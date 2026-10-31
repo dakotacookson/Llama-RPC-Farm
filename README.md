@@ -34,11 +34,16 @@ hand-rolled startup scripts.
 
   ![Cluster dashboard: live per-machine GPU/VRAM/temp status](docs/img/dashboard.png)
 
+- **Watch the cluster think** — the Flow Visualizer shows real per-tensor
+  device assignment straight from llama.cpp's scheduler: which GPU on
+  which machine is handling what, live, as models run. Pulsing GPUs are
+  compute in flight.
+
+  ![Flow visualizer: real per-tensor device assignment across your cluster](docs/img/visualizer.png)
+
 ## Quick start
 
 ![Cluster dashboard: live per-machine GPU/VRAM/temp status](docs/img/dashboard.png)
-
-![Flow visualizer: real per-tensor device assignment across your cluster](docs/img/visualizer.png)
 
 ```bash
 ./install.sh    # Linux/macOS     (Windows: install.bat)
