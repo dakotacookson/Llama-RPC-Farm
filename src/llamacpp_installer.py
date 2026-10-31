@@ -36,8 +36,8 @@ GITHUB_LATEST_DL = "https://github.com/ggml-org/llama.cpp/releases/latest/downlo
 LINUX_VER = "10.0"   # ubuntu-rocm-<ver>
 WIN_CUDA_VER = "12.4"
 WIN_ROCM_VER = "10.0"
-LINUX_CUDA_VER = "13.3"   # ubuntu-cuda-<ver>; 12.8 kept as fallback below
-LINUX_CUDA_VER_OLD = "12.8"
+LINUX_CUDA_VER = "13.4"   # ubuntu-cuda-<ver>; upstream also ships 12.8
+LINUX_CUDA_VER_OLD = "12.8"   # fallback when the newest CUDA asset is absent
 DEST_POSIX = "~/llama.cpp/bin"
 DEST_WIN = "%USERPROFILE%\\llama.cpp\\bin"
 
@@ -215,14 +215,23 @@ def _pick_assets(machine, tag, assets, glibc=None):
         # CUDA prebuilts exist upstream now — but need glibc >= 2.38
         # (measured: cuda libllama-*/libggml-base require GLIBC_2.38,
         # vulkan siblings only 2.34). Prefer CUDA when the target is new
-        # enough, else fall back to Vulkan.
+        # enough, else fall back to Vulkan. Upstream has rotated CUDA
+        # minor versions before (13.3 never shipped) — try the pinned
+        # newest first, then the known-good older one, so a version bump
+        # upstream degrades to OLD instead of failing the install.
         if glibc is not None and glibc >= GLIBC_CUDA_MIN:
-            cud = f"cudart-llama-{tag}-bin-ubuntu-cuda-{LINUX_CUDA_VER}-{arch_kind}.tar.gz"
-            return [f"llama-{tag}-bin-ubuntu-cuda-{LINUX_CUDA_VER}-{arch_kind}.tar.gz",
-                    cud], DEST_POSIX, \
-                f"CUDA {LINUX_CUDA_VER} backend (+cudart)", False
+            for _cud_ver in (LINUX_CUDA_VER, LINUX_CUDA_VER_OLD):
+                main = f"llama-{tag}-bin-ubuntu-cuda-{_cud_ver}-{arch_kind}.tar.gz"
+                if main in assets:
+                    cud = f"cudart-llama-{tag}-bin-ubuntu-cuda-{_cud_ver}-{arch_kind}.tar.gz"
+                    return [main, cud], DEST_POSIX, \
+                        f"CUDA {_cud_ver} backend (+cudart)", False
+            # neither CUDA asset present upstream — Vulkan carries it
+            note = f"Vulkan backend on NVIDIA (CUDA assets {LINUX_CUDA_VER}/{LINUX_CUDA_VER_OLD} not upstream)"
+            return [f"llama-{tag}-bin-ubuntu-vulkan-{arch_kind}.tar.gz"], \
+                DEST_POSIX, note, False
         note = "Vulkan backend on NVIDIA (devices Vulkan0..; glibc-new "
-        note += f"targets get CUDA {LINUX_CUDA_VER} instead)"
+        note += f" targets get CUDA {LINUX_CUDA_VER} instead)"
         return [f"llama-{tag}-bin-ubuntu-vulkan-{arch_kind}.tar.gz"], \
             DEST_POSIX, note, False
     return [f"llama-{tag}-bin-ubuntu-{arch_kind}.tar.gz"], DEST_POSIX, \
@@ -251,6 +260,7 @@ def install_on(machine, log=lambda m: None):
     import config_loader as cfg
     from ssh_manager import SSHManager, SSHError
     import local_node
+    import subprocess   # TimeoutExpired is a SubprocessError, NOT an OSError
 
     name = machine.get("name", "?")
     is_local = local_node.is_local(machine)
@@ -302,7 +312,7 @@ def install_on(machine, log=lambda m: None):
                 _cfg.machines.update(name, {"detected": machine["detected"]})
             except Exception:
                 pass
-    except (SSHError, OSError) as e:
+    except (SSHError, OSError, subprocess.TimeoutExpired) as e:
         return {"ok": False, "machine": name, "detail": f"probe failed: {e}"}
     try:
         tag, assets, base = _fetch_latest_assets()
@@ -323,9 +333,15 @@ def install_on(machine, log=lambda m: None):
     urls = [f"{base}/{n}" for n in plan_info["assets"]]
     try:
         if is_win:
-            # download + expand each zip into the dest dir
+            # download + expand each zip into the dest dir.
+            # $d MUST use $env:USERPROFILE (PS never expands cmd-style
+            # %VAR%; on a LOCAL windows install there is no cmd.exe
+            # wrapper to expand it first — observed 2026-10-31). The
+            # remote path works either way because cmd.exe expands
+            # %USERPROFILE% before PowerShell ever sees the body, but
+            # $env: is the one spelling correct in BOTH transports.
             ps = ["$ErrorActionPreference='Stop'",
-                  f"$d='{DEST_WIN}'",
+                  '$d="$env:USERPROFILE\\llama.cpp\\bin"',
                   "New-Item -ItemType Directory -Force -Path $d | Out-Null"]
             for i, u in enumerate(urls):
                 ps.append(
@@ -352,9 +368,24 @@ def install_on(machine, log=lambda m: None):
         if code != 0:
             return {"ok": False, "machine": name,
                     "detail": f"install failed (exit {code}): {out[-500:]}"}
-    except (SSHError, OSError) as e:
+    except (SSHError, OSError, subprocess.TimeoutExpired) as e:
         return {"ok": False, "machine": name, "detail": f"transfer failed: {e}"}
 
+    # post-install verify: the server binary must at least start — a
+    # partial extract (disk full, zip cut short) used to report success
+    # and only blow up on first launch.
+    if is_win:
+        vcmd = '& "$env:USERPROFILE\\llama.cpp\\bin\\llama-server.exe" --version'
+    else:
+        vcmd = '"$HOME/llama.cpp/bin/llama-server" --version'
+    try:
+        vcode, vout = run(vcmd, timeout=120)
+    except (SSHError, OSError, subprocess.TimeoutExpired) as e:
+        vcode, vout = 1, f"verify crashed: {e}"
+    if vcode != 0:
+        return {"ok": False, "machine": name,
+                "detail": f"installed but verify failed "
+                          f"(exit {vcode}): {(vout or '')[-300:]}"}
     bin_dir = DEST_WIN if is_win else DEST_POSIX
     bin_path = (f"{bin_dir}\\llama-server.exe" if is_win
                 else f"{bin_dir}/llama-server")

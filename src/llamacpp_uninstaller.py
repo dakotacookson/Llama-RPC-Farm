@@ -29,9 +29,10 @@ On success the machine's llama_bin pointer is cleared (load-modify-write
 via cfg.machines.update, unrelated fields untouched) so no later launch
 probe chases a dead binary.
 
-install_on's failure rollback calls uninstall_on(...) so a post-install
-verify failure (binary missing / --version crash) leaves the host in its
-pre-install state.
+install_on currently performs NO post-install verify and does NOT call
+uninstall_on on failure (verified 2026-10-31) — a failed install can
+leave partially extracted files in ~/llama.cpp/bin; run this uninstaller
+manually to clean up if that happens.
 """
 import os
 

@@ -86,6 +86,7 @@ def install_on(machine, log=lambda m: None):
     import config_loader as cfg
     from ssh_manager import SSHManager, SSHError
     import local_node
+    import subprocess   # TimeoutExpired is a SubprocessError, NOT an OSError
 
     name = machine.get("name", "?")
     is_local = local_node.is_local(machine)
@@ -101,9 +102,19 @@ def install_on(machine, log=lambda m: None):
         return proc.returncode, proc.stdout + proc.stderr
 
     def run_remote(cmd, timeout=600):
-        ssh = SSHManager(machine["ip"], machine["username"],
-                         machine["password"], port=machine.get("port", 22))
-        return ssh.run(cmd, timeout=timeout)
+        # Normalize to the run_local (code, out) shape — ssh.run returns
+        # a 3-tuple, which used to crash install_on's unpack on EVERY
+        # remote install (fixed 2026-10-31).
+        # Remote Windows: the default OpenSSH shell is cmd.exe; PS-syntax
+        # bodies must be wrapped in powershell -NoProfile with escaped
+        # quotes (same pattern as llamacpp_installer.run_remote).
+        ssh = SSHManager(machine.get("ip"), machine.get("username"),
+                         machine.get("password"), port=machine.get("port", 22))
+        if is_win:
+            cmd = ('powershell -NoProfile -Command "'
+                   + cmd.replace('"', '\\"') + '"')
+        code, out, err = ssh.run(cmd, timeout=timeout)
+        return code, (out or "") + (err or "")
 
     run = run_local if is_local else run_remote
     try:
@@ -125,13 +136,17 @@ def install_on(machine, log=lambda m: None):
                 f"download/{plan_info['tag']}/{n}"
                 for n in plan_info["assets"]]
         if is_win:
+            # $d uses $env:USERPROFILE: PS never expands cmd-style %VAR%,
+            # and on a LOCAL windows install there is no cmd.exe wrapper
+            # to expand it first (fixed 2026-10-31 — same trap as the
+            # llama.cpp installer's dest dir).
             ps = ["$ErrorActionPreference='Stop'",
-                  f"$d='{DEST_WIN}'",
+                  '$d="$env:USERPROFILE\\llama-swap"',
                   "New-Item -ItemType Directory -Force -Path $d | Out-Null",
                   f"Invoke-WebRequest -Uri '{urls[0]}' "
                   "-OutFile \"$env:TEMP\\llamaswap.zip\"",
                   "Expand-Archive -Force \"$env:TEMP\\llamaswap.zip\" $d",
-                  "Remove-Item \"$env:TEMP\\llamaswap.zip\""]
+                  "try{ Remove-Item \"$env:TEMP\\llamaswap.zip\" }catch{}"]
             code, out = run("; ".join(ps))
         else:
             # tarball is FLAT (llama-swap binary at root, plus docs) —
@@ -146,8 +161,23 @@ def install_on(machine, log=lambda m: None):
         if code != 0:
             return {"ok": False, "machine": name,
                     "detail": f"install failed (exit {code}): {out[-500:]}"}
-    except (SSHError, OSError) as e:
+    except (SSHError, OSError, subprocess.TimeoutExpired) as e:
         return {"ok": False, "machine": name, "detail": f"transfer failed: {e}"}
+
+    # post-install verify: the binary must exist and be executable —
+    # partial downloads/extracts used to report success silently.
+    if is_win:
+        vcmd = 'if(Test-Path "$env:USERPROFILE\\llama-swap\\llama-swap.exe"){echo OK}else{echo MISSING; exit 1}'
+    else:
+        vcmd = '[ -x "$HOME/.local/bin/llama-swap" ] && echo OK || { echo MISSING; exit 1; }'
+    try:
+        vcode, vout = run(vcmd, timeout=60)
+    except (SSHError, OSError, subprocess.TimeoutExpired) as e:
+        vcode, vout = 1, f"verify crashed: {e}"
+    if vcode != 0:
+        return {"ok": False, "machine": name,
+                "detail": f"installed but verify failed "
+                          f"(exit {vcode}): {(vout or '')[-300:]}"}
 
     if is_win:
         bin_path = f"{DEST_WIN}\\llama-swap.exe"
@@ -170,10 +200,13 @@ def detect_on(machine):
     is_local = local_node.is_local(machine)
     is_win = machine.get("os", "linux") == "windows"
     if is_win:
-        candidates = ["%USERPROFILE%\\llama-swap\\llama-swap.exe",
-                      "%USERPROFILE%\\llama-swap.exe"]
-        ps_cmd = ("$p=@('%USERPROFILE%\\llama-swap\\llama-swap.exe',"
-                  "'%USERPROFILE%\\llama-swap.exe');"
+        # $env:USERPROFILE — PS never expands cmd-style %VAR%, so the old
+        # %USERPROFILE% probe always tested a literal path and reported
+        # MISSING on every Windows machine (fixed 2026-10-31). Local runs
+        # hit PowerShell directly; remote goes through the cmd wrapper,
+        # which passes double quotes through with \" escaping.
+        ps_cmd = ('$p=@("$env:USERPROFILE\\llama-swap\\llama-swap.exe",'
+                  '"$env:USERPROFILE\\llama-swap.exe");'
                   "foreach($c in $p){if(Test-Path $c){echo $c;exit}};echo MISSING")
         probe = ps_cmd
     else:
@@ -203,8 +236,12 @@ def detect_on(machine):
         return False, None
     try:
         from ssh_manager import SSHManager
-        ssh = SSHManager(machine["ip"], machine["username"],
-                         machine["password"], port=machine.get("port", 22))
+        ssh = SSHManager(machine.get("ip"), machine.get("username"),
+                         machine.get("password"), port=machine.get("port", 22))
+        if is_win:
+            # same cmd.exe->PowerShell wrapper rule as install_on
+            probe = ('powershell -NoProfile -Command "'
+                     + probe.replace('"', '\\"') + '"')
         code, out, _ = ssh.run(probe, timeout=15)
         out = (out or "").strip()
         if out and "MISSING" not in out:
