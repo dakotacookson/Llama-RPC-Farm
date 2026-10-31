@@ -1,0 +1,71 @@
+model_dir: store://llm-models
+llama_bin: ~/llama.cpp/build/bin
+theme_family: steel
+theme_mode: light
+engine: llama_cpp
+vllm:
+  delivery: venv
+  venv_bin: ~/vllm-env-030/bin/vllm
+  docker_image: vllm/vllm-openai:latest
+  default_gpu_memory_utilization: 0.9
+  ray_port: 6379
+  ray_init_timeout: 300
+views:
+  Dad:
+    ips:
+    - 100.100.10.10
+    models:
+    - Huihui-Qwen3.6-35B-A3B-Q4_K-128k--dad
+    - laya-q8-0
+    - nomic-embed-text-v1-5-f16
+    - qwen3-8-27b-uncensored-q4-k-m-128k--DAD
+    - qwen3-asr-1-7b-bf16
+  dakota:
+    ips:
+    - 10.0.0.124
+    - 100.100.20.20
+    models:
+    - Ornith-1.5-9B-Q4_K_M
+    - darker-scarlett-27b-v0-1-q4-k-m
+    - laya-q8-0
+    - nomic-embed-text-v1-5-f16
+    - qwen3-asr-1-7b-bf16
+    - winbox-iq3_s
+    - qwen3-8-27b-uncensored-q4-k-m-128k
+    - Huihui-Qwen3.6-35B-A3B-Q4_K-128k
+admin_ips:
+- 10.0.0.124
+- 100.100.20.20
+admins_unrestricted: false
+access_keys:
+  sk-REPLACE-ME:
+    name: Dad
+    models:
+    - Huihui-Qwen3.6-35B-A3B-Q4_K-128k--dad
+    - laya-q8-0
+    - nomic-embed-text-v1-5-f16
+    - qwen3-8-27b-uncensored-q4-k-m-128k--DAD
+    - qwen3-asr-1-7b-bf16
+    admin: false
+    admin_unrestricted: false
+    ui:
+      theme_family: nord
+      theme_mode: dark
+  sk-REPLACE-ME:
+    name: zazi
+    models:
+    - my-model-128k
+    - Huihui-Qwen3.6-35B-A3B-Q4_K-128k
+    - Ornith-1.5-9B-Q4_K_M
+    - Ornith-1.5-9B-Q4_K_M--x5
+    - darker-scarlett-27b-v0-1-q4-k-m
+    - laya-q8-0
+    - nomic-embed-text-v1-5-f16
+    - qwen3-5-4b-q4-0
+    - qwen3-8-27b-uncensored-q4-k-m-128k
+    - qwen3-asr-1-7b-bf16
+    - winbox-iq3_s
+    - qwen3-8-27b-uncensored-q4-k-m-128k--DAD
+    - Huihui-Qwen3.6-35B-A3B-Q4_K-128k--dad
+    admin: true
+    admin_unrestricted: false

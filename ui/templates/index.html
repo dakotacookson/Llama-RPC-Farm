@@ -1,0 +1,1659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Llama RPC Farm</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_v }}">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png?v={{ asset_v }}">
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16.png?v={{ asset_v }}">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v={{ asset_v }}">
+</head>
+<body>
+  <canvas id="bg-waves" aria-hidden="true"></canvas>
+  <aside id="sidebar" aria-label="Primary">
+    <div class="sidebar-brand">
+      <div class="brand-icon"><img src="/static/logo.png?v={{ asset_v }}" alt="Llama RPC Farm logo"></div>
+      <div class="brand-text">
+        <span class="brand-title">Llama RPC Farm</span>
+      </div>
+    </div>
+    <nav aria-label="sections">
+      <div class="nav-sec">
+        <button data-tab="dashboard" class="active" title="Dashboard"><i class="fa-solid fa-gauge-high"></i><span>Dashboard</span></button>
+      </div>
+      <div class="nav-sec collapsible" data-nav-open="1">
+        <button type="button" class="nav-collapse-btn" aria-expanded="true">
+          <span class="nav-label"><i class="fa-solid fa-user nav-sec-icon"></i> User</span>
+          <i class="fa-solid fa-chevron-up nav-chev"></i>
+        </button>
+        <div class="nav-sec-body">
+        <button data-tab="user" title="User"><i class="fa-solid fa-user"></i><span>User</span></button></div>
+      </div>
+      <div class="nav-sec collapsible" data-nav-open="1">
+        <button type="button" class="nav-collapse-btn" aria-expanded="true">
+          <span class="nav-label"><i class="fa-solid fa-server nav-sec-icon"></i> Fleet</span>
+          <i class="fa-solid fa-chevron-up nav-chev"></i>
+        </button>
+        <div class="nav-sec-body">
+        <button data-tab="machines" title="Machines"><i class="fa-solid fa-server"></i><span>Machines</span></button>
+        <button data-tab="groups" title="Groups"><i class="fa-solid fa-layer-group"></i><span>Groups</span></button>
+        <button data-tab="visualizer" title="Flow Visualizer"><i class="fa-solid fa-diagram-project"></i><span>Visualizer</span></button></div>
+      </div>
+      <div class="nav-sec collapsible" data-nav-open="1">
+        <button type="button" class="nav-collapse-btn" aria-expanded="true">
+          <span class="nav-label"><i class="fa-solid fa-cube nav-sec-icon"></i> Models</span>
+          <i class="fa-solid fa-chevron-up nav-chev"></i>
+        </button>
+        <div class="nav-sec-body">
+        <button data-tab="models" title="Models"><i class="fa-solid fa-cube"></i><span>Models</span></button>
+        <button data-tab="downloads" title="Model Sources & Downloads"><i class="fa-solid fa-cloud-arrow-down"></i><span>Downloads</span></button></div>
+      </div>
+      <div class="nav-sec collapsible" data-nav-open="1">
+        <button type="button" class="nav-collapse-btn" aria-expanded="true">
+          <span class="nav-label"><i class="fa-solid fa-vials nav-sec-icon"></i> Tests</span>
+          <i class="fa-solid fa-chevron-up nav-chev"></i>
+        </button>
+        <div class="nav-sec-body">
+        <button data-tab="chat" title="Chat"><i class="fa-solid fa-comments"></i><span>Chat</span></button>
+        <button data-tab="vision" title="Vision"><i class="fa-solid fa-eye"></i><span>Vision</span></button>
+        <button data-tab="audio" title="Audio"><i class="fa-solid fa-microphone"></i><span>Audio</span></button>
+        <button data-tab="embeddings" title="Embeddings"><i class="fa-solid fa-vector-square"></i><span>Embeddings</span></button>
+        <button data-tab="decision" title="Decision (TypeSafe /v1/systemone)"><i class="fa-solid fa-scale-balanced"></i><span>Decision</span></button></div>
+      </div>
+      <div class="nav-sec collapsible" data-nav-open="1">
+        <button type="button" class="nav-collapse-btn" aria-expanded="true">
+          <span class="nav-label"><i class="fa-solid fa-rocket nav-sec-icon"></i> Serve</span>
+          <i class="fa-solid fa-chevron-up nav-chev"></i>
+        </button>
+        <div class="nav-sec-body">
+        <button data-tab="launch" title="Launch"><i class="fa-solid fa-rocket"></i><span>Launch</span></button>
+        <button data-tab="servegroups" title="Serve Groups"><i class="fa-solid fa-object-group"></i><span>Serve Groups</span></button></div>
+      </div>
+      <div class="nav-sec collapsible" data-nav-open="1">
+        <button type="button" class="nav-collapse-btn" aria-expanded="true">
+          <span class="nav-label"><i class="fa-solid fa-gear nav-sec-icon"></i> System</span>
+          <i class="fa-solid fa-chevron-up nav-chev"></i>
+        </button>
+        <div class="nav-sec-body">
+        <button data-tab="logs" title="Live Logs"><i class="fa-solid fa-terminal"></i><span>Logs</span></button>
+        <button data-tab="settings" title="Settings"><i class="fa-solid fa-gear"></i><span>Settings</span></button>
+        <button data-tab="access" title="Access" id="tab-btn-access" hidden><i class="fa-solid fa-user-shield"></i><span>Access</span></button></div>
+      </div>
+    </nav>
+    <div id="login-chip" style="display:none; flex-direction:column; gap:6px; padding:10px 12px; border-top:1px solid var(--border-soft)">
+    </div>
+    <div class="sidebar-footer">
+      <div class="sidebar-hint"><i class="fa-solid fa-circle-nodes"></i><span>Cluster control</span></div>
+    </div>
+  </aside>
+  <button id="sidebar-toggle" aria-label="Collapse sidebar" aria-expanded="true" title="Collapse"><i class="fa-solid fa-angles-left"></i></button>
+
+  <main>
+    <!-- Dashboard -->
+    <section id="tab-dashboard" class="tab active">
+      <div class="overview">
+        <h2 class="overview-title">Cluster Overview</h2>
+        <div id="ov-loaded-model" class="loaded-model-banner">no model loaded</div>
+        <div class="overview-row">
+          <div class="metric">
+            <span class="metric-label">VRAM</span>
+            <div class="metric-body">
+              <i class="fa-solid fa-microchip metric-icon"></i>
+              <div class="metric-values">
+                <span class="metric-value" id="ov-vram-used">--</span>
+                <span class="metric-slash">/</span>
+                <span class="metric-value" id="ov-vram-total">-- GB</span>
+                <span class="metric-percent" id="ov-vram-pct">--%</span>
+              </div>
+            </div>
+            <div class="bar-wrap"><div class="bar" id="ov-vram-bar"></div></div>
+          </div>
+          <div class="metric">
+            <span class="metric-label">RAM</span>
+            <div class="metric-body">
+              <i class="fa-solid fa-memory metric-icon"></i>
+              <div class="metric-values">
+                <span class="metric-value" id="ov-ram-used">--</span>
+                <span class="metric-slash">/</span>
+                <span class="metric-value" id="ov-ram-total">-- GB</span>
+                <span class="metric-percent" id="ov-ram-pct">--%</span>
+              </div>
+            </div>
+            <div class="bar-wrap"><div class="bar" id="ov-ram-bar"></div></div>
+          </div>
+          <div class="metric">
+            <span class="metric-label">CPU</span>
+            <div class="metric-body">
+              <i class="fa-solid fa-gauge-high metric-icon"></i>
+              <div class="metric-values">
+                <span class="metric-value" id="ov-cpu-pct">--%</span>
+                <span class="metric-sub" id="ov-cpu-sub">-- / -- cores</span>
+              </div>
+            </div>
+            <div class="bar-wrap"><div class="bar" id="ov-cpu-bar"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="servers-header">
+        <h2>Machines</h2>
+        <span class="count" id="machine-count">0</span>
+        <span class="servers-header-spacer"></span>
+        <span class="card-label" id="dash-action-status"></span>
+        <span class="card-label" id="swap-pill"><span class="status-dot off"></span> swap: …</span>
+        <button type="button" id="auto-refresh-chip" class="chip-switch" aria-pressed="true" title="Toggle 1s dashboard auto-refresh">
+          <span class="chip-knob"><i class="fa-solid fa-rotate"></i></span>
+          <span class="chip-label">Auto 1s</span>
+        </button>
+        <button class="small" id="start-all" title="Start RPC servers on every machine, then llama-swap">Start All</button>
+        <button class="small danger" id="stop-swap" title="Stop llama-swap, then kill leftover rpc-servers on every machine">Stop All</button>
+        <button class="small" id="restart-app" title="Stop llama-swap + RPC on all nodes, then restart this web app itself">Restart App</button>
+      </div>
+
+      <div id="status-grid"></div>
+    </section>
+
+    <!-- Machines -->
+    <section id="tab-machines" class="tab">
+      <h2>Machines</h2>
+      <form id="machine-form" class="card form">
+        <h3 id="machine-form-title">Add machine</h3>
+        <input type="hidden" id="machine-original-name">
+        <ol id="wiz-indicator" class="wiz-steps">
+          <li data-s="1" class="active">1 · Scan</li>
+          <li data-s="2">2 · Select</li>
+          <li data-s="3">3 · Configure</li>
+        </ol>
+        <div id="wiz-step-1">
+          <fieldset>
+            <legend>Scan the network <small class="hint">ping + SSH banner — OS detected without login; enrichment uses the username below (default zazi), editable in step 3</small></legend>
+            <div class="row">
+              <label>Network
+                <select id="d-subnet"></select>
+              </label>
+              <label>SSH port <input id="d-port" type="number" value="22"></label>
+              <button type="button" id="d-scan" style="align-self:end">Scan</button>
+            </div>
+            <p class="hint" id="wiz-scan-hint">Hit Scan to ping the network and fingerprint SSH hosts. Already know the IP? Just Continue — you can enter it manually in step 2.</p>
+          </fieldset>
+        </div>
+        <div id="wiz-step-2" hidden>
+          <fieldset>
+            <legend>Select a machine <small class="hint">one at a time — pick a discovered host or enter an IP manually</small></legend>
+            <div id="d-results"><p class="hint">No scan yet — go Back and Scan, or enter an IP below.</p></div>
+            <div class="row">
+              <label class="wide">Or enter IP manually <input id="wiz-manual-ip" placeholder="10.0.0.x"></label>
+            </div>
+          </fieldset>
+        </div>
+        <div id="wiz-step-3" hidden>
+        <div class="hint" id="m-fingerprint" style="margin-bottom:8px"></div>
+        <div class="row">
+          <label>Name <input id="m-name" required></label>
+          <label>IP <input id="m-ip" required list="discovered-ips" placeholder="type to pick a discovered host">
+            <datalist id="discovered-ips"></datalist>
+          </label>
+          <label>Username <input id="m-username" required value="zazi"></label>
+          <label>Password <input id="m-password" type="password"><small id="m-password-hint" class="hint"></small></label>
+        </div>
+        <div class="row">
+          <label>SSH port <input id="m-port" type="number" value="22"></label>
+          <label>Role
+            <select id="m-role">
+              <option value="peer">peer</option>
+              <option value="master">master</option>
+            </select>
+          </label>
+          <label>OS
+            <select id="m-os">
+              <option value="linux">linux</option>
+              <option value="windows">windows</option>
+              <option value="macos">macOS (Apple Silicon — Metal/MLX)</option>
+            </select>
+          </label>
+          <label>GPU vendor
+            <select id="m-gpu-vendor">
+              <option value="nvidia">NVIDIA (CUDA)</option>
+              <option value="amd">AMD (ROCm)</option>
+              <option value="intel">Intel (SYCL)</option>
+              <option value="apple">Apple Silicon (Metal)</option>
+              <option value="cpu">CPU only</option>
+            </select>
+          </label>
+          <label>RPC port <input id="m-rpc-port" type="number" value="50052"><small class="hint">legacy single-server base; per-model ports are auto-allocated ≥51000 (clear of Windows excluded ranges)</small></label>
+          <label>GPU list <input id="m-gpu" placeholder="CUDA0,CUDA1 (ROCm0,ROCm1 for AMD)"></label>
+          <label>RAM (GB) <input id="m-ram" type="number" placeholder="auto after detect"></label>
+        </div>
+        <div class="row">
+          <button type="button" id="m-detect-form">Detect hardware (fills GPU + RAM)</button>
+        </div>
+        <div class="row">
+          <label class="wide">llama.cpp bin — override for this machine (empty = use Settings default)
+            <div style="display:flex;gap:6px;align-items:center">
+              <input id="m-llama-bin" placeholder="e.g. ~/llama.cpp/build/bin or %USERPROFILE%\llama.cpp">
+              <button type="button" class="small" id="m-llama-bin-browse" title="Browse on this machine"><i class="fa-solid fa-folder-open"></i> Browse</button>
+            </div>
+            <small class="hint" id="m-llama-bin-hint"></small>
+          </label>
+        </div>
+        <fieldset>
+          <legend>Expose to cluster</legend>
+          <div class="row">
+            <label>What to expose
+              <select id="m-expose-mode">
+                <option value="both">RAM + VRAM</option>
+                <option value="vram">VRAM only</option>
+                <option value="ram">RAM only</option>
+              </select>
+            </label>
+            <label class="wide">GPUs to expose (comma separated, empty = all)
+              <input id="m-expose-gpus" placeholder="CUDA0,CUDA1">
+            </label>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>RDMA transport (llama.cpp RPC)</legend>
+          <div class="row">
+            <label style="display:flex;gap:8px;align-items:center;white-space:nowrap">
+              <input type="checkbox" id="m-rdma" style="width:auto">
+              Use RDMA (RoCE) for RPC
+            </label>
+            <label class="wide">RDMA NIC IP (RoCE v2 address, must be in the NIC's GID table)
+              <input id="m-rdma-ip" placeholder="e.g. 10.0.0.105" disabled>
+            </label>
+          </div>
+          <div class="row">
+            <label>ibverbs device (pin; empty = auto-detect)
+              <input id="m-rdma-dev" placeholder="e.g. rocep4s0" disabled>
+            </label>
+            <label>GID index (pin; empty = auto-detect)
+              <input id="m-rdma-gid" placeholder="e.g. 4" disabled>
+            </label>
+            <label style="display:flex;gap:8px;align-items:center;white-space:nowrap">
+              <input type="checkbox" id="m-rdma-cm" style="width:auto" disabled>
+              Use rdma_cm QP setup (ConnectX-3/mlx4)
+            </label>
+          </div>
+          <small class="hint">Off (default) forces TCP RPC — stable under heavy load. On: RDMA inference (~3.5µs latency, 9+ Gb/s) with automatic pacing + flow control. "rdma_cm" is required for ConnectX-3/mlx4 cards; leave off for mlx5/E810+.</small>
+        </fieldset>
+        </div><!-- /wiz-step-3 -->
+        <div class="actions" id="wiz-nav">
+          <button type="button" id="wiz-back">← Back</button>
+          <button type="button" id="wiz-cancel">Cancel</button>
+          <span style="flex:1"></span>
+          <button type="button" id="wiz-next">Continue →</button>
+          <button type="submit" id="wiz-save" hidden>Save machine</button>
+        </div>
+        <div class="actions" id="machine-edit-actions" hidden>
+          <button type="submit">Save</button>
+          <button type="button" id="machine-cancel">Cancel</button>
+        </div>
+      </form>
+      <div class="row">
+        <button type="button" id="detect-all-btn">Detect Hardware (all machines)</button>
+      </div>
+      <div id="machines-list"></div>
+    </section>
+
+    <!-- Groups -->
+    <section id="tab-groups" class="tab">
+      <div class="row" style="align-items:center; justify-content:space-between; margin-bottom:8px">
+        <h2 style="margin:0">Groups</h2>
+        <button id="grp-add" class="small" style="padding:8px 14px"><i class="fa-solid fa-plus"></i> New group</button>
+      </div>
+      <p class="hint">A group is a named set of machines that deploy together (e.g. "full-cluster" = master + RPC peers). Models reference groups on the Machines tab; status checks report each member's reachability and RPC state.</p>
+      <div id="groups-list"></div>
+    </section>
+
+    <!-- Group wizard modal (2 steps: Machines → Review) -->
+    <div id="grp-modal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" id="grp-modal-backdrop"></div>
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="grp-modal-title">
+        <div class="modal-header">
+          <h3 id="grp-modal-title"><i class="fa-solid fa-layer-group"></i> New group</h3>
+          <button class="small" id="grp-modal-close" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="group-original-name">
+          <ol class="wiz-steps grpwiz-indicator">
+            <li data-s="1" class="active">1 · Machines</li>
+            <li data-s="2">2 · Review</li>
+          </ol>
+          <div class="grpwiz-step-1">
+            <div class="row">
+              <label>Name <input id="g-name" required placeholder="e.g. full-cluster"></label>
+              <label class="wide">Description <input id="g-description" placeholder="what this machine set is for"></label>
+            </div>
+            <div class="row"><label class="wide">Machines — click to add / remove <small class="hint">(the machine marked <span class="badge badge-master">master</span> hosts llama-server; others join as RPC peers)</small></label></div>
+            <div id="g-machines-chip-list" class="machine-hw-chips"></div>
+            <div id="grp-hints" style="margin-top:8px"></div>
+          </div>
+          <div class="grpwiz-step-2" hidden>
+            <div id="grp-review" class="card" style="margin:0; padding:10px 12px"></div>
+          </div>
+        </div>
+        <div class="modal-footer" style="display:flex; gap:8px; justify-content:flex-end; padding:10px 14px; border-top:1px solid var(--border-soft)">
+          <button type="button" class="small grpwiz-back">Back</button>
+          <button type="button" class="small grpwiz-next" style="background:var(--accent-dim); color:var(--accent); border-color:var(--accent)">Next</button>
+          <button type="button" id="grp-modal-save" hidden style="background:var(--accent-dim); color:var(--accent); border-color:var(--accent)">Save group</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Installer modal (UX-2): node + tools + role -> /api/tools/install -->
+    <div id="inst-modal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" id="inst-modal-backdrop"></div>
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="inst-modal-title" style="max-width:620px">
+        <div class="modal-header">
+          <h3 id="inst-modal-title"><i class="fa-solid fa-download"></i> Run installer</h3>
+          <button class="small" id="inst-modal-close" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="modal-body">
+          <div id="inst-form">
+            <div class="row">
+              <label class="wide">Node
+                <select id="inst-machine"></select>
+                <small class="hint">machines.yaml entries; "this machine" = the host running this UI</small>
+              </label>
+            </div>
+            <div class="row">
+              <label class="wide">Tools
+                <select id="inst-tools">
+                  <option value="all">All offered tools (skip what's present)</option>
+                  <option value="llama.cpp">llama.cpp only</option>
+                  <option value="llama-swap">llama-swap only</option>
+                  <option value="vllm">vLLM only</option>
+                  <option value="ray">ray only</option>
+                </select>
+              </label>
+            </div>
+            <div class="row">
+              <label>Role
+                <select id="inst-role">
+                  <option value="main">main (installs llama-swap + settings prefill)</option>
+                  <option value="client">client (RPC peer — llama.cpp only)</option>
+                </select>
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;margin-top:18px">
+                <input type="checkbox" id="inst-dry-run"> Dry run (plan only, no changes)
+              </label>
+            </div>
+          </div>
+          <div id="inst-progress" hidden>
+            <p class="hint" id="inst-progress-head"><i class="fa-solid fa-spinner fa-spin"></i> Planning…</p>
+            <div id="inst-log" class="card" style="padding:8px 10px;max-height:260px;overflow:auto;white-space:pre-wrap;font-size:12px;font-family:var(--mono);margin-top:6px"></div>
+          </div>
+          <div id="inst-result" style="margin-top:8px"></div>
+        </div>
+        <div class="modal-footer" style="display:flex; gap:8px; justify-content:flex-end; padding:10px 14px; border-top:1px solid var(--border-soft)">
+          <button type="button" class="small" id="inst-modal-done">Close</button>
+          <button type="button" id="inst-submit" style="background:var(--accent-dim); color:var(--accent); border-color:var(--accent)">Run install</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Flow Visualizer -->
+    <section id="tab-visualizer" class="tab">
+      <h2>Flow Visualizer <span id="flow-status" class="serving-ind">…</span></h2>
+      <p class="hint">Real per-tensor GPU/device assignment from llama.cpp (GGML_SCHED_DEBUG) — watch tensors move across machines and GPUs as models run.</p>
+      <div class="flow-canvas-wrap" style="position:relative">
+        <canvas id="flow-waves" aria-hidden="true"></canvas>
+        <div id="flow-canvas" class="flow-canvas">
+          <div class="flow-empty"><i class="fa-solid fa-diagram-project"></i><span>Waiting for traffic…</span></div>
+        </div>
+        <div class="flow-controls">
+          <button class="flow-ctrl-btn" id="flow-zoom-in" title="Zoom in"><i class="fa-solid fa-magnifying-glass-plus"></i></button>
+          <button class="flow-ctrl-btn" id="flow-zoom-out" title="Zoom out"><i class="fa-solid fa-magnifying-glass-minus"></i></button>
+          <button class="flow-ctrl-btn" id="flow-zoom-fit" title="Fit view"><i class="fa-solid fa-expand"></i></button>
+          <button class="flow-ctrl-btn" id="flow-zoom-reset" title="Reset (1:1)"><i class="fa-solid fa-crosshairs"></i></button>
+          <button class="flow-ctrl-btn" id="flow-auto" title="Auto-organize"><i class="fa-solid fa-wand-magic-sparkles"></i></button>
+        </div>
+        <div class="flow-legend">
+        <!-- debug toggle hidden from UI; enable via console: localStorage.setItem("flow-debug-all-active","1") -->
+        <label hidden style="display:none">
+          <input type="checkbox" id="flow-debug-active" style="margin:0">
+          <span>debug: all lines active</span>
+        </label>
+          <span><span class="dot" style="background:var(--accent)"></span>active tensor flow</span>
+          <span><i class="fa-solid fa-hand" style="margin-right:4px;color:var(--accent)"></i>drag nodes to arrange</span>
+          <span><i class="fa-solid fa-gauge-high" style="margin-right:4px;color:var(--accent)"></i>pulsing GPUs = compute in flight</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Live Logs -->
+    <section id="tab-logs" class="tab">
+      <div class="row" style="align-items:center; justify-content:space-between; margin-bottom:8px">
+        <h2 style="margin:0">Live Logs <span id="logs-status" class="serving-ind">…</span></h2>
+        <div class="row" style="gap:8px; align-items:center">
+          <button class="flow-ctrl-btn" id="logs-pause" title="Pause / resume the stream"><i class="fa-solid fa-pause"></i></button>
+          <button class="flow-ctrl-btn" id="logs-clear" title="Clear buffer"><i class="fa-solid fa-broom"></i></button>
+          <button class="flow-ctrl-btn" id="logs-copy" title="Copy all visible lines"><i class="fa-solid fa-copy"></i></button>
+          <button class="flow-ctrl-btn" id="logs-scroll" title="Toggle auto-scroll"><i class="fa-solid fa-arrow-down"></i></button>
+        </div>
+      </div>
+      <p class="hint">Real-time tail of llama-swap's proxy and upstream (llama-server) logs — raw lines, exactly as the servers write them.</p>
+      <div class="card logs-card">
+        <div class="row logs-filters" style="gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px">
+          <span class="hint" style="font-weight:600"><i class="fa-solid fa-filter"></i> source</span>
+          <label class="hint" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="logs-src-proxy" checked style="width:auto"> proxy</label>
+          <label class="hint" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="logs-src-upstream" checked style="width:auto"> upstream</label>
+          <label class="wide" style="min-width:220px">search <input id="logs-filter" placeholder="filter lines…"></label>
+          <span id="logs-count" class="hint"></span>
+        </div>
+        <div class="logs-view" id="logs-view" tabindex="0"></div>
+      </div>
+    </section>
+
+    <!-- Models -->
+    <section id="tab-models" class="tab">
+      <h2>Models</h2>
+      <div class="card form">
+        <h3 id="model-form-title">Configure model</h3>
+        <input type="hidden" id="model-original-id">
+        <ol id="mowiz-indicator" class="wiz-steps">
+          <li data-s="1" class="active">1 · Source</li>
+          <li data-s="2">2 · Hardware</li>
+          <li data-s="3">3 · Details</li>
+        </ol>
+        <div id="mowiz-step-1">
+          <fieldset>
+            <legend>Model file <small class="hint">scan the store and pick one result, or paste a path below</small></legend>
+            <div class="row" style="flex-direction:column; align-items:center; gap:8px;">
+              <small id="scan-path-label">scanning from Settings → Model directory</small>
+              <small class="hint" id="scan-auto-hint">list refreshes automatically</small>
+            </div>
+            <input id="scan-path" type="hidden">
+            <div id="scan-results"></div>
+            <div class="row">
+              <label class="wide">Model path (first shard for sharded) <input id="mo-path" class="wide"></label>
+            </div>
+          </fieldset>
+        </div>
+        <div id="mowiz-step-2" hidden>
+          <fieldset>
+            <legend>Hardware <small class="hint" data-panel="rpc_peers">pick GPU/RAM chips — one model can span machines</small><small class="hint" data-engine="vllm" hidden>chips map to CUDA_VISIBLE_DEVICES per host — one host = single-GPU/TP, multiple hosts = pipeline layer split (configure in Advanced)</small></legend>
+            <div class="row">
+              <label>Group affinity
+                <select id="mo-group"><option value="">(custom / no group)</option></select>
+              </label>
+            </div>
+            <div class="row">
+              <div id="mo-servers-chip-list"></div>
+            </div>
+          </fieldset>
+        </div>
+        <div id="mowiz-step-3" hidden>
+        <div class="row">
+          <label>Model ID <input id="mo-id" required placeholder="huihui-35b-q8-rpc"></label>
+          <label>Display name <input id="mo-name"></label>
+        </div>
+        <div class="row">
+          <label>Runtime
+            <select id="mo-runtime">
+              <option value="llama">llama.cpp (GGUF)</option>
+              <option value="mlx">MLX (Apple Silicon, HF repo id)</option>
+              <option value="custom">Custom (external server, no GGUF)</option>
+            </select>
+          </label>
+        </div>
+        <div class="row" id="mo-custom-row" hidden>
+          <label>Custom kind
+            <select id="mo-custom-kind">
+              <option value="winbox-bat">winbox-bat (start a .bat over SSH, proxy to it)</option>
+              <option value="raw">raw (your own swap entry, passed through)</option>
+            </select>
+          </label>
+          <span id="mo-custom-bat-fields" style="display:contents">
+            <label title="Full path of the start script on the target box">Bat path on box <input id="mo-custom-bat" placeholder="D:\Strata\run-iq3_s.bat" style="min-width:260px"></label>
+            <label title="TCP port the external server listens on (proxied by llama-swap)">Port <input id="mo-custom-port" type="number" min="1" max="65535" placeholder="8080" style="width:100px"></label>
+          </span>
+          <label title="External server takes image input (listed for vision tests)"><input id="mo-custom-vision" type="checkbox"> Vision</label>
+        </div>
+        <div class="row" id="mo-custom-raw" hidden>
+          <div style="display:flex; flex-direction:column; gap:6px; width:100%">
+            <label title="Upstream base URL llama-swap proxies to (empty = serve directly)">Proxy <input id="mo-custom-proxy" placeholder="http://10.0.0.124:8080" style="min-width:280px"></label>
+            <label title="Health path llama-swap polls (needs Proxy)">Check endpoint <input id="mo-custom-ep" placeholder="/health" style="width:140px"></label>
+            <label title="llama-swap cmd — {SCRIPT} = pushed script path, {SECRETS} = vault sidecar path">Cmd <textarea id="mo-custom-cmd" rows="2" placeholder="/bin/bash &quot;{SCRIPT}&quot;" style="min-width:320px"></textarea></label>
+            <label title="Runs on unload/restart while loaded — same {SCRIPT}/{SECRETS} tokens">Cmd stop <textarea id="mo-custom-cmdstop" rows="2" style="min-width:320px"></textarea></label>
+            <label title="Extra KEY=VALUE lines for the entry">Env <textarea id="mo-custom-env" rows="2" placeholder="FOO=bar" style="min-width:200px"></textarea></label>
+            <label title="Optional: pushed as start-&lt;id&gt;.sh, referenced via {SCRIPT}">Script <textarea id="mo-custom-script" rows="4" placeholder="#!/bin/bash&#10;..." style="min-width:320px"></textarea></label>
+          </div>
+        </div>
+        <details id="mo-advanced" class="collapsible-panel advanced-details" open>
+          <summary><i class="fa-solid fa-sliders"></i> Advanced <span class="hint" id="mo-advanced-badge"></span><span class="hint" style="margin-left:auto"><i class="fa-solid fa-chevron-down" style="font-size:10px"></i></span></summary>
+          <div class="advanced-body">
+            <div class="card" id="mo-vllm" data-engine="vllm" hidden style="padding:10px; background:var(--inset)">
+          <div class="hint" style="font-weight:600; margin-bottom:8px"><i class="fa-solid fa-bolt"></i> vLLM (per-model) <span class="hint">saved as the model's <code>vllm:</code> section — empty fields fall back to vLLM defaults; GPU memory utilization falls back to the Settings-level default</span></div>
+
+          <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-arrows-left-right"></i> Parallelism</div>
+          <div class="chip-group" id="chips-vllm-layout" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px">
+            <button type="button" class="hw-chip active" data-value="pp"><i class="fa-solid fa-layer-group"></i> PP <small>layer split</small></button>
+            <button type="button" class="hw-chip" data-value="tp"><i class="fa-solid fa-arrows-left-right"></i> TP <small>tensor split</small></button>
+          </div>
+          <select id="mo-vllm-layout" hidden>
+            <option value="pp" selected>pp (layer split)</option>
+            <option value="tp">tp (tensor split)</option>
+          </select>
+          <div class="row" style="flex-wrap:wrap" title="pp = layer split across hosts (one activation pass per boundary — the llama.cpp RPC style, right for 1xPCIe/Ethernet); tp = tensor split across hosts (allreduce every layer — Infiniband-class only)">
+            <label title="pipeline stages — pp layout: one stage per host">Pipeline parallel <input id="mo-vllm-pp" type="number" placeholder="e.g. 1" style="width:110px"></label>
+            <label title="tensor ranks within a host (must divide the model's attention heads)">Tensor parallel <input id="mo-vllm-tp" type="number" placeholder="e.g. 2" style="width:110px"></label>
+            <label title="fraction of VRAM for model+KV (0–1); per-model override — weak-GPU machines get a smaller budget">GPU mem util <input id="mo-vllm-gmu" type="number" step="0.05" min="0.05" max="1" placeholder="e.g. 0.35" style="width:110px"></label>
+          </div>
+
+          <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-gauge-high"></i> Serving</div>
+          <div class="row" style="flex-wrap:wrap">
+            <label title="max context window — agentic clients like opencode request max_tokens=16384, so 8k rejects their requests">Max model len <input id="mo-vllm-max-model-len" type="number" placeholder="e.g. 32768" style="width:130px"></label>
+            <label>Max seqs <input id="mo-vllm-max-num-seqs" type="number" placeholder="e.g. 256" style="width:110px"></label>
+            <label>KV cache <select id="mo-vllm-kv" style="min-width:90px"><option value="">default</option><option value="auto">auto</option><option value="fp8">fp8</option></select></label>
+            <label>CPU offload GB <input id="mo-vllm-cpu-offload" type="number" placeholder="e.g. 20" style="width:120px"></label>
+            <label>Quantization <input id="mo-vllm-quant" placeholder="e.g. fp8" style="width:110px"></label>
+          </div>
+
+          <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-microchip"></i> Precision & performance</div>
+          <div class="row" style="flex-wrap:wrap">
+            <label title="auto lets vLLM pick (bf16 on sm_80+); Turing (RTX 20xx) cannot run bf16 — use half or float32">Compute dtype <select id="mo-vllm-dtype" style="min-width:110px"><option value="">auto</option><option value="half">half (fp16)</option><option value="bfloat16">bfloat16</option><option value="float32">float32</option></select></label>
+            <label title="disable CUDA graphs — default ON for multi-host (capture hangs across Ethernet TP); uncheck for Infiniband/fast interconnects"><button type="button" class="hw-chip" id="chip-vllm-eager" data-checked="false"><i class="fa-solid fa-bolt"></i> eager</button><input id="mo-vllm-eager" type="checkbox" hidden></label>
+          </div>
+
+          <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-screwdriver-wrench"></i> Tool calling</div>
+          <div class="row" style="flex-wrap:wrap">
+            <label title="allow tool_choice=auto — opencode and agentic clients require it"><button type="button" class="hw-chip" id="chip-vllm-tools" data-checked="false"><i class="fa-solid fa-screwdriver-wrench"></i> auto-tools</button><input id="mo-vllm-tools" type="checkbox" hidden></label>
+            <label title="how the model's tool-call syntax is parsed — hermes covers the Qwen/Most chat-template family">Tool parser <select id="mo-vllm-tool-parser" style="min-width:120px"><option value="">hermes (default)</option><option value="hermes">hermes</option><option value="llama3_json">llama3_json</option><option value="mistral">mistral</option><option value="glm45">glm45</option><option value="qwen25">qwen25</option></select></label>
+          </div>
+
+          <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-file-lines"></i> Extras</div>
+          <div class="row" style="flex-wrap:wrap">
+            <label class="wide">Tokenizer (path or HF id, when it differs from the model) <input id="mo-vllm-tokenizer" class="wide"></label>
+            <label class="wide">Extra vLLM args (comma- or newline-separated, e.g. --swap-space 4, --enable-prefix-caching) <input id="mo-vllm-extra-args" class="wide"></label>
+            <label class="wide" title="multi-host Ray/NCCL transport overrides — defaults (NCCL_P2P_DISABLE=1 etc.) suit Ethernet/consumer-GPU clusters; use KEY=false to drop one, or set your own for Infiniband">Ray env overrides (KEY=VALUE per line; KEY=false drops a default) <input id="mo-vllm-ray-env" class="wide" placeholder="NCCL_P2P_DISABLE=false"></label>
+          </div>
+        </div>
+
+            <div class="card" data-panel="tensor_split" style="padding:10px">
+              <div class="hint" style="font-weight:600; margin-bottom:8px"><i class="fa-solid fa-sliders"></i> Tensor placement <span class="hint">(llama-server's fitter assigns whole layers by live free VRAM — VRAM-first, RAM spill last)</span></div>
+              <div class="chip-group" id="chips-tensor-mode" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px">
+                <button type="button" class="hw-chip" data-value="auto"><i class="fa-solid fa-arrows-left-right"></i> Auto <small>even</small></button>
+                <button type="button" class="hw-chip active" data-value="fit"><i class="fa-solid fa-bolt"></i> Fit <small>VRAM-aware</small></button>
+                <button type="button" class="hw-chip" data-value="split"><i class="fa-solid fa-pen-ruler"></i> Split <small>forced weights</small></button>
+              </div>
+              <select id="mo-tensor-mode" hidden>
+                <option value="auto">auto</option>
+                <option value="fit" selected>fit</option>
+                <option value="split">split</option>
+              </select>
+              <div class="row" id="mo-fit-margin-wrap" hidden>
+                <label>Fit margin (MiB) <input id="mo-fit-margin" type="number" value="1024"></label>
+                <label>RAM usable by fit (MiB) <input id="mo-fit-ram-allow" type="number" value="1024"></label>
+              </div>
+              <div class="row" id="mo-tensor-split-wrap" hidden>
+                <label class="wide">Split weights (per --device, comma-separated) <input id="mo-tensor-split" placeholder="e.g. 8,10,10,6,10"></label>
+              </div>
+              <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-arrow-down-wide-short"></i> Device order</div>
+              <div class="chip-group" id="chips-order-policy" style="display:flex; gap:8px; flex-wrap:wrap">
+                <button type="button" class="hw-chip" data-value="as-selected"><i class="fa-solid fa-list-ol"></i> As selected</button>
+                <button type="button" class="hw-chip active" data-value="vram-first"><i class="fa-solid fa-memory"></i> VRAM-first</button>
+              </div>
+              <select id="mo-order-policy" hidden>
+                <option value="as-selected">as-selected</option>
+                <option value="vram-first" selected>vram-first</option>
+              </select>
+            </div>
+            <div class="row" data-engine="llama_cpp">
+              <label class="wide"><span data-engine-label="server">llama-server</span> binary (default from Settings) <input id="mo-llama-bin" placeholder="loaded from Settings"></label>
+            </div>
+            <div class="row" style="gap:8px; align-items:center">
+              <button type="button" class="hw-chip" id="chip-pinned" data-checked="false"><i class="fa-solid fa-thumbtack"></i> pinned <small>keep-warm</small></button>
+              <input type="checkbox" id="mo-pinned" hidden>
+              <label>TTL <input id="mo-ttl" type="number" placeholder="0 (never)" style="width:110px"></label>
+            </div>
+            <div class="card" data-engine="llama_cpp" style="padding:10px; background:var(--inset)">
+              <div class="hint" style="font-weight:600; margin-bottom:8px"><i class="fa-solid fa-flag"></i> Common flags</div>
+              <div class="row" style="gap:12px; align-items:flex-end; flex-wrap:wrap">
+                <label>Context <input id="flag-ctx-size" type="number" placeholder="160000" style="width:110px"></label>
+                <button type="button" class="hw-chip" id="chip-flash-attn" data-checked="false"><i class="fa-solid fa-bolt"></i> flash-attn</button>
+                <input type="checkbox" id="flag-flash-attn" hidden>
+                <button type="button" class="hw-chip" id="chip-jinja" data-checked="false"><i class="fa-solid fa-code"></i> jinja</button>
+                <input type="checkbox" id="flag-jinja" hidden>
+                <label>Cache K <select id="flag-cache-k" style="min-width:90px"><option value="">default</option><option value="q8_0">q8_0</option><option value="f16">f16</option><option value="q4_0">q4_0</option></select></label>
+                <label>Cache V <select id="flag-cache-v" style="min-width:90px"><option value="">default</option><option value="q8_0">q8_0</option><option value="f16">f16</option><option value="q4_0">q4_0</option></select></label>
+              </div>
+            </div>
+            <fieldset data-editor-section="flags">
+              <legend>Flags (power users)</legend>
+              <div class="row" style="align-items:center; margin-bottom: 8px;">
+                <button type="button" class="small" id="flags-mode-rows" style="border-color: var(--accent);">Chips</button>
+                <button type="button" class="small" id="flags-mode-text">Raw text</button>
+                <small id="flags-mode-hint">one --flag value per pair</small>
+              </div>
+              <div class="row" id="flag-presets" style="flex-wrap:wrap; gap:6px" hidden></div>
+              <div id="flags-container"></div>
+              <textarea id="flags-text" rows="7" hidden style="font-family: var(--mono); font-size: 12px;" placeholder="--ctx-size 200000
+--flash-attn on
+--jinja"></textarea>
+              <div class="row" id="flags-row-actions">
+                <button type="button" id="add-flag">+ flag</button>
+              </div>
+            </fieldset>
+          </div>
+        </details>
+        </div><!-- /mowiz-step-3 -->
+        <div class="actions" id="mowiz-nav">
+          <button type="button" id="mowiz-back">← Back</button>
+          <button type="button" id="mowiz-cancel">Cancel</button>
+          <span style="flex:1"></span>
+          <button type="button" id="mowiz-next">Continue →</button>
+        </div>
+        <div class="actions" id="model-actions">
+          <label class="hw-chip" id="model-reset-wrap" title="Before pushing the edit: stop llama-swap + every RPC/llama process cluster-wide, then push and restart the daemon. Use when changing servers/GPUs so no stale peer keeps the old device map.">
+            <input type="checkbox" id="model-reset"><span class="chip-name">Reset cluster</span>
+          </label>
+          <button type="button" id="model-save">Save model config</button>
+          <button type="button" id="model-tune" data-panel="tuner" title="Save current inputs, apply safe defaults, math-estimate max ctx, then LIGHT pass (baseline/MTP-2/plain/ub376, ~4 loads, stops if target hit) then THOROUGH (draft variants, splits, ubatch) only if short. ctx+KV never touched. Restarts RPC peers!">Tune</button>
+          <button type="button" id="model-cancel">Cancel</button>
+        </div>
+      </div>
+
+      <div class="card form" id="variants-card">
+        <div class="hint" style="font-weight:600; margin-bottom:8px"><i class="fa-solid fa-layer-group"></i> Additional configs <span class="hint" id="mo-variants-hint"></span></div>
+        <div id="mo-variants-list"></div>
+        <div class="row"><button type="button" id="mo-add-variant" class="small">+ Add config</button></div>
+        <small class="hint">Each config shares the same model file (Model ID / Path) but can have its own hardware, context, cache, and flags. They appear as separate entries on the Launch tab and as separate models in llama-swap. Existing single-config models are unchanged.</small>
+      </div>
+
+      <div id="models-list"></div>
+      <div class="card" id="model-test-card">
+        <h3>Model check</h3>
+        <div id="model-test-results"><p class="hint">Per-model buttons above: Check is instant static validation with no side effects. Tune loads and benches the real artifact and saves the winner. Tune restarts RPC peers, so don't run one while serving traffic.</p></div>
+      </div>
+    </section>
+    <!-- Downloads -->
+    <section id="tab-downloads" class="tab">
+      <h2>Model Downloads</h2>
+      <div class="subtabs">
+        <button type="button" id="dl-sub-browse" class="active"><i class="fa-solid fa-magnifying-glass"></i> Browse Hugging Face</button>
+        <button type="button" id="dl-sub-custom"><i class="fa-solid fa-link"></i> Custom link</button>
+        <button type="button" id="dl-sub-jobs"><i class="fa-solid fa-download"></i> Downloads <span id="dl-jobs-count" class="badge" hidden></span></button>
+      </div>
+      <div class="card" id="dl-pane-browse">
+        <h3>Browse Hugging Face</h3>
+        <div style="display:flex; gap:8px; align-items:center; padding:12px 14px 0; background:var(--surface)">
+          <div class="chip-group" id="hf-fmt-chips" style="display:flex; gap:6px">
+            <button type="button" class="hw-chip active" data-fmt="gguf" title="GGUF quants — llama.cpp engines"><i class="fa-solid fa-cube"></i> GGUF (llama.cpp)</button>
+            <button type="button" class="hw-chip" data-fmt="safetensors" title="Source repos (config.json + *.safetensors) — vLLM"><i class="fa-solid fa-cubes"></i> Safetensors (vLLM)</button>
+          </div>
+          <span class="hint" id="hf-fmt-hint">GGUF = ready-to-run quantized weights for llama.cpp</span>
+        </div>
+        <div class="hf-searchbar" style="padding:12px 14px; border-bottom:1px solid var(--border); background:var(--surface); display:flex; flex-direction:column; gap:10px">
+          <div style="display:flex; gap:8px; align-items:center">
+            <div style="flex:1; position:relative">
+              <i class="fa-solid fa-magnifying-glass" style="position:absolute; left:10px; top:50%; transform:translateY(-50%); color:var(--muted); font-size:13px"></i>
+              <input id="hf-query" placeholder="Search models — e.g. Qwen 7B, Mistral, uncensored" style="padding-left:30px; width:100%">
+            </div>
+            <select id="hf-sort" style="width:160px"><option value="downloads">Most downloads</option><option value="likes">Most likes</option><option value="trending">Trending</option><option value="lastModified">Recently updated</option></select>
+            <button class="small" id="hf-search-btn"><i class="fa-solid fa-arrow-right"></i> Search</button>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center" id="hf-quant-row">
+            <span class="hint">Quant:</span>
+            <div class="chip-group" id="hf-quant-chips" style="display:flex; gap:6px; flex-wrap:wrap">
+              <button type="button" class="hw-chip active" data-quant="">All</button>
+              <button type="button" class="hw-chip" data-quant="Q4_K_M">Q4_K_M</button>
+              <button type="button" class="hw-chip" data-quant="Q5_K_M">Q5_K_M</button>
+              <button type="button" class="hw-chip" data-quant="Q8_0">Q8_0</button>
+              <button type="button" class="hw-chip" data-quant="F16">F16</button>
+              <button type="button" class="hw-chip" data-quant="Q6_K">Q6_K</button>
+              <button type="button" class="hw-chip" data-quant="Q2_K">Q2_K</button>
+            </div>
+            <span class="hint" style="margin-left:6px">Store:</span>
+            <select id="hf-store" style="width:140px"></select>
+            <span class="hint" id="hf-results-hint" style="margin-left:auto">201k+ GGUF models indexed</span>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
+            <span class="hint">Task:</span>
+            <div class="chip-group" id="hf-task-chips" style="display:flex; gap:6px; flex-wrap:wrap">
+              <button type="button" class="hw-chip active" data-task="">All</button>
+              <button type="button" class="hw-chip" data-task="text-generation"><i class="fa-solid fa-comments"></i> Text</button>
+              <button type="button" class="hw-chip" data-task="feature-extraction"><i class="fa-solid fa-vector-square"></i> Embedding</button>
+              <button type="button" class="hw-chip" data-task="image-text-to-text"><i class="fa-solid fa-eye"></i> Vision</button>
+            </div>
+            <select id="hf-pipeline-select" style="width:200px"><option value="">All tasks (any llama.cpp type)</option></select>
+            <span class="hint" style="font-size:11px; color:var(--muted)">All = any GGUF (text/embed/vision/audio…)</span>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
+            <span class="hint">Company:</span>
+            <button type="button" class="hw-chip" id="hf-recommended" data-recommended="false" title="Filter to our recommended big players"><i class="fa-solid fa-star"></i> Recommended</button>
+            <select id="hf-company" style="width:180px"><option value="">All companies</option></select>
+            <input id="hf-company-search" placeholder="filter companies" style="width:140px">
+            <span class="hint">Collection:</span>
+            <select id="hf-collection" style="width:220px" disabled><option value="">All collections</option></select>
+          </div>
+        </div>
+        <div class="hf-inline-body">
+          <div id="hf-results" class="fs-list" style="flex:1; overflow:auto; border-right:1px solid var(--border-soft)"><p class="hint dl-loading"><i class="fa-solid fa-spinner fa-spin"></i></p></div>
+          <div id="hf-detail" style="width:380px; flex-shrink:0; overflow:auto; padding:14px; background:var(--inset); display:none">
+            <div class="hint">Select a model to see its files</div>
+          </div>
+        </div>
+        <div class="actions" style="align-items:center">
+          <span class="hint" id="hf-status"></span>
+          <span style="flex:1"></span>
+          <button class="small" id="hf-prev" disabled>Prev</button>
+          <button class="small" id="hf-next" disabled>Next</button>
+        </div>
+      </div>
+      <div class="card" id="dl-pane-custom" hidden>
+        <h3>Custom download from Hugging Face</h3>
+        <p class="hint">Paste an hf:// link (e.g. hf://orcarouter/Repo/file.gguf — split models download all shards together). The file streams straight to the store location on disk; the HF cache is bypassed entirely.</p>
+        <div class="row">
+          <label class="wide">hf:// link <input id="dl-link" placeholder="hf://orcarouter/Qwen3.8-27B-Uncensored-GGUF/Qwen3.8-27B-Uncensored-F16-00001-of-00002.gguf"></label>
+          <label>Store <select id="dl-store"></select></label>
+        </div>
+        <div class="actions">
+          <button type="button" id="dl-start">Start download</button>
+        </div>
+        <div id="dl-status"></div>
+      </div>
+      <div class="card" id="dl-pane-jobs" hidden>
+        <h3>Downloads <i id="dl-jobs-spinner" class="fa-solid fa-spinner fa-spin" hidden title="download(s) in flight"></i></h3>
+        <div id="dl-jobs"><p class="hint dl-loading"><i class="fa-solid fa-spinner fa-spin"></i></p></div>
+      </div>
+    </section>
+    <!-- Chat -->
+    <section id="tab-chat" class="tab">
+      <h2>Chat Test <span id="chat-status" class="serving-ind">…</span></h2>
+      <p class="hint">Chat with any configured model through llama-swap (the same OpenAI endpoint API clients use). Unloaded models load on first message — big ones take a while. <span id="chat-count"></span></p>
+      <div class="card">
+        <div class="row">
+          <label class="wide">Model <select id="chat-model"><option value="">(loading…)</option></select></label>
+          <button class="small" id="chat-refresh">Refresh</button>
+          <button class="small" id="chat-clear">Clear</button>
+          <button class="small danger" id="chat-stop" disabled>Stop</button>
+        </div>
+        <div class="row">
+          <label>System prompt <input id="chat-system" placeholder="optional" style="min-width:220px"></label>
+          <label>Temperature <input id="chat-temp" type="number" step="0.1" min="0" max="2" value="0.7" style="width:80px"></label>
+          <label>Max tokens <input id="chat-max" type="number" step="16" min="16" max="8192" value="1024" style="width:90px"></label>
+        </div>
+      </div>
+      <div class="card"><div id="chat-log" class="chat-log"></div></div>
+      <div class="card">
+        <div class="row">
+          <label class="wide">Message <textarea id="chat-input" rows="3" placeholder="Ask anything… (Ctrl+Enter to send)" style="width:100%"></textarea></label>
+          <button id="chat-send">Send</button>
+        </div>
+      </div>
+    </section>
+    <!-- Embeddings -->
+    <section id="tab-embeddings" class="tab">
+      <h2>Embeddings Test <span id="emb-status" class="serving-ind">…</span></h2>
+      <p class="hint">Test embedding models (e.g. <code>nomic-embed-text-v1.5.f16</code>) via <code>POST /v1/embeddings</code> — not chat. Vectors stay in browser, cosine similarity computed locally.</p>
+      <div class="card">
+        <div class="row">
+          <label class="wide">Model <select id="emb-model"><option value="">(no embedding models configured — create one via Scan → Configure)</option></select></label>
+          <button class="small" id="emb-refresh">Refresh models</button>
+        </div>
+        <div class="row">
+          <label class="wide">Model id override <input id="emb-model-override" placeholder="exact served model id — overrides the list (e.g. BAAI/bge-large-en-v1.5)" style="width:100%"></label>
+        </div>
+        <div class="row">
+          <label class="wide">Text A <textarea id="emb-a" rows="3" placeholder="The cat sat on the mat" style="font-family:var(--font)"></textarea></label>
+          <label class="wide">Text B (for similarity) <textarea id="emb-b" rows="3" placeholder="A cat is on a mat" style="font-family:var(--font)"></textarea></label>
+        </div>
+        <div class="actions">
+          <button id="emb-run">Get embeddings</button>
+          <span class="hint" id="emb-hint">First call may load the model (30-60s, up to 7200s on RAM).</span>
+        </div>
+        <div id="emb-output" style="margin-top:12px"></div>
+      </div>
+      <div class="card">
+        <h3>How to configure</h3>
+        <p class="hint">Scan for <code>nomic-embed*.gguf</code> → <code>Configure</code> → safe defaults will be <code>ctx 8192</code> <code>batch 512</code> <code>parallel 1</code> (no <code>jinja</code>/<code>draft-mtp</code>). Set <code>Group</code> if needed, <code>Save</code> → <code>Launch → Launch All</code>. Then test here.</p>
+      </div>
+    </section>
+    <!-- Vision -->
+    <section id="tab-vision" class="tab">
+      <h2>Vision Test <span id="vis-status" class="serving-ind">…</span></h2>
+      <p class="hint">Test vision models (mmproj configured) via <code>POST /v1/chat/completions</code> with an image. PNG/JPG only, sent as base64 from the browser — never stored.</p>
+      <div class="card">
+        <div class="row">
+          <label class="wide">Model <select id="vis-model"><option value="">(no vision models configured — set an <code>mmproj</code> flag in Configure)</option></select></label>
+          <button class="small" id="vis-refresh">Refresh models</button>
+        </div>
+        <div class="row">
+          <label class="wide">Image (png/jpg) <input type="file" id="vis-file" accept="image/png,image/jpeg"></label>
+        </div>
+        <div class="row">
+          <img id="vis-preview" alt="" style="max-height:180px;max-width:100%;border:1px solid var(--border);border-radius:8px;display:none">
+        </div>
+        <div class="row">
+          <label class="wide">Prompt <textarea id="vis-prompt" rows="2" placeholder="Describe this image in detail.">Describe this image in detail.</textarea></label>
+        </div>
+        <div class="actions">
+          <button id="vis-run">Run vision test</button>
+          <span class="hint" id="vis-hint">First call may load the model (30-60s, up to 7200s on RAM).</span>
+        </div>
+        <div id="vis-output" style="margin-top:12px"></div>
+      </div>
+      <div class="card">
+        <h3>How to configure</h3>
+        <p class="hint">Model needs an <code>mmproj</code> flag (the projector file, e.g. <code>mmproj-model-f16.gguf</code>) — set it in <code>Configure → Flags</code>. Save → <code>Launch → Launch All</code>. Then test here.</p>
+      </div>
+    </section>
+    <!-- Audio / ASR -->
+    <section id="tab-audio" class="tab">
+      <h2>Audio Test (Speech → Text) <span id="aud-status" class="serving-ind">…</span></h2>
+      <p class="hint">Test ASR models by speaking into your <b>browser microphone</b>. Click <b>Start recording</b> — the browser will prompt for <b>microphone permission</b>; recording only starts after you allow it (nothing is recorded or stored on the host). Clip goes to the model as base64 <code>input_audio</code>.</p>
+      <p class="hint" style="margin-top:-4px">Browsers hide the mic on plain-http LAN pages by default. <b>Firefox:</b> <code>about:config</code> → <code>media.devices.insecure.enabled</code> AND <code>media.getusermedia.insecure.enabled</code> = true → <b>fully quit and reopen Firefox</b> (reload alone won't do it). <b>Chrome/Edge:</b> <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code> → add this origin → relaunch. Zero-setup alternative: <code>ssh -N -L 8199:10.0.0.104:8199 zazi@10.0.0.104</code> then open <code>http://localhost:8199</code> (localhost is always trusted).</p>
+      <div class="card">
+        <div class="row">
+          <label class="wide">Model <select id="aud-model"><option value="">(no ASR models configured)</option></select></label>
+          <button class="small" id="aud-refresh">Refresh models</button>
+        </div>
+        <div class="row">
+          <div class="actions" style="gap:8px;align-items:center">
+            <button id="aud-record">● Start recording</button>
+            <span id="aud-timer" class="hint">0.0s</span>
+            <span id="aud-level" class="hint" style="min-width:120px">mic idle</span>
+          </div>
+        </div>
+        <div class="row">
+          <audio id="aud-playback" controls style="display:none;max-width:100%"></audio>
+        </div>
+        <div class="row">
+          <label>Language <select id="aud-language">
+            <option value="English" selected>English (forced)</option>
+            <option value="None">Auto-detect</option>
+            <option value="Chinese">Chinese</option>
+            <option value="Cantonese">Cantonese</option>
+            <option value="German">German</option>
+            <option value="French">French</option>
+            <option value="Spanish">Spanish</option>
+            <option value="Portuguese">Portuguese</option>
+            <option value="Italian">Italian</option>
+            <option value="Russian">Russian</option>
+            <option value="Japanese">Japanese</option>
+            <option value="Korean">Korean</option>
+            <option value="Hindi">Hindi</option>
+            <option value="Arabic">Arabic</option>
+            <option value="Dutch">Dutch</option>
+            <option value="Swedish">Swedish</option>
+            <option value="Danish">Danish</option>
+            <option value="Finnish">Finnish</option>
+            <option value="Polish">Polish</option>
+            <option value="Czech">Czech</option>
+            <option value="Turkish">Turkish</option>
+            <option value="Vietnamese">Vietnamese</option>
+            <option value="Thai">Thai</option>
+            <option value="Indonesian">Indonesian</option>
+            <option value="Malay">Malay</option>
+            <option value="Filipino">Filipino</option>
+            <option value="Persian">Persian</option>
+            <option value="Greek">Greek</option>
+            <option value="Hungarian">Hungarian</option>
+            <option value="Macedonian">Macedonian</option>
+            <option value="Romanian">Romanian</option>
+          </select></label>
+          <label class="wide">Prompt <textarea id="aud-prompt" rows="2" placeholder="Transcribe this audio.">Transcribe this audio.</textarea></label>
+        </div>
+        <div class="actions">
+          <button id="aud-run" disabled>Transcribe</button>
+          <span class="hint" id="aud-hint">First call may load the model (30-60s).</span>
+        </div>
+        <div id="aud-output" style="margin-top:12px"></div>
+      </div>
+      <div class="card">
+        <h3>How to configure</h3>
+        <p class="hint">Model id containing <code>asr</code>/<code>whisper</code> (or an <code>audio</code> flag) is listed here. Save → <code>Launch → Launch All</code>. Then test here.</p>
+      </div>
+    </section>
+    <!-- Decision (TypeSafe /v1/systemone) -->
+    <section id="tab-decision" class="tab">
+      <h2>Decision Test <span id="dec-status" class="serving-ind">…</span></h2>
+      <p class="hint">Test TypeSafe decision models (laya, kev, lev, openjev…) via <code>POST /v1/systemone</code> — sent straight to the llama-swap endpoint (:8080), which routes to the model named in the request. Send a state and typed questions — the model scores every option in one forward pass and returns probabilities (no text generation). Requires llama.cpp <code>b11379+</code> and llama-swap <code>v262+</code>.</p>
+      <div class="card">
+        <div class="row">
+          <label class="wide">Model <select id="dec-model"><option value="">(no decision models — Scan for a laya/kev GGUF and Configure)</option></select></label>
+          <button class="small" id="dec-refresh">Refresh models</button>
+        </div>
+        <div class="row">
+          <label class="wide">State (the content to evaluate) <textarea id="dec-state" rows="3" placeholder="Customer message: I was charged twice for my order last week and nobody has replied.">Customer message: I was charged twice for my order last week and nobody has replied.</textarea></label>
+        </div>
+        <div class="row">
+          <label class="wide">Choice question <input id="dec-choice-q" placeholder="Which team should handle this?" value="Which team should handle this?"></label>
+          <label class="wide">Options (one per line: <code>key | description</code>) <textarea id="dec-choice-opts" rows="3">billing | payments, charges, refunds, invoices
+shipping | delivery, tracking, lost or late parcels
+technical | bugs, errors, login problems</textarea></label>
+        </div>
+        <div class="actions">
+          <button id="dec-run">Ask decision model</button>
+          <span class="hint" id="dec-hint">First call may load the model (30-60s, up to 7200s on RAM).</span>
+        </div>
+        <div id="dec-output" style="margin-top:12px"></div>
+      </div>
+      <div class="card">
+        <h3>How to configure</h3>
+        <p class="hint">Decision models are auto-detected from the GGUF's <code>&lt;arch&gt;.decision.type</code> metadata (laya → <code>modern-bert</code>). Scan → <code>Configure</code> → safe defaults set <code>ctx 8192</code> <code>ubatch 2048</code> (whole prompt evaluated in one batch), no jinja/sampling/MTP. Save → <code>Launch → Launch All</code>. Then test here.</p>
+      </div>
+    </section>
+    <!-- Launch -->
+    <section id="tab-launch" class="tab">
+      <h2>Live Launch</h2>
+      <div class="card" id="swap-card">
+        <h3>Launch All via llama-swap <span id="swap-status" class="serving-ind">…</span></h3>
+        <p class="hint"><span data-launch-view="rpc_cluster">Generates llama-swap's config.yaml from all model configs, pushes it to the host (<span id="swap-host">…</span>), starts <span data-engine-label="peers">RPC peers</span>, then starts the llama-swap daemon. Models load on first request. Linux hosts get per-model .sh wrappers (proven start-rpc-qwen.sh shape); Windows hosts get direct commands.</span><span data-launch-view="swap_only">Generates the vLLM engine's config.vllm.yaml from all model configs, pushes it to the host (<span id="swap-host">…</span>), then starts the llama-swap daemon — vLLM serves one host per model, so there are no RPC peers to start in this mode. Models load on first request through llama-swap.</span></p>
+        <div class="row">
+          <label>Host <select id="swap-host-select"></select></label>
+          <label>Binary <input id="swap-binary" placeholder="llama-swap" readonly title="Probed by the installer — edit config/swap.yaml for edge cases"></label>
+          <label>Listen port <input id="swap-port" type="number" value="8080"></label>
+          <label class="wide">Config path <input id="swap-config-path" class="wide"></label>
+        </div>
+        <div class="actions">
+          <button type="button" id="swap-preview">Preview config</button>
+          <button type="button" id="swap-install" title="Install llama-swap on the host if missing (official prebuilt)" hidden><i class="fa-solid fa-download"></i> Install llama-swap</button>
+          <button type="button" id="swap-launch">Launch All</button>
+          <button type="button" id="swap-stop" class="danger">Stop</button>
+        </div>
+        <pre id="swap-output" hidden></pre>
+      </div>
+      <div class="card">
+        <h3>Active models (keep-warm • evict)</h3>
+        <p class="hint">Loaded on swap host — never auto-evicted via timeout; evict manually to free VRAM/RAM. Pinned is a UI hint for favorites.</p>
+        <div id="active-models"></div>
+        <div class="actions">
+          <button class="small danger" id="evict-all">Evict all</button>
+        </div>
+      </div>
+      <p class="hint" data-panel="rpc_launch">Or start a single model directly — no scripts. Heterogeneous parallel: disjoint hardware sets can run concurrently — launching a model only stops its own servers (not all). Stops old instances on its servers, starts <span data-engine-label="peers">RPC peers</span>, launches <span data-engine-label="server">llama-server</span>.</p>
+      <div class="launch-grid" id="launch-grid" data-panel="rpc_launch"></div>
+      <div id="disabled-models-strip" data-panel="rpc_launch"></div>
+      <div class="card" id="vllm-launch-view" data-launch-view="swap_only" hidden>
+        <h3>vLLM serving <span data-engine-label="probe" class="serving-ind" style="font-size:0.7em">HTTP /health</span></h3>
+        <p class="hint">vLLM models serve through llama-swap — there is no per-model direct launch in this mode (the RPC cluster grid is a llama.cpp concept). Use <b>Launch All</b> above to start the daemon; models load on first request and stop via the llama-swap unload path (the Stop button on active models below). Health is probed over HTTP /health on the swap listen port, not RPC ports.</p>
+      </div>
+    </section>
+
+    <!-- Serve Groups (llama-swap model co-serving) -->
+    <section id="tab-servegroups" class="tab">
+      <div class="row" style="align-items:center; justify-content:space-between; margin-bottom:8px">
+        <h2 style="margin:0">Serve Groups</h2>
+        <button id="sg-add" class="small" style="padding:8px 14px"><i class="fa-solid fa-plus"></i> New group</button>
+      </div>
+      <p class="hint">Controls which models may run <strong>at the same time</strong> through :8080. Group models that share hardware compatibly; llama-swap never does the VRAM math for you — the wizard warns you when a combination looks wrong.</p>
+      <div id="sgroups-list"></div>
+    </section>
+
+    <!-- Serve group wizard modal (3 steps: Behavior → Members → Review) -->
+    <div id="sg-modal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" id="sg-modal-backdrop"></div>
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="sg-modal-title">
+        <div class="modal-header">
+          <h3 id="sg-modal-title"><i class="fa-solid fa-layer-group"></i> New serve group</h3>
+          <button class="small" id="sg-modal-close" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="sgroup-original-name">
+          <ol class="wiz-steps sgwiz-indicator">
+            <li data-s="1" class="active">1 · Behavior</li>
+            <li data-s="2">2 · Members</li>
+            <li data-s="3">3 · Review</li>
+          </ol>
+          <div class="sgwiz-step-1">
+            <p class="hint" style="margin-top:0">How should this group behave? Pick the closest match — you can fine-tune the switches after.</p>
+            <div class="sg-preset-grid">
+              <div class="sg-preset-card" data-preset="together" data-flags="" role="button" tabindex="0">
+                <div class="sg-preset-icon"><i class="fa-solid fa-objects-column"></i></div>
+                <div class="sg-preset-title">Run together</div>
+                <div class="sg-preset-desc">Members run side by side, sharing VRAM. For small models that fit together.</div>
+              </div>
+              <div class="sg-preset-card" data-preset="alwayson" data-flags="persistent" role="button" tabindex="0">
+                <div class="sg-preset-icon"><i class="fa-solid fa-anchor"></i></div>
+                <div class="sg-preset-title">Always-on</div>
+                <div class="sg-preset-desc">Members run side by side AND stay loaded — other loads can't auto-unload them.</div>
+              </div>
+              <div class="sg-preset-card" data-preset="timeshare" data-flags="swap" role="button" tabindex="0">
+                <div class="sg-preset-icon"><i class="fa-solid fa-rotate"></i></div>
+                <div class="sg-preset-title">Take turns</div>
+                <div class="sg-preset-desc">Big models that each need most of the cluster — loading one parks the others.</div>
+              </div>
+              <div class="sg-preset-card" data-preset="timeshare-stay" data-flags="swap,persistent" role="button" tabindex="0">
+                <div class="sg-preset-icon"><i class="fa-solid fa-rotate"></i></div>
+                <div class="sg-preset-title">Take turns + always-on</div>
+                <div class="sg-preset-desc">Members take turns among themselves, but the group as a whole can't be auto-unloaded by outside loads.</div>
+              </div>
+              <div class="sg-preset-card" data-preset="solo" data-flags="swap,exclusive" role="button" tabindex="0">
+                <div class="sg-preset-icon"><i class="fa-solid fa-person-rays"></i></div>
+                <div class="sg-preset-title">Solo run</div>
+                <div class="sg-preset-desc">A model that clears the stage when it loads — unloads everything else, even outside this group.</div>
+              </div>
+              <div class="sg-preset-card" data-preset="solo-stay" data-flags="swap,exclusive,persistent" role="button" tabindex="0">
+                <div class="sg-preset-icon"><i class="fa-solid fa-crown"></i></div>
+                <div class="sg-preset-title">Solo run + always-on</div>
+                <div class="sg-preset-desc">Clears the whole stage on load, and this group itself is immune to auto-unload.</div>
+              </div>
+            </div>
+            <input type="checkbox" id="sg-swap" hidden>
+            <input type="checkbox" id="sg-exclusive" hidden>
+            <input type="checkbox" id="sg-persistent" hidden>
+          </div>
+          <div class="sgwiz-step-2" hidden>
+            <div class="row">
+              <label>Name <input id="sg-name" required placeholder="e.g. eyes-and-ears"></label>
+              <label class="wide">Description <input id="sg-description" placeholder="what fits together and why"></label>
+            </div>
+            <div class="row"><label class="wide">Members — click to add / remove</label></div>
+            <div id="sg-members-chip-list" class="machine-hw-chips"></div>
+            <div id="sg-hints" style="margin-top:8px"></div>
+          </div>
+          <div class="sgwiz-step-3" hidden>
+            <div id="sg-plain-summary" class="card" style="margin:0 0 8px; padding:10px 12px"></div>
+            <div id="sg-fit-line" class="hint"></div>
+            <div class="sg-review-flags" style="margin-top:8px"></div>
+          </div>
+        </div>
+        <div class="modal-footer" style="display:flex; gap:8px; justify-content:flex-end; padding:10px 14px; border-top:1px solid var(--border-soft)">
+          <button type="button" class="small sgwiz-back">Back</button>
+          <button type="button" class="small sgwiz-next" style="background:var(--accent-dim); color:var(--accent); border-color:var(--accent)">Next</button>
+          <button type="button" id="sg-modal-save" hidden style="background:var(--accent-dim); color:var(--accent); border-color:var(--accent)">Save group</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings -->
+    <!-- User (identity · access · farm glance · security) -->
+    <section id="tab-user" class="tab">
+      <div class="row" style="align-items:center; justify-content:space-between; margin-bottom:8px">
+        <h2 style="margin:0"><i class="fa-solid fa-user-astronaut" style="color:var(--accent)"></i> User</h2>
+        <span class="hint" id="user-session-line"></span>
+      </div>
+      <div class="seg-ctl" id="user-subtabs" style="margin-bottom:10px">
+        <button type="button" data-utab="info" class="active"><i class="fa-solid fa-id-badge"></i> User info</button>
+        <button type="button" data-utab="speed"><i class="fa-solid fa-gauge-high"></i> Decode speed</button>
+        <button type="button" data-utab="alltime"><i class="fa-solid fa-chart-simple"></i> Usage all-time</button>
+        <button type="button" data-utab="overtime"><i class="fa-solid fa-chart-column"></i> Usage over time</button>
+        <button type="button" data-utab="bymodel"><i class="fa-solid fa-layer-group"></i> Usage by model</button>
+      </div>
+
+      <div id="user-pane-info">
+      <!-- identity hero -->
+      <div class="card" id="user-hero" style="display:flex; gap:14px; align-items:center; flex-wrap:wrap">
+        <div class="user-avatar" style="width:52px; height:52px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:1.3em; background:var(--accent-dim); color:var(--accent); border:1px solid var(--border-soft)">
+          <i class="fa-solid fa-user"></i>
+        </div>
+        <div style="flex:1; min-width:200px">
+          <div style="font-size:1.15em; font-weight:600" id="user-hero-name">…</div>
+          <div class="hint" id="user-hero-sub">resolving session…</div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+          <span class="badge" id="user-hero-role" style="display:none"></span>
+          <button class="small danger" id="user-logout"><i class="fa-solid fa-right-from-bracket"></i> Log out</button>
+        </div>
+      </div>
+      <!-- my api key: compact strip INSIDE the hero card -->
+      <div id="acc-my-key-card" hidden style="margin-top:10px; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+        <span class="hint"><i class="fa-solid fa-key"></i> API key:</span>
+        <code id="acc-my-key" style="user-select:all; background:var(--bg-dim,#0002); padding:5px 10px; border-radius:6px; font-size:0.85em"></code>
+        <button class="small" id="acc-my-key-copy"><i class="fa-solid fa-copy"></i> Copy</button>
+      </div>
+
+      <!-- my model access: FULL WIDTH single card under the hero -->
+      <div class="card" style="margin-top:var(--s-3)">
+        <h3><i class="fa-solid fa-cubes"></i> My model access
+          <span class="hint" style="float:right" id="user-access-line"></span></h3>
+        <div class="launch-grid" id="user-models" style="grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); margin-top:6px"></div>
+      </div>
+
+</div>
+<div id="user-pane-speed" hidden>
+      <!-- decode speed by model (per-model tok/s dials) -->
+      <div class="launch-grid" id="user-dspeed" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:var(--s-3); align-items:stretch; margin-top:var(--s-3)">
+        <div class="card gauge-card accent" style="display:flex; align-items:center; justify-content:center; min-height:262px">
+          <span class="hint">loading…</span>
+        </div>
+      </div>
+</div>
+
+<div id="user-pane-alltime" hidden>
+      <!-- usage: all-time totals (each metric = its own gauge card) -->
+      <div id="usage-totals" class="launch-grid" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:var(--s-3); margin-top:var(--s-3); align-items:stretch">
+        <span class="hint">loading…</span>
+      </div>
+</div>
+
+<div id="user-pane-overtime" hidden>
+      <!-- usage: period control (shared across the series cards below) -->
+        <div class="card" style="grid-column:1/-1">
+          <div class="row" style="align-items:center; justify-content:space-between">
+            <h3><i class="fa-solid fa-chart-column"></i> Usage over time</h3>
+            <div class="seg-ctl" id="usage-period" role="group" style="font-size:0.85em">
+              <button type="button" data-p="day" class="active">Day</button>
+              <button type="button" data-p="month">Month</button>
+              <button type="button" data-p="year">Year</button>
+            </div>
+          </div>
+        </div>
+      <div class="launch-grid" style="grid-template-columns:repeat(auto-fill,minmax(400px,1fr)); margin-top:var(--s-3); align-items:start">
+        <div class="card">
+          <h3><i class="fa-solid fa-paper-plane" style="color:var(--accent,#08f)"></i> Requests
+            <span class="hint" id="uc-requests-sub" style="float:right"></span></h3>
+          <div id="uc-requests" class="hint">loading…</div>
+        </div>
+        <div class="card">
+          <h3><i class="fa-solid fa-heart-pulse" style="color:#77e"></i> Latency
+            <span class="hint" id="uc-latency-sub" style="float:right"></span></h3>
+          <div id="uc-latency" class="hint">loading…</div>
+        </div>
+        <div class="card">
+          <h3><i class="fa-solid fa-arrow-right-arrow-left" style="color:var(--ok,#0a8)"></i> Tokens in / out
+            <span class="hint" id="uc-tokens-sub" style="float:right"></span></h3>
+          <div id="uc-tokens" class="hint">loading…</div>
+        </div>
+        <div class="card">
+          <h3><i class="fa-solid fa-triangle-exclamation" style="color:var(--warn,#c60)"></i> Errors
+            <span class="hint" id="uc-errors-sub" style="float:right"></span></h3>
+          <div id="uc-errors" class="hint">loading…</div>
+      </div>
+
+</div>
+
+</div>
+
+      <div id="user-pane-bymodel" hidden>
+        <div id="ubm-cards" class="hint">loading…</div>
+      </div>
+    </section>
+
+    <section id="tab-settings" class="tab">
+      <h2>Settings</h2>
+      <div class="card">
+        <h3>Theme</h3>
+        <p class="hint">Pick a theme below. The toggle switches its light/dark variant (custom themes are absolute and ignore it). Applies instantly, persists in this browser.</p>
+        <div class="row theme-chip-row">
+          <div class="seg-ctl" id="theme-mode-seg" role="group" aria-label="Light or dark variant">
+            <button type="button" data-mode="dark"><i class="fa-solid fa-moon"></i><span>Dark</span></button>
+            <button type="button" data-mode="light"><i class="fa-solid fa-sun"></i><span>Light</span></button>
+          </div>
+          <button type="button" id="set-ribbons-chip" class="chip-switch" aria-pressed="true" title="Toggle animated background ribbons">
+            <span class="chip-knob"><i class="fa-solid fa-water"></i></span>
+            <span class="chip-label">Ribbons</span>
+          </button>
+        </div>
+        <div id="theme-grid" class="theme-grid"></div>
+        <details id="theme-builder-wrap" class="collapsible-panel">
+          <summary><i class="fa-solid fa-palette"></i> <span id="theme-builder-title">Build a custom theme</span></summary>
+          <div class="theme-builder-panel">
+            <p class="hint" style="margin-top:0">Pick colors below — the whole page updates live as you drag. Save stores it in <code>config/custom_themes.json</code>.</p>
+            <label class="wide" style="margin-bottom:12px">Theme name <input id="theme-builder-name" maxlength="40" placeholder="My theme"></label>
+            <label class="wide" style="margin-bottom:12px">Start from <select id="theme-builder-seed"></select></label>
+            <div class="row theme-fx-row">
+              <label>Ribbon glow <span class="theme-fx-val" id="theme-fx-glow-v">100%</span>
+                <input type="range" id="theme-fx-glow" min="0" max="2" step="0.05" value="1"></label>
+              <label>Ribbon vivid <span class="theme-fx-val" id="theme-fx-sat-v">100%</span>
+                <input type="range" id="theme-fx-sat" min="0" max="2.5" step="0.05" value="1"></label>
+            </div>
+            <div id="theme-builder-rows" class="theme-builder-grid"></div>
+            <div class="row" style="margin-top:12px; justify-content:flex-end">
+              <button type="button" class="small" id="theme-builder-delete" style="color:var(--bad); border-color:var(--bad)">Delete</button>
+              <button type="button" class="small" id="theme-builder-cancel">Cancel</button>
+              <button type="button" class="small" id="theme-builder-save" style="background:var(--accent-dim); color:var(--accent); border-color:var(--accent)">Save theme</button>
+            </div>
+          </div>
+        </details>
+      </div>
+      <div class="card">
+        <details id="defaults-wrap" class="collapsible-panel">
+          <summary><i class="fa-solid fa-sliders"></i> <span>Defaults</span></summary>
+          <div class="theme-builder-panel">
+        <p class="hint" style="margin-top:10px">Pre-fills the Model directory (scan) and llama.cpp bin dir (machine form) so you don't retype them.</p>
+        <div class="row">
+            <label class="wide">Model directory
+              <div style="display:flex;gap:6px;align-items:center">
+                <input id="set-model-dir" placeholder="store://llm-models">
+                <button type="button" class="small" id="set-model-dir-browse" title="Browse"><i class="fa-solid fa-folder-open"></i> Browse</button>
+              </div>
+            </label>
+          </div>
+          <p class="hint" style="margin:-8px 0 10px">Used when a machine has no override. Set per-machine bin on Machines tab for Windows vs Linux differences — global default below.</p>
+          <div class="row">
+            <label class="wide">llama.cpp bin dir (global default — per-machine can override)
+              <div style="display:flex;gap:6px;align-items:center">
+                <input id="set-llama-bin" placeholder="~/llama.cpp/build/bin" readonly title="Probed by the installer — edit config/settings.yaml for edge cases">
+                <button type="button" class="small" id="set-llama-bin-browse" title="Browse" hidden><i class="fa-solid fa-folder-open"></i> Browse</button>
+              </div>
+            </label>
+          </div>
+          <div class="row">
+            <label class="wide">Hugging Face token (for gated models)
+              <div style="display:flex;gap:6px;align-items:center">
+                <input id="set-hf-token" type="password" placeholder="hf_… — only needed for gated models" autocomplete="off">
+                <button type="button" class="small" id="set-hf-token-toggle" title="Show/hide token"><i class="fa-solid fa-eye"></i></button>
+                <button type="button" class="small danger" id="set-hf-token-clear" title="Remove the saved token">Clear</button>
+              </div>
+              <small class="hint" id="set-hf-token-hint">Not set — gated downloads will 401.</small>
+            </label>
+          </div>
+          <p class="hint" style="margin:-8px 0 10px">Saved to <code>config/settings.yaml</code> as <code>hf_token</code> (or set <code>HF_TOKEN</code> env). Needed only after you've clicked “Agree and access repository” on the gated HF page.</p>
+        <div data-engine="llama_cpp">
+        <div class="row" style="margin-top:12px">
+          <button id="install-open-modal" class="small" style="width:100%;background:var(--accent-dim);color:var(--accent);border:2px solid var(--accent);padding:8px;font-size:13px;font-weight:550;border-radius:var(--r-md);"><i class="fa-solid fa-download" style="margin-right:6px"></i>Run installer…</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button id="install-llama-cpp-others" class="small" style="width:100%;background:var(--surface);color:var(--text);border:2px solid var(--border-strong);padding:8px;font-size:13px;font-weight:550;border-radius:var(--r-md);"><i class="fa-solid fa-server" style="margin-right:6px"></i>Install on other machines…</button>
+        </div>
+        </div>
+        <div data-engine="vllm" hidden>
+        <div class="row" style="margin-top:12px">
+          <button id="install-vllm" class="small" style="width:100%;background:var(--accent-dim);color:var(--accent);border:2px solid var(--accent);padding:8px;font-size:13px;font-weight:550;border-radius:var(--r-md);"><i class="fa-solid fa-download" style="margin-right:6px"></i>Install vLLM (this host)</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button id="install-vllm-others" class="small" style="width:100%;background:var(--surface);color:var(--text);border:2px solid var(--border-strong);padding:8px;font-size:13px;font-weight:550;border-radius:var(--r-md);"><i class="fa-solid fa-server" style="margin-right:6px"></i>Install on other machines…</button>
+        </div>
+        </div>
+        <div id="install-vllm-status" style="margin-top:8px" hidden></div>
+        <div id="install-all-status" style="margin-top:8px" hidden></div>
+        <div class="row" style="margin-top:12px">
+          <button id="install-llama-swap" class="small" style="width:100%;background:var(--accent-dim);color:var(--accent);border:2px solid var(--accent);padding:8px;font-size:13px;font-weight:550;border-radius:var(--r-md);" hidden><i class="fa-solid fa-download" style="margin-right:6px"></i>Install llama-swap (this host)</button>
+        </div>
+        <div id="install-swap-status" style="margin-top:8px" hidden></div>
+        <!-- UX-3 (design §8): install buttons retired — a single read-only
+             "Tool status" panel replaces them (probed paths + versions; the
+             one-liner lives in the README/install docs, never exec'd here). -->
+        <div class="row" style="margin-top:12px">
+          <label class="wide">Tool status (probed — read-only)
+            <div id="tool-status-panel" class="card" style="padding:8px 10px;font-size:12px"><p class="hint">probing…</p></div>
+          </label>
+        </div>
+        <div class="actions">
+          <button type="button" id="set-save">Save defaults</button>
+        </div>
+        <div id="set-status"></div>
+          </div>
+        </details>
+      </div>
+      <div class="card" id="engine-card">
+        <details id="engine-wrap" class="collapsible-panel">
+          <summary><i class="fa-solid fa-microchip"></i> <span>Engine</span></summary>
+          <div class="theme-builder-panel">
+            <p class="hint" style="margin-top:10px">Serving engine for launches. <strong>llama.cpp</strong> serves GGUF via llama-server, spanning machines as an RPC cluster. <strong>vLLM is experimental</strong> — it serves HF models across machines via tensor/pipeline parallel over a Ray multi-node cluster (vLLM must be installed on each host). Works best on matched GPUs with fast interconnects; hybrid-architecture models (GDN/linear-attention) and mixed consumer GPUs may fail at engine init (upstream vLLM limitations). Panels on other tabs follow the engine; Save defaults to apply.</p>
+            <div class="row">
+              <label class="wide">Engine
+                <select id="set-engine">
+                  <option value="llama_cpp">llama.cpp (llama-server, RPC cluster)</option>
+                  <option value="vllm">vLLM (experimental — multi-host TP/PP, Ray)</option>
+                </select>
+              </label>
+            </div>
+            <div id="set-vllm" hidden>
+              <div class="row">
+                <label>Delivery
+                  <select id="set-vllm-delivery">
+                    <option value="venv">venv (pip)</option>
+                    <option value="docker">docker image</option>
+                  </select>
+                </label>
+              </div>
+              <div class="row">
+                <label class="wide" data-vllm-delivery="venv">vLLM binary (venv) <input id="set-vllm-venv-bin" placeholder="~/vllm-env/bin/vllm" readonly title="Probed by the installer — edit config/settings.yaml for edge cases"></label>
+                <label class="wide" data-vllm-delivery="docker" hidden>Docker image <input id="set-vllm-docker-image" placeholder="vllm/vllm-openai:latest"></label>
+              </div>
+              <div class="row">
+                <label>Default GPU memory utilization <input type="range" id="set-vllm-gpu-mem" min="0.05" max="1" step="0.05" value="0.9"> <span id="set-vllm-gpu-mem-v">0.90</span></label>
+                <small class="hint">fraction of each GPU vLLM may claim (0–1] — settings-level only, no per-model override</small>
+              </div>
+              <div class="row" style="margin-top:8px">
+                <button type="button" id="uninstall-vllm" class="small danger" style="width:100%;padding:8px;font-size:13px;font-weight:550;border-radius:var(--r-md);" hidden><i class="fa-solid fa-trash-can" style="margin-right:6px"></i>Uninstall vLLM (this host)</button>
+              </div>
+              <div id="uninstall-vllm-status" style="margin-top:8px" hidden></div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <!-- Access (model visibility per IP): trusted-only tab — the nav
+         button stays hidden until /api/views/whoami confirms trusted -->
+    <section id="tab-access" class="tab">
+      <div class="row" style="align-items:center; justify-content:space-between; margin-bottom:8px">
+        <h2 style="margin:0">Access</h2>
+        <span class="hint" id="access-whoami"></span>
+      </div>
+      <p class="hint">Access by API KEY, not IP. A key's clients (Hermes, opencode, winbox, browsers) present <code>Authorization: Bearer &lt;key&gt;</code> and see ONLY the models granted to that key — chat, launch, swap, model pages, the :8090 gateway, everywhere. Each grant is exact: a model card = base entry, a variant card = that variant. Keys apply on the NEXT request after any change — no restart. Your browser adopts a key via the key box below.</p>
+      <div class="row" style="align-items:flex-start; gap:12px">
+        <div class="card" style="flex:1; min-width:340px">
+          <h3>New / edit key</h3>
+          <label class="auto-refresh">Key name <input type="text" id="acc-vw-name" placeholder="e.g. Dad / Dakota / winbox" autocomplete="off"></label>
+          <div class="row hidden" id="acc-edit-key-row" style="align-items:center; gap:10px; margin-top:6px">
+            <span class="hint"><i class="fa-solid fa-key"></i> this user's key:</span>
+            <code id="acc-edit-key" style="user-select:all; background:var(--bg-dim,#0002); padding:5px 10px; border-radius:6px; font-size:0.85em"></code>
+            <button class="small" id="acc-edit-key-copy"><i class="fa-solid fa-copy"></i> Copy</button>
+          </div>
+          <div class="hint" style="font-weight:600; margin:6px 0"><i class="fa-solid fa-user-gear"></i> Identity <span class="hint">control level — admin opens the Access tab, settings, engine & installs</span></div>
+          <div class="chip-group" id="chips-key-admin" style="display:flex; gap:8px; flex-wrap:wrap">
+            <button type="button" class="hw-chip" data-value="admin" title="control surfaces: Access tab, settings, engine, installs"><i class="fa-solid fa-crown"></i> Admin</button>
+            <button type="button" class="hw-chip active" data-value="user" title="model access only"><i class="fa-solid fa-user"></i> User</button>
+          </div>
+          <div class="hint" style="font-weight:600; margin:10px 0 6px"><i class="fa-solid fa-eye"></i> Visibility <span class="hint">what models this key's clients see</span></div>
+          <div class="chip-group" id="chips-key-visibility" style="display:flex; gap:8px; flex-wrap:wrap">
+            <button type="button" class="hw-chip active" data-value="unrestricted" title="sees everything, grants below ignored"><i class="fa-solid fa-lock-open"></i> Unrestricted</button>
+            <button type="button" class="hw-chip" data-value="strict" title="sees ONLY the granted models below"><i class="fa-solid fa-lock"></i> Strict</button>
+          </div>
+          <input type="hidden" id="acc-key-admin" value="false">
+          <input type="hidden" id="acc-key-unrestricted" value="true">
+          <div class="card" style="padding:10px; margin-top:6px">
+            <h3 style="font-size:0.95em; margin:0 0 6px">Models this view may see</h3>
+            <p class="hint" style="margin:0 0 6px">Click cards to toggle. A model card grants the base model only; variant cards grant that exact variant — each is its own grant.</p>
+            <div class="launch-grid" id="acc-model-grid" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))"></div>
+          </div>
+          <div class="actions">
+            <button class="small" id="acc-key-generate">Generate key</button>
+          </div>
+        </div>
+        <div class="card" style="flex:1; min-width:340px">
+          <h3>Active keys</h3>
+          <div id="acc-views"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Adopt key in this browser</h3>
+        <p class="hint" style="margin:0 0 6px">Paste a key generated above (token shown ONCE at creation) to adopt it here — this browser's model pages, chat pickers and gateway calls will use it.</p>
+        <label class="auto-refresh">API key <input type="text" id="acc-key-input" placeholder="sk-farm-…" autocomplete="off"></label>
+        <div class="actions"><button class="small" id="acc-key-set">Use this key</button></div>
+      </div>
+      <div class="card">
+        <h3>Live check</h3>
+        <p class="hint">Test exactly what a given KEY sees — same code path the requester's requests take.</p>
+        <label class="auto-refresh">Key to test <input type="text" id="acc-test-ip" placeholder="sk-farm-…"></label>
+        <div class="actions"><button class="small" id="acc-test-go">Check visibility</button></div>
+        <pre class="log-box" id="acc-test-out" hidden></pre>
+      </div>
+    </section>
+    <!-- Web login (vault-backed): username/password resolves to the
+       login's access key — the browser never needs key management -->
+  <div id="login-modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-backdrop"></div>
+    <div class="modal-dialog" role="dialog" aria-modal="true" style="max-width:360px">
+      <div class="modal-header"><h3><i class="fa-solid fa-right-to-bracket"></i> Sign in</h3></div>
+      <div class="modal-body" style="padding:14px">
+        <p class="hint" style="margin:0 0 8px">Your login maps to an access key — model visibility and admin powers follow it.</p>
+        <label class="auto-refresh">Username <input type="text" id="login-user" autocomplete="username"></label>
+        <label class="auto-refresh">Password <input type="password" id="login-pass" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></label>
+        <p class="status-bad" id="login-err" style="margin:6px 0 0" hidden></p>
+      </div>
+      <div class="modal-footer" style="display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--border-soft)">
+        <span style="flex:1"></span>
+        <button class="small" id="login-go"><i class="fa-solid fa-right-to-bracket"></i> Sign in</button>
+      </div>
+    </div>
+  </div>
+  <!-- Access: one-time token reveal modal -->
+  <div id="acc-token-modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-backdrop" id="acc-token-backdrop"></div>
+    <div class="modal-dialog" role="dialog" aria-modal="true">
+      <div class="modal-header"><h3 id="acc-token-title"><i class="fa-solid fa-key"></i> Access key generated</h3>
+        <button class="small" id="acc-token-close" aria-label="Close"><i class="fa-solid fa-xmark"></i></button></div>
+      <div class="modal-body" style="padding:14px">
+        <p class="hint" style="margin:0 0 8px">Copy it NOW — this full value is never shown again (the list shows only a masked form).</p>
+        <pre class="log-box" id="acc-new-token" style="user-select:all; padding:10px"></pre>
+      </div>
+      <div class="modal-footer" style="display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--border-soft)">
+        <span style="flex:1"></span>
+        <button class="small" id="acc-token-copy"><i class="fa-solid fa-copy"></i> Copy token</button>
+        <button class="small" id="acc-token-close2" onclick="document.getElementById('acc-token-modal').classList.add('hidden')">Done</button>
+      </div>
+    </div>
+  </div>
+
+  </main>
+
+  <!-- Install-on-machines modal: tick one or more remote hosts, check
+       their install state, install where missing. Engine-parameterized
+       (llama.cpp prebuilts vs vLLM venv) by the opener button. -->
+  <div id="install-modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-backdrop" id="install-modal-backdrop"></div>
+    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="install-modal-title">
+      <div class="modal-header">
+        <h3 id="install-modal-title"><i class="fa-solid fa-server"></i> Install on other machines</h3>
+        <button class="small" id="install-modal-close" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body" style="flex:1; overflow:auto; padding:14px">
+        <p class="hint" id="install-modal-sub">Tick machines, check their state, install where missing.</p>
+        <div id="install-modal-list"></div>
+      </div>
+      <div class="modal-footer" style="display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--border-soft)">
+        <span style="flex:1"></span>
+        <button class="small" id="install-modal-check">Check selected</button>
+        <button class="small" id="install-modal-install" style="background:var(--accent-dim);border-color:var(--accent);color:var(--accent)">Install selected</button>
+      </div>
+    </div>
+  </div>
+  <!-- File explorer modal (used for model_dir + llama_bin, local or per-machine remote) -->
+  <div id="fs-modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-backdrop" id="fs-modal-backdrop"></div>
+    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="fs-modal-title">
+      <div class="modal-header">
+        <h3 id="fs-modal-title"><i class="fa-solid fa-folder-open"></i> Browse folders</h3>
+        <button class="small" id="fs-modal-close" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-path">
+        <button class="small" id="fs-up" title="Up one level"><i class="fa-solid fa-arrow-up"></i></button>
+        <input id="fs-path" placeholder="/home/you/..." style="flex:1">
+        <button class="small" id="fs-go" title="Go"><i class="fa-solid fa-arrow-right"></i></button>
+        <label class="hint" style="display:flex;align-items:center;gap:4px;white-space:nowrap"><input type="checkbox" id="fs-show-hidden"> hidden</label>
+      </div>
+      <div id="fs-machine-hint" class="hint" style="padding:0 14px 6px"></div>
+      <div id="fs-list" class="fs-list"></div>
+      <div class="modal-footer">
+        <span class="hint" id="fs-status"></span>
+        <span style="flex:1"></span>
+        <button class="small" id="fs-cancel">Cancel</button>
+        <button id="fs-select" class="small" style="background:var(--accent-dim);border-color:var(--accent);color:var(--accent)">Select this folder</button>
+      </div>
+    </div>
+  </div>
+  <!-- Variant (additional config) wizard modal -->
+  <div id="variant-modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-backdrop" id="variant-modal-backdrop"></div>
+    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="variant-modal-title">
+      <div class="modal-header">
+        <h3 id="variant-modal-title"><i class="fa-solid fa-layer-group"></i> Additional config</h3>
+        <button class="small" id="variant-modal-close" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body" style="flex:1; overflow:auto; padding:14px">
+        <ol class="wiz-steps vwiz-indicator">
+          <li data-s="1" class="active">1 · Source</li>
+          <li data-s="2">2 · Hardware</li>
+          <li data-s="3">3 · Details</li>
+        </ol>
+        <div class="vwiz-step-1">
+          <div class="hint v-source-display" style="margin-bottom:6px"></div>
+          <small class="hint">Shares the primary model file — one file, many configs. No separate source per config.</small>
+        </div>
+        <div class="vwiz-step-2" hidden>
+          <div class="variant-hw" id="variant-modal-hw"></div>
+          <small class="hint">Hardware for this config — pick GPUs/RAM like primary.</small>
+        </div>
+        <div class="vwiz-step-3" hidden>
+          <div class="advanced-body" style="padding:0; background:transparent">
+            <div class="row" style="gap:8px; flex-wrap:wrap">
+              <label>Label <input class="v-label" placeholder="e.g. 2x3090" style="min-width:140px"></label>
+              <label>Group <select class="v-group"><option value="">(inherit)</option></select></label>
+            </div>
+            <!-- DEC-10 (T4-G1): everything tagged data-variant-lcpp below
+                 is llama.cpp tensor-placement/flags vocabulary — hidden
+                 (not translated) when the active engine's manifest hides
+                 the tensor_split panel; the data-variant-vllm card is the
+                 vLLM engine's own per-variant surface. -->
+            <div class="hint" data-variant-lcpp style="font-weight:600; margin:6px 0 6px"><i class="fa-solid fa-arrow-down-wide-short"></i> Device order</div>
+            <div class="chip-group v-chips-order" data-variant-lcpp style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px">
+              <button type="button" class="hw-chip" data-value=""><i class="fa-solid fa-ban"></i> Inherit</button>
+              <button type="button" class="hw-chip" data-value="as-selected"><i class="fa-solid fa-list-ol"></i> As selected</button>
+              <button type="button" class="hw-chip" data-value="vram-first"><i class="fa-solid fa-memory"></i> VRAM-first</button>
+            </div>
+            <select class="v-order-policy" data-variant-lcpp hidden><option value="">inherit</option><option value="as-selected">as-selected</option><option value="vram-first">vram-first</option></select>
+            <!-- DEC-10 (T4-G1): vLLM per-variant overrides — the active
+                 engine's own fields (max-len/seqs/TP/PP/gmu/kv/cpu-offload/
+                 quant + extra args), partial-merge over the primary's
+                 `vllm:` section (same semantics as the flags override).
+                 The llama.cpp vocab blocks above stay in the DOM but
+                 HIDE under vllm (hidden-not-translated). -->
+            <div class="card v-vllm" data-variant-vllm hidden style="padding:10px; background:var(--inset)">
+              <div class="hint" style="font-weight:600; margin-bottom:8px"><i class="fa-solid fa-bolt"></i> vLLM overrides <span class="hint">(merge over the primary model's vllm section — blank fields inherit)</span></div>
+
+              <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-arrows-left-right"></i> Parallelism</div>
+              <div class="chip-group v-chips-vllm-layout" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px">
+                <button type="button" class="hw-chip" data-value=""><i class="fa-solid fa-ban"></i> Inherit</button>
+                <button type="button" class="hw-chip" data-value="pp"><i class="fa-solid fa-layer-group"></i> PP <small>layer split</small></button>
+                <button type="button" class="hw-chip" data-value="tp"><i class="fa-solid fa-arrows-left-right"></i> TP <small>tensor split</small></button>
+              </div>
+              <select class="v-vllm-layout" hidden><option value="">inherit</option><option value="pp">pp (layer split)</option><option value="tp">tp (tensor split)</option></select>
+              <div class="row" style="flex-wrap:wrap">
+                <label title="pipeline stages — pp layout: one stage per host">Pipeline parallel <input class="v-vllm-pp" type="number" placeholder="inherit" style="width:110px"></label>
+                <label title="tensor parallel size — GPUs on this variant's host">Tensor parallel <input class="v-vllm-tp" type="number" placeholder="inherit" style="width:110px"></label>
+                <label title="fraction of VRAM for model+KV (0–1)">GPU mem util <input class="v-vllm-gmu" type="number" step="0.05" min="0.05" max="1" placeholder="inherit" style="width:110px"></label>
+              </div>
+
+              <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-gauge-high"></i> Serving</div>
+              <div class="row" style="flex-wrap:wrap">
+                <label title="max context window — agentic clients request max_tokens=16384, so 8k rejects">Max model len <input class="v-vllm-max-model-len" type="number" placeholder="inherit" style="width:110px"></label>
+                <label>Max seqs <input class="v-vllm-max-num-seqs" type="number" placeholder="inherit" style="width:110px"></label>
+                <label>KV cache <select class="v-vllm-kv" style="min-width:90px"><option value="">inherit</option><option value="auto">auto</option><option value="fp8">fp8</option></select></label>
+                <label>CPU offload GB <input class="v-vllm-cpu-offload" type="number" placeholder="inherit" style="width:120px"></label>
+                <label>Quantization <input class="v-vllm-quant" placeholder="inherit" style="width:110px"></label>
+              </div>
+
+              <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-microchip"></i> Precision & performance</div>
+              <div class="row" style="flex-wrap:wrap">
+                <label title="auto lets vLLM pick (bf16 on sm_80+); Turing cannot run bf16 — half/float32">Compute dtype <select class="v-vllm-dtype" style="min-width:110px"><option value="">inherit</option><option value="half">half (fp16)</option><option value="bfloat16">bfloat16</option><option value="float32">float32</option></select></label>
+                <label title="disable CUDA graphs (multi-host capture hangs over Ethernet); uncheck the override only with Infiniband"><button type="button" class="hw-chip v-chip-vllm-eager" data-checked="false"><i class="fa-solid fa-bolt"></i> eager</button><input class="v-vllm-eager" type="checkbox" hidden></label>
+              </div>
+
+              <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-screwdriver-wrench"></i> Tool calling</div>
+              <div class="row" style="flex-wrap:wrap">
+                <label title="allow tool_choice=auto"><button type="button" class="hw-chip v-chip-vllm-tools" data-checked="false"><i class="fa-solid fa-screwdriver-wrench"></i> auto-tools</button><input class="v-vllm-tools" type="checkbox" hidden></label>
+                <label title="how the model's tool-call syntax is parsed">Tool parser <select class="v-vllm-tool-parser" style="min-width:120px"><option value="">inherit</option><option value="hermes">hermes</option><option value="llama3_json">llama3_json</option><option value="mistral">mistral</option><option value="glm45">glm45</option><option value="qwen25">qwen25</option></select></label>
+              </div>
+
+              <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-file-lines"></i> Extras</div>
+              <div class="row" style="flex-wrap:wrap">
+                <label class="wide">Tokenizer (path or HF id, when it differs from the model) <input class="v-vllm-tokenizer" placeholder="inherit"></label>
+                <label class="wide">Extra vLLM args (comma- or newline-separated) <input class="v-vllm-extra-args wide" placeholder="inherit"></label>
+                <label class="wide" title="multi-host Ray/NCCL overrides — KEY=VALUE per line; KEY=false drops a built-in default">Ray env overrides <input class="v-vllm-ray-env wide" placeholder="inherit"></label>
+              </div>
+            </div>
+            <div class="hint" data-variant-lcpp style="font-weight:600; margin:6px 0 6px"><i class="fa-solid fa-sliders"></i> Tensor placement</div>
+            <div class="chip-group v-chips-tensor-mode" data-variant-lcpp style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px">
+              <button type="button" class="hw-chip" data-value=""><i class="fa-solid fa-ban"></i> Inherit</button>
+              <button type="button" class="hw-chip" data-value="auto"><i class="fa-solid fa-arrows-left-right"></i> Auto <small>even</small></button>
+              <button type="button" class="hw-chip" data-value="fit"><i class="fa-solid fa-bolt"></i> Fit <small>VRAM-aware</small></button>
+              <button type="button" class="hw-chip" data-value="split"><i class="fa-solid fa-pen-ruler"></i> Split <small>forced weights</small></button>
+            </div>
+            <select class="v-tensor-mode" data-variant-lcpp hidden><option value="">inherit</option><option value="auto">auto</option><option value="fit">fit</option><option value="split">split</option></select>
+            <div class="row v-fit-wrap" data-variant-lcpp style="gap:8px; flex-wrap:wrap">
+              <label>Fit margin <input class="v-fit-margin" type="number" placeholder="inherit" style="width:110px"></label>
+              <label>Fit RAM allow <input class="v-fit-ram" type="number" placeholder="inherit" style="width:110px"></label>
+            </div>
+            <div class="row v-split-wrap" data-variant-lcpp>
+              <label class="wide">Split weights (per --device, comma-separated) <input class="v-tensor-split wide" placeholder="inherit"></label>
+            </div>
+            <div class="row" data-variant-lcpp>
+              <label class="wide">llama bin <input class="v-llama-bin" placeholder="inherit"></label>
+            </div>
+            <div class="row" style="gap:8px; align-items:center">
+              <button type="button" class="hw-chip v-chip-pinned" data-checked="false"><i class="fa-solid fa-thumbtack"></i> pinned <small>keep-warm</small></button>
+              <input type="checkbox" class="v-pinned" hidden>
+              <label>TTL <input class="v-ttl" type="number" placeholder="inherit" style="width:110px"></label>
+            </div>
+            <div class="card" data-variant-lcpp style="padding:10px; background:var(--inset)">
+              <div class="hint" style="font-weight:600; margin-bottom:6px">Flags override</div>
+              <div class="row" style="gap:12px; align-items:flex-end; flex-wrap:wrap">
+                <label>Context <input class="v-ctx" type="number" placeholder="inherit" style="width:110px"></label>
+                <button type="button" class="hw-chip v-chip-flash" data-checked="false"><i class="fa-solid fa-bolt"></i> flash-attn</button>
+                <input type="checkbox" class="v-flash" hidden>
+                <button type="button" class="hw-chip v-chip-jinja" data-checked="false"><i class="fa-solid fa-code"></i> jinja</button>
+                <input type="checkbox" class="v-jinja" hidden>
+                <label>Cache K <select class="v-cache-k"><option value="">inherit</option><option value="q8_0">q8_0</option><option value="f16">f16</option><option value="q4_0">q4_0</option></select></label>
+                <label>Cache V <select class="v-cache-v"><option value="">inherit</option><option value="q8_0">q8_0</option><option value="f16">f16</option><option value="q4_0">q4_0</option></select></label>
+              </div>
+              <label style="display:block; margin-top:6px">Extra flags (prefilled with primary — tweak or clear to inherit)<textarea class="v-flags-text" rows="3" style="width:100%; font-family:var(--mono); font-size:12px" placeholder="--temp 0.8
+--top-p 0.9"></textarea></label>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="small vwiz-back">← Back</button>
+        <span style="flex:1"></span>
+        <button type="button" class="small" id="variant-modal-cancel">Cancel</button>
+        <button type="button" class="small vwiz-next">Continue →</button>
+        <button type="button" class="small" id="variant-modal-save" hidden>Save config</button>
+      </div>
+    </div>
+  </div>
+  <!-- Machine detail modal (dashboard card click) -->
+  <div id="machine-detail-modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-backdrop" id="machine-detail-backdrop"></div>
+    <div class="modal-dialog modal-dialog-wide" role="dialog" aria-modal="true" aria-labelledby="machine-detail-title">
+      <div class="modal-header">
+        <h3 id="machine-detail-title"><i class="fa-solid fa-server"></i> Machine detail</h3>
+        <button class="small" id="machine-detail-close" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body" id="machine-detail-body">
+        <div class="loading-spinner"><i class="fa-solid fa-spinner fa-spin"></i><span>Loading machine details…</span></div>
+      </div>
+    </div>
+  </div>
+  <!-- HF GGUF Browser modal (amazing search) -->
+  <script src="/static/app.js?v={{ asset_v }}"></script>
+  <script>
+  (() => {
+    const btn = document.getElementById('sidebar-toggle');
+    if (!btn) return;
+    const mq = window.matchMedia('(max-width: 880px)');
+    const syncBtn = () => {
+      const collapsed = document.body.classList.contains('sidebar-collapsed');
+      const hidden = document.body.classList.contains('sidebar-hidden');
+      const isMobile = mq.matches;
+      const expanded = isMobile ? !hidden : !collapsed;
+      btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      btn.setAttribute('aria-label', isMobile ? (hidden ? 'Open navigation' : 'Close navigation') : (collapsed ? 'Expand sidebar' : 'Collapse sidebar'));
+      btn.title = isMobile ? (hidden ? 'Open' : 'Close') : (collapsed ? 'Expand' : 'Collapse');
+    };
+    const applyRestore = () => {
+      if (mq.matches) {
+        document.body.classList.add('sidebar-hidden');
+        document.body.classList.remove('sidebar-collapsed');
+      } else {
+        const collapsed = localStorage.getItem('sidebar-collapsed') === '1';
+        document.body.classList.toggle('sidebar-collapsed', collapsed);
+        document.body.classList.remove('sidebar-hidden');
+      }
+      syncBtn();
+    };
+    applyRestore();
+    mq.addEventListener('change', applyRestore);
+    btn.addEventListener('click', () => {
+      if (mq.matches) {
+        document.body.classList.toggle('sidebar-hidden');
+      } else {
+        const collapsed = document.body.classList.toggle('sidebar-collapsed');
+        localStorage.setItem('sidebar-collapsed', collapsed ? '1' : '0');
+      }
+      syncBtn();
+    });
+    // close drawer after picking a tab on mobile
+    document.querySelectorAll('#sidebar nav button').forEach(b => {
+      b.addEventListener('click', () => {
+        if (mq.matches) {
+          document.body.classList.add('sidebar-hidden');
+          syncBtn();
+        }
+      });
+    });
+  })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,71 @@
+# Secrets — never commit
+config/machines.yaml
+
+# per-install user data — the app creates/edits these at runtime; fresh
+# installs get *.example.yaml templates instead (secrets, machine names,
+# model lists, LAN paths are all specific to one setup)
+config/settings.yaml
+config/groups.yaml
+config/stores.yaml
+config/swap.yaml
+config/swap_groups.yaml
+config/models/*.yaml
+config/model_icons.json
+generated/tune-history.csv
+generated/tune-priors.json
+generated/net-probe.json
+generated/*.py
+.playwright-mcp/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# node
+node_modules/
+
+# logs
+*.log
+chat/chainlit.log
+
+# runtime state / caches (regenerated)
+generated/hf_snapshot/
+accordion_state.json
+flow_layout.json
+net_speed_cache.json
+config/ssh_known_hosts.json
+
+# test artifacts
+.pytest_cache/
+test-models/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# generated launcher scripts contain no secrets (vault at runtime),
+# but the pushed sidecar does — never commit it anywhere
+generated/*.sh
+swap-secrets.env
+
+# chainlit boilerplate translations
+.chainlit/
+config/accordion_state.json
+.env
+
+# large archives — never commit (GitHub 100MB limit)
+c.tar.gz
+
+# usage telemetry — per-key runtime history, wiped fresh 2026-10-10;
+# never commit (recreated live by the gateway writer thread)
+config/usage/*.enc
+
+# agent worktrees — never part of the project
+.worktrees/
+
+# internal QA agent state — private working notes, never public
+.qe/
+qe-result.json
