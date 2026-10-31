@@ -331,6 +331,10 @@ def install_on(machine, log=lambda m: None):
                 "detail": "release assets not found upstream: "
                           + ", ".join(plan_info["missing"])}
     urls = [f"{base}/{n}" for n in plan_info["assets"]]
+    # download+extract budget: CUDA+cuDART archives are ~1 GB total; a
+    # flat 600s was tight on slow uplinks and killed the run mid-download
+    # (fixed 2026-10-31). 20 min per asset set, verify keeps its own.
+    dl_timeout = 1200 * max(1, len(urls))
     try:
         if is_win:
             # download + expand each zip into the dest dir.
@@ -340,6 +344,9 @@ def install_on(machine, log=lambda m: None):
             # remote path works either way because cmd.exe expands
             # %USERPROFILE% before PowerShell ever sees the body, but
             # $env: is the one spelling correct in BOTH transports.
+            # No checksums: upstream publishes none for these assets —
+            # Expand-Archive validates zip CRCs, and the post-install
+            # --version verify below is the integrity gate.
             ps = ["$ErrorActionPreference='Stop'",
                   '$d="$env:USERPROFILE\\llama.cpp\\bin"',
                   "New-Item -ItemType Directory -Force -Path $d | Out-Null"]
@@ -349,11 +356,13 @@ def install_on(machine, log=lambda m: None):
                 ps.append(
                     f"Expand-Archive -Force \"$env:TEMP\\llamabin{i}.zip\" $d")
                 ps.append(f"Remove-Item \"$env:TEMP\\llamabin{i}.zip\"")
-            code, out = run("; ".join(ps))
+            code, out = run("; ".join(ps), timeout=dl_timeout)
         else:
             # curl each asset, extract FLAT into ~/llama.cpp/bin
             # (tarballs nest inside llama-<tag>/; --strip-components=1
-            # removes it so bin/llama-server is the real path)
+            # removes it so bin/llama-server is the real path).
+            # tar -xzf fails on corrupt gzip = the integrity gate
+            # (upstream publishes no checksums for these assets).
             cmds = ["mkdir -p \"$HOME/llama.cpp/bin\""]
             for i, u in enumerate(urls):
                 cmds.append(
@@ -364,7 +373,7 @@ def install_on(machine, log=lambda m: None):
                 cmds.append(f"rm -f /tmp/llamabin{i}.tgz")
             cmds.append(
                 "chmod +x \"$HOME/llama.cpp/bin/\"* 2>/dev/null; true")
-            code, out = run(" && ".join(cmds))
+            code, out = run(" && ".join(cmds), timeout=dl_timeout)
         if code != 0:
             return {"ok": False, "machine": name,
                     "detail": f"install failed (exit {code}): {out[-500:]}"}
@@ -393,6 +402,19 @@ def install_on(machine, log=lambda m: None):
     # firewall rules match the CURRENT exe path before the machine is
     # trusted to serve again (see the WIN_FW block comment above).
     fw_note = _ensure_win_firewall(run, log) if is_win else ""
+    if is_win:
+        # PATH export: the app launches through the machine's llama_bin
+        # pointer, but a manual terminal should find llama-server too.
+        # Idempotent USER-scope append (no admin needed); non-fatal —
+        # failure only costs manual PATH convenience, never serving.
+        path_ps = ("$p=[Environment]::GetEnvironmentVariable('Path','User'); "
+                   "if($p -notlike '*llama.cpp\\bin*'){ "
+                   "[Environment]::SetEnvironmentVariable('Path', "
+                   "($p.TrimEnd(';')+';'+\"$env:USERPROFILE\\llama.cpp\\bin\"), 'User') }")
+        try:
+            run(path_ps, timeout=60)
+        except Exception:
+            pass
     try:
         cfg.machines.update(name, {"llama_bin": bin_dir})
     except Exception:

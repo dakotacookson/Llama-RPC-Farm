@@ -139,7 +139,9 @@ def install_on(machine, log=lambda m: None):
             # $d uses $env:USERPROFILE: PS never expands cmd-style %VAR%,
             # and on a LOCAL windows install there is no cmd.exe wrapper
             # to expand it first (fixed 2026-10-31 — same trap as the
-            # llama.cpp installer's dest dir).
+            # llama.cpp installer's dest dir). No checksums: upstream
+            # publishes none; Expand-Archive validates zip CRCs and the
+            # post-install existence verify is the integrity gate.
             ps = ["$ErrorActionPreference='Stop'",
                   '$d="$env:USERPROFILE\\llama-swap"',
                   "New-Item -ItemType Directory -Force -Path $d | Out-Null",
@@ -147,17 +149,18 @@ def install_on(machine, log=lambda m: None):
                   "-OutFile \"$env:TEMP\\llamaswap.zip\"",
                   "Expand-Archive -Force \"$env:TEMP\\llamaswap.zip\" $d",
                   "try{ Remove-Item \"$env:TEMP\\llamaswap.zip\" }catch{}"]
-            code, out = run("; ".join(ps))
+            code, out = run("; ".join(ps), timeout=900)
         else:
             # tarball is FLAT (llama-swap binary at root, plus docs) —
-            # extract only the binary into ~/.local/bin
+            # extract only the binary into ~/.local/bin. tar -xzf fails
+            # on corrupt gzip = the integrity gate (no upstream checksums).
             cmds = ["mkdir -p \"$HOME/.local/bin\"",
                     f"curl -fSL --retry 3 -o /tmp/llamaswap.tgz '{urls[0]}'",
                     "tar -xzf /tmp/llamaswap.tgz -C /tmp llama-swap",
                     "mv /tmp/llama-swap \"$HOME/.local/bin/llama-swap\"",
                     "rm -f /tmp/llamaswap.tgz",
                     "chmod +x \"$HOME/.local/bin/llama-swap\""]
-            code, out = run(" && ".join(cmds))
+            code, out = run(" && ".join(cmds), timeout=900)
         if code != 0:
             return {"ok": False, "machine": name,
                     "detail": f"install failed (exit {code}): {out[-500:]}"}
@@ -181,6 +184,17 @@ def install_on(machine, log=lambda m: None):
 
     if is_win:
         bin_path = f"{DEST_WIN}\\llama-swap.exe"
+        # PATH export: manual terminals should find llama-swap too.
+        # Idempotent USER-scope append, non-fatal (the saved binary
+        # pointer is what launch() actually uses).
+        path_ps = ("$p=[Environment]::GetEnvironmentVariable('Path','User'); "
+                   "if($p -notlike '*llama-swap*'){ "
+                   "[Environment]::SetEnvironmentVariable('Path', "
+                   "($p.TrimEnd(';')+';'+\"$env:USERPROFILE\\llama-swap\"), 'User') }")
+        try:
+            run(path_ps, timeout=60)
+        except Exception:
+            pass
     else:
         bin_path = f"{DEST_POSIX}/llama-swap"
     # persist into swap settings so launch() uses it
