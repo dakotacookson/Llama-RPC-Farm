@@ -33,6 +33,19 @@ That's the entire setup path — the full walkthrough (vault, machines,
 stores, llama.cpp build, llama-swap, gateway, client config) is in
 **[docs/setup.md](docs/setup.md)**.
 
+### Try it with your AI agent in one prompt
+
+This repo ships an agent playbook (`AGENTS.md`), so any coding agent that
+reads AGENTS.md can install and manage the farm for you. Tell your agent:
+
+> Clone https://github.com/dakotacookson/Llama-RPC-Farm, open the folder,
+> and follow the "AI agent quick playbook" in AGENTS.md to install and
+> start the app. Then walk me through adding my machines and models per
+> docs/setup.md.
+
+That's it — the agent handles install, startup, and configuration while
+you supervise.
+
 ## Users & API keys
 
 Every client identifies with a farm API key — there's nothing else to set
