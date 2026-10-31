@@ -51,8 +51,6 @@ hand-rolled startup scripts.
 
 ## Quick start
 
-![Cluster dashboard: live per-machine GPU/VRAM/temp status](docs/img/dashboard.png)
-
 ```bash
 ./install.sh    # Linux/macOS     (Windows: install.bat)
 ./run.sh        # then open http://localhost:8199
