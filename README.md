@@ -3,12 +3,13 @@
 **True llama.cpp, over your whole house.** One dashboard that spans real
 multi-machine llama.cpp RPC clusters — your desktops' GPUs pooled across
 boxes — and on-demand multi-model serving through llama-swap. Any mix of
-Linux, Windows, and macOS machines. Any client that speaks OpenAI.
+Linux and Windows machines (macOS peers supported in code but untested —
+see the hardware table). Any client that speaks OpenAI.
 
-Real llama.cpp means real speed: full CUDA, tensor-split across GPUs, spec
-decoding, KV-cache options, 128k+ contexts — the raw llama-server features,
-wired together across machines for you, instead of fighting SSH and
-hand-rolled startup scripts.
+Real llama.cpp means real features: full CUDA, tensor-split across GPUs,
+spec decoding, KV-cache options, 128k+ contexts — the raw llama-server
+features, wired together across machines for you, instead of fighting SSH
+and hand-rolled startup scripts.
 
 **Nothing outside this folder is ever modified.** Your existing
 `llama.cpp/`, `llama-swap/` configs, and scripts stay untouched.
@@ -162,13 +163,14 @@ it there, and use the cluster for the ones that don't.
 
 ### Why this and not exo / etc.
 
-Flexibility. Machines and models are pools you arrange however your
-household needs: some machines serving as one pool of GPUs for a giant
-model, another pool for a second model, llama-swap routing between them,
-per-user keys deciding who reaches what — with real llama.cpp features
-(tensor split, spec decoding, KV-cache options, 128k+ contexts) and
-llama-swap's on-demand start/stop doing the serving. It's a farm you
-shape, not a fixed topology.
+Flexibility. exo invents its own device mesh with its own inference
+runtime — the farm instead drives **stock llama.cpp builds**, so every
+llama-server flag and backend upgrade works as-is, and adds llama-swap's
+on-demand start/stop so many models share one endpoint. Machines and
+models are pools you arrange however your household needs: some machines
+as one pool of GPUs for a giant model, another pool for a second model,
+llama-swap routing between them, per-user keys deciding who reaches what.
+It's a farm you shape, not a fixed topology.
 
 ## Security model
 
