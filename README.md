@@ -29,8 +29,6 @@ hand-rolled startup scripts.
 
 - **Keep it simple day to day** — live dashboard (VRAM, temp, RPC state),
   per-model flag editor, one-click generated launch scripts, auto-tuner.
-  A built-in Hugging Face browser finds and downloads GGUF models straight
-  into your shared store.
 
   ![Cluster dashboard: live per-machine GPU/VRAM/temp status](docs/img/dashboard.png)
 
