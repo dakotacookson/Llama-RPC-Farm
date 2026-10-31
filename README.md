@@ -41,6 +41,14 @@ hand-rolled startup scripts.
 
   ![Flow visualizer: real per-tensor device assignment across your cluster](docs/img/visualizer.png)
 
+- **Find and fetch models without leaving the farm** — the built-in
+  Hugging Face browser searches the Hub with GGUF-aware filters (quant,
+  task, company, collection), shows you sharded variants as one model,
+  and downloads straight into your shared `store://` path so every
+  machine sees it immediately.
+
+  ![Hugging Face browser: search, filter by quant/task, download to a store](docs/img/downloads.png)
+
 ## Quick start
 
 ![Cluster dashboard: live per-machine GPU/VRAM/temp status](docs/img/dashboard.png)
