@@ -32,7 +32,7 @@ hand-rolled startup scripts.
   A built-in Hugging Face browser finds and downloads GGUF models straight
   into your shared store.
 
-  ![Hugging Face browser: search, filter by quant/task, download to a store](docs/img/downloads.png)
+  ![Cluster dashboard: live per-machine GPU/VRAM/temp status](docs/img/dashboard.png)
 
 ## Quick start
 
