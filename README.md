@@ -152,6 +152,35 @@ Model configs live as YAML, the app generates the exact launch scripts
 clients always hit one endpoint. Secrets (SSH passwords, HF token) live in
 an encrypted vault on your box, never in configs, never in scripts.
 
+### Expectations: speed
+
+Pooling over RPC trades tokens/sec for reach. A split model across
+machines will be slower per-token than the same model on one box — that's
+physics, and it's the price of using GPUs that would otherwise sit idle.
+The farm never pretends otherwise; if a model fits on one machine, keep
+it there, and use the cluster for the ones that don't.
+
+### Why this and not exo / etc.
+
+Flexibility. Machines and models are pools you arrange however your
+household needs: some machines serving as one pool of GPUs for a giant
+model, another pool for a second model, llama-swap routing between them,
+per-user keys deciding who reaches what — with real llama.cpp features
+(tensor split, spec decoding, KV-cache options, 128k+ contexts) and
+llama-swap's on-demand start/stop doing the serving. It's a farm you
+shape, not a fixed topology.
+
+## Security model
+
+**This is a homelab tool for trusted networks.** llama.cpp's RPC server
+is unauthenticated by design; the farm assumes your LAN or a VPN
+(Tailscale-style) is the boundary. Don't port-forward the RPC ports or
+the UI to the public internet. What the app does touch: SSH to machines
+you add (credentials in the encrypted `.env` vault, never in configs or
+scripts), and Windows firewall allow rules for the two llama.cpp
+binaries so peers can reach each other. Everything else stays inside the
+project folder.
+
 ## Documentation
 
 | Doc | What it covers |
@@ -168,7 +197,7 @@ an encrypted vault on your box, never in configs, never in scripts.
 
 This project is an orchestration layer only — the engines are the real
 work of two projects we build on and depend on, installed as required
-downloads (both MIT-licensed, so a wrapper like this is legitimate):
+downloads (both MIT-licensed):
 
 - **[llama.cpp](https://github.com/ggml-org/llama.cpp)** (ggml-org) — the
   inference engine itself: `llama-server`, `ggml-rpc-server`, tensor
@@ -191,8 +220,8 @@ vLLM mode exists behind `engine: vllm` (see
 
 Licensed under **Apache-2.0** (this project's own code; download engines
 llama.cpp and llama-swap remain MIT under their own terms) — free for
-personal and commercial use, and free forever. If it saves you a GPU
- headache, the GitHub **Sponsors** button is right up there. Licensing of
+personal and commercial use. If it saves you a GPU headache, the GitHub
+**Sponsors** button is right up there. Licensing of
 wrapped tools: [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).
 Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md); every PR
 is review-approved by the maintainer.
