@@ -109,6 +109,18 @@ what, and watch per-key usage. Keys are never stored in plaintext in
 configs (the vault holds them; details in
 [docs/secrets.md](docs/secrets.md)).
 
+## Test every model type before it matters
+
+The built-in test bench (Tests tab) covers every llama.cpp capability,
+right where the models live — so you verify a model actually works
+through your real cluster before a client ever sees it: **Chat**
+(streaming conversations against llama-swap, any text model), **Vision**
+(multimodal), **Audio**, **Embeddings**, and **Decision** (structured
+choice testing). Each type routes through the same views/keys/gateway as
+production traffic, so the test is the whole chain, not just the model.
+
+![Tests: chat, vision, audio, embeddings, decision test benches](docs/img/testing-tabs.png)
+
 ## Supported hardware
 
 Master and peers can be any mix; llama.cpp decides the backends. This code
