@@ -17,12 +17,28 @@ hand-rolled startup scripts.
 
 - **Pool machines into one cluster** — pick which GPUs (and RAM) each box
   shares; peers run RPC servers started for you over SSH.
+
+  ![Model editor: pick GPU/RAM chips across machines, device order at the bottom](docs/img/model-hardware.png)
+
 - **Serve many models on demand** — llama-swap starts and stops each model's
   llama-server the moment a client asks, and frees the GPUs when it's done.
+  Group models with the loading behavior that fits: run together, always-on,
+  take turns, or solo.
+
+  ![Serve groups: per-cluster loading behavior](docs/img/cluster-behavior.png)
+
 - **Keep it simple day to day** — live dashboard (VRAM, temp, RPC state),
   per-model flag editor, one-click generated launch scripts, auto-tuner.
+  A built-in Hugging Face browser finds and downloads GGUF models straight
+  into your shared store.
+
+  ![Hugging Face browser: search, filter by quant/task, download to a store](docs/img/downloads.png)
 
 ## Quick start
+
+![Cluster dashboard: live per-machine GPU/VRAM/temp status](docs/img/dashboard.png)
+
+![Flow visualizer: real per-tensor device assignment across your cluster](docs/img/visualizer.png)
 
 ```bash
 ./install.sh    # Linux/macOS     (Windows: install.bat)
@@ -54,6 +70,8 @@ device; each key gets a **model allowlist**, so your kid's PC shows only
 the fast 4B, your coding box shows the coder models, and an admin key
 sees everything. Keys are also how usage is attributed per user in the
 dashboard.
+
+![Access keys: per-key model grants, admin/user level, strict/unrestricted views](docs/img/access-keys.png)
 
 Clients send the key as a normal auth header — same style as OpenAI:
 
