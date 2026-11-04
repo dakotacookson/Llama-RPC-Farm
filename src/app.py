@@ -99,6 +99,25 @@ def seed_local_master():
     _thr.Thread(target=_reconcile_swap, daemon=True,
                 name="boot-swap-reconcile").start()
 
+    def _cleanup_hf_cache():
+        try:
+            res = hf_downloader.cleanup_stale_cache()
+            if (res.get("removed_incomplete")
+                    or res.get("removed_locks")):
+                print(
+                    "[cache-cleanup] removed "
+                    f"{res['removed_incomplete']} incomplete, "
+                    f"{res['removed_locks']} lock file(s), "
+                    f"{res['removed_bytes'] / 1e9:.1f} GB; "
+                    f"skipped {res.get('skipped_active', 0)} active")
+            for err in (res.get("errors") or [])[:5]:
+                print(f"[cache-cleanup] {err}")
+        except Exception as e:
+            print(f"[cache-cleanup] skipped: {e}")
+
+    _thr.Thread(target=_cleanup_hf_cache, daemon=True,
+                name="boot-cache-cleanup").start()
+
 
 class NoCacheStaticFiles(StaticFiles):
     """Static assets must always revalidate — a stale cached app.js made
