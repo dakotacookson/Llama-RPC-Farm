@@ -94,6 +94,13 @@ stores:
 Model configs then use `store://llm-models/<file.gguf>` — never absolute
 paths. Add a `macos:` key when a Mac joins.
 
+New downloads are bundled into a per-model folder
+(`store://llm-models/<model-stem>/`): the selected weights (with all
+shards), every `mmproj`/MTP/draft GGUF in the repo, config/tokenizer
+metadata (from the repo, or from its declared `base_model` when the GGUF
+repo omits them), LICENSE/README files, and a `farm-bundle.json` manifest.
+Existing flat files keep working; only new downloads use bundles.
+
 ## 6. Build llama.cpp (UI: llama.cpp installer)
 
 From the UI, install/build `llama-server` per machine (or point
