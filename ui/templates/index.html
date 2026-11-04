@@ -748,7 +748,7 @@
       </div>
       <div class="card" id="dl-pane-custom" hidden>
         <h3>Custom download from Hugging Face</h3>
-        <p class="hint">Paste an hf:// link (e.g. hf://orcarouter/Repo/file.gguf — split models download all shards together). The file streams straight to the store location on disk; the HF cache is bypassed entirely.</p>
+        <p class="hint">Paste an hf:// link (e.g. hf://orcarouter/Repo/file.gguf). The model lands in its own folder under the store: selected weights + all shards, every mmproj/MTP/draft GGUF in the repo, config/tokenizer, LICENSE/README and a farm-bundle.json manifest. The HF cache is bypassed entirely.</p>
         <div class="row">
           <label class="wide">hf:// link <input id="dl-link" placeholder="hf://orcarouter/Qwen3.8-27B-Uncensored-GGUF/Qwen3.8-27B-Uncensored-F16-00001-of-00002.gguf"></label>
           <label>Store <select id="dl-store"></select></label>

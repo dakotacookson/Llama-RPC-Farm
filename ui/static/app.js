@@ -7514,8 +7514,10 @@ on("#dl-start", "click", async (e) => {
     const jobs = r.jobs || [r];
     const started = jobs.filter(j => j.status !== "done");
     const existed = jobs.filter(j => j.status === "done");
+    const bundleName = r.bundle?.name || r.bundle?.bundle?.name || "";
+    const target = bundleName ? `${bundleName}/` : started[0]?.dest || jobs[0]?.dest || "";
     box.innerHTML = started.length
-      ? `<p class="status-ok">${started.length} download${started.length > 1 ? "s" : ""} started${r.sharded ? ` (all ${r.total} shards)` : ""} → ${escHtml(started[0].dest)}${started.length > 1 ? " …" : ""}</p>`
+      ? `<p class="status-ok">${started.length} file${started.length > 1 ? "s" : ""} started${r.sharded ? " (all shards)" : ""} → ${escHtml(target)}${started.length > 1 ? " …" : ""}${r.bundle ? " — companions + metadata included" : ""}</p>`
         + (existed.length ? `<p class="status-warn">${existed.length} file${existed.length > 1 ? "s" : ""} already existed — skipped</p>` : "")
       : `<p class="status-warn">File${jobs.length > 1 ? "s" : ""} already exist${jobs.length > 1 ? "" : "s"} at ${escHtml(jobs[0].dest)}</p>`;
     $("#dl-link").value = "";
@@ -7863,7 +7865,7 @@ async function selectHfModel(modelId){
           </div>
           <button class="small" data-file="${escHtml(e.file)}" style="background:var(--accent-dim);border-color:var(--accent);color:var(--accent); margin-left:8px">${label}</button>
         </div>`;}).join("")}
-      <small class="hint" style="display:block; margin-top:8px">Downloads via <code>hf://</code> to <code>store://${escHtml(storeVal)}</code> — streamed to disk, bypasses HF cache (same as custom URL path).</small>`;
+      <small class="hint" style="display:block; margin-top:8px">Downloads via <code>hf://</code> into its own folder under <code>store://${escHtml(storeVal)}</code> — selected weights + all shards, every <code>mmproj</code>/MTP/draft GGUF in the repo, plus config/tokenizer, LICENSE and README. Streamed to disk, bypasses the HF cache.</small>`;
     detail.querySelectorAll("button[data-file]").forEach(btn=>{
       const origLabel = btn.textContent;
       btn.onclick = async ()=>{
@@ -7876,8 +7878,10 @@ async function selectHfModel(modelId){
           const jobs = r.jobs || [r];
           const started = jobs.filter(j => j.status !== "done");
           const existed = jobs.filter(j => j.status === "done");
+          const bundleName = r.bundle?.name || r.bundle?.bundle?.name || "";
+          const modelJobs = r.model_jobs || jobs.filter(j => j.kind === "model").length || 1;
           toast(started.length
-            ? `Download started (${started.length}/${jobs.length} shard${jobs.length > 1 ? "s" : ""}) → ${started[0].dest}${existed.length ? ` · ${existed.length} already existed` : ""}`
+            ? `Download started → ${bundleName ? bundleName + "/" : started[0].dest} (${started.length} file${started.length > 1 ? "s" : ""}, ${modelJobs} model file${modelJobs > 1 ? "s" : ""}${r.bundle ? " + companions/metadata" : ""})${existed.length ? ` · ${existed.length} already existed` : ""}`
             : `Already exists: ${jobs[0].dest}`, started.length ? "ok" : "warn");
           loadDownloads();
           // a download starting is the event of interest — jump to its subtab
@@ -7922,7 +7926,7 @@ async function selectHfSafetensorsModel(modelId){
         <a href="https://huggingface.co/${escHtml(data.id)}" target="_blank" class="small"><i class="fa-solid fa-external-link"></i> HF</a>
       </div>
       ${data.gated ? `<div id="hf-access-box" style="margin-bottom:10px"><p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Checking saved token against this repo…</p></div>` : ""}
-      <p class="hint" style="margin-bottom:8px">Source repo (vLLM format). Downloads <strong>config.json + *.safetensors</strong> (+ tokenizer) into <code>store://${escHtml(storeVal)}/${escHtml(name)}/</code> — the format vLLM serves directly and model discovery picks up.</p>
+      <p class="hint" style="margin-bottom:8px">Source repo (vLLM format). Downloads <strong>config.json + *.safetensors</strong> (+ tokenizer, remote code, LICENSE, README and any mmproj/MTP companion GGUFs) into <code>store://${escHtml(storeVal)}/${escHtml(name)}/</code> — the format vLLM serves directly and model discovery picks up.</p>
       <div class="hf-file-row recommended">
         <div style="min-width:0; flex:1">
           <div class="hf-detail-file">${escHtml(name)}/</div>
@@ -7935,7 +7939,7 @@ async function selectHfSafetensorsModel(modelId){
         <summary class="hint" style="cursor:pointer">${files.length} file(s)</summary>
         ${files.map(f => `<small class="hint" style="display:block; word-break:break-all">${escHtml(f.rfilename)} — ${fmtBytes(f.size||0)}</small>`).join("")}
       </details>
-      <small class="hint" style="display:block; margin-top:8px">Whole-repo download via <code>snapshot_download</code> — GGUF/bin/checkpoint files in the repo are skipped automatically.</small>`;
+      <small class="hint" style="display:block; margin-top:8px">Whole-repo download via <code>snapshot_download</code> — weights, tokenizer/config, LICENSE/README and any mmproj/MTP companion GGUFs are included; other GGUF/bin/checkpoint files are skipped.</small>`;
     const btn = detail.querySelector("#hf-st-download");
     if (btn) btn.onclick = async ()=>{
       btn.disabled=true; btn.textContent="starting…";
