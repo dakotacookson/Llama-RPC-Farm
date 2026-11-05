@@ -25,6 +25,30 @@ else
     killall llama-server 2>/dev/null || echo "llama-server not running"
   fi
 fi
+
+# Full-restart cleanup: llama-swap's daemon shutdown does not run each
+# model's cmdStop, so remote-local llama-servers and per-model
+# ggml-rpc-server peers can outlive a restart. Stop every farm-managed
+# llama process on every machine now (best-effort; offline boxes don't
+# block the restart). `run.sh` remains the non-destructive UI-only path.
+_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_PY="$_ROOT/.venv/bin/python"
+[ -x "$_PY" ] || _PY="$(command -v python3)"
+if [ -n "$_PY" ] && [ -f "$_ROOT/src/app.py" ]; then
+  echo "Stopping farm llama processes on all machines..."
+  ( cd "$_ROOT" && "$_PY" - <<'PYEOF' ) || true
+import sys
+sys.path.insert(0, "src")
+import config_loader as cfg
+import rpc_manager
+for m in cfg.machines.all():
+    try:
+        rpc_manager.stop_rpc(m["name"])
+    except Exception as e:
+        print(f"[restart] stop_rpc {m.get('name')}: {e}")
+PYEOF
+fi
+
 # free web UI port - kills old python src/app.py without matching this script
 fuser -k 8199/tcp > /dev/null 2>&1 || echo "port 8199 free"
 sleep 1

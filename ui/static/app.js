@@ -264,23 +264,27 @@ async function loadUsageByModel(light = false) {
       }
       const cards = Object.entries(mods).sort((a, b) =>
         (b[1].total?.requests || 0) - (a[1].total?.requests || 0));
-      // same count → patch values in place; count change → full rebuild
+      // same count → patch by MODEL ID (not DOM index: sort order can
+      // change between polls, which used to write model A's values into
+      // model B's card). Count/identity change → full rebuild.
       if (cards.length === grid.children.length) {
         const maxH = Math.max(0.01, ...cards.map(([, x]) =>
           x.total?.hours || 0)) * 1.15;
-        cards.forEach(([m, d], i) => {
-          const card = grid.children[i];
+        let ok = true;
+        for (const [m, d] of cards) {
+          const card = grid.querySelector(
+            `[data-model="${CSS.escape(m)}"]`);
+          if (!card) { ok = false; break; }
           const hours = d.total?.hours || 0;
           const sub = card.querySelectorAll(".hint")[0];
-          if (sub) sub.innerHTML =
-            `${d.total?.requests||0} req · ${_fmtTok(d.total?.tok_out||0)} out · ${_fmtTok(d.total?.tok_in||0)} in${d.avg_spd ? ` · <b>${d.avg_spd} tok/s</b>` : ""}${d.total?.errors ? ` · <span style="color:var(--warn)">${d.total.errors} err</span>` : ""}`;
-          const val = card.querySelector("text.gauge-val");
-          if (val && _gaugePatch(card, hours, maxH, _fmtHours)) {
-            const nameEl = card.firstElementChild;
-            if (nameEl) nameEl.title = m;
+          if (sub) sub.innerHTML = _ubmSub(d);
+          if (!_gaugePatch(card, hours, maxH, _fmtHours, "total")) {
+            ok = false; break;
           }
-        });
-        return;
+          const nameEl = card.firstElementChild;
+          if (nameEl) nameEl.title = m;
+        }
+        if (ok) return;
       }
     } catch (err) { /* fall through to full render */ }
   }
@@ -298,20 +302,31 @@ async function loadUsageByModel(light = false) {
       host.innerHTML = '<div class="card gauge-card accent"><span class="hint">no usage recorded yet — every model you use through the gateway gets a card here</span></div>';
       return;
     }
+    const maxH = Math.max(0.01, ...cards.map(([, x]) =>
+      x.total?.hours || 0)) * 1.15;
     host.innerHTML = `<div class="launch-grid" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:var(--s-3); align-items:stretch">` +
       cards.map(([m, d]) => {
         const t = d.total || {};
         const hours = t.hours || 0;
-        const maxH = Math.max(0.01, ...cards.map(([, x]) => x.total?.hours || 0)) * 1.15;
-        return `<div class="card gauge-card accent" style="display:flex; flex-direction:column; align-items:center; justify-content:center; padding:8px 10px">
+        return `<div class="card gauge-card accent" data-model="${escHtml(m)}" style="display:flex; flex-direction:column; align-items:center; justify-content:center; padding:8px 10px">
           <div style="font-size:0.95em; font-weight:600; width:100%; text-align:center; overflow:hidden; text-overflow:ellipsis" title="${escHtml(m)}">${escHtml(m.length > 30 ? m.slice(0,29) + "…" : m)}</div>
-          ${_gaugeSkel(hours, maxH, "accent", _fmtHours, "compute time", "")}
-          <div class="hint" style="width:100%; text-align:center; margin-top:2px">${t.requests||0} req · ${_fmtTok(t.tok_out||0)} out · ${_fmtTok(t.tok_in||0)} in${d.avg_spd ? ` · <b>${d.avg_spd} tok/s</b>` : ""}${t.errors ? ` · <span style="color:var(--warn)">${t.errors} err</span>` : ""}</div>
+          ${_gaugeSkel(hours, maxH, "accent", _fmtHours, "compute time", "", "total")}
+          <div class="hint" style="width:100%; text-align:center; margin-top:2px">${_ubmSub(d)}</div>
         </div>`;
       }).join("") + `</div>`;
   } catch (err) {
     host.textContent = "by-model failed: " + err.message;
   }
+}
+
+function _ubmSub(d) {
+  const t = d.total || {};
+  const spd = d.avg_spd
+    ? ` · <b>${d.avg_spd} tok/s avg</b>${d.peak_spd ? ` · peak ${d.peak_spd} tok/s` : ""}`
+    : (d.peak_spd ? ` · peak ${d.peak_spd} tok/s` : "");
+  return `${t.requests||0} req · ${_fmtTok(t.tok_out||0)} out · ` +
+    `${_fmtTok(t.tok_in||0)} in${spd}` +
+    `${t.errors ? ` · <span style="color:var(--warn)">${t.errors} err</span>` : ""}`;
 }
 
 function _userRefreshVisible() {
@@ -335,15 +350,22 @@ function _userRefreshVisible() {
    maintainable each renderer owns its light path: same data, then
    patch values via data-field hooks. Gauge cards carry data-field
    markers on the value text/arc/peak/sub nodes. */
-function _gaugePatch(card, value, max, fmt) {
+function _gaugePatch(card, value, max, fmt, note) {
   const svg = card.querySelector("svg");
   if (!svg) return false;
   // value text (3rd text node class gauge-val)
   const val = svg.querySelector("text.gauge-val");
   if (val) val.textContent = fmt(value ?? 0);
-  // arc path = 2nd path (track first)
+  // arc path = 2nd path (track first). A gauge first rendered at value 0
+  // has ONLY the track path — create the value path on the first nonzero
+  // patch, or fresh usage would never draw an arc until a full rebuild.
   const paths = svg.querySelectorAll("path");
-  if (paths.length === 2) {
+  let arcPath = paths[1];
+  if (!arcPath && paths[0]) {
+    arcPath = paths[0].cloneNode(false);
+    paths[0].parentNode.insertBefore(arcPath, paths[0].nextSibling);
+  }
+  if (arcPath) {
     const frac = Math.max(0, Math.min(1, value / Math.max(max, 1e-9)));
     // recompute d for the 270° sweep
     const W = 300, H = 175, cx = W/2, cy = H*0.78, R = 105;
@@ -353,14 +375,22 @@ function _gaugePatch(card, value, max, fmt) {
     const large = (r1 - a0) > Math.PI ? 1 : 0;
     const x0 = cx + R * Math.cos(a0), y0 = cy + R * Math.sin(a0);
     if (frac <= 0) {
-      paths[1].setAttribute("opacity", "0");
+      arcPath.setAttribute("opacity", "0");
     } else {
-      paths[1].setAttribute("opacity", "0.95");
-      paths[1].setAttribute("d", `M ${x0.toFixed(1)} ${y0.toFixed(1)} A ${R} ${R} 0 ${large} 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`);
+      arcPath.setAttribute("opacity", "0.95");
+      arcPath.setAttribute("d", `M ${x0.toFixed(1)} ${y0.toFixed(1)} A ${R} ${R} 0 ${large} 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`);
     }
   }
-  const peak = [...svg.querySelectorAll("text")].find(t => t.textContent.startsWith("peak"));
-  if (peak) peak.textContent = `peak ${fmt(max)}`;
+  let noteEl = svg.querySelector("text.gauge-note");
+  if (!noteEl) noteEl = [...svg.querySelectorAll("text")].find(
+    t => t.textContent.startsWith("peak"));
+  if (noteEl) {
+    let noteText;
+    if (note === undefined) noteText = `peak ${fmt(max)}`;
+    else if (note === null) noteText = "";
+    else noteText = typeof note === "function" ? note(max) : String(note);
+    noteEl.textContent = noteText;
+  }
   return true;
 }
 
@@ -9502,7 +9532,7 @@ function _uc_sub(el, text) {
    value arc relative to max, big center value, unit sub, peak note.
    `color` = css-Class suffix (accent|ok|ribbon|warn): arcs/texts use
    currentColor; theme re-skin is automatic on change. */
-function _gaugeSkel(value, max, color, fmt, unit, label) {
+function _gaugeSkel(value, max, color, fmt, unit, label, note) {
   const W = 300, H = 175, cx = W/2, cy = H*0.78, R = 105;
   const a0 = Math.PI * 0.75, a1 = Math.PI * 2.25;
   const frac = Math.max(0, Math.min(1, max > 0 ? value / max : 0));
@@ -9514,43 +9544,54 @@ function _gaugeSkel(value, max, color, fmt, unit, label) {
     return `<path d="M ${x0.toFixed(1)} ${y0.toFixed(1)} A ${R} ${R} 0 ${large} 1 ${x1.toFixed(1)} ${y1.toFixed(1)}" fill="none" stroke-width="${wdt}" stroke-linecap="round" opacity="${op}"/>`;
   };
   const v = Math.max(0, value || 0);
+  let noteText;
+  if (note === undefined) noteText = `peak ${fmt(max)}`;
+  else if (note === null) noteText = "";
+  else noteText = typeof note === "function" ? note(max) : String(note);
   return `<span class="gauge-wrap gauge-${color}" style="display:contents">
     <svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto">
       ${arc(0, 1, 14, 1)}
       ${frac > 0 ? arc(0, frac, 14, 0.95) : ""}
       <text class="gauge-val" x="${cx}" y="${cy - 34}" font-size="30" font-weight="700" text-anchor="middle">${escHtml(fmt(v))}</text>
       <text x="${cx}" y="${cy - 15}" font-size="10.5" text-anchor="middle" fill="var(--muted)">${escHtml(unit || label || "")}</text>
-      <text x="${cx}" y="${cy + 14}" font-size="9.5" text-anchor="middle" fill="var(--muted)">peak ${escHtml(fmt(max))}</text>
+      <text class="gauge-note" x="${cx}" y="${cy + 14}" font-size="9.5" text-anchor="middle" fill="var(--muted)">${escHtml(noteText)}</text>
     </svg></span>`;
 }
 
-function renderDecodeSpeedByModel(r, speed) {
-  /* per-model dials: one gauge card per model, arc vs fastest×1.15;
-     fastest = accent badge; all colors inherit the theme (accent). */
+function renderDecodeSpeedByModel(r, speed, peaks) {
+  /* per-model dials: value = that model's average decode tok/s, peak =
+     that model's own highest exact single-request rate. Never share one
+     model's scale across the grid (that made every card show the same
+     "peak"). fastest = highest average; colors inherit the theme. */
   const box = $("#user-dspeed");
   const sub = $("#udsp-sub");
   if (!box) return;
+  const peakMap = peaks || {};
   const entries = Object.entries(speed || {}).
     filter(([m, v]) => v && v > 0 && Number.isFinite(v)).
     sort((a, b) => b[1] - a[1]);
   if (sub) sub.textContent = entries.length
-    ? `${entries[0][0]} fastest · ${entries[0][1]} tok/s · ${entries.length} model(s)`
+    ? `${entries[0][0]} fastest avg · ${entries[0][1]} tok/s · ${entries.length} model(s)`
     : "";
   if (!entries.length) {
     box.innerHTML = '<div class="card gauge-card accent" style="display:flex; align-items:center; justify-content:center"><span class="hint">no decode volume yet — chat a decoder model through the gateway; decision models (laya) emit no completion tokens</span></div>';
     return;
   }
-  const max = Math.max(...entries.map(e => e[1])) * 1.15;
   box.innerHTML =
-    entries.map(([m, v], idx) => `
+    entries.map(([m, v], idx) => {
+      const p = Number(peakMap[m]);
+      const peak = (Number.isFinite(p) && p > 0) ? p : v;
+      const gaugeMax = Math.max(peak, v, 0.1);
+      return `
     <div class="card gauge-card accent" style="display:flex; flex-direction:column;
       align-items:center; justify-content:center;">
       <div style="font-size:0.95em; font-weight:600; width:100%; text-align:center;
         overflow:hidden; text-overflow:ellipsis" title="${escHtml(m)}">
         ${escHtml(m.length > 30 ? m.slice(0,29) + "…" : m)}${idx === 0 ? ' <span class="badge" style="background:var(--accent-dim);color:var(--accent)">fastest</span>' : ""}
       </div>
-      ${_gaugeSkel(v, max, "accent", x => x.toFixed(1), "tok/s", "")}
-    </div>`).join("");
+      ${_gaugeSkel(v, gaugeMax, "accent", x => x.toFixed(1), "tok/s", "")}
+    </div>`;
+    }).join("");
 }
 
 function _fmtTok(n) {
@@ -9697,7 +9738,7 @@ async function loadUsageTotals(light = false) {
       const t = r.total || {};
       let peakDay = {requests: 1, tok_out: 1, tok_in: 1, wall_s: 1, days: 1};
       try {
-        const dr = await api("GET", "/api/usage?period=day&count=90");
+        const dr = await api("GET", "/api/usage?period=day&count=60");
         const buckets = (dr.buckets || []);
         const pk = (k) => Math.max(1, ...buckets.map(b => b[k] || 0));
         peakDay = {requests: pk("requests"), tok_out: pk("tok_out"),
@@ -9708,15 +9749,18 @@ async function loadUsageTotals(light = false) {
       const spd = r.avg_tok_per_s || 0;
       const cards = pane.querySelectorAll(".gauge-card");
       const specs = [
-        [t.requests || 0, peakDay.requests * 1.15, _fmtTok],
-        [t.tok_out || 0, peakDay.tok_out * 1.15, _fmtTok],
-        [t.tok_in || 0, peakDay.tok_in * 1.15, _fmtTok],
-        [t.hours || 0, (peakDay.wall_s / 3600) * (peakDay.days || 1) || (t.hours || 0.01), _fmtHours],
-        [spd, Math.max(spd * 1.15, 1), v => v.toFixed(1)],
+        [t.requests || 0, peakDay.requests, _fmtTok,
+         `peak day ${_fmtTok(peakDay.requests)}`],
+        [t.tok_out || 0, peakDay.tok_out, _fmtTok,
+         `peak day ${_fmtTok(peakDay.tok_out)}`],
+        [t.tok_in || 0, peakDay.tok_in, _fmtTok,
+         `peak day ${_fmtTok(peakDay.tok_in)}`],
+        [t.hours || 0, (peakDay.wall_s / 3600) * (peakDay.days || 1) || (t.hours || 0.01), _fmtHours, "total"],
+        [spd, Math.max(r.peak_tok_per_s || spd, spd, 1), v => v.toFixed(1), undefined],
       ];
       cards.forEach((c, i) => {
-        const [v, m, f] = specs[i] || [];
-        if (v !== undefined) _gaugePatch(c, v, m, f);
+        const [v, m, f, note] = specs[i] || [];
+        if (v !== undefined) _gaugePatch(c, v, m, f, note);
       });
       return;
     } catch (err) { /* fall through to full render */ }
@@ -9726,7 +9770,7 @@ async function loadUsageTotals(light = false) {
     const t = r.total || {};
     let peakDay = {requests: 1, tok_out: 1, tok_in: 1};
     try {
-      const dr = await api("GET", "/api/usage?period=day&count=90");
+      const dr = await api("GET", "/api/usage?period=day&count=60");
       const buckets = (dr.buckets || []);
       const pk = (k) => Math.max(1, ...buckets.map(b => b[k] || 0));
       peakDay = {requests: pk("requests"), tok_out: pk("tok_out"),
@@ -9734,21 +9778,24 @@ async function loadUsageTotals(light = false) {
                  wall_s: Math.max(1, ...buckets.map(b => b.wall_s || 0)),
                  days: buckets.filter(b => (b.requests||0) > 0).length || 1};
     } catch (_) {}
-    const G = (value, max, cls, fmt, unit) => `
+    const G = (value, max, cls, fmt, unit, note) => `
       <div class="card gauge-card ${cls}">
-        ${_gaugeSkel(value, Math.max(max, 1e-6), cls, fmt, unit, "")}
+        ${_gaugeSkel(value, Math.max(max, 1e-6), cls, fmt, unit, "", note)}
       </div>`;
     const spd = r.avg_tok_per_s || 0;
     box.innerHTML =
-      G(t.requests || 0, peakDay.requests * 1.15, "accent",
-        v => _fmtTok(v), "requests all-time") +
-      G(t.tok_out || 0, peakDay.tok_out * 1.15, "accent",
-        _fmtTok, "tokens out") +
-      G(t.tok_in || 0, peakDay.tok_in * 1.15, "accent", _fmtTok, "tokens in") +
+      G(t.requests || 0, peakDay.requests, "accent",
+        v => _fmtTok(v), "requests all-time",
+        `peak day ${_fmtTok(peakDay.requests)}`) +
+      G(t.tok_out || 0, peakDay.tok_out, "accent",
+        _fmtTok, "tokens out", `peak day ${_fmtTok(peakDay.tok_out)}`) +
+      G(t.tok_in || 0, peakDay.tok_in, "accent", _fmtTok, "tokens in",
+        `peak day ${_fmtTok(peakDay.tok_in)}`) +
       G(t.hours || 0,
         (peakDay.wall_s / 3600) * (peakDay.days || 1) || (t.hours || 0.01),
-        "accent", _fmtHours, "compute time") +
-      G(spd, Math.max(spd * 1.15, 1), "accent", v => v.toFixed(1), "tok/s avg");
+        "accent", _fmtHours, "compute time", "total") +
+      G(spd, Math.max(r.peak_tok_per_s || spd, spd, 1), "accent",
+        v => v.toFixed(1), "tok/s avg");
     // per-model bar rows removed from this pane (decode speed pane owns per-model detail)
     if (per) per.innerHTML = "";
   } catch (err) {
@@ -9786,23 +9833,27 @@ async function loadUsageSeries(period, light = false) {
     const avgLat = buckets.reduce((a, b) =>
       a + ((b.requests) ? (b._avglat || 0) * b.requests : 0), 0) /
       Math.max(1, reqs);
-    const latRef = Math.max(0.5, Math.max(...buckets.map(b => b._avglat || 0)));
+    const peakLat = Math.max(...buckets.map(b => b._avglat || 0));
+    const latRef = Math.max(0.5, peakLat);
     const wallSum = buckets.reduce((a, b) => a + (b.wall_s || 0), 0);
     const tokSum = sum("tok_out");
     const errPct = reqs ? 100 * sum("errors") / reqs : 0;
     // (selector, cardClass, value, ref, fmt, unitLabel)
+    const peakReqs = peakOf("requests");
+    const peakTok = tokSum > 0 ? peakOf("tok_out") : peakOf("tok_in");
     const specs = [
-      ["#uc-requests", "accent", reqs, peakOf("requests") * 1.15,
-       v => _fmtTok(v), "requests"],
-      ["#uc-latency", "accent", avgLat, latRef, v => v.toFixed(1), "s / request"],
+      ["#uc-requests", "accent", reqs, peakReqs,
+       v => _fmtTok(v), "requests", `peak ${_fmtTok(peakReqs)}`],
+      ["#uc-latency", "accent", avgLat, latRef, v => v.toFixed(1), "s / request",
+       `peak ${peakLat.toFixed(1)}s`],
       ["#uc-tokens", "accent",
-       tokSum > 0 ? tokSum : sum("tok_in"),
-       tokSum > 0 ? peakOf("tok_out") * 1.15 : peakOf("tok_in") * 1.15,
-       _fmtTok, tokSum > 0 ? "tokens out" : "tokens in (no decode yet)"],
+       tokSum > 0 ? tokSum : sum("tok_in"), peakTok,
+       _fmtTok, tokSum > 0 ? "tokens out" : "tokens in (no decode yet)",
+       `peak ${_fmtTok(peakTok)}`],
       ["#uc-errors", "accent", errPct, Math.max(20, errPct * 1.5),
-       v => v.toFixed(1) + "%", "of requests failed"],
+       v => v.toFixed(1) + "%", "of requests failed", "rate"],
     ];
-    for (const [sel, cls, v, m, f, lbl] of specs) {
+    for (const [sel, cls, v, m, f, lbl, note] of specs) {
       const e = $(sel);
       if (!e) continue;
       const card = e.closest(".card");
@@ -9815,10 +9866,10 @@ async function loadUsageSeries(period, light = false) {
         const flip = sel === "#uc-tokens" &&
           ((wantsLbl.startsWith("tokens out") && !nowLbl.startsWith("tokens out")) ||
            (wantsLbl.startsWith("tokens in") && !nowLbl.startsWith("tokens")));
-        if (flip) e.innerHTML = _gaugeSkel(v, m, cls, f, lbl, "");
-        else _gaugePatch(card, v, m, f);
+        if (flip) e.innerHTML = _gaugeSkel(v, m, cls, f, lbl, "", note);
+        else _gaugePatch(card, v, m, f, note);
       } else {
-        e.innerHTML = _gaugeSkel(v, m, cls, f, lbl, "");
+        e.innerHTML = _gaugeSkel(v, m, cls, f, lbl, "", note);
       }
     }
     _uc_sub("#uc-requests-sub", `${reqs} total`);
@@ -9836,7 +9887,8 @@ async function loadUsageSeries(period, light = false) {
 async function loadDecodeSpeed() {
   try {
     const r = await api("GET", "/api/usage?period=all");
-    renderDecodeSpeedByModel(r, r.tok_out_per_s || {});
+    renderDecodeSpeedByModel(r, r.tok_out_per_s || {},
+                             r.tok_out_peak_per_s || {});
   } catch (err) {
     const box = $("#user-dspeed");
     if (box) box.textContent = "speed data failed: " + err.message;
