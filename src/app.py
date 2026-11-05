@@ -2412,6 +2412,224 @@ def _parse_sched_line(line):
             "cause": cause, "srcs": srcs}
 
 
+# Common model-load failures seen in llama.cpp / llama-swap upstream logs.
+# Order matters: the most specific cause wins (OOM before the MTP-context
+# error it caused, missing file before the generic loader error).
+_LOAD_FAULT_RULES = (
+    ("oom", re.compile(
+        r"cudaMalloc failed|CUDA error: out of memory|out of memory|"
+        r"failed to allocate .*buffer|failed to allocate .*buffers|"
+        r"compute buffer allocation failed|failed to allocate CUDA",
+        re.IGNORECASE),
+     "CUDA out of memory. Lower ubatch/context, disable MTP, or free VRAM and retry."),
+    ("port", re.compile(
+        r"address already in use|failed to bind|couldn't bind|"
+        r"port .* is held by another process",
+        re.IGNORECASE),
+     "Port already in use. Stop the stale server or let the farm roll the port."),
+    ("missing_model", re.compile(
+        r"failed to open GGUF file|No such file or directory|"
+        r"failed to load model from|model file not found|"
+        r"failed to load model .*not found",
+        re.IGNORECASE),
+     "Model file is missing or unreadable at the configured store path."),
+    ("mtp", re.compile(
+        r"failed to create MTP context|doesn't contain MTP layers|"
+        r"MTP context|failed to load MTP|failed to create MTP",
+        re.IGNORECASE),
+     "MTP/speculative context failed. Disable MTP or use a model with MTP layers."),
+    ("mmproj", re.compile(
+        r"failed to load.*mmproj|mmproj.*(?:fail|error)|"
+        r"failed to load.*projector|projector.*(?:fail|error)|"
+        r"vision.*(?:fail|error)|clip.*(?:fail|error)",
+        re.IGNORECASE),
+     "Vision projector (mmproj) failed to load or does not match the model."),
+    ("load_error", re.compile(
+        r"failed to load model|error loading model|"
+        r"exiting due to model loading error",
+        re.IGNORECASE),
+     "Model failed to load. See Logs for the exact upstream error."),
+)
+
+_WRAPPER_GEN_RE = re.compile(r">>> wrapper-gen:\s*(\S+)")
+_LOAD_MODEL_RE = re.compile(r"load_model: loading model '([^']+)'")
+_START_FAIL_RE = re.compile(r"starting\s+(.+?)\s+failed:\s*(.*)")
+
+
+def _parse_load_fault(line):
+    """Return (code, human_reason) for a recognizable load failure, else None."""
+    for code, rx, reason in _LOAD_FAULT_RULES:
+        if rx.search(line or ""):
+            return code, reason
+    return None
+
+
+def _load_model_map():
+    """Cheap basename -> model_id map (YAML only; no GGUF header reads)."""
+    import yaml as _yaml
+    out = {}
+    try:
+        names = os.listdir(cfg.MODELS_DIR)
+    except Exception:
+        return out
+    for fn in names:
+        if not fn.endswith(".yaml") or "__tune_tmp" in fn or "__ab_single" in fn:
+            continue
+        try:
+            with open(os.path.join(cfg.MODELS_DIR, fn), "r",
+                      encoding="utf-8") as f:
+                d = _yaml.safe_load(f) or {}
+        except Exception:
+            continue
+        bp = os.path.basename(str(d.get("base_path") or ""))
+        if bp:
+            out[bp] = d.get("model_id") or fn[:-5]
+    return out
+
+
+def _resolve_fault_model(raw, mmap):
+    raw = str(raw or "").strip().strip("'\"")
+    if not raw:
+        return ""
+    return mmap.get(os.path.basename(raw), raw)
+
+
+@app.websocket("/ws/swap/faults")
+async def swap_faults_ws(websocket: WebSocket):
+    """Persistent top-right load-failure notices.
+
+    Tails llama-swap's proxy+upstream log streams, recognizes the common
+    llama.cpp/llama-swap startup failures (OOM, port, missing model, MTP,
+    mmproj, generic load errors), and emits ONE structured event per model
+    per short cooldown. The browser renders it as a sticky notice until the
+    user dismisses it. History replay is primed away (~1.5 s)."""
+    import httpx, asyncio
+    await websocket.accept()
+    st = swap_manager.status()
+    if not st.get("running"):
+        await websocket.close()
+        return
+    gate_open = access.gate_open()
+    allow = access.view_allow()
+    if not gate_open and allow is None:
+        await websocket.close(code=1008)
+        return
+    host = st.get("host_ip") or "127.0.0.1"
+    port = st.get("port") or 8080
+    urls = {
+        "proxy": f"http://{host}:{port}/logs/stream/proxy",
+        "upstream": f"http://{host}:{port}/logs/stream/upstream",
+    }
+    mmap = _load_model_map()
+    priming_until = time.time() + 1.5
+    state = {"model": "", "last_emit": {}, "specific": {}, "last_code": {}}
+    dead = asyncio.Event()
+
+    def _allowed(model):
+        if gate_open or allow is None:
+            return True
+        if not model:
+            return False
+        from swap_gateway import _mid_allowed
+        return (_mid_allowed(model, allow)
+                or _mid_allowed(model.split("--")[0], allow))
+
+    async def _emit(model, code, reason, detail):
+        if not _allowed(model):
+            return
+        now = time.time()
+        key = model or "?"
+        prev_code = state["last_code"].get(key)
+        # a specific cause always overrides a generic "exited prematurely"
+        override = (code != "generic" and prev_code == "generic")
+        if not override and now - state["last_emit"].get(key, 0) < 6:
+            return
+        state["last_emit"][key] = now
+        state["last_code"][key] = code
+        if code != "generic":
+            state["specific"][key] = now
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "load_failure",
+                "model": model,
+                "code": code,
+                "reason": reason,
+                "detail": (detail or "").strip()[:600],
+                "ts": now,
+            }))
+        except Exception:
+            dead.set()
+
+    async def tail(kind, url):
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream("GET", url) as resp:
+                    async for line in resp.aiter_lines():
+                        if dead.is_set():
+                            return
+                        if not line:
+                            continue
+                        # model attribution hints (both streams)
+                        m = (_WRAPPER_GEN_RE.search(line)
+                             or _LOAD_MODEL_RE.search(line)
+                             or _VLLM_MODEL_TAG_RE.search(line))
+                        if m:
+                            state["model"] = _resolve_fault_model(
+                                m.group(1), mmap)
+                        if time.time() < priming_until:
+                            continue
+                        # llama-swap's own "starting <model> failed" line
+                        sm = _START_FAIL_RE.search(line)
+                        if sm:
+                            model = _resolve_fault_model(sm.group(1), mmap)
+                            key = model or "?"
+                            now = time.time()
+                            if now - state["specific"].get(key, 0) >= 120:
+                                await _emit(
+                                    model, "generic",
+                                    "Model failed to load (upstream exited prematurely).",
+                                    sm.group(2) or line)
+                            continue
+                        fault = _parse_load_fault(line)
+                        if fault:
+                            code, reason = fault
+                            await _emit(state["model"], code, reason, line)
+                            if dead.is_set():
+                                return
+        except Exception:
+            pass
+
+    async def watch_client():
+        while not dead.is_set():
+            try:
+                msg = await asyncio.wait_for(websocket.receive(), timeout=10)
+                if msg.get("type") == "websocket.disconnect":
+                    dead.set()
+                    return
+            except asyncio.TimeoutError:
+                continue
+            except Exception:
+                dead.set()
+                return
+
+    tasks = [asyncio.create_task(tail("proxy", urls["proxy"])),
+             asyncio.create_task(tail("upstream", urls["upstream"])),
+             asyncio.create_task(watch_client())]
+    try:
+        _done, pending = await asyncio.wait(
+            tasks, return_when=asyncio.FIRST_COMPLETED)
+        for t in pending:
+            t.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+    except Exception:
+        for t in tasks:
+            t.cancel()
+    try:
+        await websocket.close()
+    except Exception:
+        pass
+
+
 def _parse_upstream_line(line):
     """Extract a flow event from one upstream log line.
 
