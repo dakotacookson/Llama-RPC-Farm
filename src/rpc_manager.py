@@ -1391,6 +1391,11 @@ def build_llama_command(model_cfg, servers, master_name=None):
     target_os = master.get("os", "linux")
     model_path = path_resolver.resolve_for(
         model_cfg.get("base_path") or model_cfg.get("path", ""), target_os)
+    # Bash does not expand `~` inside quotes; emit `$HOME/...` so the
+    # quoted model path resolves on POSIX masters (observed: literal
+    # `~/GGUF_models/...` caused "No such file or directory").
+    if model_path.startswith("~/") and target_os != "windows":
+        model_path = "$HOME/" + model_path[2:]
     # binary: machine override wins, else global settings default (see _effective_bin_dir),
     # else per-model bin. This keeps heterogeneous clusters (linux + windows) correct:
     # set Settings as default, override per-machine when its path differs.
@@ -1456,9 +1461,17 @@ def build_llama_command(model_cfg, servers, master_name=None):
     skip_keys = ("host", "port")
     if split_mode == "fit":
         skip_keys += ("n-gpu-layers", "n_gpu_layers", "ngl")
+    # Normalize legacy/short GPU-layer keys: `ngl` must emit `-ngl`, not
+    # the invalid long form `--ngl` (observed: "invalid argument: --ngl").
+    flag_aliases = {
+        "ngl": "-ngl",
+        "n_gpu_layers": "-ngl",
+        "n-gpu-layers": "-ngl",
+    }
     for key, value in flags.items():
         if key in skip_keys:
             continue
+        key = flag_aliases.get(key.lstrip("-"), key)
         if isinstance(value, str) and value == "":
             continue
         flag = key if key.startswith("-") else f"--{key}"
@@ -3176,8 +3189,16 @@ def launch_model(model_id, servers, port=8080, variant=None, master_name=None,
         # fit mode lets llama.cpp's own fitter distribute layers across
         # this box's GPUs by ACTUAL free memory — better than any static
         # tensor-split computed for a multi-box RPC chain.
-        model["tensor_split_mode"] = "fit"
-        model["tensor_split"] = ""
+        # BUT: fit mode breaks on Metal (single device MTL0) — skip fit
+        # when there's only one Metal device, use auto mode with -ngl instead.
+        is_metal_single = len(gpus) == 1 and gpus[0] in ("Metal", "MTL0")
+        if not is_metal_single:
+            model["tensor_split_mode"] = "fit"
+            model["tensor_split"] = ""
+        else:
+            # For Metal single device, ensure auto mode (no --fit)
+            model["tensor_split_mode"] = "auto"
+            model["tensor_split"] = ""
         peers = []
     report = {"model_id": model_id, "steps": [], "port": port}
     steps = [(f"stop:{master['name']}", stop_rpc, master["name"])]

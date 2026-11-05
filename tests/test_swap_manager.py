@@ -755,9 +755,21 @@ def _run_wrapper_with_mock_ssh(script_text, tmp_path):
     env = dict(_os.environ, PATH=f"{fakebin}{_os.pathsep}{_os.environ['PATH']}",
                SSH_PASS="x")
     # reuse path loops `sleep 5` forever: 124 == still alive in it.
-    r = _sp.run(["timeout", "8", "bash", str(sh)], capture_output=True,
-                text=True, env=env, timeout=30)
-    return r
+    # Python-managed timeout avoids relying on GNU coreutils `timeout`,
+    # which macOS does not provide by default.
+    try:
+        return _sp.run(["bash", str(sh)], capture_output=True,
+                       text=True, env=env, timeout=8)
+    except _sp.TimeoutExpired as e:
+        stdout = e.stdout or ""
+        stderr = e.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode(errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+        return types.SimpleNamespace(returncode=124,
+                                     stdout=stdout,
+                                     stderr=stderr)
 
 
 def test_windows_wrapper_reuse_probe_survives_set_u(monkeypatch, tmp_path):
@@ -849,8 +861,13 @@ def test_windows_wrapper_ps1_run_uses_double_quoted_file(monkeypatch,
     sshlog = tmp_path / "ssh.log"
     env = dict(_os.environ, PATH=f"{fakebin}{_os.pathsep}{_os.environ['PATH']}",
                SSH_PASS="x", SSH_LOG=str(sshlog))
-    r = _sp.run(["timeout", "20", "bash", str(sh)], capture_output=True,
-                text=True, env=env, timeout=40)
+    try:
+        r = _sp.run(["bash", str(sh)], capture_output=True,
+                    text=True, env=env, timeout=20)
+    except _sp.TimeoutExpired as e:
+        r = types.SimpleNamespace(returncode=124,
+                                  stdout=e.stdout or "",
+                                  stderr=e.stderr or "")
     assert "unbound variable" not in r.stderr
     runs = sshlog.read_text(encoding="utf-8")
     assert "ExecutionPolicy Bypass -File" in runs
