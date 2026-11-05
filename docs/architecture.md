@@ -38,6 +38,7 @@ A single FastAPI process (`src/app.py`) that:
 | `hf_browse.py` / `hf_downloader.py` | Hugging Face GGUF search/collections + download jobs (single + shard fan-out), proxied through the app. |
 | `secrets_vault.py` | Fernet vault in git-ignored `.env` (`FARM_SECRET_KEY`, `FARM_SALT`, `HF_TOKEN_ENC`, `MACHINE_<ID>_PASSWORD_ENC`, mode 0600); passwords/HF token decrypted only at point of use, never written back to YAML or sent to the browser (`password_set` / `hf_token_set` flags only). SHA-256+salt `hash_password`/`verify_password` for one-way fingerprints. |
 | `steps.py` | Shared step-runner for launch reports (used by both single-model launch and swap launch). |
+| `reaper.py` | Conservative orphan `ggml-rpc-server` reaper: protects loaded/loading models, active `--rpc` endpoints, and young processes; kills only per-port orphans. |
 
 ## Two clusters of ownership (don't blur them)
 

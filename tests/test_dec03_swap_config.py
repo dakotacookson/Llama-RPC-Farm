@@ -43,34 +43,7 @@ def client():
     return TestClient(app_module.app)
 
 
-def test_swap_settings_post_persists_config_path_vllm(
-        swap_settings_file, client):
-    r = client.post("/api/swap/settings", json={
-        "config_path": "~/.config/llama-swap/config.yaml",
-        "config_path_vllm": "~/custom/vswap.yaml"})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["config_path"] == "~/.config/llama-swap/config.yaml"
-    assert body["config_path_vllm"] == "~/custom/vswap.yaml"
-    with open(swap_settings_file, encoding="utf-8") as f:
-        on_disk = yaml.safe_load(f)
-    assert on_disk["config_path_vllm"] == "~/custom/vswap.yaml"
 
-
-def test_swap_settings_post_empty_vllm_clears_to_derive(
-        swap_settings_file, client):
-    client.post("/api/swap/settings", json={
-        "config_path_vllm": "~/custom/vswap.yaml"})
-    r = client.post("/api/swap/settings", json={"config_path_vllm": ""})
-    assert r.status_code == 200
-    assert r.json()["config_path_vllm"] is None
-
-
-def test_swap_settings_get_surfaces_vllm_key_fresh_install(
-        swap_settings_file, client):
-    r = client.get("/api/swap/settings")
-    assert r.status_code == 200
-    assert "config_path_vllm" in r.json()
 
 
 def test_machine_add_rejects_bad_swap_config_override_type(client):

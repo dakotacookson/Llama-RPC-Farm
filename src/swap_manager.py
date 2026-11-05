@@ -750,6 +750,68 @@ exit 1
 """
 
 
+def _rpc_cmdstop(model_cfg, peers):
+    """Explicit stop command for a script-mode RPC deployment.
+
+    The generated start script has an EXIT trap that stops peers it started,
+    but a hard kill / daemon shutdown can bypass it. This cmdStop kills only
+    THIS model's per-(peer, group) rpc-server ports (the same ports
+    build_llama_command puts in --rpc) and clears their state files. Other
+    co-served models use different hashed ports and are untouched.
+    """
+    if not peers:
+        return None
+    try:
+        ports = rpc_manager._model_rpc_ports(model_cfg, peers)
+    except Exception:
+        return None
+    raw_order = model_cfg.get("device_order") or ""
+    cmds = []
+    for p in peers:
+        ip = (p.get("ip") or "").strip()
+        if not ip:
+            continue
+        user = p.get("username") or "root"
+        is_win = p.get("os", "linux") == "windows"
+        try:
+            groups = rpc_manager._peer_server_groups(raw_order, p)
+        except Exception:
+            continue
+        for gname, _devs in groups:
+            port = ports.get((p.get("name"), gname))
+            if not port:
+                continue
+            if is_win:
+                ps = (
+                    "Get-CimInstance Win32_Process | Where-Object { "
+                    "(' ' + $_.CommandLine + ' ') -like '*-p " + str(port)
+                    + " *' -and $_.Name -like 'ggml-rpc-server*' } | "
+                    "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; "
+                    "Remove-Item $env:USERPROFILE/.cache/llama-wrapper/rpc.state."
+                    + str(port) + ", $env:TEMP/llama-wrapper-rpc.state."
+                    + str(port) + " -ErrorAction SilentlyContinue")
+                # escape PowerShell $vars for the local shell; keep inner
+                # quotes escaped for the remote powershell wrapper
+                ps_shell = ps.replace("$", "\\$")
+                cmds.append(
+                    'ssh -n -o StrictHostKeyChecking=no -o ConnectTimeout=5 '
+                    '-o BatchMode=yes ' + user + '@' + ip
+                    + ' "powershell -NoProfile -Command \\"'
+                    + ps_shell + '\\"" || true')
+            else:
+                remote = (
+                    'pkill -u ' + user + ' -f \\"ggml-[r]pc-server.*-p '
+                    + str(port) + ' \\" 2>/dev/null || true; '
+                    'rm -f \\$HOME/.cache/llama-wrapper/rpc.state.'
+                    + str(port)
+                    + ' /tmp/llama-wrapper-rpc.state.' + str(port))
+                cmds.append(
+                    'sshpass -p "$SSH_PASS" ssh -n '
+                    '-o StrictHostKeyChecking=no -o ConnectTimeout=5 '
+                    + user + '@' + ip + ' "' + remote + '" || true')
+    return " ; ".join(cmds) if cmds else None
+
+
 def launch_plan(config_path=None, host_name=None):
     """Build the llama-swap launch plan from all model configs.
 
@@ -844,7 +906,7 @@ def launch_plan(config_path=None, host_name=None):
         k, w = _swap_key(tmp, taken_set)
         return k, w
 
-    def _wrap_cmdstop(mid_for_key, cmdstop):
+    def _wrap_cmdstop(mid_for_key, cmdstop, force=False):
         """Make a cmdStop that needs $SSH_PASS actually receive it.
 
         llama-swap runs cmdStop in the DAEMON's environment, not inside the
@@ -856,7 +918,8 @@ def launch_plan(config_path=None, host_name=None):
         """
         if not cmdstop or host_os == "windows":
             return cmdstop
-        if "$SSH_PASS" not in cmdstop and "sshpass" not in cmdstop:
+        if (not force and "$SSH_PASS" not in cmdstop
+                and "sshpass" not in cmdstop):
             return cmdstop
         safe = "".join(c if c.isalnum() or c in "-_."
                        else "-" for c in str(mid_for_key or "model"))
@@ -1144,6 +1207,11 @@ def launch_plan(config_path=None, host_name=None):
             # harmlessly (source fails silently, they need no SSH).
             models[key] = {
                 "cmd": f"/bin/bash -c 'source \"{scripts_dir}/swap-secrets.env\" 2>/dev/null; exec /bin/bash \"{scripts_dir}/{script_name}\" \"${{PORT}}\"'"}
+            if peer_objs:
+                _rpc_stop = _rpc_cmdstop(deploy_model, peer_objs)
+                if _rpc_stop:
+                    models[key]["cmdStop"] = _wrap_cmdstop(
+                        mid_for_key, _rpc_stop, force=True)
         else:
             cmd = cmd.replace('"$PORT"', "${PORT}")
             if host_os == "windows":

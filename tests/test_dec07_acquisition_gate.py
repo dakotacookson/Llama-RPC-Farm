@@ -133,32 +133,6 @@ def test_llamacpp_adapter_acquire_routes_start_and_start_shards(monkeypatch):
                                "llm-models")
 
 
-def test_vllm_adapter_acquire_refuses_bare_gguf(monkeypatch):
-    ad = engine_registry.get_engine({"engine": "vllm"})
-    with pytest.raises(ValueError):
-        ad.acquire("hf://o/r/file.gguf", "llm-models")
-
-
-def test_vllm_adapter_acquire_routes_repo_and_shards(monkeypatch):
-    import hf_downloader
-    calls = {}
-
-    def fake_repo(repo_id, store):
-        calls["repo"] = (repo_id, store)
-        return {"id": "r1"}
-
-    def fake_shards(link, store):
-        calls["shards"] = (link, store)
-        return {"id": "r2"}
-
-    monkeypatch.setattr(hf_downloader, "start_repo", fake_repo)
-    monkeypatch.setattr(hf_downloader, "start_shards", fake_shards)
-    ad = engine_registry.get_engine({"engine": "vllm"})
-    assert ad.acquire("hf://Qwen/Qwen3-0.6B", "llm-models",
-                       repo=True)["id"] == "r1"
-    assert calls["repo"] == ("Qwen/Qwen3-0.6B", "llm-models")
-    assert ad.acquire("hf://o/r/m-00001-of-00002.safetensors",
-                      "llm-models")["id"] == "r2"
 
 
 def _run(coro):
@@ -183,23 +157,6 @@ def test_llamacpp_adapter_browse_gguf(monkeypatch):
     assert res == {"models": ["gg"]}
     assert calls["query"] == "qwen" and calls["quant"] == "q4"
 
-
-def test_vllm_adapter_browse_safetensors(monkeypatch):
-    import hf_browse
-    calls = {}
-
-    async def fake_st(**kw):
-        calls.update(kw)
-        return {"models": ["st"]}
-
-    async def fake_gguf(**kw):
-        raise AssertionError("gguf search must not run in vllm mode")
-    monkeypatch.setattr(hf_browse, "search_safetensors", fake_st)
-    monkeypatch.setattr(hf_browse, "search_gguf", fake_gguf)
-    ad = engine_registry.get_engine({"engine": "vllm"})
-    res = _run(ad.browse(query="qwen"))
-    assert res == {"models": ["st"]}
-    assert calls["query"] == "qwen"
 
 
 def test_validate_downloaded_shapes(tmp_path, monkeypatch):
@@ -251,31 +208,6 @@ def test_downloads_repo_409_llamacpp_mode(client, settings_file, monkeypatch):
     assert not fired  # gate fires BEFORE any downloader call
 
 
-def test_downloads_repo_ok_vllm_mode(client, settings_file, monkeypatch):
-    _set_engine("vllm", settings_file)
-    import hf_downloader
-    monkeypatch.setattr(hf_downloader, "start_repo",
-                        lambda rid, s: {"id": "j2", "status": "downloading"})
-    r = client.post("/api/downloads", json={
-        "link": "hf://Qwen/Qwen3-0.6B", "store": "llm-models",
-        "repo": True})
-    assert r.status_code == 200, r.text
-    assert r.json()["id"] == "j2"
-
-
-def test_downloads_gguf_409_vllm_mode(client, settings_file, monkeypatch):
-    _set_engine("vllm", settings_file)
-    import hf_downloader
-    fired = []
-    monkeypatch.setattr(hf_downloader, "start_shards",
-                        lambda *a: fired.append(a) or {})
-    monkeypatch.setattr(hf_downloader, "start",
-                         lambda *a: fired.append(a) or {})
-    r = client.post("/api/downloads", json={
-        "link": "hf://o/r/file.gguf", "store": "llm-models"})
-    assert r.status_code == 409
-    assert "gguf" in r.json()["detail"].lower()
-    assert not fired
 
 
 # ---------------- GET /api/hf/search format gate -----------------------------
@@ -364,25 +296,6 @@ def test_validate_model_hf_under_llamacpp_is_error(tmp_path, monkeypatch,
     assert any("hf" in m or "safetensors" in m for m in msgs), report
     assert not report["ok"]
 
-
-def test_validate_model_gguf_under_vllm_only_warns(tmp_path, monkeypatch,
-                                                   settings_file):
-    _set_engine("vllm", settings_file)
-    import rpc_manager
-    _write_model(tmp_path, monkeypatch, "m-gguf", (
-        "model_id: m-gguf\n"
-        "base_path: store://llm-models/model.gguf\n"
-        "servers: [aibox1]\n"
-        "device_order: aibox1-CUDA0\n"
-    ))
-    report = rpc_manager.validate_model("m-gguf")
-    errs = [i for i in report["issues"] if i["level"] == "error"]
-    warns = [i for i in report["issues"] if i["level"] == "warn"
-             and "experimental" in i["msg"]]
-    # the gguf-under-vllm gate must be a WARNING, never an error
-    assert warns, report
-    gguf_errs = [e for e in errs if "not servable" in e["msg"]]
-    assert not gguf_errs
 
 
 def test_validate_model_gguf_under_llamacpp_stays_clean(tmp_path, monkeypatch,

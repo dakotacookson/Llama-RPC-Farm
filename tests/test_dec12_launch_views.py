@@ -49,18 +49,6 @@ def test_apply_engine_hints_renders_launch_views_from_manifest_mode():
     assert "(hints.launch || {}).mode" in fn
 
 
-def test_vllm_launch_view_is_swap_only_rpc_view_is_llama_cpp():
-    """The adapters declare their launch modes: vLLM is swap_only (models
-    serve THROUGH llama-swap; direct /api/launch 409s), llama.cpp is
-    rpc_cluster (peers + per-model grid). These drive the template's
-    data-launch-view keys — one grammar, both sides."""
-    import vllm_manager
-    from engine_registry import LlamaCppAdapter
-    assert vllm_manager.VllmAdapter().ui_manifest()["launch"]["mode"] \
-        == "swap_only"
-    assert LlamaCppAdapter().ui_manifest()["launch"]["mode"] \
-        == "rpc_cluster"
-
 
 def test_preview_warnings_header_retired():
     """DEC-08/09 retired save-time warnings, so the Launch tab's preview

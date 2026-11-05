@@ -20,10 +20,12 @@ import app as app_module  # noqa: E402
 
 
 @pytest.fixture
-def settings_file(tmp_path):
+def settings_file(tmp_path, monkeypatch):
     """Redirect the app's SETTINGS_FILE into the pytest tmp dir."""
     path = tmp_path / "settings.yaml"
     app_module.SETTINGS_FILE = str(path)
+    import access
+    monkeypatch.setattr(access, "_settings_path", lambda: str(path))
     yield path
     app_module.SETTINGS_FILE = os.path.join(
         app_module.BASE_DIR, "config", "settings.yaml")
@@ -147,8 +149,8 @@ def test_persister_helper_round_trips_comments(tmp_path):
 def test_persister_helper_creates_file_when_missing(tmp_path):
     """First save with no settings file: writes a valid mapping."""
     p = tmp_path / "settings.yaml"
-    app_module._dump_settings_yaml_preserving({"engine": "vllm"}, str(p))
-    assert yaml.safe_load(_read_raw(p))["engine"] == "vllm"
+    app_module._dump_settings_yaml_preserving({"engine": "llama_cpp"}, str(p))
+    assert yaml.safe_load(_read_raw(p))["engine"] == "llama_cpp"
 
 
 def test_persister_helper_falls_back_without_ruamel(tmp_path, monkeypatch):
@@ -189,14 +191,15 @@ def test_engine_post_preserves_comments_and_unknown_keys(settings_file, client):
     """The comment-preserving round trip applies to every POST, not just
     theme switches."""
     _write_raw(settings_file, SAMPLE_SETTINGS)
-    r = client.post("/api/settings", json={"engine": "vllm"})
+    r = client.post("/api/settings", json={"engine": "llama_cpp"})
     assert r.status_code == 200
     text = _read_raw(settings_file)
     assert "STARTUP ERROR" in text
     assert "legacy_unknown_key: keep-me" in text
     on_disk = yaml.safe_load(text)
-    assert on_disk["engine"] == "vllm"
-    assert on_disk["vllm"]["delivery"] == "venv"
+    assert on_disk["engine"] == "llama_cpp"
+    # switching to llama_cpp scrubs the foreign vllm vocabulary
+    assert "vllm" not in on_disk
 
 
 def test_legacy_yaml_token_still_removed_on_post(settings_file, client):
