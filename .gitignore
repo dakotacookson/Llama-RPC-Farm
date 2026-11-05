@@ -74,5 +74,10 @@ qe-result.json
 AGENT_handover_STATUS.md 
 SUMMARY_installation.md
 
+# PErsonal during testing
+.agents/
+.github/workflows
+opencode.jsonc
+
 # Graphs
 graphify*

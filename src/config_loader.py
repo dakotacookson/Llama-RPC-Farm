@@ -753,17 +753,22 @@ def delete_model(model_id):
 # avoids that).
 
 def sanitize_vllm_section(raw, where="vllm"):
-    """Delegate to the owning adapter (DEC-04). Same errors, same shapes."""
-    import engine_registry
-    return engine_registry.get_engine_section_adapter().sanitize_model_section(
-        raw, where=where)
+    """Delegate to the owning adapter (DEC-04). Same errors, same shapes.
+
+    Always use VllmAdapter: the `vllm:` section is vLLM-owned vocabulary,
+    even when the ACTIVE engine is llama_cpp. Delegating to the active
+    adapter made direct sanitizer calls bypass validation under the
+    default engine."""
+    import vllm_manager
+    return vllm_manager.VllmAdapter().sanitize_model_section(raw, where=where)
 
 
 def apply_vllm_section(data, where="vllm"):
-    """Delegate to the owning adapter (DEC-04). Same errors, same shapes."""
-    import engine_registry
-    return engine_registry.get_engine_section_adapter().apply_model_section(
-        data, where=where)
+    """Delegate to the owning adapter (DEC-04). Same errors, same shapes.
+
+    Always use VllmAdapter: see sanitize_vllm_section."""
+    import vllm_manager
+    return vllm_manager.VllmAdapter().apply_model_section(data, where=where)
 
 
 def _machine_hw_slots(m):
