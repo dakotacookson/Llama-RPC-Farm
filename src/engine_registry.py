@@ -485,7 +485,10 @@ def get_engine_section_adapter():
     sanitize/apply here instead of hardcoding the vllm logic. LlamaCppAdapter
     owns no per-model section (it is the llama.cpp vocabulary itself), so it
     provides no-ops; vLLM owns the `vllm:` block."""
-    return get_engine()
+    # The per-model `vllm:` section is owned by VllmAdapter regardless of
+    # the ACTIVE engine: llama.cpp saves must preserve an existing vllm
+    # block verbatim, while vLLM saves normalize it.
+    return get_engine({"engine": cfg.ENGINE_VLLM})
 
 def get_engine(settings=None):
     """Resolve the engine adapter from settings (dict, or None = load file).

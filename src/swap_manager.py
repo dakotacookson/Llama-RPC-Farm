@@ -1097,7 +1097,7 @@ def launch_plan(config_path=None, host_name=None):
             if _entry_env:
                 models[key]["env"] = [
                     f"{k}={v}" for k, v in _entry_env.items()]
-        elif host_os == "linux":
+        elif host_os in ("linux", "macos"):
             script_name = f"start-{mid_for_key}.sh"
             if peer_objs:
                 scripts[script_name] = rpc_manager._render_rpc(

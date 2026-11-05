@@ -69,3 +69,15 @@ config/usage/*.enc
 # internal QA agent state — private working notes, never public
 .qe/
 qe-result.json
+
+# Handovers
+AGENT_handover_STATUS.md 
+SUMMARY_installation.md
+
+# PErsonal during testing
+.agents/
+.github/workflows
+opencode.jsonc
+
+# Graphs
+graphify*
