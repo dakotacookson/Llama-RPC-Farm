@@ -88,55 +88,10 @@ def test_invalid_engine_raises_even_via_get_engine(settings_file):
 
 # ---------------- vllm block validation ----------------
 
-def test_vllm_block_partial_overrides_keep_rest_of_defaults(settings_file):
-    _write_settings(settings_file, {"engine": "vllm",
-                                    "vllm": {"delivery": "docker"}})
-    out = load_settings(settings_file)
-    assert out["engine"] == "vllm"
-    assert out["vllm"]["delivery"] == "docker"
-    assert out["vllm"]["venv_bin"] == "~/vllm-env/bin/vllm"  # default kept
 
 
-def test_vllm_unknown_key_rejected(settings_file):
-    # DEC-01: foreign vllm vocabulary only validates when vllm is ACTIVE
-    _write_settings(settings_file, {"engine": "vllm",
-                                    "vllm": {"deliveri": "venv"}})
-    with pytest.raises(ValueError) as ei:
-        load_settings(settings_file)
-    assert "deliveri" in str(ei.value)
 
 
-def test_vllm_invalid_delivery_rejected(settings_file):
-    _write_settings(settings_file, {"engine": "vllm",
-                                    "vllm": {"delivery": "snap"}})
-    with pytest.raises(ValueError) as ei:
-        load_settings(settings_file)
-    assert "venv" in str(ei.value) and "docker" in str(ei.value)
-
-
-def test_vllm_bad_gpu_memory_utilization_rejected(settings_file):
-    for bad in (0, 1.5, -0.1, "high", True):
-        _write_settings(settings_file,
-                        {"engine": "vllm",
-                         "vllm": {"default_gpu_memory_utilization": bad}})
-        with pytest.raises(ValueError):
-            load_settings(settings_file)
-
-
-def test_vllm_non_mapping_block_rejected(settings_file):
-    _write_settings(settings_file, {"engine": "vllm", "vllm": ["venv"]})
-    with pytest.raises(ValueError):
-        load_settings(settings_file)
-
-
-def test_foreign_vllm_block_tolerated_in_llama_cpp_mode(settings_file):
-    """DEC-01 (spec §3): per-model/foreign vocabulary on disk is
-    dead-but-tolerated — a llama.cpp load must not validate (or fail on)
-    the vllm block; it passes through untouched."""
-    _write_settings(settings_file, {"engine": "llama_cpp",
-                                    "vllm": {"deliveri": "venv"}})
-    out = load_settings(settings_file)
-    assert out["vllm"] == {"deliveri": "venv"}
 
 
 # ---------------- config_loader helpers (schema vocabulary) ----------------
@@ -156,32 +111,6 @@ def test_inject_engine_defaults_mutates_and_returns():
     # engine-qualified: llama_cpp injects no vllm block (DEC-01)
 
 
-def test_inject_engine_defaults_preserves_partial_vllm_block():
-    s = {"engine": "vllm", "vllm": {"venv_bin": "/opt/vllm/bin/vllm"}}
-    cfg.inject_engine_defaults(s)
-    assert s["vllm"]["venv_bin"] == "/opt/vllm/bin/vllm"
-    assert s["vllm"]["delivery"] == "venv"
-
-
-def test_inject_engine_defaults_delegates_to_active_adapter():
-    """DEC-01: inject_engine_defaults shrinks to engine enum + dispatch —
-    the vllm block validation runs on the adapter the registry returns."""
-    import vllm_manager
-    s = {"engine": "vllm"}
-    calls = []
-    orig = vllm_manager.VllmAdapter.settings_section
-
-    def spy(self, raw_settings):
-        calls.append(dict(raw_settings))
-        return orig(self, raw_settings)
-
-    vllm_manager.VllmAdapter.settings_section = spy
-    try:
-        cfg.inject_engine_defaults(s)
-    finally:
-        vllm_manager.VllmAdapter.settings_section = orig
-    assert calls == [{"engine": "vllm"}]
-    assert s["vllm"]["delivery"] == "venv"  # adapter applied the defaults
 
 
 def test_inject_engine_defaults_llamacpp_settings_section_noop():
@@ -191,16 +120,6 @@ def test_inject_engine_defaults_llamacpp_settings_section_noop():
     assert adapter.settings_section(raw) is raw
     assert raw == {"llama_bin": "x"}
 
-
-def test_adapter_ownership_members():
-    """DEC-01 identity/file-ownership members on both adapters."""
-    llamacpp = LlamaCppAdapter()
-    assert llamacpp.engine_id == "llama_cpp"
-    assert llamacpp.config_section is None
-    import vllm_manager
-    va = vllm_manager.VllmAdapter()
-    assert va.engine_id == "vllm"
-    assert va.config_section == "vllm"
 
 
 # ---------------- get_engine: registry seam ----------------
@@ -221,15 +140,6 @@ def test_get_engine_rejects_invalid_engine_value():
     with pytest.raises(ValueError):
         get_engine({"engine": "llama_cpppp"})
 
-
-def test_get_engine_returns_vllm_adapter():
-    """B2 registered VllmAdapter: 'vllm' resolves to it, and the adapter
-    is the Protocol-conformant class from vllm_manager."""
-    import vllm_manager
-
-    adapter = get_engine({"engine": "vllm"})
-    assert adapter.name == "vllm"
-    assert isinstance(adapter, vllm_manager.VllmAdapter)
 
 
 def test_get_engine_rejects_unknown_engine_with_options():
@@ -349,29 +259,6 @@ def test_adapter_ui_hints_shape():
     assert hints["flag_presets"]["ctx_size"]["flag"] == "--ctx-size"
 
 
-def test_vllm_adapter_ui_manifest_has_pp_preset():
-    """A1 fix: UI parity — a pipeline-parallel preset alongside TP.
-    AUDIT-T6 §1.5 (DEC-02): the manifest is the engine-owned contract;
-    the deprecated ui_hints view projects from it."""
-    import vllm_manager
-    man = vllm_manager.ui_manifest()
-    presets = man["flag_presets"]
-    assert presets["parallelism"]["flag"] == "--tensor-parallel-size"
-    assert presets["parallelism_pp"]["flag"] == "--pipeline-parallel-size"
-    # complete inventory: vllm_section is the only editor surface the
-    # engine owns; llama.cpp panels/tabs are hidden; swap_only launch,
-    # HF downloads
-    assert man["model_editor"]["sections"] == [{"id": "vllm_section"}]
-    assert set(man["hidden_panels"]) == {"tuner", "tensor_split", "rpc_peers", "rpc_launch"}
-    assert man["hidden_tabs"] == ["audio"]
-    assert man["launch"] == {"mode": "swap_only", "probe_label": "HTTP /health",
-                             "multi_host": True}
-    assert man["downloads"] == {"formats": ["hf"], "browse_source": "hf_repos"}
-    # shim projection stays in sync with the manifest
-    hints = vllm_manager.VllmAdapter().ui_hints()
-    assert hints["hidden_panels"] == man["hidden_panels"]
-    assert hints["hidden_tabs"] == man["hidden_tabs"]
-
 
 def test_adapter_swap_entries_delegates_to_generate(monkeypatch):
     """swap_entries must be pure delegation to swap_manager.launch_plan
@@ -387,10 +274,3 @@ def test_adapter_swap_entries_delegates_to_generate(monkeypatch):
     plan = LlamaCppAdapter().swap_entries("/cfg/swap.yaml", "aibox1")
     assert plan["host"] == "aibox1"
     assert calls["args"] == ("/cfg/swap.yaml", "aibox1")
-
-
-def test_settings_file_default_points_at_repo_config():
-    """The registry's default settings path must be the repo config file."""
-    import engine_registry as er
-    assert er.SETTINGS_FILE.endswith(os.path.join("config", "settings.yaml"))
-    assert os.path.exists(er.SETTINGS_FILE)

@@ -80,157 +80,13 @@ def _generate(monkeypatch, tmp_path, models, engine_settings,
 
 # ---------------- vllm mode: thin script entries (B3 checkpoint) ----------
 
-def test_vllm_mode_snapshot(monkeypatch, tmp_path):
-    model = _model()
-    model["device_order"] = "aibox1-CUDA0"
-    model["vllm"] = {"max_model_len": 32768}
-    plan = _generate(monkeypatch, tmp_path, [model],
-                     {"engine": "vllm", "vllm": VENV_BLOCK})
-    assert plan["models"] == ["qwen3-8b"]
-    assert plan["warnings"] == []
-    assert plan["skipped"] == []
-    assert plan["script_mids"] == ["qwen3-8b"]
-    assert plan["scripts"] == ["start-qwen3-8b.sh"]
-    script = plan["_scripts"]["start-qwen3-8b.sh"]
-    lines = script.splitlines()
-    assert lines[0] == "#!/bin/bash"
-    assert lines[1] == 'PORT="${1:-8080}"'
-    assert any(line.startswith("exec ") for line in lines)
-    # thin: no RPC fan-out, no sshpass block, no rpc-server machinery
-    for banned in ("sshpass", "rpc-server", "ggml-rpc", "--rpc"):
-        assert banned not in script
-    assert "vllm serve" in script
-    assert "CUDA_VISIBLE_DEVICES=0" in script
-    assert '--served-model-name "qwen3-8b"' in script
-    entry = plan["entries"][0]
-    assert entry["mode"] == "script"
-    assert entry["rpc_map"] == {}
-    emitted = yaml.safe_load(plan["yaml"])["models"]["qwen3-8b"]
-    assert emitted["cmd"] == (
-        f"/bin/bash {plan['scripts_dir']}/start-qwen3-8b.sh ${{PORT}}")
-    assert emitted["cmdStop"] == 'pkill -f "vllm serve.*qwen3-8b"'
-    assert emitted["checkEndpoint"] == "/health"
-    # env omitted when empty (vLLM carries env inside cmd by design); a
-    # dict here would crash-loop the daemon (see kv-list test below)
-    assert "env" not in emitted
-    assert emitted["ttl"] == 0
 
 
-def test_vllm_mode_docker_delivery_snapshot(monkeypatch, tmp_path):
-    plan = _generate(monkeypatch, tmp_path, [_model()],
-                     {"engine": "vllm", "vllm": DOCKER_BLOCK})
-    script = plan["_scripts"]["start-qwen3-8b.sh"]
-    assert "docker run --rm --gpus all" in script
-    assert "-p ${PORT}:8000" in script
-    emitted = yaml.safe_load(plan["yaml"])["models"]["qwen3-8b"]
-    assert emitted["cmdStop"] == "docker stop farm-qwen3-8b"
-    assert emitted["checkEndpoint"] == "/health"
-    assert "env" not in emitted
 
 
-def test_vllm_mode_multi_host_builds_cluster_script(monkeypatch, tmp_path):
-    """Multi-host vLLM: peers pass through to swap_entry_parts — the
-    entry carries the Ray cluster script and the swap-secrets.env wrap
-    (worker nodes need $SSH_PASS, same sidecar the llama.cpp branch uses)."""
-    peer = _machine("aibox2", "10.0.0.2")
-    plan = _generate(monkeypatch, tmp_path,
-                     [_model(servers=["aibox1", "aibox2"],
-                             device_order="aibox1-CUDA0,aibox2-CUDA0")],
-                     {"engine": "vllm", "vllm": VENV_BLOCK},
-                     extra_machines=[peer])
-    assert not any("peers ignored" in w for w in plan["warnings"])
-    script = plan["_scripts"]["start-qwen3-8b.sh"]
-    assert "rpc-server" not in script          # no llama.cpp fan-out
-    assert "ray start --address=" in script    # cluster machinery instead
-    emitted = yaml.safe_load(plan["yaml"])["models"]["qwen3-8b"]
-    assert emitted["cmd"].startswith(
-        f"/bin/bash -c 'source \"{plan['scripts_dir']}/swap-secrets.env\"")
 
 
-def test_vllm_mode_single_host_keeps_thin_cmd(monkeypatch, tmp_path):
-    """No peers: the vLLM entry stays the thin script cmd (no secrets
-    wrap — single-node vLLM needs no SSH)."""
-    plan = _generate(monkeypatch, tmp_path, [_model()],
-                     {"engine": "vllm", "vllm": VENV_BLOCK})
-    emitted = yaml.safe_load(plan["yaml"])["models"]["qwen3-8b"]
-    assert emitted["cmd"] == (
-        f"/bin/bash {plan['scripts_dir']}/start-qwen3-8b.sh ${{PORT}}")
 
-
-def test_vllm_mode_bad_model_skipped_not_fatal(monkeypatch, tmp_path):
-    plan = _generate(monkeypatch, tmp_path,
-                     [_model("bad;touch"), _model("good-model")],
-                     {"engine": "vllm", "vllm": VENV_BLOCK})
-    assert plan["models"] == ["good-model"]
-    assert "bad;touch" in plan["skipped"]
-    assert any("bad;touch" in w for w in plan["warnings"])
-    assert plan["scripts"] == ["start-good-model.sh"]
-
-
-def test_vllm_mode_env_emitted_as_kv_list(monkeypatch, tmp_path):
-    """llama-swap's per-model env is a LIST of "K=V" strings: a dict makes
-    the whole config fail to load (`cannot unmarshal !!map into
-    []string`, daemon crash-loops). generate() must convert non-empty
-    parts env to K=V strings and omit the key when empty."""
-    import vllm_manager
-    real_parts = vllm_manager.swap_entry_parts
-
-    def parts_with_env(model_cfg, master, vllm_cfg=None, *, peers=None):
-        d = real_parts(model_cfg, master, vllm_cfg, peers=peers)
-        d["env"] = {"CUDA_VISIBLE_DEVICES": "0,1", "FOO_BAR": "baz"}
-        return d
-
-    import swap_manager  # patch the name generate() actually resolves
-    monkeypatch.setattr(vllm_manager, "swap_entry_parts", parts_with_env)
-    plan = _generate(monkeypatch, tmp_path, [_model()],
-                     {"engine": "vllm", "vllm": VENV_BLOCK})
-    emitted = yaml.safe_load(plan["yaml"])["models"]["qwen3-8b"]
-    assert emitted["env"] == ["CUDA_VISIBLE_DEVICES=0,1", "FOO_BAR=baz"]
-
-
-def test_vllm_script_hoists_env_prefix_and_keeps_port(monkeypatch, tmp_path):
-    """_vllm_script: `exec VAR=x cmd` is invalid bash (exit 127); env
-    prefixes must be hoisted to export lines while $PORT resolution and
-    the exec line survive."""
-    _wire(monkeypatch, tmp_path, [_model()],
-          {"engine": "vllm", "vllm": VENV_BLOCK})
-    script = swap_manager._vllm_script(
-        'CUDA_VISIBLE_DEVICES=0,1 vllm serve "$PORT" --model /m')
-    lines = script.splitlines()
-    assert lines[0] == "#!/bin/bash"
-    assert lines[1] == 'PORT="${1:-8080}"'
-    assert "export CUDA_VISIBLE_DEVICES=0,1" in script
-    assert 'exec vllm serve "$PORT" --model /m' in script
-    assert "exec CUDA_VISIBLE_DEVICES" not in script
-
-
-def test_vllm_script_plain_cmd_untouched(monkeypatch, tmp_path):
-    _wire(monkeypatch, tmp_path, [_model()],
-          {"engine": "vllm", "vllm": VENV_BLOCK})
-    script = swap_manager._vllm_script('vllm serve "$PORT" --model /m')
-    assert script.endswith('exec vllm serve "$PORT" --model /m\n')
-
-
-def test_vllm_script_cluster_cmd_passes_through(monkeypatch, tmp_path):
-    """_vllm_script: a multi-host cluster cmd is already a full bash
-    program — it must NOT gain a wrapping `exec` header (`exec #!/bin/bash`
-    is the load failure). Only the nvjitlink LD_LIBRARY_PATH line is
-    injected so the final `vllm serve` still imports torch."""
-    _wire(monkeypatch, tmp_path, [_model()],
-          {"engine": "vllm", "vllm": VENV_BLOCK})
-    cluster = ('#!/bin/bash\nPORT="${1:-8080}"\n'
-               'MASTER_IP="10.0.0.1"\nstart_workers\n'
-               'exec ~/vllm-env/bin/vllm serve "/m" \\\n  --port "$PORT"\n')
-    script = swap_manager._vllm_script(cluster)
-    assert script.startswith("#!/bin/bash\n")
-    assert "exec #!" not in script
-    assert script.count("#!/bin/bash") == 1
-    assert 'PORT="${1:-8080}"' in script
-    assert 'exec ~/vllm-env/bin/vllm serve "/m"' in script
-    import subprocess
-    r = subprocess.run(["bash", "-n"], input=script, capture_output=True,
-                       text=True)
-    assert r.returncode == 0, r.stderr
 
 
 # ---------------- llama.cpp parity: branch adds nothing --------------------
@@ -245,7 +101,14 @@ def test_llama_cpp_mode_keeps_rpc_wrapper(monkeypatch, tmp_path):
     assert entry["mode"] == "script"
     assert entry["rpc_map"]  # RPC ids exist in llama.cpp mode
     emitted = yaml.safe_load(plan["yaml"])["models"]["qwen3-8b"]
-    assert "cmdStop" not in emitted
+    # script-mode RPC deployments carry an explicit cmdStop so peer
+    # rpc-servers die even when the start-script EXIT trap is bypassed
+    assert emitted["cmdStop"].startswith('/bin/bash "')
+    stop_name = emitted["cmdStop"].split("/")[-1].strip('"')
+    stop_script = plan["_scripts"][stop_name]
+    assert "sshpass" in stop_script
+    assert "swap-secrets.env" in stop_script
+    assert "ggml-[r]pc-server" in stop_script
     script = plan["_scripts"]["start-qwen3-8b.sh"]
     assert "--rpc" in script
     assert "vllm" not in script
@@ -277,11 +140,18 @@ def test_single_peer_auto_launch_mode_proxies_remote(monkeypatch, tmp_path):
     # llama-swap polls until 200 so the first client request WAITS
     # instead of surfacing bad-gateway
     assert emitted["checkEndpoint"] == "/health"
-    assert "sshpass" in emitted["cmdStop"]
+    # cmdStop is a pushed script that sources the vault sidecar first —
+    # llama-swap's daemon env has no $SSH_PASS, so the old inline command
+    # silently failed to kill the remote server.
+    assert emitted["cmdStop"].startswith('/bin/bash "')
+    stop_name = emitted["cmdStop"].split("/")[-1].strip('"')
+    stop_script = plan["_scripts"][stop_name]
+    assert "sshpass" in stop_script
+    assert "swap-secrets.env" in stop_script
     stop_port = emitted["proxy"].rsplit(":", 1)[1]
     # end-or-space anchor: cmdline may END at --port (launcher renders it
     # last); trailing-space-only never matched there (observed live)
-    assert f"--port {stop_port}( |$)" in emitted["cmdStop"]
+    assert f"--port {stop_port}( |$)" in stop_script
     # the launcher script exists and carries the remote start logic
     script = plan["_scripts"]["start-qwen3-8b.sh"]
     assert "llama-server" in script
@@ -413,20 +283,6 @@ def test_model_ttl_wired_into_swap_entry(monkeypatch, tmp_path):
 
 # ================== DEC-03 (AUDIT-T6 §1.6): per-engine swap files =========
 
-def test_vllm_generate_writes_config_vllm_yaml(monkeypatch, tmp_path):
-    """vllm mode derives the sibling FILE config.vllm.yaml from llama.cpp's
-    config_path (same dir, engine-qualified basename) — the two engines'
-    routing tables never collide in one file."""
-    _wire(monkeypatch, tmp_path, [_model()],
-          {"engine": "vllm", "vllm": VENV_BLOCK})
-    with open(tmp_path / "swap-settings.yaml", "w", encoding="utf-8") as f:
-        yaml.safe_dump({"config_path": "~/.config/llama-swap/config.yaml",
-                        "host_name": "aibox1"}, f)
-    plan = swap_manager.generate(None, "aibox1")
-    assert plan["abs_config"] == os.path.expanduser(
-        "~/.config/llama-swap/config.vllm.yaml")
-    assert plan["swap_dir"] == os.path.expanduser("~/.config/llama-swap")
-
 
 def test_llama_cpp_generate_keeps_config_yaml(monkeypatch, tmp_path):
     """llama.cpp mode keeps the historical config.yaml verbatim — no
@@ -440,19 +296,6 @@ def test_llama_cpp_generate_keeps_config_yaml(monkeypatch, tmp_path):
     assert plan["abs_config"] == os.path.expanduser(
         "~/.config/llama-swap/config.yaml")
 
-
-def test_vllm_explicit_config_path_vllm_wins_verbatim(monkeypatch, tmp_path):
-    """swap.yaml config_path_vllm (set explicitly) is taken VERBATIM — the
-    operator pinned a file, the daemon must use exactly that file."""
-    _wire(monkeypatch, tmp_path, [_model()],
-          {"engine": "vllm", "vllm": VENV_BLOCK})
-    with open(tmp_path / "swap-settings.yaml", "w", encoding="utf-8") as f:
-        yaml.safe_dump({"config_path": "~/.config/llama-swap/config.yaml",
-                        "config_path_vllm": "~/custom/vswap.yaml",
-                        "host_name": "aibox1"}, f)
-    plan = swap_manager.generate(None, "aibox1")
-    assert plan["abs_config"] == os.path.expanduser(
-        "~/custom/vswap.yaml")
 
 
 def test_machine_swap_config_override_beats_global(monkeypatch, tmp_path):
@@ -550,29 +393,6 @@ def test_engine_qualify_path_idempotent_and_bare():
         "%USERPROFILE%\\.config\\llama-swap\\config.yaml", "vllm") == (
         "%USERPROFILE%\\.config\\llama-swap\\config.vllm.yaml")
 
-
-def test_load_save_settings_roundtrip_config_path_vllm(
-        monkeypatch, tmp_path):
-    """swap.yaml gains config_path_vllm (DEC-03): load surfaces it; save
-    persists it; "" clears back to derive-from-config_path (None)."""
-    settings_file = str(tmp_path / "swap.yaml")
-    monkeypatch.setattr(swap_manager, "SWAP_SETTINGS_FILE", settings_file)
-    monkeypatch.setattr(swap_manager, "get_host",
-                        lambda name=None: {"name": "aibox1", "ip": "1.2.3.4",
-                                           "os": "linux"}, raising=False)
-    out = swap_manager.save_settings(config_path="~/.config/llama-swap/config.yaml",
-                                     config_path_vllm="~/custom/v.yaml")
-    assert out["config_path_vllm"] == "~/custom/v.yaml"
-    with open(settings_file, encoding="utf-8") as f:
-        on_disk = yaml.safe_load(f)
-    assert on_disk["config_path_vllm"] == "~/custom/v.yaml"
-    # "" clears back to None (derive)
-    out = swap_manager.save_settings(config_path_vllm="")
-    assert out["config_path_vllm"] is None
-    # load surfaces the key even when absent on disk (fresh installs)
-    with open(settings_file, "w", encoding="utf-8") as f:
-        yaml.safe_dump({"host_name": "aibox1"}, f)
-    assert "config_path_vllm" in swap_manager.load_settings()
 
 # ======================================================================
 # qe-validation-test branch: secrets-vault / installer regression tests

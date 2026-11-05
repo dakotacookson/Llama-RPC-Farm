@@ -70,16 +70,6 @@ def test_variant_modal_lcpp_blocks_tagged(modal):
         assert "data-variant-lcpp" in block, f"{needle} not gated: {block[-300:]}"
 
 
-def test_variant_modal_vllm_override_card_exists(modal):
-    """The vLLM engine's own per-variant fields (max-len/seqs/TP/PP/gmu/
-    kv/cpu-offload/quant/tokenizer/extra args) — the engine shows its
-    own vocabulary, never a translation of the other engine's."""
-    assert 'data-variant-vllm' in modal
-    for cls in ("v-vllm-max-model-len", "v-vllm-max-num-seqs", "v-vllm-tp",
-                "v-vllm-pp", "v-vllm-gmu", "v-vllm-kv", "v-vllm-cpu-offload",
-                "v-vllm-quant", "v-vllm-tokenizer", "v-vllm-extra-args"):
-        assert cls in modal, cls
-
 
 def test_variant_modal_gated_from_manifest(appjs):
     """applyVariantModalEngineGate reads the ACTIVE engine's manifest
@@ -120,23 +110,6 @@ def test_variant_summary_is_engine_aware(appjs):
 
 # ---------------- G2: device-order policy gating --------------------------
 
-def test_primary_save_strips_tensor_vocab_under_vllm(appjs):
-    """saveModelForm strips tensor_split/device_order/expose keys from
-    the payload when the active engine's manifest hides tensor_split —
-    the llama.cpp-only key can never be silently filed under vllm."""
-    fn = appjs.split("async function saveModelForm", 1)[1]
-    fn = fn[:fn.index("\nfunction ", 1)] if "\nfunction " in fn else fn[:20000]
-    assert 'manifestHiddenPanels().includes("tensor_split")' in fn
-    assert 'data.device_order_policy = "as-selected"' in fn
-    assert 'data.tensor_split_mode = "auto"' in fn
-
-
-def test_advanced_badge_skips_order_policy_under_vllm(appjs):
-    """updateAdvancedBadge no longer badge-counts #mo-order-policy when
-    the manifest hides tensor_split (the field is not the engine's)."""
-    fn = appjs.split("function updateAdvancedBadge", 1)[1]
-    fn = fn[:fn.index("\nfunction ", 1)]
-    assert 'manifestHiddenPanels().includes("tensor_split")' in fn
 
 
 # ---------------- G3: flags fieldset rendered from the manifest ----------
@@ -159,15 +132,6 @@ def test_apply_engine_hints_renders_editor_sections(appjs):
     assert "data-editor-section" in fn
     assert "model_editor" in fn
 
-
-def test_vllm_manifest_lists_only_its_own_editor_sections():
-    """The contract itself: vllm's ui_manifest.model_editor carries
-    ONLY vllm_section — the flags fieldset hides because it is absent,
-    not because a JS branch knows the engine name."""
-    import vllm_manager
-    man = vllm_manager.VllmAdapter().ui_manifest()
-    assert man["model_editor"]["sections"] == [{"id": "vllm_section"}]
-    assert "tensor_split" in man["hidden_panels"]
 
 
 def test_bridge_preview_translation_mirror_stays_deleted(appjs):

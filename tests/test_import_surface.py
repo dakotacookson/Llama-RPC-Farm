@@ -48,6 +48,7 @@ _CANDIDATE_MODULES = [
     "steps",
     "swap_manager",
     "tuner",
+    "reaper",
 ]
 
 

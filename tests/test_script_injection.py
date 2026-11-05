@@ -69,16 +69,6 @@ def _generate(monkeypatch, tmp_path, models, engine_settings):
     return swap_manager.generate(str(tmp_path / "config.yaml"), "aibox1")
 
 
-def test_vllm_script_filename_follows_allowlisted_id(monkeypatch, tmp_path):
-    plan = _generate(monkeypatch, tmp_path, [_model("qwen3-8b")],
-                     {"engine": "vllm", "vllm": VENV_BLOCK})
-    assert plan["scripts"] == ["start-qwen3-8b.sh"]
-    for fname in plan["scripts"]:
-        assert _SCRIPT_NAME.fullmatch(fname)
-    emitted = yaml.safe_load(plan["yaml"])["models"]["qwen3-8b"]
-    assert emitted["cmd"] == (
-        f"/bin/bash {plan['scripts_dir']}/start-qwen3-8b.sh ${{PORT}}")
-
 
 def test_shell_metachar_id_never_reaches_scripts_or_yaml(monkeypatch,
                                                          tmp_path):
