@@ -19,6 +19,7 @@ Frontend is vanilla JS; all state lives in `config/*.yaml`.
 | [tuner.md](tuner.md) | Auto-tune: math estimate, staged live search, safe defaults |
 | [models-and-variants.md](models-and-variants.md) | Model configs, flags, device_order, variants, serve groups |
 | [development.md](development.md) | Running, testing, the string-assertion test style, common pitfalls (see also `AGENTS.md`) |
+| [peer-agent.md](peer-agent.md) | Optional peer agent design: coexistence with SSH, protocol, transport seam, rollout plan |
 
 ## Quick orientation
 

@@ -10,6 +10,7 @@ Generated scripts mirror start-huihui-35b-rpc.sh / start-rpc-qwen.sh.
 This module NEVER touches files outside its own folder.
 """
 import os
+import re
 import time
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
@@ -1158,6 +1159,121 @@ def _any_rpc_running_remote(machine, ssh):
         return code == 0
     except SSHError:
         return ssh.check_port(machine.get("rpc_port", 50052))
+
+
+def _parse_etime(text):
+    """'MM:SS' / 'HH:MM:SS' / 'DD-HH:MM:SS' -> seconds (BSD/macOS ps)."""
+    text = (text or "").strip()
+    days = 0
+    if "-" in text:
+        d, text = text.split("-", 1)
+        try:
+            days = int(d)
+        except ValueError:
+            return None
+    try:
+        parts = [int(x) for x in text.split(":")]
+    except ValueError:
+        return None
+    if len(parts) == 3:
+        h, m, sec = parts
+    elif len(parts) == 2:
+        h, m, sec = 0, parts[0], parts[1]
+    elif len(parts) == 1:
+        h, m, sec = 0, 0, parts[0]
+    else:
+        return None
+    return days * 86400 + h * 3600 + m * 60 + sec
+
+
+def list_rpc_servers(machine_name):
+    """Running ggml-rpc-server processes on a machine.
+
+    Returns [{pid, port, age_s, cmd}]. Used by the orphan reaper; ports are
+    parsed from the process command line (-p N). Best-effort: a failed OS
+    query returns [] (reaper then does nothing for that box)."""
+    machine = cfg.machines.require(machine_name)
+    is_win = machine.get("os", "linux") == "windows"
+    is_local = local_node.is_local(machine)
+    os_type = "windows" if is_win else machine.get("os", "linux")
+    out = ""
+    if is_win:
+        ps = (
+            "Get-CimInstance Win32_Process | Where-Object { "
+            "$_.Name -eq 'ggml-rpc-server.exe' } | "
+            "ForEach-Object { [pscustomobject]@{ Pid=$_.ProcessId; "
+            "Age=[int]((Get-Date)-$_.CreationDate).TotalSeconds; "
+            "Cmd=$_.CommandLine } } | ConvertTo-Json -Compress")
+        cmd = 'powershell -NoProfile -Command "' + ps + '"'
+        try:
+            if is_local:
+                code, out, err = _run_local(cmd, True, 20)
+            else:
+                code, out, err = _ssh_for(machine).run(cmd)
+        except Exception:
+            return []
+        if not (out or "").strip():
+            return []
+        try:
+            import json
+            data = json.loads(out)
+        except Exception:
+            return []
+        if isinstance(data, dict):
+            data = [data]
+        servers = []
+        for e in data if isinstance(data, list) else []:
+            try:
+                c = e.get("Cmd") or ""
+                m = re.search(r"(?:^|\s)-p\s+(\d+)", c)
+                if not m:
+                    continue
+                servers.append({
+                    "pid": int(e.get("Pid") or 0),
+                    "port": int(m.group(1)),
+                    "age_s": int(e.get("Age")) if e.get("Age") is not None else None,
+                    "cmd": c,
+                })
+            except Exception:
+                continue
+        return servers
+    if os_type == "macos":
+        cmd = "ps -axo pid=,etime=,command= 2>/dev/null | grep '[g]gml-rpc-server' || true"
+    else:
+        cmd = "ps -eo pid=,etimes=,args= 2>/dev/null | grep '[g]gml-rpc-server' || true"
+    try:
+        if is_local:
+            code, out, err = _run_local(cmd, False, 20)
+        else:
+            code, out, err = _ssh_for(machine).run(cmd)
+    except Exception:
+        return []
+    servers = []
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        if os_type == "macos":
+            age_s = _parse_etime(parts[1])
+        else:
+            try:
+                age_s = int(parts[1])
+            except ValueError:
+                age_s = None
+        cmdline = parts[2]
+        m = re.search(r"(?:^|\s)-p\s+(\d+)", cmdline)
+        if not m:
+            continue
+        servers.append({"pid": pid, "port": int(m.group(1)),
+                        "age_s": age_s, "cmd": cmdline})
+    return servers
 
 
 def _local_gpu_info(machine=None):

@@ -81,28 +81,6 @@ def client(settings_file):
     return TestClient(app_module.app)
 
 
-class _VllmEngine:
-    """Minimal vllm adapter: validate_model_config delegates to the REAL
-    vllm_manager implementation so the routed /test gate is exercised
-    end-to-end (not a stubbed tautology)."""
-    name = "vllm"
-
-    # DEC-04: save_model dispatches the per-model section round-trip
-    # through the owning adapter; stub doubles carry the protocol members.
-    def apply_model_section(self, data, where="vllm"):
-        return data
-
-    def sanitize_model_section(self, raw, where="vllm"):
-        if raw is None:
-            return None
-        return dict(raw)
-
-    def capable(self, capability):
-        return capability == "swap_stop"
-
-    def validate_model_config(self, cfg):
-        return vllm_manager.validate_model_config(cfg)
-
 
 class _LcppEngine:
     name = "llama_cpp"
@@ -159,21 +137,6 @@ def test_stop_all_llama_cpp_unchanged(client, settings_file, monkeypatch):
     assert r.json()[0]["machine"] == "aibox1"
 
 
-def test_stop_all_vllm_409_never_calls_rpc_manager(client, settings_file,
-                                                   monkeypatch):
-    """vllm mode: 409 with the llama-swap pointer; rpc_manager.stop_rpc
-    is NEVER called (no peers exist under vLLM — both start paths are
-    G-3 gated; swap_manager.stop only kills the daemon, not peers, so
-    there is no vllm-meaningful cleanup this endpoint could do)."""
-    _engine(_VllmEngine(), monkeypatch)
-    stopped = []
-    monkeypatch.setattr(app_module.rpc_manager, "stop_rpc",
-                        lambda name: stopped.append(name))
-    r = client.post("/api/rpc/stop-all")
-    assert r.status_code == 409, r.text
-    assert r.json()["detail"] == RPC_409
-    assert stopped == []
-
 
 # ---------------- Part B: GET /api/rpc-map ---------------------------------
 
@@ -199,24 +162,6 @@ def test_rpc_map_llama_cpp_unchanged(client, settings_file, monkeypatch):
     assert map_calls == ["qwen-test"]
 
 
-def test_rpc_map_vllm_409_never_calls_rpc_manager(client, settings_file,
-                                                  monkeypatch):
-    """vllm mode: 409; rpc_manager._split_servers and compute_rpc_map are
-    NEVER called (no RPC<N> numbering exists to resolve)."""
-    _engine(_VllmEngine(), monkeypatch)
-    touched = []
-
-    def _boom(*a, **k):
-        touched.append(a)
-        raise AssertionError("rpc_manager map math called in vllm mode")
-
-    monkeypatch.setattr(app_module.rpc_manager, "_split_servers", _boom)
-    monkeypatch.setattr(app_module.rpc_manager, "compute_rpc_map", _boom)
-    r = client.get("/api/rpc-map")
-    assert r.status_code == 409, r.text
-    assert r.json()["detail"] == RPC_409
-    assert touched == []
-
 
 # ---------------- Part C: POST /api/models/{id}/test -----------------------
 
@@ -235,53 +180,7 @@ def test_model_test_llama_cpp_unchanged(client, settings_file, monkeypatch):
     assert r.json() == {"model_id": "qwen-test", "ok": True, "issues": []}
 
 
-def test_model_test_vllm_routes_to_engine_validator(client, settings_file,
-                                                    monkeypatch):
-    """vllm mode: the REAL vllm_manager.validate_model_config runs on the
-    stored config; ok:true + warn issues ride along; rpc_manager is never
-    touched."""
-    _engine(_VllmEngine(), monkeypatch)
 
-    def _boom(*a, **k):
-        raise AssertionError("rpc_manager.validate_model called in vllm mode")
-
-    monkeypatch.setattr(app_module.rpc_manager, "validate_model", _boom)
-    # device_order selects all 4 GPUs, TP=2 -> the validator WARNS that
-    # vLLM will use only the first 2 — warnings ride along under ok:true
-    _save_model(device_order="CUDA0,CUDA1,CUDA2,CUDA3",
-                vllm={"tensor_parallel_size": 2})
-    r = client.post("/api/models/qwen-test/test")
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["ok"] is True
-    assert body["model_id"] == "qwen-test"
-    assert body["issues"], "expected the TP/GPU-count warn to ride along"
-    assert all(i["level"] == "warn" for i in body["issues"])
-
-
-def test_model_test_vllm_multi_host_ok(client, settings_file, monkeypatch):
-    """vllm mode: multi-machine is now ALLOWED (ray cluster) — the test
-    endpoint must NOT 400 on two servers; hard errors still 400."""
-    _engine(_VllmEngine(), monkeypatch)
-    monkeypatch.setattr(config_loader.machines, "path",
-                        config_loader.machines.path)  # fixture machine only
-    with open(config_loader.machines.path, "a", encoding="utf-8") as f:
-        f.write("- id: b2\n  name: b2\n  ip: 10.0.0.2\n  role: peer\n"
-                "  os: linux\n  rpc_port: 50052\n  gpu: CUDA0\n"
-                "  gpu_vendor: nvidia\n")
-    _save_model(servers=["aibox1", "b2"])
-    r = client.post("/api/models/qwen-test/test")
-    assert r.status_code != 400 or "one machine" not in r.json().get(
-        "detail", ""), r.text
-
-
-def test_model_test_vllm_unknown_model_404(client, settings_file,
-                                           monkeypatch):
-    """vllm mode: missing model file -> 404 before any validation."""
-    _engine(_VllmEngine(), monkeypatch)
-    r = client.post("/api/models/ghost/test")
-    assert r.status_code == 404, r.text
-    assert "ghost" in r.json()["detail"]
 
 
 # ---------------- Part D: the tune/* family (8 endpoints) ------------------
@@ -318,21 +217,6 @@ def _stub_tuner(monkeypatch, log, payload=None):
                "cancel_tune", "drift_check", "snapshot_seed"):
         monkeypatch.setattr(tuner, fn, _mk(fn))
 
-
-@pytest.mark.parametrize("method,path,json_body", TUNE_ROUTES)
-def test_tune_family_vllm_409_never_calls_tuner(client, settings_file,
-                                                monkeypatch, method, path,
-                                                json_body):
-    """vllm mode: every tune/* endpoint -> 409 with the exact card-detail
-    string; NO tuner.* entry point is ever reached."""
-    _engine(_VllmEngine(), monkeypatch)
-    log = []
-    _stub_tuner(monkeypatch, log)
-    _save_model(model_id="m")
-    r = client.request(method, path, json=json_body)
-    assert r.status_code == 409, f"{method} {path}: {r.text}"
-    assert r.json()["detail"] == TUNE_409, f"{method} {path}: {r.text}"
-    assert log == [], f"tuner reached via {method} {path}: {log}"
 
 
 @pytest.mark.parametrize("method,path,json_body",

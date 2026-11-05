@@ -737,6 +737,9 @@ a:hover { text-decoration: underline; }
   margin-bottom: var(--s-3);
 }
 .row:last-child { margin-bottom: 0; }
+/* author display:flex beats the UA [hidden]{display:none} rule — this is
+   what kept the custom-runtime fields visible on normal llama.cpp models */
+.row[hidden] { display: none !important; }
 .wide { flex: 1 1 260px; min-width: 0; }
 /* inputs can carry .wide too — inside a column label, flex-basis would
    become HEIGHT; force normal height */
@@ -1451,6 +1454,30 @@ tr.row-selected td:first-child {
 }
 .toast-ok  { border-left-color: var(--ok); }
 .toast-bad { border-left-color: var(--bad); }
+.toast-persistent {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding-right: 8px;
+  border-left-color: var(--bad);
+}
+.toast-body { flex: 1; min-width: 0; }
+.toast-count {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  padding-top: 1px;
+}
+.toast-close {
+  background: none;
+  border: 0;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+.toast-close:hover { color: var(--text); }
 @keyframes toast-in {
   from { opacity: 0; transform: translateX(16px); }
   to   { opacity: 1; transform: translateX(0); }

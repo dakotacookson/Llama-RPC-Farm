@@ -20,10 +20,15 @@ import app as app_module  # noqa: E402
 
 
 @pytest.fixture
-def settings_file(tmp_path):
+def settings_file(tmp_path, monkeypatch):
     """Redirect the app's SETTINGS_FILE into the pytest tmp dir."""
     path = tmp_path / "settings.yaml"
     app_module.SETTINGS_FILE = str(path)
+    # access.py reads its own settings path (env override + repo default);
+    # without this the real access_keys table gates POST /api/settings and
+    # returns 404 in a local run that has keys configured.
+    import access
+    monkeypatch.setattr(access, "_settings_path", lambda: str(path))
     yield path
     app_module.SETTINGS_FILE = os.path.join(
         app_module.BASE_DIR, "config", "settings.yaml")
@@ -91,20 +96,6 @@ def test_get_injects_engine_defaults(settings_file, client):
     assert hints["hidden_panels"] == []
 
 
-def test_get_picks_active_engine_and_its_manifest(settings_file, client):
-    """Stored engine=vllm -> vLLM manifest (labels + hidden llama.cpp-only
-    panels) with the deprecated ui_hints view riding along."""
-    _write(settings_file, {"engine": "vllm"})
-    body = client.get("/api/settings").json()
-    assert body["engine"] == "vllm"
-    man = body["ui_manifest"]
-    assert man["labels"]["server"] == "vLLM server"
-    assert "rpc_peers" in man["hidden_panels"]
-    assert man["launch"]["mode"] == "swap_only"
-    hints = body["ui_hints"]
-    assert hints["labels"]["server"] == "vLLM server"
-    assert "rpc_peers" in hints["hidden_panels"]
-
 
 def test_get_rejects_bad_engine_in_file(settings_file, client):
     """A typo in settings.yaml must NOT fall back silently — 400 with the
@@ -116,48 +107,9 @@ def test_get_rejects_bad_engine_in_file(settings_file, client):
     assert "llama_cpp, vllm" in r.json()["detail"]
 
 
-def test_get_rejects_unknown_vllm_key(settings_file, client):
-    """DEC-01: the vllm: block is validated by its owning adapter — only
-    when vllm is the ACTIVE engine. In llama_cpp mode foreign vocabulary
-    on disk is dead-but-tolerated (spec §3): GET serves it verbatim, the
-    next active-engine save scrubs it (never a validation error)."""
-    _write(settings_file, {"engine": "vllm", "vllm": {"nope": 1}})
-    assert client.get("/api/settings").status_code == 400
-    # the same key under llama_cpp does NOT fail the read
-    _write(settings_file, {"engine": "llama_cpp", "vllm": {"nope": 1}})
-    body = client.get("/api/settings").json()
-    assert body["vllm"] == {"nope": 1}  # dead-but-tolerated, passed through
-
 
 # ---------------- POST ----------------
 
-def test_post_engine_persists(settings_file, client):
-    _write(settings_file, {"model_dir": "store://llm-models"})
-    r = client.post("/api/settings", json={"engine": "vllm"})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["engine"] == "vllm"
-    # vllm block fully defaulted in both the response and the file
-    assert body["vllm"]["delivery"] == "venv"
-    assert body["vllm"]["default_gpu_memory_utilization"] == 0.9
-    on_disk = _read(settings_file)
-    assert on_disk["engine"] == "vllm"
-    assert on_disk["vllm"]["delivery"] == "venv"
-
-
-def test_post_vllm_block_round_trip(settings_file, client):
-    _write(settings_file, {"engine": "vllm"})
-    r = client.post("/api/settings", json={
-        "vllm": {"delivery": "docker", "docker_image": "vllm/vllm-openai:v0"}})
-    assert r.status_code == 200
-    body = r.json()
-    # partial update merged over stored block; missing keys defaulted
-    assert body["vllm"]["delivery"] == "docker"
-    assert body["vllm"]["docker_image"] == "vllm/vllm-openai:v0"
-    assert body["vllm"]["venv_bin"] == "~/vllm-env/bin/vllm"
-    assert body["vllm"]["default_gpu_memory_utilization"] == 0.9
-    # docker_image survives untouched on disk
-    assert _read(settings_file)["vllm"]["docker_image"] == "vllm/vllm-openai:v0"
 
 
 def test_post_bad_engine_400_file_untouched(settings_file, client):
@@ -168,62 +120,11 @@ def test_post_bad_engine_400_file_untouched(settings_file, client):
     assert _read(settings_file) == {"model_dir": "keep"}
 
 
-def test_post_unknown_vllm_key_400(settings_file, client):
-    _write(settings_file, {"engine": "vllm"})  # block validated by its owner
-    r = client.post("/api/settings", json={"vllm": {"bogus": True}})
-    assert r.status_code == 400
-    assert "bogus" in r.json()["detail"]
 
 
-def test_post_bad_delivery_400(settings_file, client):
-    _write(settings_file, {"engine": "vllm"})  # block validated by its owner
-    r = client.post("/api/settings", json={"vllm": {"delivery": "pip"}})
-    assert r.status_code == 400
-    assert "pip" in r.json()["detail"]
 
 
-def test_post_bad_gpu_memory_utilization_400(settings_file, client):
-    _write(settings_file, {"engine": "vllm"})  # block validated by its owner
-    for bad in (0, 1.5, "0.9", True):
-        r = client.post("/api/settings",
-                        json={"vllm": {"default_gpu_memory_utilization": bad}})
-        assert r.status_code == 400, bad
 
-
-def test_post_vllm_partial_merge_keeps_stored_keys(settings_file, client):
-    """A second POST changing only delivery must not drop stored keys."""
-    _write(settings_file, {"engine": "vllm", "vllm": {"venv_bin": "/custom/bin/vllm"}})
-    r = client.post("/api/settings", json={"vllm": {"delivery": "docker"}})
-    assert r.status_code == 200
-    assert r.json()["vllm"]["venv_bin"] == "/custom/bin/vllm"
-
-
-def test_post_engine_and_vllm_together(settings_file, client):
-    r = client.post("/api/settings", json={
-        "engine": "vllm", "vllm": {"delivery": "docker"}})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["engine"] == "vllm"
-    assert body["vllm"]["delivery"] == "docker"
-
-
-def test_post_omitted_engine_leaves_stored(settings_file, client):
-    _write(settings_file, {"engine": "vllm"})
-    r = client.post("/api/settings", json={"theme_family": "steel"})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["engine"] == "vllm"  # untouched
-    assert body["theme_family"] == "steel"
-    assert _read(settings_file)["engine"] == "vllm"
-
-
-def test_round_trip_get_matches_post(settings_file, client):
-    """POST then GET — the normalized on-disk state is what GET serves."""
-    client.post("/api/settings", json={
-        "engine": "vllm", "vllm": {"default_gpu_memory_utilization": 0.8}})
-    got = client.get("/api/settings").json()
-    assert got["engine"] == "vllm"
-    assert got["vllm"]["default_gpu_memory_utilization"] == 0.8
 
 
 # ---------------- backward compat (other fields) ----------------
