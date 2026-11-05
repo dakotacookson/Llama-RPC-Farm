@@ -390,6 +390,7 @@ def test_adapter_swap_entries_delegates_to_generate(monkeypatch):
 
 
 def test_settings_file_default_points_at_repo_config(monkeypatch):
+<<<<<<< Updated upstream
     """The registry's default settings path must be the repo config file.
 
     conftest isolates SETTINGS_FILE for the whole suite; restore the
@@ -402,4 +403,21 @@ def test_settings_file_default_points_at_repo_config(monkeypatch):
     monkeypatch.setattr(er, "SETTINGS_FILE", repo_default)
     assert er.SETTINGS_FILE.endswith(
         os.path.join("config", "settings.yaml"))
+=======
+    """The registry's default settings path must be the repo config file."""
+    import engine_registry as er
+
+    repo_root = os.path.dirname(
+        os.path.dirname(os.path.abspath(er.__file__))
+    )
+    repo_default = os.path.join(repo_root, "config", "settings.yaml")
+
+    # Restore the repository default for this assertion only; the suite-wide
+    # settings_file fixture intentionally isolates SETTINGS_FILE in tmp_path.
+    monkeypatch.setattr(er, "SETTINGS_FILE", repo_default)
+
+    assert er.SETTINGS_FILE.endswith(
+        os.path.join("config", "settings.yaml")
+    )
+>>>>>>> Stashed changes
     assert os.path.exists(er.SETTINGS_FILE)

@@ -935,6 +935,7 @@ def _run_wrapper_with_mock_ssh(script_text, tmp_path):
     env = dict(_os.environ, PATH=f"{fakebin}{_os.pathsep}{_os.environ['PATH']}",
                SSH_PASS="x")
     # reuse path loops `sleep 5` forever: 124 == still alive in it.
+<<<<<<< Updated upstream
     # Python-managed timeout avoids relying on GNU coreutils `timeout`,
     # which macOS does not provide by default.
     try:
@@ -950,6 +951,23 @@ def _run_wrapper_with_mock_ssh(script_text, tmp_path):
         return types.SimpleNamespace(returncode=124,
                                      stdout=stdout,
                                      stderr=stderr)
+=======
+    # macOS has no GNU `timeout`; use Python's subprocess timeout and
+    # synthesize the same 124 contract.
+    try:
+        r = _sp.run(["bash", str(sh)], capture_output=True,
+                    text=True, env=env, timeout=8)
+    except _sp.TimeoutExpired as e:
+        stdout = e.stdout or b""
+        stderr = e.stderr or b""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        r = types.SimpleNamespace(
+            returncode=124, stdout=stdout, stderr=stderr)
+    return r
+>>>>>>> Stashed changes
 
 
 def test_windows_wrapper_reuse_probe_survives_set_u(monkeypatch, tmp_path):
@@ -1044,10 +1062,15 @@ def test_windows_wrapper_ps1_run_uses_double_quoted_file(monkeypatch,
     try:
         r = _sp.run(["bash", str(sh)], capture_output=True,
                     text=True, env=env, timeout=20)
+<<<<<<< Updated upstream
     except _sp.TimeoutExpired as e:
         r = types.SimpleNamespace(returncode=124,
                                   stdout=e.stdout or "",
                                   stderr=e.stderr or "")
+=======
+    except _sp.TimeoutExpired:
+        r = types.SimpleNamespace(returncode=124, stdout="", stderr="")
+>>>>>>> Stashed changes
     assert "unbound variable" not in r.stderr
     runs = sshlog.read_text(encoding="utf-8")
     assert "ExecutionPolicy Bypass -File" in runs
