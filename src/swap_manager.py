@@ -844,6 +844,32 @@ def launch_plan(config_path=None, host_name=None):
         k, w = _swap_key(tmp, taken_set)
         return k, w
 
+    def _wrap_cmdstop(mid_for_key, cmdstop):
+        """Make a cmdStop that needs $SSH_PASS actually receive it.
+
+        llama-swap runs cmdStop in the DAEMON's environment, not inside the
+        model `cmd` shell — the sidecar sourced by cmd is gone by then. A
+        bare `sshpass -p "$SSH_PASS" ...` therefore ran with an empty
+        password and never killed remote-local models / RPC peers. Wrap such
+        cmdStops in a tiny pushed script that sources the sidecar first.
+        (POSIX swap host only; Windows hosts have no bash/sidecar path.)
+        """
+        if not cmdstop or host_os == "windows":
+            return cmdstop
+        if "$SSH_PASS" not in cmdstop and "sshpass" not in cmdstop:
+            return cmdstop
+        safe = "".join(c if c.isalnum() or c in "-_."
+                       else "-" for c in str(mid_for_key or "model"))
+        safe = safe.strip("-") or "model"
+        fname = f"stop-{safe}.sh"
+        scripts[fname] = (
+            "#!/bin/bash\n"
+            "set -uo pipefail\n"
+            f"source \"{scripts_dir}/{SIDECAR_NAME}\" 2>/dev/null || true\n"
+            f"{cmdstop}\n"
+        )
+        return f'/bin/bash "{scripts_dir}/{fname}"'
+
     def _process_one(deploy_model, mid_for_key, label_for_log, is_variant=False):
         # SERVE-GROUP key for the actual-port state file, by group kind:
         # - exclusive (take-turns) group: the GROUP name — cmdStop kills
@@ -996,9 +1022,11 @@ def launch_plan(config_path=None, host_name=None):
                     # key = the deployment's SERVE GROUP (group-scoped
                     # kick-out), or the model id when ungrouped — resolved
                     # at push time, never hard-coded.
-                    "cmdStop": rpc_manager.swap_state_killer_snippet(
-                        peer_m, _sg_key, remote_port,
-                        os_type="windows"),
+                    "cmdStop": _wrap_cmdstop(
+                        mid_for_key,
+                        rpc_manager.swap_state_killer_snippet(
+                            peer_m, _sg_key, remote_port,
+                            os_type="windows")),
                     # /health: poll until the remote model finishes
                     # loading (llama-server 503s while loading)
                     "checkEndpoint": "/health",
@@ -1021,8 +1049,10 @@ def launch_plan(config_path=None, host_name=None):
                     "proxy": f"http://{remote_ip}:{remote_port}",
                     # ACTUAL-PORT kill (see the windows branch above);
                     # state key = serve group (group-scoped kick-out)
-                    "cmdStop": rpc_manager.swap_state_killer_snippet(
-                        peer_m, _sg_key, remote_port),
+                    "cmdStop": _wrap_cmdstop(
+                        mid_for_key,
+                        rpc_manager.swap_state_killer_snippet(
+                            peer_m, _sg_key, remote_port)),
                     # /health: poll until the remote model finishes
                     # loading (llama-server 503s while loading)
                     "checkEndpoint": "/health",
@@ -1228,11 +1258,12 @@ def launch_plan(config_path=None, host_name=None):
             # live on winbox) — the client's first request waits for the
             # load instead of surfacing a 502/503.
             "checkEndpoint": "/health",
-            "cmdStop": (
-                'sshpass -p "$SSH_PASS" ssh -n '
-                '-o StrictHostKeyChecking=no -o ConnectTimeout=5 '
-                f"{user}@{remote_ip} "
-                '"powershell -NoProfile -Command \\"' + ps_kill + '\\""'),
+            "cmdStop": _wrap_cmdstop(
+                mid_for_key,
+                ('sshpass -p "$SSH_PASS" ssh -n '
+                 '-o StrictHostKeyChecking=no -o ConnectTimeout=5 '
+                 f"{user}@{remote_ip} "
+                 '"powershell -NoProfile -Command \\"' + ps_kill + '\\""')),
         }
         ttl, pinned = _custom_ttl_pinned(deploy_model)
         models[key]["ttl"] = ttl
@@ -1272,7 +1303,8 @@ def launch_plan(config_path=None, host_name=None):
         if (spec.get("checkEndpoint") or "").strip():
             entry["checkEndpoint"] = (spec.get("checkEndpoint") or "").strip()
         if spec.get("cmdStop") is not None:
-            entry["cmdStop"] = _sub(spec.get("cmdStop"))
+            entry["cmdStop"] = _wrap_cmdstop(
+                mid_for_key, _sub(spec.get("cmdStop")))
         if spec.get("env") is not None:
             entry["env"] = [f"{k}={v}"
                             for k, v in (spec.get("env") or {}).items()]

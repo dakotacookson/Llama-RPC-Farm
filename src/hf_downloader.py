@@ -897,3 +897,141 @@ def all_jobs():
 def all_bundles():
     return sorted(BUNDLES.values(), key=lambda b: b.get("created") or "",
                   reverse=True)
+
+def _open_paths():
+    """Real paths of files currently held open by any process.
+
+    Linux: /proc/<pid>/fd scan. macOS/other POSIX: `lsof -Fn` fallback.
+    Windows: no scan — the age guard + active-job directory guard still
+    protect running downloads there.
+    """
+    paths = set()
+    if os.path.isdir("/proc"):
+        try:
+            pids = [p for p in os.listdir("/proc") if p.isdigit()]
+        except OSError:
+            pids = []
+        for pid in pids:
+            fd_dir = f"/proc/{pid}/fd"
+            try:
+                fds = os.listdir(fd_dir)
+            except OSError:
+                continue
+            for fd in fds:
+                try:
+                    paths.add(os.path.realpath(os.path.join(fd_dir, fd)))
+                except OSError:
+                    pass
+        if paths:
+            return paths
+    if shutil.which("lsof"):
+        try:
+            proc = subprocess.run(["lsof", "-Fn"], capture_output=True,
+                                  text=True, timeout=20)
+            for line in (proc.stdout or "").splitlines():
+                if line.startswith("n") and len(line) > 1:
+                    try:
+                        paths.add(os.path.realpath(line[1:]))
+                    except OSError:
+                        pass
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return paths
+
+
+def cleanup_stale_cache(min_age_seconds=3600, stores=None):
+    """Remove stale HF download `.incomplete` / `.lock` files.
+
+    Runs at app startup (and can be called manually). Only files older than
+    `min_age_seconds` are removed, cache dirs belonging to an in-process
+    active job are skipped wholesale, and any path currently open by a live
+    process is skipped (Linux /proc, POSIX lsof) — so a running download is
+    never touched. Scans each store root's `.cache/huggingface/download`
+    plus one level of per-model bundle folders.
+    """
+    roots = []
+    names = stores if stores is not None else list_stores()
+    for name in names:
+        try:
+            root = path_resolver.resolve(f"store://{name}")
+        except Exception:
+            continue
+        if root and not str(root).startswith("store://"):
+            roots.append(root)
+    roots = list(dict.fromkeys(roots))
+
+    cache_dirs = []
+    for root in roots:
+        cache_dirs.append(os.path.join(
+            root, ".cache", "huggingface", "download"))
+        try:
+            for entry in os.scandir(root):
+                if entry.is_dir(follow_symlinks=False):
+                    cache_dirs.append(os.path.join(
+                        entry.path, ".cache", "huggingface", "download"))
+        except OSError:
+            pass
+
+    open_paths = _open_paths()
+    # Never touch a cache directory that belongs to a download this process
+    # is still running — even if its mtime looks old (slow/blocked stream).
+    active_cache_dirs = set()
+    for job in JOBS.values():
+        if job.get("status") != "downloading":
+            continue
+        for base in (job.get("bundle_dir"), job.get("local_dir")):
+            if base and os.path.isdir(base):
+                active_cache_dirs.add(os.path.realpath(os.path.join(
+                    base, ".cache", "huggingface", "download")))
+    now = time.time()
+    result = {"removed_incomplete": 0, "removed_locks": 0,
+              "removed_bytes": 0, "skipped_active": 0,
+              "errors": []}
+    for cache_dir in dict.fromkeys(cache_dirs):
+        if not os.path.isdir(cache_dir):
+            continue
+        real_cache = os.path.realpath(cache_dir)
+        if any(real_cache == d or real_cache.startswith(d + os.sep)
+               for d in active_cache_dirs):
+            result["skipped_active"] += 1
+            continue
+        for dirpath, _dirnames, files in os.walk(cache_dir):
+            for fname in files:
+                if not (fname.endswith(".incomplete")
+                        or fname.endswith(".lock")):
+                    continue
+                path = os.path.join(dirpath, fname)
+                try:
+                    st = os.stat(path, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                except OSError as e:
+                    result["errors"].append(f"{path}: {e}")
+                    continue
+                if now - st.st_mtime < min_age_seconds:
+                    continue
+                if os.path.realpath(path) in open_paths:
+                    result["skipped_active"] += 1
+                    continue
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    continue
+                except OSError as e:
+                    result["errors"].append(f"{path}: {e}")
+                    continue
+                if fname.endswith(".incomplete"):
+                    result["removed_incomplete"] += 1
+                    result["removed_bytes"] += st.st_size
+                else:
+                    result["removed_locks"] += 1
+        # prune empty dirs left behind (keep the cache root itself)
+        for dirpath, _dirnames, _files in os.walk(cache_dir, topdown=False):
+            if dirpath == cache_dir:
+                continue
+            try:
+                if not os.listdir(dirpath):
+                    os.rmdir(dirpath)
+            except OSError:
+                pass
+    return result
