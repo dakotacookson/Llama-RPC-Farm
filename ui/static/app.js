@@ -101,22 +101,100 @@ function makeArchSection(container, key, title, count) {
   return { sec, archBody };
 }
 
-/* Toast: replaces native alert()/confirm(), which browsers block or
-   suppress (that silently killed the delete/status buttons). */
-function toast(msg, kind = "info", ms = 6000) {
+function _toastHost() {
   let host = $("#toast-host");
   if (!host) {
     host = document.createElement("div");
     host.id = "toast-host";
     document.body.appendChild(host);
   }
+  return host;
+}
+
+/* Toast: replaces native alert()/confirm(), which browsers block or
+   suppress (that silently killed the delete/status buttons). */
+function toast(msg, kind = "info", ms = 6000) {
+  const host = _toastHost();
   const el = document.createElement("div");
   el.className = `toast toast-${kind}`;
   el.textContent = msg;
   host.appendChild(el);
-  while (host.children.length > 5) host.firstChild.remove();
+  // only transient toasts are capped — sticky notices stay until dismissed
+  const transient = [...host.children].filter(
+    c => !c.classList.contains("toast-persistent"));
+  while (transient.length > 5) transient.shift().remove();
   setTimeout(() => el.remove(), ms);
   console.log("[ui]", kind, msg);
+}
+
+/* Persistent top-right notice (load failures). Same key updates in place
+   (with a ×N counter) instead of stacking duplicate cards; only the X
+   button clears it. */
+function stickyNotice(msg, kind = "bad", key = "", detail = "") {
+  const host = _toastHost();
+  let el = key ? [...host.children].find(
+    c => c.dataset.noticeKey === key && c.classList.contains("toast-persistent")
+  ) : null;
+  if (el) {
+    el._count = (el._count || 1) + 1;
+    const body = el.querySelector(".toast-body");
+    if (body) body.textContent = msg;
+    const cnt = el.querySelector(".toast-count");
+    if (cnt) cnt.textContent = el._count > 1 ? ` ×${el._count}` : "";
+    if (detail) el.title = detail;
+    return el;
+  }
+  el = document.createElement("div");
+  el.className = `toast toast-${kind} toast-persistent`;
+  el.dataset.noticeKey = key || "";
+  el._count = 1;
+  if (detail) el.title = detail;
+  const body = document.createElement("span");
+  body.className = "toast-body";
+  body.textContent = msg;
+  const cnt = document.createElement("span");
+  cnt.className = "toast-count";
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "toast-close";
+  close.setAttribute("aria-label", "Dismiss notification");
+  close.textContent = "×";
+  close.onclick = () => el.remove();
+  el.append(body, cnt, close);
+  host.appendChild(el);
+  return el;
+}
+
+/* Keep a global socket open for load-failure notices, independent of the
+   active tab. The backend tails llama-swap's proxy+upstream logs, primes
+   history, and emits one event per model/failure cooldown. */
+let faultWs = null;
+let faultWsRetry = 0;
+function initFaultWatch() {
+  if (faultWs && (faultWs.readyState === 0 || faultWs.readyState === 1)) return;
+  try {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    faultWs = new WebSocket(`${proto}://${location.host}/ws/swap/faults`);
+    faultWs.onmessage = (e) => {
+      let ev;
+      try { ev = JSON.parse(e.data); } catch (_) { return; }
+      if (!ev || ev.type !== "load_failure") return;
+      const prefix = ev.model ? `${ev.model}: ` : "";
+      stickyNotice(`${prefix}${ev.reason}`, "bad",
+        `load:${ev.model || "?"}`,
+        ev.detail || "");
+    };
+    faultWs.onopen = () => { faultWsRetry = 0; };
+    faultWs.onclose = (e) => {
+      faultWs = null;
+      if (e && e.code === 1008) return;   // unauthenticated/scoped: no retry loop
+      const delay = Math.min(30000, 2000 + faultWsRetry++ * 3000);
+      setTimeout(initFaultWatch, delay);
+    };
+    faultWs.onerror = () => {};
+  } catch (_) {
+    setTimeout(initFaultWatch, 5000);
+  }
 }
 
 /* ---------------- tabs ---------------- */
@@ -9343,6 +9421,7 @@ document.addEventListener("click", (e) => {
 
 /* ---------------- init ---------------- */
 startAutoRefresh();
+initFaultWatch();  // global persistent load-failure notices (top right)
 applyRibbons();   // global ribbon backdrop behind every page (toggleable)
 on("#set-ribbons-chip", "click", () => {
   localStorage.setItem("ui-ribbons", ribbonsOn() ? "0" : "1");
