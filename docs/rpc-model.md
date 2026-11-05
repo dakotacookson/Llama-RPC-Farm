@@ -106,6 +106,23 @@ fails fast with a clear message otherwise.
 - `--tensor-split`/`--n-gpu-layers` are skipped in fit mode (the fitter
   owns them; user-set ngl makes it abort).
 
+## Cleanup: scripts, cmdStop, and the orphan reaper
+
+Three layers, all per-port and co-serve safe:
+
+1. **Start-script EXIT trap** — stops only the peers that run actually
+   started (reused peers belong to whoever started them).
+2. **Explicit `cmdStop`** — script-mode RPC entries now get a generated
+   `stop-<model>.sh` that sources `swap-secrets.env` and kills exactly that
+   model's per-(peer, group) RPC ports. This no longer depends on the shell
+   trap surviving a hard kill or daemon shutdown.
+3. **Orphan reaper** (`src/reaper.py`) — periodic safety net. It compares
+   llama-swap's loaded/loading model list and local `llama-server --rpc`
+   endpoints against `ggml-rpc-server` processes on every machine. It never
+   touches a protected endpoint, a process younger than the grace period
+   (`FARM_REAPER_GRACE`, default 1800s), or a machine it cannot inspect.
+   Disable with `FARM_REAPER=0`; log-only with `FARM_REAPER_DRY_RUN=1`.
+
 ## Where things can silently disagree
 
 | Symptom | Cause to check |

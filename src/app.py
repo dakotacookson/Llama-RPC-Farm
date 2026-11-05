@@ -38,6 +38,7 @@ import model_parser
 import path_resolver
 import stats_collector
 import rpc_manager
+import reaper
 import gguf_inspect
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -117,6 +118,13 @@ def seed_local_master():
 
     _thr.Thread(target=_cleanup_hf_cache, daemon=True,
                 name="boot-cache-cleanup").start()
+
+    # Conservative orphan RPC-server reaper (per-port kills only, protects
+    # loaded/loading models + active --rpc endpoints + young processes).
+    try:
+        reaper.start()
+    except Exception as e:
+        print(f"[reaper] start skipped: {e}")
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -5864,7 +5872,7 @@ async def launch_model(l: LaunchIn):
             raise HTTPException(status_code=404,
                                 detail=f"model '{lmid}' not found")
         allow = access.view_allow()
-        if allow is not None and lmid not in allow:
+        if allow is None or lmid not in allow:
             raise HTTPException(status_code=404,
                                 detail=f"model '{lmid}' not found")
     if not engine.capable("rpc_cluster"):
@@ -5892,9 +5900,14 @@ async def launch_model(l: LaunchIn):
                 master_name = verdict["box"]
         except ValueError:
             mode = "rpc"
-    report = await run_in_threadpool(
-        engine.start_model, l.model_id, l.servers, l.port, l.variant,
-        master_name, mode)
+    try:
+        report = await run_in_threadpool(
+            engine.start_model, l.model_id, l.servers, l.port, l.variant,
+            master_name, mode)
+    except ValueError as e:
+        return JSONResponse(
+            {"model_id": l.model_id, "failed": True, "error": str(e),
+             "steps": []}, status_code=500)
     status = 500 if report.get("failed") else 200
     return JSONResponse(report, status_code=status)
 
@@ -5920,7 +5933,7 @@ async def stop_launch(l: LaunchIn):
             raise HTTPException(status_code=404,
                                 detail=f"model '{lmid}' not found")
         allow = access.view_allow()
-        if allow is not None and lmid not in allow:
+        if allow is None or lmid not in allow:
             raise HTTPException(status_code=404,
                                 detail=f"model '{lmid}' not found")
     try:
