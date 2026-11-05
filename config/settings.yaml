@@ -1,0 +1,5 @@
+model_dir: store://llm-models
+llama_bin: ~/llama.cpp/build/bin
+theme_family: nord
+theme_mode: dark
+engine: llama_cpp
