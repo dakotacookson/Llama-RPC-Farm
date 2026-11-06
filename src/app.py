@@ -265,6 +265,29 @@ app.add_middleware(IpGateMiddleware)
 LOGIN_COOKIE = "farm_session"
 
 
+def _gateway_headers(request=None):
+    """Identity headers for a server-side call to the :8090 gateway.
+
+    The browser's farm session cookie resolves (inside the gateway) to the
+    logged-in user's access key, so usage/grants attribute to them without
+    ever exposing the key to JS. An explicit Bearer key also rides along.
+    """
+    h = {"Content-Type": "application/json", "Accept": "application/json"}
+    try:
+        sid = request.cookies.get(LOGIN_COOKIE) if request is not None else ""
+    except Exception:
+        sid = ""
+    if sid:
+        h["Cookie"] = f"{LOGIN_COOKIE}={sid}"
+    try:
+        tok = access.request_key(request) if request is not None else ""
+    except Exception:
+        tok = ""
+    if tok:
+        h["Authorization"] = f"Bearer {tok}"
+    return h
+
+
 @app.get("/api/auth/me")
 async def auth_me(request: Request, response: Response):
     """Identity report for the UI boot: full resolution already happened
@@ -6396,9 +6419,9 @@ async def flow_vllm_metrics():
 
     def fetch():
         import urllib.request, json as _json
-        base = (f"http://127.0.0.1:{st['port']}"
-                if local_node.is_local(cfg.machines.require(st["host"]))
-                else f"http://{st.get('host_ip')}:{st['port']}")
+        # Go through the farm gateway (:8090) with the logged-in user's
+        # identity (session cookie → access key), exactly like API clients.
+        base = "http://127.0.0.1:8090"
         with urllib.request.urlopen(base + "/v1/models", timeout=5) as r:
             models = _json.load(r).get("data", [])
         loaded = [m["id"] for m in models
@@ -6499,7 +6522,7 @@ _FLOW_VLLM_METRICS_PREV = None
 
 
 @app.post("/api/swap/load/{model_id}")
-async def swap_load_model(model_id: str):
+async def swap_load_model(model_id: str, request: Request):
     """Load one model through the running swap daemon: vLLM models load
     on first request, so this fires a minimal warmup completion
     (max_tokens=1) at the daemon and waits for it. First load takes
@@ -6515,9 +6538,9 @@ async def swap_load_model(model_id: str):
 
     def warmup():
         import urllib.request, urllib.error, json as _json
-        base = (f"http://127.0.0.1:{st['port']}"
-                if local_node.is_local(cfg.machines.require(st["host"]))
-                else f"http://{st.get('host_ip')}:{st['port']}")
+        # Go through the farm gateway (:8090) with the logged-in user's
+        # identity (session cookie → access key), exactly like API clients.
+        base = "http://127.0.0.1:8090"
         is_embed = False
         try:
             engine = engine_registry.get_engine()
@@ -6538,14 +6561,25 @@ async def swap_load_model(model_id: str):
             path = "/v1/chat/completions"
         req = urllib.request.Request(
             base + path, data=payload,
-            headers={"Content-Type": "application/json"}, method="POST")
+            headers=_gateway_headers(request), method="POST")
         t0 = _time.time()
-        try:
-            with urllib.request.urlopen(req, timeout=600) as r:
-                body = _json.load(r)
-        except urllib.error.HTTPError as e:
-            raise RuntimeError(f"daemon refused load: HTTP {e.code} "
-                               f"{e.read(300).decode('utf-8', 'replace')}")
+        body = None
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=600) as r:
+                    body = _json.load(r)
+                break
+            except urllib.error.HTTPError as e:
+                detail = e.read(300).decode("utf-8", "replace")
+                # App startup reloads llama-swap (stop+start); a load that
+                # lands in that window gets a transient 5xx. Retry briefly.
+                if e.code in (500, 502, 503) and attempt < 2:
+                    _time.sleep(2)
+                    continue
+                raise RuntimeError(
+                    f"daemon refused load: HTTP {e.code} {detail}")
+        if body is None:
+            raise RuntimeError("daemon refused load: no response")
         choice = ((body.get("choices") or [{}])[0].get("message") or {})
         preview = (choice.get("content") or "")
         if not preview and body.get("data"):
@@ -6664,7 +6698,7 @@ class EmbedIn(pydantic.BaseModel):
 
 
 @app.post("/api/embeddings")
-async def create_embeddings(e: EmbedIn):
+async def create_embeddings(e: EmbedIn, request: Request):
     st = swap_manager.status()
     if not st.get("running"):
         raise HTTPException(status_code=503, detail="swap not running — Launch All first")
@@ -6674,7 +6708,9 @@ async def create_embeddings(e: EmbedIn):
     def do():
         import urllib.request, json as _json, urllib.error
         payload = _json.dumps({"model": e.model, "input": e.input}).encode()
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+        req = urllib.request.Request(url, data=payload,
+                                     headers=_gateway_headers(request),
+                                     method="POST")
         try:
             with urllib.request.urlopen(req, timeout=7200) as r:
                 body = r.read().decode()
@@ -6720,7 +6756,7 @@ class AudioIn(pydantic.BaseModel):
 
 
 @app.post("/api/audio")
-async def audio_test(v: AudioIn):
+async def audio_test(v: AudioIn, request: Request):
     """Transcribe browser-captured audio via OpenAI-style input_audio
     (base64 data URI) in a chat completion. Audio never touches disk."""
     st = swap_manager.status()
@@ -6745,7 +6781,9 @@ async def audio_test(v: AudioIn):
             {"type": "input_audio", "input_audio": {"data": v.audio, "format": "wav"}},
         ]})
         payload = _json.dumps({"model": v.model, "messages": msgs}).encode()
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+        req = urllib.request.Request(url, data=payload,
+                                     headers=_gateway_headers(request),
+                                     method="POST")
         try:
             with urllib.request.urlopen(req, timeout=7200) as r:
                 resp = _json.loads(r.read().decode())
@@ -6793,7 +6831,7 @@ class VisionIn(pydantic.BaseModel):
 
 
 @app.post("/api/vision")
-async def vision_test(v: VisionIn):
+async def vision_test(v: VisionIn, request: Request):
     st = swap_manager.status()
     if not st.get("running"):
         raise HTTPException(status_code=503, detail="swap not running — Launch All first")
@@ -6809,7 +6847,9 @@ async def vision_test(v: VisionIn):
                 {"type": "image_url", "image_url": {"url": v.image}},
             ]}],
         }).encode()
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+        req = urllib.request.Request(url, data=payload,
+                                     headers=_gateway_headers(request),
+                                     method="POST")
         try:
             with urllib.request.urlopen(req, timeout=7200) as r:
                 resp = _json.loads(r.read().decode())

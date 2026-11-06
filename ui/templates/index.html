@@ -956,7 +956,7 @@ technical | bugs, errors, login problems</textarea></label>
     </section>
     <!-- Launch -->
     <section id="tab-launch" class="tab">
-      <h2>Live Launch</h2>
+      <h2>Launch (via llama-swap API)</h2>
       <div class="card" id="swap-card">
         <h3>Launch All via llama-swap <span id="swap-status" class="serving-ind">…</span></h3>
         <p class="hint"><span data-launch-view="rpc_cluster">Generates llama-swap's config.yaml from all model configs, pushes it to the host (<span id="swap-host">…</span>), starts <span data-engine-label="peers">RPC peers</span>, then starts the llama-swap daemon. Models load on first request. Linux hosts get per-model .sh wrappers (proven start-rpc-qwen.sh shape); Windows hosts get direct commands.</span><span data-launch-view="swap_only">Generates the vLLM engine's config.vllm.yaml from all model configs, pushes it to the host (<span id="swap-host">…</span>), then starts the llama-swap daemon — vLLM serves one host per model, so there are no RPC peers to start in this mode. Models load on first request through llama-swap.</span></p>
@@ -982,7 +982,7 @@ technical | bugs, errors, login problems</textarea></label>
           <button class="small danger" id="evict-all">Evict all</button>
         </div>
       </div>
-      <p class="hint" data-panel="rpc_launch">Or start a single model directly — no scripts. Heterogeneous parallel: disjoint hardware sets can run concurrently — launching a model only stops its own servers (not all). Stops old instances on its servers, starts <span data-engine-label="peers">RPC peers</span>, launches <span data-engine-label="server">llama-server</span>.</p>
+      <p class="hint" data-panel="rpc_launch">Load and Evict call the same llama-swap API path as clients — no per-model port, host, or launch mode to configure. Servers and flags come from the model config.</p>
       <div class="launch-grid" id="launch-grid" data-panel="rpc_launch"></div>
       <div id="disabled-models-strip" data-panel="rpc_launch"></div>
       <div class="card" id="vllm-launch-view" data-launch-view="swap_only" hidden>

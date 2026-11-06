@@ -1579,7 +1579,7 @@ on("#stop-swap", "click", async (e) => {
   const btn = e.currentTarget;
   dashStatus("stop-all clicked");
   if (!armed(btn, "Stop All")) return;
-  btn.disabled = true; btn.textContent = "stopping…";
+  btn.disabled = true; btn.textContent = "evicting…";
   dashStatus("stopping llama-swap + all RPC…");
   try {
     const r = await api("POST", "/api/swap/stop", {});
@@ -5748,10 +5748,10 @@ async function loadSwap() {
   };
   $("#swap-stop").onclick = async (e) => {
     const btn = e.target;
-    btn.disabled = true; btn.textContent = "stopping…";
+    btn.disabled = true; btn.textContent = "evicting…";
     try { await api("POST", "/api/swap/stop", {}); loadSwap(); }
     catch (err) { toast(err.message, "bad"); }
-    btn.disabled = false; btn.textContent = "Stop";
+    btn.disabled = false; btn.textContent = "Evict";
   };
   /* UX-3: the swap-install button is retired (bootstrap.py owns installs);
      the hidden button has no handler — nothing to do here anymore. */
@@ -5850,8 +5850,8 @@ async function loadLaunch() {
       <div class="launch-ready-hint"></div>
       <p class="hint">Served via llama-swap — the same path as the client API. Configure servers/flags in the Models tab.</p>
       <div class="actions">
-        <button class="small" data-act="launch">Launch</button>
-        <button class="small danger" data-act="stop">Stop</button>
+        <button class="small" data-act="launch">Load</button>
+        <button class="small danger" data-act="stop">Evict</button>
         <button class="small" data-act="swap-disable" title="Hide this model from the swap config until re-enabled (takes effect on next push / Launch All)">Disable</button>
         <span class="serving-ind card-loaded status-warn">idle</span>
       </div>
@@ -5920,7 +5920,7 @@ async function loadLaunch() {
         if (hint) hint.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> ' + escHtml(err.message);
         toast(err.message, "bad");
       }
-      btn.disabled = false; btn.textContent = "Launch";
+      btn.disabled = false; btn.textContent = "Load";
     };
   });
   grid.querySelectorAll('[data-act="stop"]').forEach(btn => {
@@ -5929,13 +5929,13 @@ async function loadLaunch() {
       const mid = card.dataset.model;
       const variant = card.dataset.variant || "";
       const key = variant ? `${mid}--${variant}` : mid;
-      btn.disabled = true; btn.textContent = "stopping…";
+      btn.disabled = true; btn.textContent = "evicting…";
       try {
         await api("POST", `/api/swap/evict/${encodeURIComponent(key)}`);
         toast(`Evicted ${key} from llama-swap`, "ok");
         loadLaunch();
       } catch (err) { toast(err.message, "bad"); }
-      btn.disabled = false; btn.textContent = "Stop";
+      btn.disabled = false; btn.textContent = "Evict";
     };
   });
   grid.querySelectorAll('[data-act="swap-disable"]').forEach(btn => {
