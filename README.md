@@ -151,8 +151,10 @@ contribution — pull requests welcome.
 The machine you run the UI on is the master; everything you add is a peer.
 Model configs live as YAML, the app generates the exact launch scripts
 (RPC nodes first, llama-server last), and llama-swap fronts it all so
-clients always hit one endpoint. Secrets (SSH passwords, HF token) live in
-an encrypted vault on your box, never in configs, never in scripts.
+clients always hit one endpoint. The app also runs the `:8090` view/access
+gateway in-process — no separate service to install. Secrets (SSH
+passwords, HF token) live in an encrypted vault on your box, never in
+configs, never in scripts.
 
 ### Expectations: speed
 

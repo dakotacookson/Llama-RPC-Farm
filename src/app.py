@@ -50,7 +50,77 @@ templates.env.auto_reload = True  # pick up index.html edits without a restart
 
 app = FastAPI(title="Llama RPC Farm")
 
+_GATEWAY_SERVER = None
 
+
+def _port_open(port):
+    try:
+        import socket
+        s = socket.socket()
+        s.settimeout(0.3)
+        try:
+            return s.connect_ex(("127.0.0.1", int(port))) == 0
+        finally:
+            s.close()
+    except Exception:
+        return False
+
+
+def start_swap_gateway():
+    """Run the view/access-key gateway in-process on :8090.
+
+    Packaged builds have no source checkout to launch src/swap_gateway.py
+    as a separate service, and every client-facing path (README examples,
+    UI Chat/Tests) expects :8090. Embedding it keeps one binary and makes
+    the gateway lifecycle follow the app. If something already answers on
+    the port (legacy systemd gateway), leave it alone.
+    """
+    global _GATEWAY_SERVER
+    if _GATEWAY_SERVER is not None:
+        return
+    if (os.environ.get("FARM_GATEWAY_DISABLE") or "").lower() in (
+            "1", "true", "yes", "on"):
+        return
+    # pytest spins the app up repeatedly; never bind a real port there.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    try:
+        port = int(os.environ.get("GATEWAY_PORT") or 8090)
+    except ValueError:
+        port = 8090
+    if _port_open(port):
+        print(f"[gateway] :{port} already answering — using external gateway")
+        return
+    try:
+        import threading
+        import uvicorn
+        import swap_gateway
+        cfg = uvicorn.Config(
+            swap_gateway.app,
+            host=(os.environ.get("GATEWAY_HOST") or "0.0.0.0"),
+            port=port,
+            log_level="warning",
+            access_log=False,
+        )
+        server = uvicorn.Server(cfg)
+        thread = threading.Thread(target=server.run, daemon=True,
+                                  name="swap-gateway")
+        thread.start()
+        _GATEWAY_SERVER = server
+        print(f"[gateway] embedded swap gateway listening on "
+              f"{cfg.host}:{cfg.port}")
+    except Exception as e:
+        # A gateway failure must never take down the farm UI; clients can
+        # still target llama-swap :8080 directly.
+        print(f"[gateway] failed to start embedded gateway: {e}")
+
+
+@app.on_event("shutdown")
+def stop_swap_gateway():
+    global _GATEWAY_SERVER
+    if _GATEWAY_SERVER is not None:
+        _GATEWAY_SERVER.should_exit = True
+        _GATEWAY_SERVER = None
 
 
 @app.on_event("startup")
@@ -61,6 +131,7 @@ def seed_local_master():
     # reads them. Best-effort, never blocks boot.
     ensure_runtime_layout()
     local_node.ensure_local_master()
+    start_swap_gateway()
     # DEC-17: one-time stamp of `engine` on legacy group entries (both
     # collections) so existing groups keep rendering under their engine.
     # Best-effort: a locked/read-only config dir never blocks boot.

@@ -138,18 +138,20 @@ scripts/farm-run.sh aibox1 generated/start-my-model-RPC.sh 8080
    reach model commands via a 0600 `swap-secrets.env` sidecar (host-side
    only, git-ignored).
 
-## 9. Optionally run the swap gateway (:8090)
+## 9. Gateway (:8090) — built in
 
-`src/swap_gateway.py` is a view-aware reverse proxy in front of
-llama-swap: clients are keyed to views so they only see their allowlisted
-models; trusted IPs pass through unfiltered. Run it as a systemd service:
+The view/access-key reverse proxy is **embedded in the main app** and
+starts automatically on `:8090` with the UI. No separate service is
+needed, and packaged `.deb`/`.dmg`/`.exe` builds include it. Clients point
+at the gateway instead of `:8080`.
 
-```bash
-# /etc/systemd/system/swap-gateway.service → ExecStart=.venv/bin/python src/swap_gateway.py
-sudo systemctl enable --now swap-gateway
-```
+Environment overrides: `GATEWAY_PORT` (default `8090`), `GATEWAY_HOST`
+(default `0.0.0.0`), `GATEWAY_UPSTREAM` (default `http://127.0.0.1:8080`).
 
-Clients then point at the gateway instead of :8080.
+If you prefer the legacy standalone systemd service, start the app with
+`FARM_GATEWAY_DISABLE=1` and run
+`.venv/bin/python src/swap_gateway.py` yourself — the app detects an
+already-answering `:8090` and leaves it alone.
 
 ## 10. Connect clients
 

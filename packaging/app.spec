@@ -18,6 +18,9 @@ for pkg in ("uvicorn", "fastapi", "starlette", "anyio", "pydantic"):
         hiddenimports += collect_submodules(pkg)
     except Exception:
         pass
+# embedded :8090 gateway lives in src/swap_gateway.py; import it eagerly
+# so PyInstaller's analysis can never miss the dynamic import chain.
+hiddenimports.append("swap_gateway")
 
 a = Analysis(
     [os.path.join(ROOT, "packaging", "app_entry.py")],
