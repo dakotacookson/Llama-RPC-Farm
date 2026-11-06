@@ -23,6 +23,19 @@ import gguf_inspect
 import path_resolver
 import stats_collector
 import agent_client
+from runtime_paths import data_dir
+
+
+def _generated_dir():
+    """Writable generated/ dir in the per-user data root (never the
+    PyInstaller bundle, which is a throwaway extraction directory)."""
+    d = os.path.join(data_dir(), "generated")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _generated_path(name):
+    return os.path.join(_generated_dir(), name)
 
 # ctx ladder we walk DOWN from the math estimate until tok/s >= target
 CTX_LADDER = [262144, 200000, 160000, 128000, 100000,
@@ -672,9 +685,7 @@ def _history_log(model_id, label, bench, max_temp="", trial=None):
     the hardware fingerprint so reuse never crosses topologies."""
     try:
         import csv
-        p = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "generated", "tune-history.csv")
+        p = _generated_path("tune-history.csv")
         new = not os.path.exists(p)
         with open(p, "a", encoding="utf-8", newline="") as f:
             w = csv.writer(f)
@@ -722,9 +733,8 @@ def _fit_print(model_id, base_path, extra_args=None, target_os="linux"):
 
 def _seed_path(model_id):
     safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in model_id)
-    return os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "config", "models", f"{safe}.seed")
+    os.makedirs(cfg.MODELS_DIR, exist_ok=True)
+    return os.path.join(cfg.MODELS_DIR, f"{safe}.seed")
 
 
 def snapshot_seed(model_id):
@@ -754,9 +764,7 @@ def _load_seed(model_id):
 
 
 def _priors_path():
-    return os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "generated", "tune-priors.json")
+    return _generated_path("tune-priors.json")
 
 
 def load_priors():
@@ -876,9 +884,7 @@ def _history_lookup(model_id, label, trial=None, max_age_days=7):
     identical model+label+HARDWARE measured within N days returns tps)."""
     import csv
     try:
-        p = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "generated", "tune-history.csv")
+        p = _generated_path("tune-history.csv")
         if not os.path.exists(p):
             return None
         fp = _hw_fingerprint(trial) if trial is not None else None
@@ -912,9 +918,7 @@ def _history_lookup(model_id, label, trial=None, max_age_days=7):
 
 def _probe_cache():
     import json as _js
-    p = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "generated", "net-probe.json")
+    p = _generated_path("net-probe.json")
     try:
         return (_js.load(open(p)) if os.path.exists(p) else {}), p
     except Exception:
@@ -1281,9 +1285,7 @@ def _run_trial(model_id, trial, port, label, path_map=None):
     # phantom. History CSV stays as audit-only; each rung loads fresh.
     # bench server output goes here (not DEVNULL) so dead-rung
     # failures (e.g. fa=off refusing to bind) stay diagnosable
-    bench_log = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "generated", f"bench-{tmp_id}.log")
+    bench_log = _generated_path(f"bench-{tmp_id}.log")
     trial = copy.deepcopy(trial)
     if path_map:
         # point trials at local SSD copies (mapped by resolved orig path)
