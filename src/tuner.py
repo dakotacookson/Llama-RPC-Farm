@@ -1002,24 +1002,7 @@ def probe_link_mbps(machine, size_mb=32):
         elif _ln.is_local(machine):
             mbps = 0  # local: not a network hop
         else:
-            t0 = time.time()
-            # pump zeros over the same SSH path RPC tensors take.
-            # sshpass -e reads the password from $SSHPASS (environment),
-            # never from the command line — -p '...' would expose it in
-            # `ps aux` to every user on the box. Password itself comes
-            # from the in-memory vault-resolved machine dict.
-            import os as _os
-            cmd = (f"dd if=/dev/zero bs=1M count={size_mb} 2>/dev/null | "
-                   f"sshpass -e ssh "
-                   f"-o StrictHostKeyChecking=no "
-                   f"-o ConnectTimeout=8 -c aes128-gcm@openssh.com "
-                   f"{machine['username']}@{machine['ip']} "
-                   f"-p {machine.get('port', 22)} 'cat > /dev/null'")
-            env = dict(_os.environ, SSHPASS=machine['password'] or "")
-            r = subprocess.run(["bash", "-c", cmd], timeout=120, env=env)
-            dt = max(0.5, time.time() - t0)
-            if r.returncode == 0:
-                mbps = round(size_mb * 8 / dt)
+            mbps = 0
     except Exception:
         mbps = 0
     cache[name] = {"mbps": mbps, "ts": time.time()}
