@@ -5943,8 +5943,7 @@ async def stop_launch(l: LaunchIn):
     if not engine.capable("rpc_cluster"):
         try:
             return await run_in_threadpool(
-                engine.stop_model, l.model_id, l.servers, l.variant,
-                None, l.port)
+                engine.stop_model, l.model_id, l.servers, l.variant)
         except vllm_manager.SwapDownError as e:
             raise HTTPException(status_code=503, detail=str(e)) from None
     valid = {m["name"] for m in cfg.machines.all()}
@@ -5967,7 +5966,7 @@ async def stop_launch(l: LaunchIn):
         return await _proxy_swap_unload(verdict["swap_key"])
     return await run_in_threadpool(rpc_manager.stop_model, l.servers,
                                    l.model_id, l.variant, l.master_name,
-                                   l.port)
+                                   l.model_id)
 
 
 @app.get("/api/launch/active")
@@ -6117,7 +6116,8 @@ async def swap_loaded_models(request: Request):
             data = _json.load(r)
         ids = [m["id"] for m in data.get("data", [])
                if (m.get("status") or {}).get("value") == "loaded"]
-        if _a.is_admin(None) or _a.admin_sees_everything():
+        if (_a.gate_open() and _a.view_allow() is None) \
+                or _a.admin_sees_everything():
             return ids
         # scoped caller: filter against THEIR grants. The middleware
         # stashed the raw record for this request — use it (no token

@@ -1190,7 +1190,7 @@ def launch_plan(config_path=None, host_name=None):
             if _entry_env:
                 models[key]["env"] = [
                     f"{k}={v}" for k, v in _entry_env.items()]
-        elif host_os == "linux":
+        elif host_os in ("linux", "macos"):
             script_name = f"start-{mid_for_key}.sh"
             if peer_objs:
                 scripts[script_name] = rpc_manager._render_rpc(
@@ -2061,6 +2061,23 @@ def launch(binary=None, listen_port=None, config_path=None,
     # stays the user's chosen port; a launch-time collision rolls for
     # that launch alone and the next clean restart lands back on the
     # configured port.
+    if not gen["models"]:
+        return {
+            "host": gen["host"], "port": settings["listen_port"],
+            "port_rolled": False, "config_path": gen["abs_config"],
+            "steps": [{"step": "generate",
+                       "error": "no models generated"}],
+            "models": gen["models"], "scripts": gen["scripts"],
+            "warnings": gen["warnings"], "failed": True,
+        }
+
+    # Stop any existing daemon BEFORE choosing the listen port. Otherwise a
+    # still-running llama-swap on the configured port forces a launch-only
+    # roll (8080 -> 8081), while status/gateway clients remain on 8080.
+    try:
+        prestop = stop()
+    except Exception as e:
+        prestop = {"stopped": False, "note": f"stop failed: {e}"}
     port, port_rolled = rpc_manager._roll_port_if_busy(host, settings["listen_port"],
                                                        is_local)
     abs_config = gen["abs_config"]
@@ -2069,12 +2086,6 @@ def launch(binary=None, listen_port=None, config_path=None,
               "config_path": abs_config, "steps": [],
               "models": gen["models"], "scripts": gen["scripts"],
               "warnings": gen["warnings"]}
-
-    if not gen["models"]:
-        report["steps"].append(
-            {"step": "generate", "error": "no models generated"})
-        report["failed"] = True
-        return report
 
     def do_generate():
         return {"models": gen["models"], "scripts": gen["scripts"],
@@ -2161,18 +2172,6 @@ def launch(binary=None, listen_port=None, config_path=None,
             if s != host["name"] and s not in peer_names:
                 peer_names.append(s)
 
-    def do_stop_swap():
-        # Every Start click must first stop any running daemon: without
-        # this each launch spawns another llama-swap (the new one rolls
-        # to the next free port) and instances pile up. This also makes
-        # switching between the vLLM and llama.cpp configs clean — the
-        # old config's daemon is stopped before the new one starts.
-        try:
-            res = stop()
-        except Exception as e:
-            return {"stopped": False, "note": f"stop failed: {e}"}
-        return {"stopped": res.get("stopped", False)}
-
     def do_start():
         if os_type == "windows":
             if not is_local:
@@ -2198,7 +2197,9 @@ def launch(binary=None, listen_port=None, config_path=None,
     # per-model rpc-servers (other ports) from co-served scripts survive.
     steps.extend((f"rpc:{p}", rpc_manager.start_rpc, p, None, None, None, True)
                  for p in peer_names)
-    steps.append(("swap:stop", do_stop_swap))
+    report["steps"].append({
+        "step": "swap:stop", "stopped": prestop.get("stopped", False),
+        **({"note": prestop["note"]} if prestop.get("note") else {})})
     steps.append(("swap:start", do_start))
     run_steps(report, steps)
     if report["failed"]:
