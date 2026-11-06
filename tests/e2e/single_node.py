@@ -43,6 +43,24 @@ SWAP_PORT = 8080
 AGENT_PORT = 18198
 
 
+def _free_port(start, used):
+    for port in range(int(start), int(start) + 200):
+        if port in used:
+            continue
+        try:
+            sock = socket.socket()
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("127.0.0.1", port))
+            address = sock.getsockname()
+            sock.close()
+            if address[1] == port:
+                used.add(port)
+                return port
+        except OSError:
+            continue
+    raise RuntimeError(f"no free port near {start}")
+
+
 def log(msg):
     print(f"[e2e] {msg}", flush=True)
 
@@ -317,11 +335,21 @@ def isolate_env(work):
 
 
 def main():
+    global APP_PORT, GATEWAY_PORT, SWAP_PORT, AGENT_PORT
     ap = argparse.ArgumentParser()
     ap.add_argument("--app", required=True)
     ap.add_argument("--agent", required=True)
     ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--app-port", type=int, default=APP_PORT)
+    ap.add_argument("--gateway-port", type=int, default=GATEWAY_PORT)
+    ap.add_argument("--swap-port", type=int, default=SWAP_PORT)
+    ap.add_argument("--agent-port", type=int, default=AGENT_PORT)
     args = ap.parse_args()
+    used = set()
+    APP_PORT = _free_port(args.app_port, used)
+    GATEWAY_PORT = _free_port(args.gateway_port, used)
+    SWAP_PORT = _free_port(args.swap_port, used)
+    AGENT_PORT = _free_port(args.agent_port, used)
 
     work = Path(tempfile.mkdtemp(prefix="llama-farm-e2e-"))
     # Set the data-dir override BEFORE importing src modules so their
@@ -345,7 +373,7 @@ def main():
         agent_env = dict(os.environ, **isolated,
                          PEER_AGENT_TOKEN=TOKEN,
                          PEER_AGENT_PORT=str(AGENT_PORT),
-                         PEER_AGENT_DISCOVERY_PORT="18199",
+                         PEER_AGENT_DISCOVERY_PORT=str(AGENT_PORT + 1),
                          PEER_AGENT_DISCOVERY="0",
                          PEER_AGENT_NO_SERVICE="1",
                          PEER_AGENT_PAIRING="0",
@@ -367,6 +395,7 @@ def main():
                        LLAMA_FARM_PORT=str(APP_PORT),
                        GATEWAY_PORT=str(GATEWAY_PORT),
                        GATEWAY_HOST="127.0.0.1",
+                       GATEWAY_UPSTREAM=f"http://127.0.0.1:{SWAP_PORT}",
                        LLAMA_FARM_NO_SERVICE="1")
         app_proc = subprocess.Popen(
             [args.app], env=app_env, stdout=app_log,
