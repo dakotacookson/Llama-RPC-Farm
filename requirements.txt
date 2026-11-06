@@ -12,9 +12,3 @@ python-dotenv>=1.0.0
 ruamel.yaml>=0.18.0
 pytest>=8.0.0
 pyfakefs>=5.3
-
-# System dependency (NOT pip-installable): sshpass is needed only on the
-# master and only for SSH transport (bootstrap/recovery + generated scripts).
-# Peer-agent transport works without it. The Linux .deb declares it as a
-# package dependency; source installs: sudo apt install -y sshpass
-# (Fedora/RHEL: sudo dnf install sshpass; macOS: brew install hudochenkov/sshpass/sshpass)

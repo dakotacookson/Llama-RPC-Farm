@@ -77,17 +77,6 @@ log "Installing requirements"
 "$VENV_PY" -m pip install --upgrade pip -q
 "$VENV_PY" -m pip install -r "$REQ"
 
-# sshpass is a system binary, not a Python package. Only the SSH transport
-# (bootstrap/recovery + generated scripts that SSH to peers) needs it; the
-# peer-agent transport works without it. The Linux .deb declares it as a
-# dependency, so packaged installs get it automatically.
-if ! command -v sshpass >/dev/null 2>&1; then
-  log "NOTE: sshpass not found (optional — only needed for SSH transport)"
-  echo "  Debian/Ubuntu: sudo apt install -y sshpass"
-  echo "  Fedora/RHEL:   sudo dnf install -y sshpass"
-  echo "  macOS:         brew install hudochenkov/sshpass/sshpass"
-fi
-
 log "Done."
 echo
 echo "Next steps:"

@@ -144,7 +144,7 @@ def test_agent_client_health_and_transport(live_agent, monkeypatch):
     assert agent_client.should_use_agent(machine) is True
     assert agent_client.health(machine)["ok"] is True
     assert isinstance(agent_client.rpc_list(machine), list)
-    assert agent_client.should_use_agent({**machine, "transport": "ssh"}) is False
+    assert agent_client.should_use_agent({**machine, "transport": "ssh"}) is True
 
 
 def test_agent_client_auto_falls_back_when_down(monkeypatch):
@@ -153,7 +153,10 @@ def test_agent_client_auto_falls_back_when_down(monkeypatch):
                         lambda m: TOKEN)
     machine = {"name": "closed-peer", "ip": "127.0.0.1",
                "agent_port": 9, "transport": "auto"}
-    assert agent_client.should_use_agent(machine) is False
+    # agent-only: transport selection no longer probes/falls back
+    assert agent_client.should_use_agent(machine) is True
+    with pytest.raises(agent_client.AgentError):
+        agent_client.health(machine, timeout=0.2)
 
 
 def test_rpc_manager_uses_agent_for_list_ensure_stop(stub_cfg, monkeypatch):

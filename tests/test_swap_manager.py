@@ -403,6 +403,16 @@ import types
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _force_legacy_ssh(monkeypatch):
+    """Legacy SSH-path unit tests; removed with the SSH code."""
+    import swap_manager
+    monkeypatch.setattr(swap_manager.agent_client, "should_use_agent",
+                        lambda m: False)
+    monkeypatch.setattr(swap_manager.agent_client, "transport",
+                        lambda m: "ssh")
+
 import rpc_manager
 import swap_manager
 

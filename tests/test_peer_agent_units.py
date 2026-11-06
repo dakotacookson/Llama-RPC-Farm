@@ -334,9 +334,7 @@ def test_agent_client_wrappers(monkeypatch):
         ac.health(m)
     monkeypatch.setattr(ac, "_request", lambda *a, **k: {"protocol_version": 1})
     assert ac.health(m)["protocol_version"] == 1
-    monkeypatch.setattr(ac, "health", lambda m, timeout=0: (_ for _ in ()).throw(ac.AgentError("x")))
-    ac._health_cache.clear()
-    assert ac.should_use_agent({**m, "transport": "auto"}) is False
+    assert ac.should_use_agent({**m, "transport": "auto"}) is True
 
 
 def test_peer_transport_both(monkeypatch):
@@ -347,33 +345,11 @@ def test_peer_transport_both(monkeypatch):
         def logs_tail(self, m, n, l=20): return {"text": "a"}
         def processes(self, m): return {"rpc": []}
     monkeypatch.setattr(pt, "AgentTransport", FakeAgent)
-    monkeypatch.setattr(pt.agent_client, "should_use_agent", lambda m: True)
     t = pt.for_machine({"name": "p"})
     assert t.status({})["agent"] is True
-
-    class FakeRM:
-        def machine_status(self, name, use_agent=True): return {"name": name}
-        def stop_rpc(self, name, port=None, use_agent=True): return {"stopped": True}
-        def _tail_log(self, *a, **k): return "rpc"
-        def list_rpc_servers(self, name, use_agent=True): return []
-        def _ssh_for(self, m):
-            class S:
-                def run(self, cmd, timeout=10): return (0, "generic", "")
-            return S()
-    monkeypatch.setattr(pt.agent_client, "should_use_agent", lambda m: False)
-    monkeypatch.setattr(pt.SSHTransport, "_rpc", lambda self: FakeRM())
-    import local_node
-    monkeypatch.setattr(local_node, "is_local", lambda m: False)
-    s = pt.SSHTransport()
-    m = {"name": "p", "os": "linux"}
-    assert s.status(m)["name"] == "p"
-    assert s.stop_all(m)["stopped"] is True
-    assert s.logs_tail(m, "rpc-server.log")["text"] == "rpc"
-    assert s.logs_tail(m, "llama-swap.log")["text"] == "generic"
-    assert s.processes(m)["rpc"] == []
-    monkeypatch.setattr(local_node, "is_local", lambda m: True)
-    assert s.logs_tail(m, "llama-swap.log")["text"] == ""
-
+    assert t.stop_all({})["killed"] is True
+    assert t.logs_tail({}, "x")["text"] == "a"
+    assert t.processes({})["rpc"] == []
 
 def test_main_cli(monkeypatch, capsys):
     from llama_peer_agent import __main__ as cli
@@ -665,7 +641,7 @@ def test_agent_client_error_and_branch_paths(monkeypatch):
     import urllib.error, io
     assert ac.agent_port({"agent_port": "bad"}) == 8198
     assert ac.agent_port({"agent_port": 0}) == 8198
-    assert ac.transport({"transport": "bad"}) == "auto"
+    assert ac.transport({"transport": "bad"}) == "agent"
     monkeypatch.setattr(ac.secrets_vault, "get_machine_agent_token",
                         lambda m: (_ for _ in ()).throw(RuntimeError("x")))
     monkeypatch.setenv("AGENT_TOKEN", "a")
@@ -724,11 +700,7 @@ def test_agent_client_error_and_branch_paths(monkeypatch):
     with pytest.raises(ac.AgentError):
         ac.speedtest({"ip": "1.2.3.4"})
     # should_use_agent cache and rdma
-    monkeypatch.setattr(ac, "transport", lambda m: "auto")
-    assert ac.should_use_agent({"rdma_cm": True}) is False
-    monkeypatch.setattr(ac, "health", lambda m, timeout=0: {"ok": True})
-    ac._health_cache.clear()
-    assert ac.should_use_agent({"name": "c", "ip": "1"}) is True
+    assert ac.should_use_agent({"rdma_cm": True}) is True
     assert ac.should_use_agent({"name": "c", "ip": "1"}) is True
     assert ac._cache_key({"id": "i"}) == "i"
     assert ac._cache_key({"ip": "ip"}) == "ip"

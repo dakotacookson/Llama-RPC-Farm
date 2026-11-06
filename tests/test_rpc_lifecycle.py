@@ -14,6 +14,17 @@ import pytest
 import rpc_manager
 
 
+@pytest.fixture(autouse=True)
+def _force_legacy_ssh(monkeypatch):
+    """These unit tests exercise the legacy SSH command rendering while
+    the agent-only migration removes it; force the SSH branch here."""
+    import rpc_manager
+    monkeypatch.setattr(rpc_manager.agent_client, "should_use_agent",
+                        lambda m: False)
+    monkeypatch.setattr(rpc_manager.agent_client, "transport",
+                        lambda m: "ssh")
+
+
 class FakeSSH:
     """Records commands run and returns canned results. Mimics the
     .run(code, out, err) and .check_port()/is_reachable() surface that
