@@ -950,19 +950,13 @@ def _pcie_info(machine):
     if not val and not (agent_selected and
                         agent_client.transport(machine) == "agent"):
         try:
-            from ssh_manager import SSHManager
             import local_node as _ln
             if _ln.is_local(machine):
                 p = subprocess.run(q.split(), capture_output=True, text=True,
                                    timeout=10)
                 out = p.stdout
             else:
-                ssh = SSHManager(machine["ip"], machine["username"],
-                                 machine["password"],
-                                 port=machine.get("port", 22))
-                code, out, _ = ssh.run(q, timeout=15)
-                if code != 0:
-                    out = ""
+                out = ""
             tags = []
             for line in (out or "").splitlines():
                 cells = [x.strip() for x in line.split(",")]
@@ -1001,7 +995,6 @@ def probe_link_mbps(machine, size_mb=32):
             else:
                 print(f"[agent] {name}: speedtest failed, falling back to SSH: {e}")
     try:
-        from ssh_manager import SSHManager
         import local_node as _ln
         if mbps or (agent_selected and
                     agent_client.transport(machine) == "agent"):
@@ -1057,7 +1050,6 @@ def virt_info(machine=None):
                 return info
             print(f"[agent] {machine.get('name')}: virt failed, falling back to SSH: {e}")
     try:
-        from ssh_manager import SSHManager
         import local_node as _ln
         if machine is None or _ln.is_local(machine):
             def run(cmd):
@@ -1065,13 +1057,8 @@ def virt_info(machine=None):
                                    text=True, timeout=10)
                 return p.stdout.strip()
         else:
-            ssh = SSHManager(machine["ip"], machine["username"],
-                             machine["password"],
-                             port=machine.get("port", 22))
-
             def run(cmd):
-                code, out, _ = ssh.run(cmd, timeout=15)
-                return out.strip() if code == 0 else ""
+                return ""
         info["virt"] = run("systemd-detect-virt") or "bare?"
         cpu = run("lscpu -J")
         if cpu:
@@ -1191,18 +1178,13 @@ def measure_headroom(servers):
                     continue
                 print(f"[agent] {name}: metrics failed, falling back to SSH: {e}")
         try:
-            from ssh_manager import SSHManager
             import local_node as _ln
             if _ln.is_local(m):
                 p = subprocess.run(q.split(), capture_output=True, text=True,
                                    timeout=10)
                 out = p.stdout
             else:
-                ssh = SSHManager(m["ip"], m["username"], m["password"],
-                                 port=m.get("port", 22))
-                code, out, _ = ssh.run(q, timeout=15)
-                if code != 0:
-                    continue
+                out = ""
             for line in (out or "").splitlines():
                 line = line.strip()
                 if line.replace(".", "", 1).isdigit():

@@ -33,6 +33,7 @@ import agent_client
 import local_node
 import urllib.request
 
+
 GITHUB_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases"
 GITHUB_LATEST_DL = "https://github.com/ggml-org/llama.cpp/releases/latest/download"
 LINUX_VER = "10.0"   # ubuntu-rocm-<ver>
@@ -260,7 +261,6 @@ def install_on(machine, log=lambda m: None):
     """Install the right prebuilt on a machine (local or via SSH).
     Returns dict {ok, machine, bin, detail}."""
     import config_loader as cfg
-    from ssh_manager import SSHManager, SSHError
     import local_node
     import subprocess   # TimeoutExpired is a SubprocessError, NOT an OSError
 
@@ -281,19 +281,7 @@ def install_on(machine, log=lambda m: None):
         return proc.returncode, proc.stdout + proc.stderr
 
     def run_remote(cmd, timeout=600):
-        ssh = SSHManager(machine["ip"], machine["username"],
-                         machine["password"], port=machine.get("port", 22))
-        if is_win:
-            # Windows peers' OpenSSH default shell is cmd.exe — a raw
-            # PowerShell body dies there ('$ErrorActionPreference' is not
-            # recognized...). Hand it to cmd as a 'powershell -NoProfile
-            # -Command' wrapper, same escaping as rpc_manager (AGENTS.md
-            # OS coverage): embedded double quotes become \" so PS parses
-            # them as literals inside the outer quoted command.
-            cmd = ('powershell -NoProfile -Command "'
-                   + cmd.replace('"', '\\"') + '"')
-        code, out, err = ssh.run(cmd, timeout=timeout)
-        return code, out + err
+        raise RuntimeError("remote install is agent-only; use the peer agent")
 
     run = run_local if is_local else run_remote
     try:
@@ -314,7 +302,7 @@ def install_on(machine, log=lambda m: None):
                 _cfg.machines.update(name, {"detected": machine["detected"]})
             except Exception:
                 pass
-    except (SSHError, OSError, subprocess.TimeoutExpired) as e:
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
         return {"ok": False, "machine": name, "detail": f"probe failed: {e}"}
     try:
         tag, assets, base = _fetch_latest_assets()
@@ -406,7 +394,7 @@ def install_on(machine, log=lambda m: None):
         if code != 0:
             return {"ok": False, "machine": name,
                     "detail": f"install failed (exit {code}): {out[-500:]}"}
-    except (SSHError, OSError, subprocess.TimeoutExpired) as e:
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
         return {"ok": False, "machine": name, "detail": f"transfer failed: {e}"}
 
     # post-install verify: the server binary must at least start — a
@@ -418,7 +406,7 @@ def install_on(machine, log=lambda m: None):
         vcmd = '"$HOME/llama.cpp/bin/llama-server" --version'
     try:
         vcode, vout = run(vcmd, timeout=120)
-    except (SSHError, OSError, subprocess.TimeoutExpired) as e:
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
         vcode, vout = 1, f"verify crashed: {e}"
     if vcode != 0:
         return {"ok": False, "machine": name,
@@ -468,7 +456,6 @@ def _machine_run(machine):
     """(run, is_local) for a machine — bash -c locally, raw SSH
     remotely (POSIX; Windows peers never take the source path)."""
     import local_node
-    from ssh_manager import SSHManager
     is_local = local_node.is_local(machine)
 
     def run_local(cmd, timeout=7200):
@@ -478,10 +465,7 @@ def _machine_run(machine):
         return proc.returncode, proc.stdout + proc.stderr
 
     def run_remote(cmd, timeout=7200):
-        ssh = SSHManager(machine["ip"], machine["username"],
-                         machine["password"], port=machine.get("port", 22))
-        code, out, err = ssh.run(cmd, timeout=timeout)
-        return code, out + err
+        raise RuntimeError("remote install is agent-only; use the peer agent")
 
     return (run_local if is_local else run_remote), is_local
 

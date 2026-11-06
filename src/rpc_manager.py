@@ -15,7 +15,6 @@ import time
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
 
-from ssh_manager import SSHManager, SSHError
 import config_loader as cfg
 import agent_client
 import peer_transport
@@ -333,45 +332,9 @@ def _win_exe_expr(machine, server="ggml-rpc-server"):
     return f"Join-Path ({base}) '{exe_name}'"
 
 
-class _MacCapturingSSH(SSHManager):
-    """SSHManager that remembers the machine it connects to. On the first
-    successful command run, grabs the machine's MAC (the identity that
-    never changes across DHCP re-leases) and stores it on the machine
-    config — later IP drift can then be auto-healed from the ARP table.
-    Capture is once-per-machine, off the hot path."""
-    def __init__(self, machine, *a, **kw):
-        super().__init__(machine["ip"], machine.get("username", ""),
-                         machine.get("password", ""), port=machine.get("port", 22),
-                         *a, **kw)
-        self._machine = machine
-        self._mac_done = bool((machine.get("mac") or "").strip())
-
-    def run(self, command, timeout=60):
-        code, out, err = super().run(command, timeout)
-        if code == 0 and not self._mac_done:
-            self._mac_done = True  # once per process, even on failure
-            try:
-                import discovery
-                os_type = self._machine.get("os", "linux")
-                mac_ip, mac = discovery.query_machine_mac(self, os_type)
-                if mac:
-                    self._machine["mac"] = mac
-                    cfg.machines.update(
-                        self._machine.get("name") or self._machine.get("id"),
-                        {"mac": mac})
-                    print(f"[mac-capture] {self._machine.get('name')}: {mac} @ {mac_ip}")
-            except Exception:
-                pass  # best-effort: never break a working command
-        return code, out, err
-
-
 def _ssh_for(machine):
-    if agent_client.transport(machine) == "agent":
-        raise SSHError(
-            f"SSH is disabled for {machine.get('name') or machine.get('id') or machine.get('ip')}: "
-            "transport=agent")
-    return _MacCapturingSSH(machine)
-
+    """SSH runtime transport is removed — only the peer agent is used."""
+    raise RuntimeError("SSH transport removed; use the peer agent")
 
 def _bin_subdir(machine, binary):
     """Bin path for remote commands. ~/ paths become $HOME-relative
@@ -466,7 +429,7 @@ def stop_rpc(machine_name, port=None, use_agent=True):
             return _run_local(cmd, is_win, timeout)
         try:
             return _ssh_for(machine).run(cmd, timeout=timeout)
-        except SSHError as e:
+        except RuntimeError as e:
             return 255, "", str(e)
 
     # ---- per-model port-targeted stop ----
@@ -611,7 +574,7 @@ def stop_llama_server_port(machine_name, port, use_agent=True):
             return _run_local(cmd, is_win, timeout)
         try:
             return _ssh_for(machine).run(cmd, timeout=timeout)
-        except SSHError as e:
+        except RuntimeError as e:
             return 255, "", str(e)
 
     port = int(port)
@@ -749,7 +712,7 @@ def _rpc_state_read(machine, is_local, port=50052):
                f"cat {tmp} 2>/dev/null || true")
     try:
         _, out, _ = _ssh_for(machine).run(cmd, timeout=10)
-    except SSHError:
+    except RuntimeError:
         return ""
     return (out or "").strip()
 
@@ -794,7 +757,7 @@ def _rpc_state_write(machine, is_local, want, port=50052):
                f"> {tmp}")
     try:
         _ssh_for(machine).run(cmd, timeout=10)
-    except SSHError:
+    except RuntimeError:
         pass
 def _expose_args(expose):
     """ggml-rpc-server flags for what to expose. NOTE: ggml-rpc-server
@@ -1051,21 +1014,8 @@ def _port_open(machine, port, is_local):
             try:
                 return any(int(p.get("port") or 0) == int(port)
                            for p in agent_client.rpc_list(machine))
-            except Exception as e:
-                if agent_client.transport(machine) == "agent":
-                    return False
-                print(f"[agent] {machine['name']}: rpc/list failed, falling back to SSH: {e}")
-        try:
-            from ssh_manager import SSHManager
-            ssh = SSHManager(machine["ip"], machine["username"],
-                             machine.get("password", ""),
-                             port=machine.get("port", 22))
-            code, out, _ = ssh.run(
-                f"pgrep -f 'ggml-[r]pc-server.*-p {port} ' >/dev/null && echo up",
-                timeout=8)
-            return code == 0 and "up" in (out or "")
-        except Exception:
-            return False
+            except Exception:
+                return False
     host = "127.0.0.1" if is_local else machine["ip"]
     import socket
     try:
@@ -1105,7 +1055,7 @@ def _tail_log(machine, is_win, is_local, port=50052, use_agent=True):
     try:
         _, tail, _ = _ssh_for(machine).run(cmd, timeout=10)
         return tail
-    except SSHError:
+    except RuntimeError:
         return ""
 
 
@@ -1147,7 +1097,7 @@ def _tail_all_rpc_logs(machine, is_win, is_local, use_agent=True):
     try:
         _, tail, _ = _ssh_for(machine).run(cmd, timeout=10)
         return tail
-    except SSHError:
+    except RuntimeError:
         return ""
 
 
@@ -1168,8 +1118,8 @@ def _sync_machine_ip(machine):
         return machine
     # sanity: the new IP must actually speak SSH before we switch to it
     try:
-        with socket.create_connection((current_ip, machine.get("port", 22)),
-                                      timeout=3):
+        with socket.create_connection(
+                (current_ip, agent_client.agent_port(machine)), timeout=3):
             pass
     except OSError:
         return machine
@@ -1342,7 +1292,7 @@ def _any_rpc_running_remote(machine, ssh):
                 return False
         code, _, _ = ssh.run("pgrep -f ggml-[r]pc-server")
         return code == 0
-    except SSHError:
+    except RuntimeError:
         return ssh.check_port(machine.get("rpc_port", 50052))
 
 
@@ -3488,7 +3438,7 @@ def _launch_model_remote_local(model, master, peers, port):
               master["name"], port),
              (f"serve:{master['name']}", _start_llama_server,
               model, master, [], port)]
-    report = run_steps(report, steps, catch=(SSHError, ValueError))
+    report = run_steps(report, steps, catch=(RuntimeError, ValueError))
     for st in report.get("steps", []):
         if st.get("step", "").startswith("serve:") and st.get("port"):
             report["port"] = st["port"]
@@ -3591,7 +3541,7 @@ def launch_model(model_id, servers, port=8080, variant=None, master_name=None,
     steps += rpc_steps
     steps.append((f"serve:{master['name']}", _start_llama_server,
                   model, master, peers, port))
-    report = run_steps(report, steps, catch=(SSHError, ValueError))
+    report = run_steps(report, steps, catch=(RuntimeError, ValueError))
     # surface the ACTUAL bound port (it may have rolled past a busy one)
     for st in report.get("steps", []):
         if st.get("step", "").startswith("serve:") and st.get("port"):

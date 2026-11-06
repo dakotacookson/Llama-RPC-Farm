@@ -57,38 +57,7 @@ class _FakeSSH:
     def run(self, cmd, timeout=15):
         return 0, self._out, ""
 
-def test_query_machine_mac_linux(monkeypatch):
-    out = "10.0.0.98 bc:24:11:de:ad:be\n10.0.0.99 00:15:5d:aa:bb:cc\n"
-    ip, mac = discovery.query_machine_mac(_FakeSSH(out), "linux")
-    # virtual NICs (Hyper-V 00:15:5d) skipped; physical wins
-    assert ip == "10.0.0.98"
-    assert mac == "bc:24:11:de:ad:be"
 
-def test_query_machine_mac_windows(monkeypatch):
-    out = "10.0.0.124 DE-AD-BE-EF-12-34\n"
-    ip, mac = discovery.query_machine_mac(_FakeSSH(out), "windows")
-    assert ip == "10.0.0.124"
-    assert mac == "de:ad:be:ef:12:34"  # dashes -> colons, lowered
-
-def test_query_machine_mac_macos():
-    out = "10.0.0.5 a4:83:e7:11:22:33\n"
-    ip, mac = discovery.query_machine_mac(_FakeSSH(out), "macos")
-    assert ip == "10.0.0.5"
-    assert mac == "a4:83:e7:11:22:33"
-
-def test_query_machine_mac_no_output():
-    ip, mac = discovery.query_machine_mac(_FakeSSH(""), "linux")
-    assert ip == "" and mac == ""
-
-def test_query_machine_mac_ssh_failure():
-    class _DeadSSH:
-        def run(self, cmd, timeout=15):
-            raise discovery.SSHError("unreachable")
-    ip, mac = discovery.query_machine_mac(_DeadSSH(), "linux")
-    assert ip == "" and mac == ""
-
-
-# ---------------- ARP table parsing ----------------
 
 def test_arp_table_from_arp_a(monkeypatch):
     out = "? (10.0.0.124) at de:ad:be:ef:12:34 [ether] on enp6s18\n" \
@@ -198,45 +167,3 @@ def test_sync_new_ip_without_ssh_is_rejected(monkeypatch):
 
 
 # ---------------- MAC capture on successful connect ----------------
-
-def test_mac_captured_on_first_successful_run(monkeypatch):
-    """A successful SSH command triggers a one-time MAC capture, stored
-    on the machine config."""
-    m = _machine(mac="")  # no MAC known yet
-    monkeypatch.setattr(discovery, "query_machine_mac",
-                        lambda ssh, os_type: ("10.0.0.124", "de:ad:be:ef:12:34"))
-    updates = {}
-    monkeypatch.setattr(rpc_manager.cfg.machines, "update",
-                        lambda name, upd: updates.update(upd))
-    # the underlying SSHManager.run: pretend success without the network
-    monkeypatch.setattr(rpc_manager.SSHManager, "run",
-                        lambda self, cmd, timeout=60: (0, "ok", ""))
-    ssh = rpc_manager._MacCapturingSSH(m)
-    code, out, err = ssh.run("echo ok")
-    assert code == 0
-    assert m["mac"] == "de:ad:be:ef:12:34"
-    assert updates["mac"] == "de:ad:be:ef:12:34"
-
-def test_mac_capture_skipped_when_stored(monkeypatch):
-    """Already-known MAC: no capture query is ever issued."""
-    m = _machine(mac="de:ad:be:ef:12:34")
-    queried = []
-    monkeypatch.setattr(discovery, "query_machine_mac",
-                        lambda ssh, os_type: queried.append(1) or ("", ""))
-    monkeypatch.setattr(rpc_manager.SSHManager, "run",
-                        lambda self, cmd, timeout=60: (0, "ok", ""))
-    ssh = rpc_manager._MacCapturingSSH(m)
-    ssh.run("echo ok")
-    assert queried == []  # capture is once per machine
-
-def test_mac_capture_failure_never_breaks_command(monkeypatch):
-    """A broken MAC capture must not fail the working SSH command."""
-    m = _machine(mac="")
-    def _boom(ssh, os_type):
-        raise RuntimeError("capture exploded")
-    monkeypatch.setattr(discovery, "query_machine_mac", _boom)
-    monkeypatch.setattr(rpc_manager.SSHManager, "run",
-                        lambda self, cmd, timeout=60: (0, "ok", ""))
-    ssh = rpc_manager._MacCapturingSSH(m)
-    code, out, err = ssh.run("echo ok")
-    assert code == 0 and out == "ok"  # command result untouched

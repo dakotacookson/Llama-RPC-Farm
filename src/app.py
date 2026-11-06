@@ -995,26 +995,9 @@ def _detect_rdma_nic(machine, is_local):
         except (OSError, subprocess.SubprocessError):
             # no bash on Windows (RDMA tooling is Linux-only anyway)
             return {}
-    elif agent_client.should_use_agent(machine):
-        try:
-            return agent_client.rdma(machine) or {}
-        except Exception as e:
-            if agent_client.transport(machine) == "agent":
-                return {}
-            print(f"[agent] {machine.get('name')}: rdma failed, falling back to SSH: {e}")
-            try:
-                from ssh_manager import SSHManager
-                ssh = SSHManager(machine["ip"], machine["username"],
-                                 machine.get("password", ""),
-                                 port=machine.get("port", 22))
-                code, out, _ = ssh.run(remote_script, timeout=20)
-            except Exception:
-                return {}
     else:
         try:
-            from ssh_manager import SSHManager
-            ssh = SSHManager(machine["ip"], machine["username"], machine.get("password", ""), port=machine.get("port", 22))
-            code, out, _ = ssh.run(remote_script, timeout=20)
+            return agent_client.rdma(machine) or {}
         except Exception:
             return {}
     for line in (out or "").splitlines():
@@ -4462,14 +4445,11 @@ def _agent_version_payload(machine):
 
 
 def _update_agent_remote(machine):
-    """Install/update the agent over SSH bootstrap and restart its service."""
-    from ssh_manager import SSHManager
+    """Install/update the agent through its in-place /agent/update endpoint."""
     name = machine.get("name") or machine.get("id") or "?"
     wheel = _agent_wheel_path()
     version = _agent_latest_version()
-    # Preferred path: the agent upgrades itself in place. The SSH path
-    # below is only bootstrap/recovery for agents that predate /agent/update.
-    if agent_client.should_use_agent(machine):
+    if True:
         try:
             with open(wheel, "rb") as f:
                 blob = f.read()
@@ -4493,59 +4473,10 @@ def _update_agent_remote(machine):
                         "method": "agent",
                         "detail": "agent accepted update but did not come back healthy"}
         except Exception as e:
-            print(f"[agent] {name}: self-update unavailable, using SSH bootstrap: {e}")
-    port = machine.get("ssh_update_port") or (machine.get("port")
-                                               if int(machine.get("port") or 22) > 1
-                                               else 22)
-    ssh = SSHManager(machine.get("ip", ""), machine.get("username", ""),
-                     machine.get("password", ""), port=port, timeout=20)
-    is_win = (machine.get("os", "linux") == "windows")
-    home = (ssh.run("echo %USERPROFILE%", timeout=10)[1].strip().splitlines()[-1]
-            if is_win else
-            ssh.run("echo $HOME", timeout=10)[1].strip().splitlines()[-1])
-    if not home:
-        raise RuntimeError("could not resolve remote home directory")
-    if is_win:
-        remote = f"{home}/AppData/Local/Temp/{os.path.basename(wheel)}"
-    else:
-        remote = f"{home}/.cache/{os.path.basename(wheel)}"
-    ssh.push_file(wheel, remote)
-    if is_win:
-        venv = rf"{home}\.llama-peer-agent\venv"
-        py = rf"{venv}\Scripts\python.exe"
-        ps = (
-            f"New-Item -ItemType Directory -Force -Path '{home}\.llama-peer-agent' | Out-Null; "
-            f"if (-not (Test-Path '{py}')) {{ & C:\Python312\python.exe -m venv '{venv}' }}; "
-            f"& '{py}' -m pip install --force-reinstall --no-deps '{remote}'; "
-            "schtasks /End /TN LlamaPeerAgent 2>$null | Out-Null; "
-            "Start-ScheduledTask -TaskName 'LlamaPeerAgent'")
-        code, out, err = ssh.run('powershell -NoProfile -Command "' +
-                                 ps.replace('"', '\\"') + '"', timeout=180)
-    else:
-        venv = f"{home}/.llama-peer-agent/venv"
-        py = f"{venv}/bin/python"
-        cmd = (
-            "test -x " + py + " || python3 -m venv " + venv + "; " +
-            py + " -m pip install --force-reinstall --no-deps " + remote + "; " +
-            "systemctl --user restart llama-peer-agent")
-        code, out, err = ssh.run(cmd, timeout=180)
-    try:
-        ssh.run(f"rm -f {remote}" if not is_win else f"del {remote}", timeout=20)
-    except Exception:
-        pass
-    if code != 0:
-        raise RuntimeError((err or out or f"exit {code}")[-800:])
-    import time as _t
-    _t.sleep(2)
-    try:
-        h = agent_client.health(machine, timeout=5)
-        return {"ok": True, "machine": name, "wheel": os.path.basename(wheel),
-                "agent_version": h.get("agent_version"),
-                "protocol_version": h.get("protocol_version")}
-    except Exception as e:
-        return {"ok": False, "machine": name, "wheel": os.path.basename(wheel),
-                "detail": f"installed but agent health failed: {e}"}
-
+            return {"ok": False, "machine": name,
+                    "wheel": os.path.basename(wheel),
+                    "method": "agent",
+                    "detail": f"agent update failed: {e}"}
 
 @app.get("/api/machines/{name}/agent-version")
 async def agent_version_machine(name: str):
@@ -4816,8 +4747,8 @@ async def vllm_plan_machine(name: str):
 # Unified installer endpoints (UX-1): probe/plan/execute layer in app
 # ---------------------------------------------------------------------------
 # Wraps src/installer/{probe,execute}.py. Remote machines run the probe
-# ladder + executor over an SSHManager-backed RunCmd; local machines run
-# RealRunCmd locally. NO GPU drivers are ever installed (executor refuses);
+# ladder + executor; remote probing is agent-only (local RunCmd here).
+# NO GPU drivers are ever installed (executor refuses);
 # llama.cpp serving behavior is untouched (this only adds new endpoints).
 
 
@@ -4848,36 +4779,11 @@ def _machine_env(machine):
         from installer.env import RealRunCmd as _RRC
         run = _RRC()
     else:
-        if agent_client.transport(machine) == "agent":
-            raise HTTPException(
-                status_code=400,
-                detail="installer system probe is not agent-backed; "
-                       "set transport=auto/ssh or add the missing agent probe")
-        from ssh_manager import SSHManager
-
-        class _SSHRunCmd:
-            """RunCmd adapter: SSHManager.run -> (code, out, err) ->
-            RunResult. Windows peers get a PowerShell wrapper so the
-            probe ladder's shell syntax parses (cmd.exe default shell)."""
-
-            def __init__(self, m):
-                self._ssh = SSHManager(m["ip"], m.get("username", ""),
-                                       m.get("password", ""),
-                                       port=m.get("port", 22))
-                self._win = os_type == "windows"
-
-            def run(self, cmd, timeout=30.0):
-                real = cmd
-                if self._win:
-                    real = ('powershell -NoProfile -Command "'
-                            + cmd.replace('"', '\\"') + '"')
-                try:
-                    code, out, err = self._ssh.run(real, timeout=timeout)
-                except Exception as e:
-                    return RunResult(cmd, 255, "", f"ssh error: {e}")
-                return RunResult(cmd, code, out or "", err or "")
-
-        run = _SSHRunCmd(machine)
+        raise HTTPException(
+            status_code=400,
+            detail="remote installer probes are agent-only; install via the "
+                   "peer agent's /install/* endpoints or run the installer on "
+                   "that machine")
 
     # detect the rest of SystemInfo with the shared probe ladder (cheap,
     # read-only; same code path bootstrap.py uses locally)
@@ -5408,141 +5314,12 @@ def _fs_list_agent(machine, raw_path, show_hidden=False):
 
 
 def _fs_list_remote(machine, raw_path, show_hidden=False):
-    if agent_client.should_use_agent(machine):
-        try:
-            return _fs_list_agent(machine, raw_path, show_hidden)
-        except HTTPException:
-            raise
-        except Exception as e:
-            if agent_client.transport(machine) == "agent":
-                raise HTTPException(status_code=500,
-                                    detail=f"agent browse failed: {e}")
-            print(f"[agent] {machine['name']}: browse failed, falling back to SSH: {e}")
-    from ssh_manager import SSHManager, SSHError
-    is_win = machine.get("os", "linux") == "windows"
-    if not raw_path or raw_path.strip() == "":
-        raw_path = "~" if not is_win else "%USERPROFILE%"
-    # store:// on remote: resolve for that machine's OS (best-effort: use local stores.yaml)
-    if raw_path.startswith(path_resolver.PREFIX):
-        try:
-            raw_path = path_resolver.resolve_for(raw_path, machine.get("os", "linux"))
-        except Exception:
-            pass
-    ssh = SSHManager(machine["ip"], machine["username"], machine["password"], port=machine.get("port", 22))
-    if not is_win:
-        # Use python if available for robust listing, else fallback to ls
-        exp_path = raw_path
-        # embed path as python repr to avoid argv/-- confusion and space handling
-        import json as _json_local
-        repr_path = repr(exp_path)
-        code, out, err = ssh.run(f'python3 -c "import os, json; p=os.path.expanduser({repr_path}); print(json.dumps({{\'exists\': os.path.exists(p), \'is_dir\': os.path.isdir(p), \'parent\': os.path.dirname(os.path.abspath(p)), \'real\': p}}))"', timeout=15)
-        meta = None
-        if code == 0 and out.strip():
-            try:
-                import json as _json
-                meta = _json.loads(out.strip().splitlines()[-1])
-            except Exception:
-                meta = None
-        if meta and meta.get("exists"):
-            real = meta["real"]
-            parent = meta["parent"]
-            is_dir = meta["is_dir"]
-            if not is_dir:
-                real = parent
-                is_dir = True
-                repr_real = repr(real)
-                code, out, _ = ssh.run(f'python3 -c "import os; print(os.path.dirname(os.path.abspath(os.path.expanduser({repr_real}))))"', timeout=10)
-                parent = out.strip().splitlines()[-1] if code == 0 else os.path.dirname(real)
-            # list entries — try python json, else ls -p fallback
-            repr_real2 = repr(real)
-            code, out, _ = ssh.run(f'python3 -c "import os, json; p={repr_real2}; print(json.dumps([{{\'name\': n, \'is_dir\': os.path.isdir(os.path.join(p,n))}} for n in os.listdir(p) if not n.startswith(\".\") or {str(show_hidden).lower()}]))" 2>/dev/null || ls -1 -p "{real}"', timeout=15)
-            entries = []
-            if code == 0 and out.strip():
-                # try json first
-                try:
-                    import json as _json
-                    parsed = _json.loads(out.strip().splitlines()[-1])
-                    if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
-                        for e in parsed:
-                            entries.append({"name": e["name"], "path": os.path.join(real, e["name"]), "is_dir": bool(e["is_dir"])})
-                    else:
-                        raise ValueError()
-                except Exception:
-                    # ls -p fallback
-                    for line in out.splitlines():
-                        name = line.strip()
-                        if not name:
-                            continue
-                        if name.startswith(".") and not show_hidden:
-                            continue
-                        is_d = name.endswith("/")
-                        clean = name.rstrip("/")
-                        entries.append({"name": clean, "path": os.path.join(real, clean), "is_dir": is_d})
-                entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
-            try:
-                alias = path_resolver.to_alias(real)
-            except Exception:
-                alias = real
-            return {"path": real, "alias": alias, "parent": parent, "exists": True, "is_dir": True, "os": "linux", "entries": entries}
-        # fallback: try ls directly
-        code, out, _ = ssh.run(f'ls -ld "{exp_path}" 2>&1', timeout=10)
-        if code != 0:
-            raise HTTPException(status_code=404, detail=f"path not found or unreachable: {raw_path}")
-        # expand via echo
-        code, out, _ = ssh.run(f'echo "{exp_path}"', timeout=10)
-        real = out.strip() or exp_path
-        try:
-            alias = path_resolver.to_alias(real)
-        except Exception:
-            alias = real
-        return {"path": real, "alias": alias, "parent": os.path.dirname(real), "exists": True, "is_dir": True, "os": "linux", "entries": []}
-    else:
-        # windows remote via powershell
-        # normalize slashes
-        ps_path = raw_path.replace("'", "''")
-        # if empty or ~, use $env:USERPROFILE
-        if raw_path.strip() in ("~", "%USERPROFILE%", "$env:USERPROFILE"):
-            ps_path = "$env:USERPROFILE"
-        code, out, err = ssh.run(f'powershell -NoProfile -Command "$p=\\"{ps_path}\\"; $e=Test-Path $p; $isDir=(Test-Path $p -PathType Container); $real=(Resolve-Path $p -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path -ErrorAction SilentlyContinue); if (-not $real) {{ $real=$p }}; $parent=Split-Path $real -Parent; if (-not $parent) {{ $parent=$real }}; Write-Output (@{{exists=$e; isDir=$isDir; real=$real; parent=$parent}} | ConvertTo-Json -Compress)"', timeout=15)
-        if code != 0 or not out.strip():
-            raise HTTPException(status_code=500, detail=f"windows browse failed: {err or out}")
-        import json as _json
-        try:
-            meta = _json.loads(out.strip().splitlines()[-1])
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"parse failed: {e} – {out}")
-        exists = bool(meta.get("exists"))
-        is_dir = bool(meta.get("isDir"))
-        real = meta.get("real") or raw_path
-        parent = meta.get("parent") or os.path.dirname(real)
-        if not exists:
-            raise HTTPException(status_code=404, detail=f"path not found: {raw_path}")
-        if not is_dir:
-            real = parent
-        # list
-        code, out, err = ssh.run(f'powershell -NoProfile -Command "Get-ChildItem -Force -Path \\"{ps_path}\\" | Select-Object Name,FullName,PSIsContainer | ConvertTo-Json -Compress"', timeout=15)
-        entries = []
-        if code == 0 and out.strip():
-            try:
-                data = _json.loads(out.strip())
-                if isinstance(data, dict):
-                    data = [data]
-                for e in data or []:
-                    name = e.get("Name")
-                    if not name:
-                        continue
-                    if name.startswith(".") and not show_hidden:
-                        continue
-                    entries.append({"name": name, "path": e.get("FullName") or os.path.join(real, name), "is_dir": bool(e.get("PSIsContainer"))})
-                entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
-            except Exception:
-                pass
-        try:
-            alias = path_resolver.to_alias(real)
-        except Exception:
-            alias = real
-        return {"path": real, "alias": alias, "parent": parent, "exists": exists, "is_dir": is_dir, "os": "windows", "entries": entries}
-
+    try:
+        return _fs_list_agent(machine, raw_path, show_hidden)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"agent browse failed: {e}")
 
 @app.get("/api/fs/browse")
 async def fs_browse(path: str = "", machine: str = "", show_hidden: bool = False):
@@ -5776,20 +5553,6 @@ def _save_speed_cache(cache):
         pass
 
 
-def _measure_ssh_speed(ssh, mb=50):
-    """Measure real throughput over the existing SSH connection by having the
-    remote stream `mb` MB to stdout and timing the read. Returns Mb/s."""
-    import time as _t
-    start = _t.time()
-    try:
-        code, out, _ = ssh.run(f"dd if=/dev/zero bs=1M count={mb} 2>/dev/null",
-                               timeout=60)
-    except Exception:
-        return None
-    elapsed = _t.time() - start
-    if elapsed <= 0 or code != 0:
-        return None
-    return round(mb * 8 / elapsed)
 
 
 def _measure_agent_speed(machine, mb=50):
@@ -5811,30 +5574,11 @@ async def machine_detail(name: str):
     is_local = local_node.is_local(machine)
     machine_os = machine.get("os", "linux")
 
-    # reuse ONE SSH connection for all commands (opening one per command was
-    # slow — each handshake is ~1s+). Local runs use subprocess directly.
-    ssh = None
-    if not is_local:
-        try:
-            from ssh_manager import SSHManager
-            ssh = SSHManager(machine["ip"], machine["username"],
-                             machine["password"], port=machine.get("port", 22))
-        except Exception:
-            ssh = None
-
     def _run(cmd, timeout=20):
-        if is_local:
-            try:
-                p = subprocess.run(cmd, shell=True, capture_output=True,
-                                   text=True, timeout=timeout)
-                return p.stdout.strip()
-            except Exception:
-                return ""
-        if ssh is None:
-            return ""
         try:
-            code, out, _ = ssh.run(cmd, timeout=timeout)
-            return out.strip() if code == 0 else ""
+            p = subprocess.run(cmd, shell=True, capture_output=True,
+                               text=True, timeout=timeout)
+            return p.stdout.strip()
         except Exception:
             return ""
 
@@ -5868,6 +5612,23 @@ async def machine_detail(name: str):
         detail.update(_machine_connection_caps(machine))
     except Exception:
         pass
+
+    # Remote machines: the agent's /system/detail is the single source of
+    # truth (same fields the local command ladder produces).
+    if not is_local:
+        try:
+            sd = agent_client.system_detail(machine) or {}
+        except Exception as e:
+            raise HTTPException(status_code=502,
+                                detail=f"agent detail failed: {e}")
+        detail.update(sd)
+        detail.setdefault("net", {"ip": machine.get("ip", ""), "speed": ""})
+        detail.setdefault("disk", {"free": "", "mount": ""})
+        try:
+            detail["stats"] = stats_collector.machine_stats(machine)
+        except Exception:
+            detail["stats"] = None
+        return detail
     agent_detail = None
     if not is_local and agent_client.should_use_agent(machine):
         try:
@@ -5954,48 +5715,30 @@ async def machine_detail(name: str):
                 f"echo \"S:$S\"; echo \"D:$D\"; echo \"DT:$DT\"; echo \"L:$L\"", timeout=30)
             _parse_posix_blob(detail, blob)
 
-    # ---- real throughput over SSH (cached 1h) ----
-    # virtio/virtual NICs don't report a link speed, so measure what the
-    # machine can actually push to the cluster over its SSH link. For the
-    # local machine, measure to the first reachable peer.
-    speed_ssh = None
+    # ---- real throughput over the peer agent (cached 1h) ----
     speed_agent = None
-    if not is_local and agent_client.should_use_agent(machine):
-        speed_agent = machine
-    elif not is_local and ssh is not None:
-        speed_ssh = ssh
-    elif is_local:
-        for peer in cfg.machines.all():
-            if peer.get("name") == name or local_node.is_local(peer):
-                continue
-            try:
-                from ssh_manager import SSHManager
-                speed_ssh = SSHManager(peer["ip"], peer["username"],
-                                        peer["password"],
-                                        port=peer.get("port", 22))
-                break
-            except Exception:
-                continue
-    # only measure over SSH when the reported link speed is missing/unknown
-    # (virtio/virtual NICs). Machines with a real reported speed keep it.
+    for peer in cfg.machines.all():
+        if peer.get("name") == name or local_node.is_local(peer):
+            continue
+        speed_agent = peer
+        break
     reported = str(detail["net"].get("speed") or "").strip()
     need_measure = (not reported or "n/a" in reported.lower()
                     or "unknown" in reported.lower())
-    if need_measure and (speed_agent is not None or speed_ssh is not None):
+    if need_measure and speed_agent is not None:
         cache = _load_speed_cache()
         ent = cache.get(name)
         now = time.time()
         if ent and now - ent.get("ts", 0) < _SPEED_CACHE_TTL:
             detail["net"]["speed"] = ent.get("mbps")
         else:
-            mbps = (_measure_agent_speed(speed_agent) if speed_agent is not None
-                    else _measure_ssh_speed(speed_ssh))
+            mbps = _measure_agent_speed(speed_agent)
             if mbps:
                 detail["net"]["speed"] = mbps
                 cache[name] = {"mbps": mbps, "ts": now}
                 _save_speed_cache(cache)
         if detail["net"]["speed"]:
-            detail["net"]["speed"] = f"{detail['net']['speed']} Mb/s (SSH)"
+            detail["net"]["speed"] = f"{detail['net']['speed']} Mb/s (agent)"
 
     # live stats ride along so the modal shows current numbers
     try:
