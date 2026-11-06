@@ -21,12 +21,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: version
-        name: Read VERSION
+        name: Compute next patch version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           base=$(tr -d '[:space:]' < VERSION)
-          test -n "$base" || { echo "VERSION file is empty" >&2; exit 1; }
-          echo "version=${base}-main.${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          if ! printf '%s' "$base" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "VERSION must be MAJOR.MINOR.PATCH (got: ${base})" >&2
+            exit 1
+          fi
+          # Every published build gets an immutable release-X.Y.Z tag. Pick
+          # the highest patch already published on this major.minor line so a
+          # number is never reused (0.1.1, 0.1.2, ...). VERSION is the floor;
+          # bump it to start a new minor/major line.
+          latest=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/release-" --paginate \
+            --jq '.[].ref' 2>/dev/null \
+            | sed 's#refs/tags/release-##' \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -1 || true)
+          next=$(python3 - "$base" "$latest" <<'PY'
+          import sys
+          base = tuple(int(p) for p in sys.argv[1].split("."))
+          latest = sys.argv[2].strip()
+          cur = tuple(int(p) for p in latest.split(".")) if latest else base
+          if cur[:2] != base[:2]:
+              nxt = (base[0], base[1], base[2] + 1)
+          else:
+              nxt = (cur[0], cur[1], max(cur[2], base[2]) + 1)
+          print("{}.{}.{}".format(*nxt))
+          PY
+          )
+          echo "version=${next}" >> "$GITHUB_OUTPUT"
+          echo "Computed version ${next} (base ${base}, last release ${latest:-none})"
 
   linux:
     name: Build (Linux)
@@ -438,7 +465,7 @@ jobs:
             *.sha256
 
   publish:
-    name: Publish main-latest
+    name: Publish rolling releases
     needs: [prepare, linux, macos, windows]
     runs-on: ubuntu-latest
     steps:
@@ -447,7 +474,7 @@ jobs:
         with:
           path: release-assets
           merge-multiple: true
-      - name: Replace main-latest release
+      - name: Publish versioned build + main-latest pointer
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -482,12 +509,12 @@ jobs:
           short = sha[:7]
           compare = os.environ["COMPARE"]
           changes = pathlib.Path("changes.md").read_text().strip()
-          notes = f"""# Llama RPC Farm — main rolling build
+          release_notes = f"""# Llama RPC Farm — {version}
 
-          Automatic prerelease snapshot of `main`. Not a versioned, supported release.
+          Archived prerelease snapshot of `main` at commit [`{short}`](https://github.com/{repo}/commit/{sha}).
+          This release is immutable: it is never replaced by a later build.
 
           - **Version:** `{version}`
-          - **Commit:** [`{short}`](https://github.com/{repo}/commit/{sha})
           - **Built:** {datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d %H:%M UTC}
           - **Compare:** {compare}
 
@@ -519,15 +546,24 @@ jobs:
 
           Binaries are unsigned: on macOS use **right-click → Open** the first time.
           """
-          pathlib.Path("release-notes.md").write_text(notes)
+          pointer_notes = f"""# Llama RPC Farm — main rolling (current)
+
+          This tag always tracks the newest rolling build of `main`. It is a
+          pointer only: the installers live in that build's immutable release,
+          and every older build stays available under its own tag.
+
+          - **Newest build:** [`release-{version}`](https://github.com/{repo}/releases/tag/release-{version})
+          - **Commit:** [`{short}`](https://github.com/{repo}/commit/{sha})
+          - **Built:** {datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d %H:%M UTC}
+          - **All rolling builds:** https://github.com/{repo}/releases?q=release-
+
+          Download the installers from the **release-{version}** release above, or browse
+          the full release history to pin an earlier build.
+          """
+          pathlib.Path("release-notes.md").write_text(release_notes)
+          pathlib.Path("pointer-notes.md").write_text(pointer_notes)
           PY
 
-          TITLE="Llama RPC Farm (main rolling)"
-          if gh release view main-latest >/dev/null 2>&1; then
-            gh release delete main-latest --yes
-          fi
-          git tag -f main-latest "$SHA"
-          git push -f origin refs/tags/main-latest
           # download-artifact preserves platform subdirs (e.g. dist/), so
           # collect FILES only — passing release-assets/* used to hand
           # gh a directory and fail with "is a directory".
@@ -536,7 +572,27 @@ jobs:
             echo "no release assets found under release-assets/" >&2
             exit 1
           fi
-          gh release create main-latest "${ASSETS[@]}" \
+
+          TAG="release-${VERSION}"
+          # 1. Immutable per-build release. Older versions are never deleted;
+          #    only a rebuild that reuses an existing tag is replaced.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes --cleanup-tag
+          fi
+          gh release create "$TAG" "${ASSETS[@]}" \
+            --target "$SHA" \
             --prerelease \
-            --title "$TITLE" \
+            --title "Llama RPC Farm ${VERSION}" \
             --notes-file release-notes.md
+
+          # 2. main-latest is a moving pointer to the newest build. It carries
+          #    no assets, so historical builds are not duplicated in storage.
+          if gh release view main-latest >/dev/null 2>&1; then
+            gh release delete main-latest --yes
+          fi
+          git tag -f main-latest "$SHA"
+          git push -f origin refs/tags/main-latest
+          gh release create main-latest \
+            --prerelease \
+            --title "Llama RPC Farm (main rolling)" \
+            --notes-file pointer-notes.md

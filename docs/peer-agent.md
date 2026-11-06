@@ -7,8 +7,8 @@ files, service control, installers, stats/tuner probes, discovery, and
 in-place agent updates are agent-backed. SSH/sshpass/paramiko have been
 removed; agents are installed from their own `.deb`/`.pkg`/`setup.exe`.
 Separate release artifacts are built automatically on every `main` push by
-`.github/workflows/rolling-main.yml`; the agent is published in the rolling
-`main-latest` prerelease.
+`.github/workflows/rolling-main.yml`; the agent is published in each
+versioned rolling prerelease, with `main-latest` pointing at the newest build.
 
 ## Why
 
@@ -234,8 +234,11 @@ Source stays in this monorepo; releases are rolling artifacts built on
 every `main` push:
 
 - agent: Linux `.deb`, macOS `.pkg`, Windows Inno Setup `setup.exe`
-  plus SHA-256 checksums in the `main-latest` prerelease
-- app: the same three installer formats in the same prerelease
+  plus SHA-256 checksums in each versioned rolling prerelease
+- app: the same three installer formats in the same release
+
+`main-latest` is a moving pointer to the newest versioned release; older
+builds are retained under their own version tags.
 
 See `docs/release.md` for the platform workflows. Bump
 `peer_agent/pyproject.toml` and `llama_peer_agent.__version__` when the
