@@ -394,7 +394,7 @@ def test_swap_load_warmup_contract(client, settings_file, monkeypatch):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is True and body["model"] == "Qwen3-8B"
-    assert seen["url"] == "http://127.0.0.1:8080/v1/chat/completions"
+    assert seen["url"] == "http://127.0.0.1:8090/v1/chat/completions"
     assert seen["body"]["max_tokens"] == 1
 
 
