@@ -274,6 +274,10 @@ MACHINE_DEFAULTS = {
     "rdma_cm": False,        # use rdma_cm QP path resolution (mlx4/CX3); else raw path
     "swap_config_path": "",       # DEC-03: per-machine llama.cpp swap-config file ("" = inherit)
     "swap_config_path_vllm": "",  # DEC-03: per-machine vllm swap-config file ("" = inherit)
+    # Optional peer agent (docs/peer-agent.md). auto = probe agent, fall
+    # back to SSH; ssh = never use the agent; agent = require it.
+    "transport": "auto",
+    "agent_port": 8198,
 }
 GROUP_DEFAULTS = {
     "description": "",

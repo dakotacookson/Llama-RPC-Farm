@@ -1,0 +1,41 @@
+name: Release app
+
+on:
+  push:
+    tags: ["app-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Test before packaging
+        run: |
+          python -m py_compile src/*.py scripts/*.py peer_agent/llama_peer_agent/*.py tests/*.py
+          node --check ui/static/app.js
+          bash -n run.sh restart-llama-swap.sh install.sh
+          python -m pytest tests -q
+      - name: Build source archive
+        run: |
+          VERSION="${GITHUB_REF_NAME#app-v}"
+          git archive --format=tar.gz \
+            --prefix="llama-rpc-farm-${VERSION}/" \
+            -o "llama-rpc-farm-${VERSION}.tar.gz" HEAD
+          sha256sum "llama-rpc-farm-${VERSION}.tar.gz" > SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            llama-rpc-farm-*.tar.gz SHA256SUMS \
+            --title "Llama RPC Farm ${GITHUB_REF_NAME#app-v}" \
+            --generate-notes

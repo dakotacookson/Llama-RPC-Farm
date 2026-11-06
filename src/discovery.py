@@ -15,6 +15,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ssh_manager import SSHManager, SSHError
+import agent_discovery
 
 IDENTIFY_CMD = (
     'uname -s 2>/dev/null; hostname 2>/dev/null; echo ---; '
@@ -348,7 +349,8 @@ def _probe_host(ip, port, cred_list, known_ips):
 
 
 def discover(subnet=None, port=22, credentials=None, include_known=True,
-             scan_timeout=0.5, ping=True):
+             scan_timeout=0.5, ping=True, agent_discovery_enabled=True,
+             agent_discovery_port=8199, agent_discovery_timeout=1.0):
     """Full scan: ICMP ping sweep + SSH port sweep + banner OS classify
     (+ optional post-login enrichment). Persists nothing."""
     if not subnet:
@@ -395,10 +397,48 @@ def discover(subnet=None, port=22, credentials=None, include_known=True,
                 r["ping_alive"] = r["ip"] in alive
             results.append(r)
     results.sort(key=lambda x: tuple(int(p) for p in x["ip"].split(".")))
+    agents = []
+    if agent_discovery_enabled:
+        try:
+            agents = agent_discovery.discover(
+                port=agent_discovery_port, timeout=agent_discovery_timeout)
+        except Exception:
+            agents = []
+        by_ip = {r["ip"]: r for r in results}
+        for a in agents:
+            ip = a.get("ip")
+            if not ip or (not include_known and ip in known):
+                continue
+            entry = by_ip.get(ip)
+            if entry is None:
+                entry = {
+                    "ip": ip, "port": port, "ssh_port_open": False,
+                    "ping_alive": None, "banner": None, "os": a.get("os"),
+                    "ssh_ok": False, "auth_failed": False,
+                    "hostname": a.get("hostname"), "gpus": [],
+                    "gpu_vendor": None, "username": None,
+                    "mac": a.get("mac", ""), "mac_ip": ip,
+                    "already_added": ip in known,
+                }
+                results.append(entry)
+                by_ip[ip] = entry
+            entry.update({
+                "agent": True, "agent_port": a.get("agent_port"),
+                "agent_version": a.get("agent_version"),
+                "protocol_version": a.get("protocol_version"),
+                "agent_addresses": a.get("addresses") or [],
+            })
+            if not entry.get("hostname"):
+                entry["hostname"] = a.get("hostname")
+            if not entry.get("os"):
+                entry["os"] = a.get("os")
+            if not entry.get("mac"):
+                entry["mac"] = a.get("mac", "")
+    results.sort(key=lambda x: tuple(int(p) for p in x["ip"].split(".")))
     # drop hosts we couldn't fingerprint (no usable banner and no login):
     # they can't be added safely and only clutter the results table
     unknown = [r for r in results if not r["os"]]
     results = [r for r in results if r["os"]]
     return {"subnet": subnet, "port": port, "alive": len(alive),
             "ssh_hosts": len(open_hosts), "unknown": len(unknown),
-            "results": results}
+            "agents": len(agents), "results": results}

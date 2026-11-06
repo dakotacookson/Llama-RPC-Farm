@@ -29,6 +29,7 @@ libcudart/libcublas .so files).
 """
 import json
 import os
+import agent_client
 import urllib.request
 
 GITHUB_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases"
@@ -331,6 +332,33 @@ def install_on(machine, log=lambda m: None):
                 "detail": "release assets not found upstream: "
                           + ", ".join(plan_info["missing"])}
     urls = [f"{base}/{n}" for n in plan_info["assets"]]
+    if not is_local and agent_client.should_use_agent(machine):
+        try:
+            dest = "~/llama.cpp/bin"
+            agent_client.install_artifact(
+                machine, urls, dest,
+                archive="zip" if is_win else "tar.gz",
+                strip_components=1, mode=None if is_win else 0o755)
+            bin_name = "llama-server.exe" if is_win else "llama-server"
+            v = agent_client.install_verify(machine, f"{dest}/{bin_name}")
+            if v.get("returncode") == 0:
+                bin_path = f"{dest}/{bin_name}"
+                try:
+                    cfg.machines.update(name, {"llama_bin": dest})
+                except Exception:
+                    pass
+                return {"ok": True, "machine": name, "bin": bin_path,
+                        "backend": plan_info["backend"],
+                        "detail": f"installed {', '.join(plan_info['assets'])} "
+                                  f"({plan_info['tag']}) to {dest}"}
+            return {"ok": False, "machine": name,
+                    "detail": f"installed but verify failed: "
+                              f"{v.get('output', '')[-300:]}"}
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                return {"ok": False, "machine": name,
+                        "detail": f"agent install failed: {e}"}
+            print(f"[agent] {name}: install failed, falling back to SSH: {e}")
     # download+extract budget: CUDA+cuDART archives are ~1 GB total; a
     # flat 600s was tight on slow uplinks and killed the run mid-download
     # (fixed 2026-10-31). 20 min per asset set, verify keeps its own.
@@ -477,6 +505,18 @@ def probe_setup(machine, log=lambda m: None):
            "kind": "prebuilt", "llama_bin": None,
            "build_dir": None, "src_root": None, "flags": {}}
     lb = (machine.get("llama_bin") or "").strip()
+    if (lb and not local_node.is_local(machine)
+            and agent_client.should_use_agent(machine)):
+        try:
+            res = agent_client.build_probe(machine, lb)
+            res["machine"] = machine.get("name", "?")
+            return res
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                out["machine"] = machine.get("name", "?")
+                return out
+            print(f"[agent] {machine.get('name')}: build probe failed, "
+                  f"falling back to SSH: {e}")
     if not lb or machine.get("os", "linux") == "windows":
         # Windows can't remote-source-build (no MSVC toolchain
         # assumption) and an empty llama_bin just needs a prebuilt.
@@ -563,6 +603,24 @@ def update_source_on(machine, probe=None, log=lambda m: None):
                           f"{probe.get('llama_bin') or machine.get('llama_bin')}"}
     build_dir = probe["build_dir"]
     src_root = probe["src_root"]
+    if (not local_node.is_local(machine)
+            and agent_client.should_use_agent(machine)):
+        try:
+            bin_path = (f"{probe.get('llama_bin') or build_dir + '/bin'}"
+                        f"/llama-server")
+            res = agent_client.build_update(
+                machine, src_root, build_dir, bin_path)
+            if res.get("ok"):
+                return {"ok": True, "machine": name, "bin": bin_path,
+                        "detail": f"source build updated to "
+                                  f"{res.get('version', '')}"}
+            return {"ok": False, "machine": name,
+                    "detail": res.get("error") or "source update failed"}
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                return {"ok": False, "machine": name,
+                        "detail": f"agent source update failed: {e}"}
+            print(f"[agent] {name}: source update failed, falling back to SSH: {e}")
     run, _is_local = _machine_run(machine)
 
     try:

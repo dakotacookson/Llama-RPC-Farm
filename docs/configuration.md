@@ -33,6 +33,8 @@ Per machine:
   gpu_vendor: nvidia    # nvidia | amd | intel | apple | cpu
   rdma: false           # RDMA/RoCE transport (opt-in; TCP default)
   rdma_ip: / rdma_dev: / rdma_gid: / rdma_cm: false
+  transport: auto       # auto | ssh | agent (optional peer agent)
+  agent_port: 8198      # agent HTTP port when transport uses it
 ```
 
 **Warning:** `id` and `name` can diverge (historical rename: id `aibox2`,

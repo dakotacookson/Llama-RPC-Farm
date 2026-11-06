@@ -5,6 +5,7 @@ llama-swap daemon (systemd on Linux, detached process on Windows).
 llama-swap lazy-loads models (cmd runs on first request), so starting
 the daemon is safe -- no VRAM is touched until traffic arrives.
 """
+import json
 import os
 import shutil
 import time
@@ -13,6 +14,7 @@ from datetime import datetime
 import yaml
 
 import config_loader as cfg
+import agent_client
 import local_node
 import rpc_manager
 from steps import run_steps
@@ -750,6 +752,73 @@ exit 1
 """
 
 
+def _agent_token_var(machine_name):
+    return "AGENT_TOKEN_" + "".join(
+        c if c.isalnum() else "_" for c in str(machine_name or "").upper())
+
+
+def _agent_base(machine):
+    ip = (machine.get("ip") or "").strip()
+    return f"http://{ip}:{agent_client.agent_port(machine)}"
+
+
+def _agent_llama_start_script(scripts_dir, machine, port, payload_name):
+    var = _agent_token_var(machine.get("name"))
+    base = _agent_base(machine)
+    return f"""#!/bin/bash
+set -uo pipefail
+source "{scripts_dir}/{SIDECAR_NAME}" 2>/dev/null || true
+: "${{{var}:?agent token not set for {machine.get('name')}}}"
+AGENT="{base}"
+PORT="{int(port)}"
+if ! curl -fsS -H "Authorization: Bearer ${var}" \
+  -H "Content-Type: application/json" \
+  --data-binary @"{scripts_dir}/{payload_name}" \
+  "$AGENT/llama/start" >/dev/null; then
+  echo "!!! agent llama/start failed for {machine.get('name')}:{int(port)}" >&2
+  exit 1
+fi
+_up=0
+for _i in $(seq 1 2400); do
+  if curl -s -o /dev/null --max-time 2 "http://{machine.get('ip')}:{int(port)}/"; then
+    _up=1; break
+  fi
+  if [ $((_i % 20)) -eq 0 ]; then
+    curl -fsS -H "Authorization: Bearer ${var}" \
+      "$AGENT/llama/status?port=$PORT" >/dev/null || {{
+      echo "!!! llama-server on {machine.get('name')}:{int(port)} died before opening the port" >&2
+      exit 1
+    }}
+  fi
+  sleep 2
+done
+if [ "$_up" -ne 1 ]; then
+  echo "!!! {machine.get('name')}:{int(port)} did not open" >&2
+  exit 1
+fi
+while curl -s -o /dev/null --max-time 2 "http://{machine.get('ip')}:{int(port)}/"; do
+  sleep 5
+done
+echo ">>> {machine.get('name')}:{int(port)} closed — exiting"
+exit 0
+"""
+
+
+def _agent_llama_stop_script(scripts_dir, machine, port, state_key):
+    var = _agent_token_var(machine.get("name"))
+    base = _agent_base(machine)
+    body = json.dumps({"port": int(port), "state_key": state_key})
+    return f"""#!/bin/bash
+set -uo pipefail
+source "{scripts_dir}/{SIDECAR_NAME}" 2>/dev/null || true
+: "${{{var}:?agent token not set for {machine.get('name')}}}"
+curl -fsS -H "Authorization: Bearer ${var}" \
+  -H "Content-Type: application/json" \
+  -d '{body}' \
+  "{base}/llama/stop" >/dev/null || true
+"""
+
+
 def _rpc_cmdstop(model_cfg, peers):
     """Explicit stop command for a script-mode RPC deployment.
 
@@ -782,11 +851,14 @@ def _rpc_cmdstop(model_cfg, peers):
             if not port:
                 continue
             if is_win:
+                # Pipe-free PowerShell: cmd.exe over OpenSSH mangles the
+                # pipe form (Stop-Process never ran but the old stop script
+                # still exited 0).
                 ps = (
-                    "Get-CimInstance Win32_Process | Where-Object { "
-                    "(' ' + $_.CommandLine + ' ') -like '*-p " + str(port)
-                    + " *' -and $_.Name -like 'ggml-rpc-server*' } | "
-                    "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; "
+                    "$c=0; foreach ($x in (Get-CimInstance Win32_Process)) { "
+                    "if ($x.Name -like 'ggml-rpc-server*' -and "
+                    "((' ' + $x.CommandLine + ' ') -like '*-p " + str(port)
+                    + " *')) { Stop-Process -Id $x.ProcessId -Force; $c++ } }; "
                     "Remove-Item $env:USERPROFILE/.cache/llama-wrapper/rpc.state."
                     + str(port) + ", $env:TEMP/llama-wrapper-rpc.state."
                     + str(port) + " -ErrorAction SilentlyContinue")
@@ -1065,6 +1137,37 @@ def launch_plan(config_path=None, host_name=None):
                 {"_local_port_of": remote_port})
             remote_ip = (peer_m.get("ip") or "").strip()
             remote_os = peer_m.get("os", "linux")
+            # Optional agent: native llama-server start/stop on the peer,
+            # no SSH in the load path. Only when the agent is selected
+            # (explicit transport:agent, or auto + healthy probe).
+            if agent_client.should_use_agent(peer_m):
+                payload = rpc_manager.remote_local_agent_payload(
+                    deploy_model, peer_m, remote_port, state_key=_sg_key)
+                payload_name = f"agent-{mid_for_key}.json"
+                scripts[payload_name] = json.dumps(payload) + "\n"
+                script_name = f"start-{mid_for_key}.sh"
+                scripts[script_name] = _agent_llama_start_script(
+                    scripts_dir, peer_m, remote_port, payload_name)
+                stop_name = f"stop-{mid_for_key}.sh"
+                scripts[stop_name] = _agent_llama_stop_script(
+                    scripts_dir, peer_m, remote_port, _sg_key)
+                script_mids.add(mid_for_key)
+                models[key] = {
+                    "cmd": (
+                        f"/bin/bash -c 'source \"{scripts_dir}/swap-secrets.env\" "
+                        f"2>/dev/null; exec /bin/bash \"{scripts_dir}/{script_name}\"'"),
+                    "proxy": f"http://{remote_ip}:{remote_port}",
+                    "cmdStop": f'/bin/bash "{scripts_dir}/{stop_name}"',
+                    "checkEndpoint": "/health",
+                }
+                entries.append({"key": key, "model_id": mid_for_key,
+                                "mode": "remote-proxy",
+                                "pinned": bool(deploy_model.get("pinned")),
+                                "ttl": max(0, int(deploy_model.get("ttl") or 0)),
+                                "variant": deploy_model.get("_variant_label") or None,
+                                "base_model": mid_for_key.split("--")[0],
+                                "rpc_map": {}})
+                return
             if remote_os == "windows":
                 # Windows llama-server box: render_remote_local_script
                 # pushes a .ps1 launcher over SSH and drives it — same
@@ -1453,19 +1556,38 @@ def launch_plan(config_path=None, host_name=None):
     # A raw custom entry (or its pushed script) may reference $SSH_PASS /
     # sshpass itself — same vault-fed sidecar, never baked secrets.
     def _needs_sidecar_text(*texts):
-        return any(t and ("SSH_PASS" in t or "sshpass" in t)
+        return any(t and ("SSH_PASS" in t or "sshpass" in t
+                          or "AGENT_TOKEN_" in t)
                    for t in texts)
 
     if any(_needs_sidecar_text(c) for c in scripts.values()) or any(
             _needs_sidecar_text(e.get("cmd"), e.get("cmdStop"))
             for e in models.values()):
         import shlex as _shlex
-        scripts[SIDECAR_NAME] = (
-            "# llama-swap runtime secrets — generated at push time from the\n"
-            "# encrypted vault (never committed, never baked into scripts).\n"
-            "# Sourced by model launch commands before start-*.sh runs.\n"
-            f"export SSH_PASS={_shlex.quote(host.get('password') or '')}\n"
-        )
+        try:
+            import secrets_vault as _vault
+        except Exception:
+            _vault = None
+        lines = [
+            "# llama-swap runtime secrets — generated at push time from the",
+            "# encrypted vault (never committed, never baked into scripts).",
+            "# Sourced by model launch commands before start-*.sh runs.",
+            f"export SSH_PASS={_shlex.quote(host.get('password') or '')}",
+        ]
+        # Per-machine agent tokens: only the agent-native scripts reference
+        # these; 0600 sidecar, same trust boundary as SSH_PASS.
+        for _m in cfg.machines.all():
+            _tok = ""
+            if _vault is not None:
+                try:
+                    _tok = _vault.get_machine_agent_token(_m)
+                except Exception:
+                    _tok = ""
+            if _tok:
+                lines.append(
+                    f"export {_agent_token_var(_m.get('name'))}="
+                    f"{_shlex.quote(_tok)}")
+        scripts[SIDECAR_NAME] = "\n".join(lines) + "\n"
     # skipped with a warning; a deployment claimed twice stays in the
     # first group (llama-swap requires unique membership).
     try:
@@ -1642,6 +1764,21 @@ def _remote_home(ssh, os_type="linux"):
     raise ValueError("could not resolve $HOME on remote host")
 
 
+def _host_home(host):
+    """Home directory on the host, via agent when selected."""
+    if agent_client.should_use_agent(host):
+        try:
+            home = agent_client.info(host).get("home")
+            if home:
+                return home
+        except Exception as e:
+            if agent_client.transport(host) == "agent":
+                raise
+            print(f"[agent] {host['name']}: info failed, falling back to SSH: {e}")
+    return _remote_home(rpc_manager._ssh_for(host),
+                        host.get("os", "linux"))
+
+
 def _expand_remote(path, home, os_type="linux"):
     if path.startswith("~/"):
         return home + path[1:]
@@ -1669,7 +1806,7 @@ def _run(host, cmd, timeout=30):
     return rpc_manager._ssh_for(host).run(cmd, timeout=timeout)
 
 
-def _write_host(host, remote_path, text):
+def _write_host(host, remote_path, text, mode=None):
     """Write text to a file on the host (local or SFTP).
 
     Local writes are atomic (temp file + os.replace) so a stale
@@ -1687,6 +1824,8 @@ def _write_host(host, remote_path, text):
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
             os.replace(tmp, remote_path)
+            if mode is not None:
+                os.chmod(remote_path, int(mode))
         except PermissionError as e:
             try:
                 os.unlink(tmp)
@@ -1714,8 +1853,22 @@ def _write_host(host, remote_path, text):
             )
             raise PermissionError(f"{e}. {hint}") from e
         return
+    if agent_client.should_use_agent(host):
+        try:
+            agent_client.file_write(host, remote_path, text, mode=mode)
+            return
+        except Exception as e:
+            if agent_client.transport(host) == "agent":
+                raise
+            print(f"[agent] {host['name']}: file write failed, falling back to SSH: {e}")
     rpc_manager._ssh_for(host).push_text(
         text, remote_path, host.get("os", "linux"))
+    if mode is not None:
+        try:
+            rpc_manager._ssh_for(host).run(
+                f'chmod {int(mode):o} "{remote_path}"', timeout=15)
+        except Exception:
+            pass
 
 
 def _host_config_path(host, config_path):
@@ -1724,7 +1877,7 @@ def _host_config_path(host, config_path):
     if is_local:
         return _expand_local(config_path, host.get("os", "linux"))
     os_type = host.get("os", "linux")
-    home = _remote_home(rpc_manager._ssh_for(host), os_type)
+    home = _host_home(host)
     return _expand_remote(config_path, home, os_type)
 
 
@@ -1732,6 +1885,13 @@ def _host_config_path(host, config_path):
 def _port_open(host, port):
     if local_node.is_local(host):
         return rpc_manager._local_port_open(port)
+    if agent_client.should_use_agent(host):
+        try:
+            return bool(agent_client.port_open(host, port).get("open"))
+        except Exception as e:
+            if agent_client.transport(host) == "agent":
+                return False
+            print(f"[agent] {host['name']}: port check failed, falling back to SSH: {e}")
     try:
         return rpc_manager._ssh_for(host).check_port(port)
     except Exception:
@@ -1740,6 +1900,13 @@ def _port_open(host, port):
 
 def _process_running(host):
     os_type = host.get("os", "linux")
+    if agent_client.should_use_agent(host):
+        try:
+            return bool(agent_client.service_status(host).get("running"))
+        except Exception as e:
+            if agent_client.transport(host) == "agent":
+                return False
+            print(f"[agent] {host['name']}: service status failed, falling back to SSH: {e}")
     if os_type == "windows":
         code, out, _ = _run(
             host, 'powershell -NoProfile -Command "(Get-Process -Name '
@@ -1785,6 +1952,15 @@ def _start_windows_remote(host, binary, config_path, port):
     so it survives the SSH session. Paths with %USERPROFILE% / ~ are
     expanded target-side by PowerShell.
     """
+    binary = _resolve_binary(host, binary)
+    if agent_client.should_use_agent(host):
+        try:
+            return agent_client.service_start(
+                host, "llama-swap", binary, config_path, port)
+        except Exception as e:
+            if agent_client.transport(host) == "agent":
+                return {"error": f"agent service start failed: {e}"}
+            print(f"[agent] {host['name']}: service start failed, falling back to SSH: {e}")
     ssh = rpc_manager._ssh_for(host)
     # Expand config path target-side; keep quoting safe for PowerShell.
     ps = (
@@ -1835,6 +2011,14 @@ def _resolve_binary(host, binary):
             return expanded
         found = shutil.which(binary)
         return found or expanded
+    if agent_client.should_use_agent(host):
+        try:
+            found = agent_client.which(host, binary).get("path")
+            return found or binary
+        except Exception as e:
+            if agent_client.transport(host) == "agent":
+                return binary
+            print(f"[agent] {host['name']}: which failed, falling back to SSH: {e}")
     # remote: ask the host
     code, out, _ = _run(host, f'command -v "{binary}" 2>/dev/null || echo ""',
                         timeout=10)
@@ -1867,13 +2051,21 @@ def _start_linux_service(host, binary, config_path, port):
     """systemd user service; falls back to a detached background process.
     macOS has no systemctl and no setsid — nohup is the portable fallback."""
     is_local = local_node.is_local(host)
+    binary = _resolve_binary(host, binary)
+    if not is_local and agent_client.should_use_agent(host):
+        try:
+            return agent_client.service_start(
+                host, "llama-swap", binary, config_path, port)
+        except Exception as e:
+            if agent_client.transport(host) == "agent":
+                return {"error": f"agent service start failed: {e}"}
+            print(f"[agent] {host['name']}: service start failed, falling back to SSH: {e}")
     ssh_home = None
     if not is_local:
         ssh_home = _remote_home(rpc_manager._ssh_for(host))
         unit_path = ssh_home + "/.config/systemd/user/llama-swap.service"
     else:
         unit_path = os.path.expanduser("~/.config/systemd/user/llama-swap.service")
-    binary = _resolve_binary(host, binary)
     is_mac = host.get("os", "linux") == "macos"
     if not is_mac:
         _write_host(host, unit_path, _systemd_unit(binary, config_path, port))
@@ -1931,6 +2123,14 @@ def _ensure_host_dir(host, path):
         except OSError:
             pass
         return
+    if agent_client.should_use_agent(host):
+        try:
+            agent_client.file_mkdir(host, path)
+            return
+        except Exception as e:
+            if agent_client.transport(host) == "agent":
+                raise
+            print(f"[agent] {host['name']}: mkdir failed, falling back to SSH: {e}")
     if host.get("os", "linux") == "windows":
         _run(host, f'powershell -NoProfile -Command "'
               f'New-Item -ItemType Directory -Force -Path \\\\"{path}\\\\\""',
@@ -1944,6 +2144,14 @@ def _backup_host_file(host, path, stamp):
     overwritten (DEC-13, T2-G4). Returns the backup path, or None when the
     source doesn't exist. Never raises — backup is best-effort, the write
     itself is the hard gate."""
+    if agent_client.should_use_agent(host):
+        try:
+            res = agent_client.file_backup(host, path, stamp)
+            return res.get("backup") if res.get("backed_up") else None
+        except Exception as e:
+            if agent_client.transport(host) == "agent":
+                return None
+            print(f"[agent] {host['name']}: backup failed, falling back to SSH: {e}")
     is_local = local_node.is_local(host)
     bak = f"{path}.bak-{stamp}"
     if is_local:
@@ -2010,18 +2218,8 @@ def push_scripts():
     written = [abs_config]
     for fname, content in gen["_scripts"].items():
         dest = scripts_dir + "/" + fname
-        _write_host(host, dest, content)
-        if is_local:
-            try:
-                # secrets sidecar is owner-only; scripts stay executable
-                os.chmod(dest, 0o600 if fname == SIDECAR_NAME else 0o755)
-            except OSError:
-                pass
-        elif fname == SIDECAR_NAME:
-            try:
-                _run(host, f"chmod 600 '{dest}'", timeout=15)
-            except Exception:
-                pass
+        _write_host(host, dest, content,
+                    mode=0o600 if fname == SIDECAR_NAME else 0o755)
         written.append(dest)
     return {"written": written, "backups": backups, "validated": True,
             "warnings": gen.get("warnings", []),
@@ -2087,6 +2285,16 @@ def launch(binary=None, listen_port=None, config_path=None,
     def do_backup():
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         bak = abs_config + f".bak-{stamp}"
+        if not is_local and agent_client.should_use_agent(host):
+            try:
+                res = agent_client.file_backup(host, abs_config, stamp)
+                if res.get("backed_up"):
+                    return {"backed_up": True, "backup": res.get("backup")}
+                return {"backed_up": False, "note": "no existing config"}
+            except Exception as e:
+                if agent_client.transport(host) == "agent":
+                    return {"error": f"agent backup failed: {e}"}
+                print(f"[agent] {host['name']}: backup failed, falling back to SSH: {e}")
         if is_local:
             if not os.path.exists(abs_config):
                 return {"backed_up": False, "note": "no existing config"}
@@ -2119,21 +2327,33 @@ def launch(binary=None, listen_port=None, config_path=None,
         written = [abs_config]
         for fname, content in gen["_scripts"].items():
             dest = (gen.get("scripts_dir") or gen["swap_dir"]) + "/" + fname
-            _write_host(host, dest, content)
-            if not is_local:
-                _run(host, f'chmod +x "{dest}"', timeout=15)
-            else:
-                try:
-                    os.chmod(dest, 0o755)
-                except OSError:
-                    pass
+            _write_host(host, dest, content,
+                        mode=0o600 if fname == SIDECAR_NAME else 0o755)
             written.append(dest)
         return {"written": True, "files": written}
 
     def do_validate():
-        cmd = f'{settings["binary"]} --config "{abs_config}" --validate'
-        code, out, err = _run(host, cmd, timeout=60)
-        tail = ((out or "") + (err or ""))[-800:]
+        if not is_local and agent_client.should_use_agent(host):
+            try:
+                res = agent_client.service_validate(
+                    host, _resolve_binary(host, settings["binary"]),
+                    abs_config)
+                code = res.get("returncode", 1)
+                tail = res.get("output", "")[-800:]
+            except Exception as e:
+                if agent_client.transport(host) == "agent":
+                    return {"valid": False, "output": "",
+                            "error": f"agent validate failed: {e}"}
+                print(f"[agent] {host['name']}: validate failed, falling back to SSH: {e}")
+                code, out, err = _run(
+                    host,
+                    f'{settings["binary"]} --config "{abs_config}" --validate',
+                    timeout=60)
+                tail = ((out or "") + (err or ""))[-800:]
+        else:
+            cmd = f'{settings["binary"]} --config "{abs_config}" --validate'
+            code, out, err = _run(host, cmd, timeout=60)
+            tail = ((out or "") + (err or ""))[-800:]
         if code == 0:
             return {"valid": True, "output": tail}
         # Older llama-swap builds have no --validate flag. That usage
@@ -2232,6 +2452,17 @@ def stop():
     """Stop the llama-swap daemon on the host (peers stay up)."""
     host = get_host(load_settings()["host_name"])
     os_type = host.get("os", "linux")
+    if agent_client.should_use_agent(host):
+        try:
+            res = agent_client.service_stop(host)
+            return {"host": host["name"],
+                    "stopped": bool(res.get("killed")),
+                    "detail": (res.get("remaining") or "")}
+        except Exception as e:
+            if agent_client.transport(host) == "agent":
+                return {"host": host["name"], "stopped": False,
+                        "detail": f"agent error: {e}"}
+            print(f"[agent] {host['name']}: service stop failed, falling back to SSH: {e}")
     if os_type == "windows":
         code, out, err = _run(host, "taskkill /F /IM llama-swap.exe",
                               timeout=20)

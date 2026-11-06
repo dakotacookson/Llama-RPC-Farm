@@ -16,6 +16,7 @@ swap settings' binary is updated (POSIX: the full resolved path, since
 """
 import json
 import os
+import agent_client
 import urllib.request
 
 GITHUB_API = "https://api.github.com/repos/mostlygeek/llama-swap/releases"
@@ -135,6 +136,29 @@ def install_on(machine, log=lambda m: None):
         urls = [f"https://github.com/mostlygeek/llama-swap/releases/"
                 f"download/{plan_info['tag']}/{n}"
                 for n in plan_info["assets"]]
+        if not is_local and agent_client.should_use_agent(machine):
+            try:
+                dest = "~/llama-swap" if is_win else "~/.local/bin"
+                member = "llama-swap.exe" if is_win else "llama-swap"
+                agent_client.install_artifact(
+                    machine, urls[0], dest,
+                    archive="zip" if is_win else "tar.gz",
+                    member=member, mode=None if is_win else 0o755)
+                bin_path = (f"{dest}/llama-swap.exe" if is_win
+                            else f"{dest}/llama-swap")
+                v = agent_client.install_verify(machine, bin_path)
+                if v.get("returncode") == 0:
+                    return {"ok": True, "machine": name, "bin": bin_path,
+                            "detail": f"installed llama-swap "
+                                      f"({plan_info['tag']}) to {dest}"}
+                return {"ok": False, "machine": name,
+                        "detail": f"installed but verify failed: "
+                                  f"{v.get('output', '')[-300:]}"}
+            except Exception as e:
+                if agent_client.transport(machine) == "agent":
+                    return {"ok": False, "machine": name,
+                            "detail": f"agent install failed: {e}"}
+                print(f"[agent] {name}: install failed, falling back to SSH: {e}")
         if is_win:
             # $d uses $env:USERPROFILE: PS never expands cmd-style %VAR%,
             # and on a LOCAL windows install there is no cmd.exe wrapper

@@ -38,6 +38,7 @@ import model_parser
 import path_resolver
 import stats_collector
 import rpc_manager
+import agent_client
 import reaper
 import gguf_inspect
 
@@ -703,6 +704,13 @@ def _ssh_port_guard(machine):
             return None
     except Exception:
         pass
+    if agent_client.should_use_agent(machine):
+        try:
+            agent_client.health(machine, timeout=4)
+            return None
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                return f"agent unreachable: {e}"
     from ssh_manager import SSHManager
     ssh = SSHManager(
         machine.get("ip", ""), machine.get("username", ""),
@@ -878,6 +886,21 @@ def _detect_rdma_nic(machine, is_local):
         except (OSError, subprocess.SubprocessError):
             # no bash on Windows (RDMA tooling is Linux-only anyway)
             return {}
+    elif agent_client.should_use_agent(machine):
+        try:
+            return agent_client.rdma(machine) or {}
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                return {}
+            print(f"[agent] {machine.get('name')}: rdma failed, falling back to SSH: {e}")
+            try:
+                from ssh_manager import SSHManager
+                ssh = SSHManager(machine["ip"], machine["username"],
+                                 machine.get("password", ""),
+                                 port=machine.get("port", 22))
+                code, out, _ = ssh.run(remote_script, timeout=20)
+            except Exception:
+                return {}
     else:
         try:
             from ssh_manager import SSHManager
@@ -4024,6 +4047,17 @@ def _detect_bin_on_machine(machine):
         if c not in seen:
             seen.add(c)
             uniq.append(c)
+    if not is_local and agent_client.should_use_agent(machine):
+        for cand in uniq:
+            probe = cand.replace("%USERPROFILE%", "~")
+            try:
+                st = agent_client.file_stat(machine, probe)
+                if st.get("exists") and st.get("is_file"):
+                    return True, cand, f"found at {cand}"
+            except Exception as e:
+                if agent_client.transport(machine) == "agent":
+                    return False, None, f"agent bin probe failed: {e}"
+                print(f"[agent] {machine.get('name')}: bin probe failed, falling back to SSH: {e}")
     for cand in uniq:
         # expand for local check
         if is_local:
@@ -5060,7 +5094,55 @@ def _fs_list_local(raw_path, show_hidden=False):
     return {"path": raw_path, "alias": alias, "display_path": disp_path, "parent": parent, "exists": exists, "is_dir": is_dir, "os": "windows" if os.name == "nt" else "macos" if sys.platform == "darwin" else "linux", "entries": entries}
 
 
+def _fs_list_agent(machine, raw_path, show_hidden=False):
+    import ntpath
+    is_win = machine.get("os", "linux") == "windows"
+    join = ntpath.join if is_win else os.path.join
+    dirname = ntpath.dirname if is_win else os.path.dirname
+    if not raw_path or raw_path.strip() == "":
+        raw_path = "~"
+    if raw_path.startswith(path_resolver.PREFIX):
+        try:
+            raw_path = path_resolver.resolve_for(raw_path, machine.get("os", "linux"))
+        except Exception:
+            pass
+    stat = agent_client.file_stat(machine, raw_path)
+    if not stat.get("exists"):
+        raise HTTPException(status_code=404,
+                            detail=f"path not found or unreachable: {raw_path}")
+    real = stat["path"]
+    is_dir = bool(stat.get("is_dir"))
+    parent = dirname(real)
+    if not is_dir:
+        real = parent
+        is_dir = True
+    listing = agent_client.file_list(machine, real, show_hidden)
+    entries = [{"name": e["name"], "path": join(real, e["name"]),
+                "is_dir": bool(e.get("is_dir"))}
+               for e in listing.get("entries", [])]
+    entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
+    try:
+        alias = path_resolver.to_alias(real)
+    except Exception:
+        alias = real
+    return {"path": real, "alias": alias, "parent": parent,
+            "exists": True, "is_dir": is_dir,
+            "os": "windows" if is_win else
+                  "macos" if machine.get("os") == "macos" else "linux",
+            "entries": entries}
+
+
 def _fs_list_remote(machine, raw_path, show_hidden=False):
+    if agent_client.should_use_agent(machine):
+        try:
+            return _fs_list_agent(machine, raw_path, show_hidden)
+        except HTTPException:
+            raise
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                raise HTTPException(status_code=500,
+                                    detail=f"agent browse failed: {e}")
+            print(f"[agent] {machine['name']}: browse failed, falling back to SSH: {e}")
     from ssh_manager import SSHManager, SSHError
     is_win = machine.get("os", "linux") == "windows"
     if not raw_path or raw_path.strip() == "":
@@ -5435,6 +5517,13 @@ def _measure_ssh_speed(ssh, mb=50):
     return round(mb * 8 / elapsed)
 
 
+def _measure_agent_speed(machine, mb=50):
+    try:
+        return agent_client.speedtest(machine, mb=mb)
+    except Exception:
+        return None
+
+
 @app.get("/api/machines/{name}/detail")
 async def machine_detail(name: str):
     """Deep system info for one machine: OS/kernel, CPU model, disk, network,
@@ -5495,86 +5584,101 @@ async def machine_detail(name: str):
         "gid": machine.get("rdma_gid", ""),
     }
     detail["disk"] = {"free": "", "mount": ""}
-    if machine_os == "windows":
-        blob = _run(
-            "powershell -NoProfile -Command \""
-            "$o=@{};"
-            "$o.kernel=(ver);"
-            "$o.cpu=(Get-CimInstance Win32_Processor).Name;"
-            "$o.uptime=((Get-Date)-(Get-CimInstance Win32_OperatingSystem).LastBootUpTime).ToString();"
-            "$o.ip=((Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*'} | Select-Object -First 1).IPAddress);"
-            "$o.speed=((Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object -First 1).LinkSpeed);"
-            "$o.disk=(Get-PSDrive -PSProvider FileSystem | Where-Object {$_.Free -gt 0} | Select-Object Name,Free,Used | ConvertTo-Json -Compress);"
-            "$o.cores=(Get-CimInstance Win32_Processor | Measure-Object -Sum NumberOfLogicalProcessors).Sum;"
-            "$o.coreload=(Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor | Where-Object {$_.Name -ne '_Total'} | Select-Object -ExpandProperty PercentProcessorTime | ForEach-Object {[math]::Round($_,1)} | ConvertTo-Json -Compress);"
-            "$o.llama=((& (Join-Path $env:USERPROFILE 'llama.cpp\\bin\\llama-server.exe') --version 2>&1 | Select-String 'version:' | Select-Object -First 1).ToString());"
-            "if (-not $o.llama) { $o.llama=((& (Join-Path $env:USERPROFILE 'llama.cpp\\llama-server.exe') --version 2>&1 | Select-String 'version:' | Select-Object -First 1).ToString()); }"
-            "$o | ConvertTo-Json -Compress\"", timeout=30)
+    agent_detail = None
+    if not is_local and agent_client.should_use_agent(machine):
         try:
-            o = json.loads(blob)
-            detail["kernel"] = o.get("kernel", "")
-            detail["cpu_model"] = o.get("cpu", "")
-            detail["uptime"] = o.get("uptime", "")
-            detail["net"]["ip"] = o.get("ip", "")
-            detail["net"]["speed"] = o.get("speed", "")
-            detail["disk"]["free"], detail["disk"]["total"] = _parse_win_disk(o.get("disk", ""))
-            detail["llama_version"] = o.get("llama", "")
-            # coreload comes back as a JSON string; parse it into a list
-            cl = o.get("coreload")
-            if isinstance(cl, str):
-                try:
-                    detail["cpu_cores"] = json.loads(cl)
-                except Exception:
-                    detail["cpu_cores"] = []
+            agent_detail = agent_client.system_detail(machine)
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                agent_detail = {}
             else:
-                detail["cpu_cores"] = cl or []
-            detail["cores"] = o.get("cores", "")
-        except Exception:
-            pass
-    elif machine_os == "macos":
-        blob = _run(
-            "echo \"K:$(uname -a)\";"
-            "echo \"C:$(sysctl -n machdep.cpu.brand_string)\";"
-            "echo \"U:$(uptime)\";"
-            "echo \"I:$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)\";"
-            "echo \"S:$(networksetup -getmedia en0 2>/dev/null | grep -i 'current' | sed 's/.*: //')\";"
-            "echo \"D:$(df -k / | awk 'NR==2 {print $4}')\";"
-            "echo \"DT:$(df -k / | awk 'NR==2 {print $2}')\";"
-            "echo \"L:$(\\\"{bin}/llama-server\\\" --version 2>&1 || "
-            "\\\"{bin}/llama-cli\\\" --version 2>&1)\"".format(
-                bin=machine.get('llama_bin', '') or '.'), timeout=30)
-        _parse_posix_blob(detail, blob)
+                print(f"[agent] {machine['name']}: detail failed, falling back to SSH: {e}")
+    if agent_detail is not None:
+        detail.update(agent_detail)
     else:
-        _bin = machine.get('llama_bin', '')
-        blob = _run(
-            f"K=$(uname -a); "
-            f"C=$(lscpu | grep 'Model name' | cut -d: -f2 | sed 's/^ *//'); "
-            f"U=$(uptime -p); "
-            f"I=$(hostname -I 2>/dev/null | grep -oF '{machine['ip']}' | head -n1); "
-            f"S=$(for i in $(ls /sys/class/net | grep -v '^lo'); do "
-            f"d=$(readlink /sys/class/net/$i/device/driver 2>/dev/null); "
-            f"case \"$i\" in veth*|br-*|docker*|virbr*|tailscale*) continue;; esac; "
-            f"case \"$d\" in *bridge*|*veth|*tun|*tap) continue;; esac; "
-            f"s=$(cat /sys/class/net/$i/speed 2>/dev/null); "
-            f"if [ -n \"$s\" ] && [ \"$s\" != \"-1\" ] && [ \"$s\" -gt 0 ]; then "
-            f"if [ \"$s\" -ge 1000 ]; then echo \"$((s/1000)) Gb/s\"; "
-            f"else echo \"${{s}} Mb/s\"; fi; break; fi; "
-            f"e=$(ethtool $i 2>/dev/null | grep -i speed | sed 's/.*: *//;s/ *$//'); "
-            f"if [ -n \"$e\" ] && [ \"$e\" != \"Unknown!\" ]; then echo \"$e\"; break; fi; "
-            f"case \"$d\" in *virtio*) echo \"virtio (speed n/a)\"; break;; esac; done); "
-            f"D=$(df -k / | tail -n1 | awk '{{print $4}}'); "
-            f"DT=$(df -k / | tail -n1 | awk '{{print $2}}'); "
-            f"L=$(\"{_bin}/llama-server\" --version 2>&1 || \"{_bin}/llama-cli\" --version 2>&1); "
-            f"echo \"K:$K\"; echo \"C:$C\"; echo \"U:$U\"; echo \"I:$I\"; "
-            f"echo \"S:$S\"; echo \"D:$D\"; echo \"DT:$DT\"; echo \"L:$L\"", timeout=30)
-        _parse_posix_blob(detail, blob)
+        if machine_os == "windows":
+            blob = _run(
+                "powershell -NoProfile -Command \""
+                "$o=@{};"
+                "$o.kernel=(ver);"
+                "$o.cpu=(Get-CimInstance Win32_Processor).Name;"
+                "$o.uptime=((Get-Date)-(Get-CimInstance Win32_OperatingSystem).LastBootUpTime).ToString();"
+                "$o.ip=((Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*'} | Select-Object -First 1).IPAddress);"
+                "$o.speed=((Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object -First 1).LinkSpeed);"
+                "$o.disk=(Get-PSDrive -PSProvider FileSystem | Where-Object {$_.Free -gt 0} | Select-Object Name,Free,Used | ConvertTo-Json -Compress);"
+                "$o.cores=(Get-CimInstance Win32_Processor | Measure-Object -Sum NumberOfLogicalProcessors).Sum;"
+                "$o.coreload=(Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor | Where-Object {$_.Name -ne '_Total'} | Select-Object -ExpandProperty PercentProcessorTime | ForEach-Object {[math]::Round($_,1)} | ConvertTo-Json -Compress);"
+                "$o.llama=((& (Join-Path $env:USERPROFILE 'llama.cpp\\bin\\llama-server.exe') --version 2>&1 | Select-String 'version:' | Select-Object -First 1).ToString());"
+                "if (-not $o.llama) { $o.llama=((& (Join-Path $env:USERPROFILE 'llama.cpp\\llama-server.exe') --version 2>&1 | Select-String 'version:' | Select-Object -First 1).ToString()); }"
+                "$o | ConvertTo-Json -Compress\"", timeout=30)
+            try:
+                o = json.loads(blob)
+                detail["kernel"] = o.get("kernel", "")
+                detail["cpu_model"] = o.get("cpu", "")
+                detail["uptime"] = o.get("uptime", "")
+                detail["net"]["ip"] = o.get("ip", "")
+                detail["net"]["speed"] = o.get("speed", "")
+                detail["disk"]["free"], detail["disk"]["total"] = _parse_win_disk(o.get("disk", ""))
+                detail["llama_version"] = o.get("llama", "")
+                # coreload comes back as a JSON string; parse it into a list
+                cl = o.get("coreload")
+                if isinstance(cl, str):
+                    try:
+                        detail["cpu_cores"] = json.loads(cl)
+                    except Exception:
+                        detail["cpu_cores"] = []
+                else:
+                    detail["cpu_cores"] = cl or []
+                detail["cores"] = o.get("cores", "")
+            except Exception:
+                pass
+        elif machine_os == "macos":
+            blob = _run(
+                "echo \"K:$(uname -a)\";"
+                "echo \"C:$(sysctl -n machdep.cpu.brand_string)\";"
+                "echo \"U:$(uptime)\";"
+                "echo \"I:$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)\";"
+                "echo \"S:$(networksetup -getmedia en0 2>/dev/null | grep -i 'current' | sed 's/.*: //')\";"
+                "echo \"D:$(df -k / | awk 'NR==2 {print $4}')\";"
+                "echo \"DT:$(df -k / | awk 'NR==2 {print $2}')\";"
+                "echo \"L:$(\\\"{bin}/llama-server\\\" --version 2>&1 || "
+                "\\\"{bin}/llama-cli\\\" --version 2>&1)\"".format(
+                    bin=machine.get('llama_bin', '') or '.'), timeout=30)
+            _parse_posix_blob(detail, blob)
+        else:
+            _bin = machine.get('llama_bin', '')
+            blob = _run(
+                f"K=$(uname -a); "
+                f"C=$(lscpu | grep 'Model name' | cut -d: -f2 | sed 's/^ *//'); "
+                f"U=$(uptime -p); "
+                f"I=$(hostname -I 2>/dev/null | grep -oF '{machine['ip']}' | head -n1); "
+                f"S=$(for i in $(ls /sys/class/net | grep -v '^lo'); do "
+                f"d=$(readlink /sys/class/net/$i/device/driver 2>/dev/null); "
+                f"case \"$i\" in veth*|br-*|docker*|virbr*|tailscale*) continue;; esac; "
+                f"case \"$d\" in *bridge*|*veth|*tun|*tap) continue;; esac; "
+                f"s=$(cat /sys/class/net/$i/speed 2>/dev/null); "
+                f"if [ -n \"$s\" ] && [ \"$s\" != \"-1\" ] && [ \"$s\" -gt 0 ]; then "
+                f"if [ \"$s\" -ge 1000 ]; then echo \"$((s/1000)) Gb/s\"; "
+                f"else echo \"${{s}} Mb/s\"; fi; break; fi; "
+                f"e=$(ethtool $i 2>/dev/null | grep -i speed | sed 's/.*: *//;s/ *$//'); "
+                f"if [ -n \"$e\" ] && [ \"$e\" != \"Unknown!\" ]; then echo \"$e\"; break; fi; "
+                f"case \"$d\" in *virtio*) echo \"virtio (speed n/a)\"; break;; esac; done); "
+                f"D=$(df -k / | tail -n1 | awk '{{print $4}}'); "
+                f"DT=$(df -k / | tail -n1 | awk '{{print $2}}'); "
+                f"L=$(\"{_bin}/llama-server\" --version 2>&1 || \"{_bin}/llama-cli\" --version 2>&1); "
+                f"echo \"K:$K\"; echo \"C:$C\"; echo \"U:$U\"; echo \"I:$I\"; "
+                f"echo \"S:$S\"; echo \"D:$D\"; echo \"DT:$DT\"; echo \"L:$L\"", timeout=30)
+            _parse_posix_blob(detail, blob)
 
     # ---- real throughput over SSH (cached 1h) ----
     # virtio/virtual NICs don't report a link speed, so measure what the
     # machine can actually push to the cluster over its SSH link. For the
     # local machine, measure to the first reachable peer.
     speed_ssh = None
-    if not is_local and ssh is not None:
+    speed_agent = None
+    if not is_local and agent_client.should_use_agent(machine):
+        speed_agent = machine
+    elif not is_local and ssh is not None:
         speed_ssh = ssh
     elif is_local:
         for peer in cfg.machines.all():
@@ -5593,14 +5697,15 @@ async def machine_detail(name: str):
     reported = str(detail["net"].get("speed") or "").strip()
     need_measure = (not reported or "n/a" in reported.lower()
                     or "unknown" in reported.lower())
-    if need_measure and speed_ssh is not None:
+    if need_measure and (speed_agent is not None or speed_ssh is not None):
         cache = _load_speed_cache()
         ent = cache.get(name)
         now = time.time()
         if ent and now - ent.get("ts", 0) < _SPEED_CACHE_TTL:
             detail["net"]["speed"] = ent.get("mbps")
         else:
-            mbps = _measure_ssh_speed(speed_ssh)
+            mbps = (_measure_agent_speed(speed_agent) if speed_agent is not None
+                    else _measure_ssh_speed(speed_ssh))
             if mbps:
                 detail["net"]["speed"] = mbps
                 cache[name] = {"mbps": mbps, "ts": now}

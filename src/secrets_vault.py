@@ -225,6 +225,44 @@ def get_machine_password(machine):
     return (machine or {}).get("password") or ""
 
 
+# ---------------- peer-agent tokens ----------------
+def machine_agent_env_key(machine_id):
+    return f"MACHINE_{_safe_id(machine_id)}_AGENT_TOKEN_ENC"
+
+
+def set_machine_agent_token(machine_id, plain):
+    """Encrypt + store this machine's peer-agent token. Empty clears it."""
+    key = machine_agent_env_key(machine_id)
+    if plain:
+        set_env_value(key, encrypt_value(plain))
+    else:
+        delete_env_value(key)
+
+
+def get_machine_agent_token(machine):
+    """Peer-agent token for a machine: per-machine vault entry, then a
+    farm-wide vault entry, then explicit env overrides for tests/dev."""
+    mid = (machine or {}).get("id") or (machine or {}).get("name") or ""
+    enc = (os.environ.get(machine_agent_env_key(mid)) or "").strip()
+    if enc:
+        try:
+            return decrypt_value(enc)
+        except Exception:
+            return ""
+    enc = (os.environ.get("AGENT_TOKEN_ENC") or "").strip()
+    if enc:
+        try:
+            return decrypt_value(enc)
+        except Exception:
+            return ""
+    return (os.environ.get("FARM_AGENT_TOKEN")
+            or os.environ.get("AGENT_TOKEN") or "").strip()
+
+
+def machine_agent_token_set(machine):
+    return bool(get_machine_agent_token(machine))
+
+
 # ---------------- HF token ----------------
 def get_hf_token():
     for k in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_API_TOKEN"):

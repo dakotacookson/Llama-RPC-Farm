@@ -12,6 +12,7 @@ import subprocess
 from ssh_manager import SSHManager
 import local_node
 import gpu_vendor
+import agent_client
 
 GPU_QUERY = gpu_vendor.nvidia_query(
     "index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,"
@@ -356,12 +357,42 @@ def collect_macos(ssh, machine=None):
     return stats
 
 
+def _agent_stats(machine):
+    """Full stats via the peer agent, or None when it is unavailable."""
+    if not agent_client.should_use_agent(machine):
+        return None
+    try:
+        s = agent_client.metrics(machine)
+    except Exception as e:
+        if agent_client.transport(machine) == "agent":
+            return _empty(machine.get("os", "linux"))
+        print(f"[agent] {machine['name']}: metrics failed, falling back to SSH: {e}")
+        return None
+    if not isinstance(s, dict) or s.get("status") != "online":
+        return _empty(machine.get("os", "linux"))
+    return s
+
+
 def machine_stats_light(machine):
     """Fast reachability-only stats for the overview (no SSH collection).
     Returns identity + online/offline + rpc state, with empty gpus/cpu/ram.
     The detail modal calls machine_stats() for the full picture on demand."""
     machine_os = machine.get("os", "linux")
     is_local = local_node.is_local(machine)
+    if not is_local and agent_client.should_use_agent(machine):
+        try:
+            st = agent_client.status(machine)
+            s = _empty(machine_os)
+            s["status"] = "online" if st.get("rpc_running") or st.get(
+                "llama_running") or st.get("swap_running") else "online"
+            return {**s, "name": machine["name"], "ip": machine["ip"],
+                    "os": machine_os, "is_local": False,
+                    "is_master": machine.get("role") == "master",
+                    "rpc_running": bool(st.get("rpc_running")),
+                    "rdma": bool(machine.get("rdma")),
+                    "rdma_cm": bool(machine.get("rdma_cm"))}
+        except Exception:
+            pass
     # rpc_running = any ggml-rpc-server process (per-model ports mean the
     # base port alone is no longer a reliable signal)
     import rpc_manager
@@ -394,25 +425,34 @@ def machine_stats(machine):
     dashboard: health + gpus + cpu/ram + identity (local/master/rpc)."""
     machine_os = machine.get("os", "linux")
     is_local = local_node.is_local(machine)
+    s = None
+    if not is_local:
+        s = _agent_stats(machine)
     try:
-        if is_local:
-            s = collect_local(machine_os, machine)
-        else:
-            ssh = SSHManager(
-                machine["ip"], machine["username"], machine["password"],
-                port=machine.get("port", 22),
-            )
-            if machine_os == "windows":
-                s = collect_windows(ssh, machine)
-            elif machine_os == "macos":
-                s = collect_macos(ssh, machine)
+        if s is None:
+            if is_local:
+                s = collect_local(machine_os, machine)
             else:
-                s = collect_linux(ssh, machine)
+                ssh = SSHManager(
+                    machine["ip"], machine["username"], machine["password"],
+                    port=machine.get("port", 22),
+                )
+                if machine_os == "windows":
+                    s = collect_windows(ssh, machine)
+                elif machine_os == "macos":
+                    s = collect_macos(ssh, machine)
+                else:
+                    s = collect_linux(ssh, machine)
     except Exception:
         s = _empty(machine_os)
     import rpc_manager
     if is_local:
         rpc = rpc_manager._any_rpc_running_local(machine)
+    elif agent_client.should_use_agent(machine):
+        try:
+            rpc = bool(agent_client.status(machine).get("rpc_running"))
+        except Exception:
+            rpc = False
     else:
         try:
             ssh = SSHManager(

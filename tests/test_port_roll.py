@@ -420,7 +420,7 @@ def test_render_kill_patterns_anchored(stub_cfg):
     assert '-p $port \\"' in script
     # PowerShell match pads the command line with spaces so a port at the
     # END of the command line (no trailing arg) still matches
-    assert "(' ' + \\$_.CommandLine + ' ') -like '* -p $port *'" in script
+    assert "(' ' + \\$x.CommandLine + ' ') -like '*-p $port *'" in script
     # no unanchored port match remains in kill/pgrep lines
     for line in script.splitlines():
         if ("pkill" in line or "pgrep" in line) and "-p $port" in line:
