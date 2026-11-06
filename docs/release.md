@@ -8,22 +8,27 @@ workflows.
 
 ## Versioning
 
-The repo-root `VERSION` file is the single source of truth for the base
-version. Builds append the `main` suffix and short commit:
+The repo-root `VERSION` file is the floor for the version line, in
+`MAJOR.MINOR.PATCH` form. Each successful build automatically receives the
+next patch version on that line and is published as an immutable tag:
 
 ```
-<VERSION>-main.<short-sha>      e.g. 0.1.0-main.100de53
+release-0.1.1, release-0.1.2, release-0.1.3, ...
 ```
 
-Bump `VERSION` when you want a new base version. Artifact filenames and
-`.deb` control versions use the computed string, so every download is
-traceable to a commit.
+The next number is computed at build time from already-published
+`release-*` tags, so a number is never reused and nothing is overwritten.
+Bump `VERSION` (e.g. to `0.2.0`) to start a new minor line; the next build
+becomes `release-0.2.1`. Artifact filenames and `.deb` control versions use
+the bare computed version (e.g. `0.1.1`), so every download is traceable to
+a release.
 
 ## Orchestration
 
 `rolling-main.yml` is the only workflow triggered by `main` pushes. It:
 
-1. Reads `VERSION` and computes `<VERSION>-main.<short-sha>`.
+1. Reads `VERSION` and computes the next `X.Y.Z` from published
+   `release-*` tags.
 2. Runs three platform **build jobs** in parallel in the same workflow:
    - `linux` — linux-x64, also runs the pre-release checks
      (py_compile, `node --check`, `bash -n`, pytest)
@@ -45,17 +50,16 @@ Each platform also emits a SHA-256 checksum file.
 
 The publish job runs once, after all builds pass:
 
-1. Creates an **immutable per-build prerelease** tagged with the computed
-   version (e.g. `0.1.0-main.100de53`) and uploads every platform asset to
-   it, with a generated body: version, commit link, changelog since the
-   previous roll, download names per platform, checksum note, and
-   quick-start instructions. Older versioned releases are never deleted, so
-   every historical build stays downloadable. Re-running the same commit
-   replaces only that commit's own versioned release.
+1. Creates an **immutable per-build prerelease** tagged `release-<version>`
+   (e.g. `release-0.1.1`) and uploads every platform asset to it, with a
+   generated body: version, commit link, changelog since the previous roll,
+   download names per platform, checksum note, and quick-start instructions.
+   Older versioned releases are never deleted, so every historical build
+   stays downloadable.
 2. Recreates `main-latest` as a **moving pointer** to the newest build. It
-   carries no assets; its body links to the newest versioned release. This
-   keeps `https://github.com/<repo>/releases/tag/main-latest` stable without
-   duplicating artifacts on the pointer.
+   carries no assets; its body links to the newest `release-<version>`
+   release. This keeps `https://github.com/<repo>/releases/tag/main-latest`
+   stable without duplicating artifacts on the pointer.
 
 Because the publish step is gated on `needs: [linux, macos, windows]` and
 the workflow serializes on the `rolling-main` concurrency group, a failed

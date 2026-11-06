@@ -21,12 +21,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: version
-        name: Read VERSION
+        name: Compute next patch version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           base=$(tr -d '[:space:]' < VERSION)
-          test -n "$base" || { echo "VERSION file is empty" >&2; exit 1; }
-          echo "version=${base}-main.${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          if ! printf '%s' "$base" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "VERSION must be MAJOR.MINOR.PATCH (got: ${base})" >&2
+            exit 1
+          fi
+          # Every published build gets an immutable release-X.Y.Z tag. Pick
+          # the highest patch already published on this major.minor line so a
+          # number is never reused (0.1.1, 0.1.2, ...). VERSION is the floor;
+          # bump it to start a new minor/major line.
+          latest=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/release-" --paginate \
+            --jq '.[].ref' 2>/dev/null \
+            | sed 's#refs/tags/release-##' \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -1 || true)
+          next=$(python3 - "$base" "$latest" <<'PY'
+          import sys
+          base = tuple(int(p) for p in sys.argv[1].split("."))
+          latest = sys.argv[2].strip()
+          cur = tuple(int(p) for p in latest.split(".")) if latest else base
+          if cur[:2] != base[:2]:
+              nxt = (base[0], base[1], base[2] + 1)
+          else:
+              nxt = (cur[0], cur[1], max(cur[2], base[2]) + 1)
+          print("{}.{}.{}".format(*nxt))
+          PY
+          )
+          echo "version=${next}" >> "$GITHUB_OUTPUT"
+          echo "Computed version ${next} (base ${base}, last release ${latest:-none})"
 
   linux:
     name: Build (Linux)
@@ -525,12 +552,12 @@ jobs:
           pointer only: the installers live in that build's immutable release,
           and every older build stays available under its own tag.
 
-          - **Newest build:** [`{version}`](https://github.com/{repo}/releases/tag/{version})
+          - **Newest build:** [`release-{version}`](https://github.com/{repo}/releases/tag/release-{version})
           - **Commit:** [`{short}`](https://github.com/{repo}/commit/{sha})
           - **Built:** {datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d %H:%M UTC}
-          - **All rolling builds:** https://github.com/{repo}/releases?q={version.split('-main.')[0]}
+          - **All rolling builds:** https://github.com/{repo}/releases?q=release-
 
-          Download the installers from the **{version}** release above, or browse
+          Download the installers from the **release-{version}** release above, or browse
           the full release history to pin an earlier build.
           """
           pathlib.Path("release-notes.md").write_text(release_notes)
@@ -546,13 +573,13 @@ jobs:
             exit 1
           fi
 
+          TAG="release-${VERSION}"
           # 1. Immutable per-build release. Older versions are never deleted;
-          #    only a rebuild of the exact same commit (workflow_dispatch
-          #    rerun) replaces its own versioned release.
-          if gh release view "$VERSION" >/dev/null 2>&1; then
-            gh release delete "$VERSION" --yes --cleanup-tag
+          #    only a rebuild that reuses an existing tag is replaced.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes --cleanup-tag
           fi
-          gh release create "$VERSION" "${ASSETS[@]}" \
+          gh release create "$TAG" "${ASSETS[@]}" \
             --target "$SHA" \
             --prerelease \
             --title "Llama RPC Farm ${VERSION}" \
