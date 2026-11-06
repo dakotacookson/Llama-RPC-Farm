@@ -6,8 +6,9 @@ vLLM/Ray workers, custom Windows runtimes, process/status views, logs,
 files, service control, installers, stats/tuner probes, discovery, and
 in-place agent updates are agent-backed. SSH remains only for first-time
 bootstrap, recovery, and explicit SSH discovery.
-Separate release artifacts are built by
-`.github/workflows/release-agent.yml` (tags `agent-v*`).
+Separate release artifacts are built automatically on every `main` push by
+`.github/workflows/main-build-{linux,macos,windows}.yml`; the agent is
+published in the rolling `main-latest` prerelease.
 
 ## Why
 
@@ -229,18 +230,20 @@ Each slice keeps SSH functional, so no user is forced to migrate early.
 
 ## Release packaging
 
-Source stays in this monorepo; releases are separate artifacts:
+Source stays in this monorepo; releases are rolling artifacts built on
+every `main` push:
 
-- agent: `llama_rpc_farm_agent-<ver>-py3-none-any.whl` + sdist +
-  `SHA256SUMS` (`.github/workflows/release-agent.yml`, tag `agent-v*`)
-- app: source archive + `SHA256SUMS`
-  (`.github/workflows/release-app.yml`, tag `app-v*`)
+- agent: standalone `llama-peer-agent` binaries (`.deb`/`.tar.gz` on
+  Linux, `.zip` on Windows, `.dmg`/`.tar.gz` on macOS) plus SHA-256
+  checksums in the `main-latest` prerelease
+- app: standalone `llama-rpc-farm` binaries with the same per-platform
+  packaging in the same `main-latest` prerelease
 
-The agent package is dependency-free (stdlib only). Bump
-`peer_agent/pyproject.toml` and `llama_peer_agent.__version__` before
-tagging. Protocol compatibility is reported by `/version`; the master
-accepts protocol 1 only and falls back to SSH on incompatible/missing
-agents.
+See `docs/release.md` for the platform workflows. Bump
+`peer_agent/pyproject.toml` and `llama_peer_agent.__version__` when the
+agent protocol changes. Protocol compatibility is reported by `/version`;
+the master accepts protocol 1 only and falls back to SSH on
+incompatible/missing agents.
 
 ## Testing
 
