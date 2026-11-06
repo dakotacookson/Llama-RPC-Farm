@@ -456,11 +456,16 @@ jobs:
           REPO="$GITHUB_REPOSITORY"
           SHA="$GITHUB_SHA"
           PREV=$(gh api "repos/${REPO}/git/ref/tags/main-latest" --jq .object.sha 2>/dev/null || true)
+          # The tag may not exist on the first run; gh can also print an
+          # error JSON body on stdout. Only accept a real 40-char commit SHA.
+          if ! printf '%s' "$PREV" | grep -Eq '^[0-9a-fA-F]{40}$'; then
+            PREV=""
+          fi
           if [ -n "$PREV" ] && [ "$PREV" != "$SHA" ]; then
             COMPARE="https://github.com/${REPO}/compare/${PREV}...${SHA}"
             gh api "repos/${REPO}/compare/${PREV}...${SHA}" \
               --jq '.commits[0:30][] | "- " + (.commit.message | split("\n")[0]) + " (`" + .sha[0:7] + "`)"' \
-              > changes.md || true
+              > changes.md 2>/dev/null || : > changes.md
           else
             COMPARE="https://github.com/${REPO}/commits/main"
             : > changes.md
@@ -523,7 +528,15 @@ jobs:
           fi
           git tag -f main-latest "$SHA"
           git push -f origin refs/tags/main-latest
-          gh release create main-latest release-assets/* \
+          # download-artifact preserves platform subdirs (e.g. dist/), so
+          # collect FILES only — passing release-assets/* used to hand
+          # gh a directory and fail with "is a directory".
+          mapfile -d '' ASSETS < <(find release-assets -type f -print0)
+          if [ ${#ASSETS[@]} -eq 0 ]; then
+            echo "no release assets found under release-assets/" >&2
+            exit 1
+          fi
+          gh release create main-latest "${ASSETS[@]}" \
             --prerelease \
             --title "$TITLE" \
             --notes-file release-notes.md

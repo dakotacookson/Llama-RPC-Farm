@@ -466,4 +466,11 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _rc = main()
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    # Never hang CI on a lingering library thread.
+    os._exit(_rc)
