@@ -35,7 +35,7 @@ Each build job produces both the app and the peer agent:
 |---|---|---|
 | Linux | `.deb`, `.tar.gz` | `.deb`, `.tar.gz` |
 | macOS | `.dmg`, `.tar.gz` | `.dmg`, `.tar.gz` |
-| Windows | `.zip` | `.zip` |
+| Windows | `.exe`, `.zip` | `.exe`, `.zip` |
 
 Each platform also emits a SHA-256 checksum file.
 

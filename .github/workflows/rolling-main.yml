@@ -197,11 +197,15 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           $version = $env:VERSION
+          Copy-Item dist\llama-rpc-farm.exe "llama-rpc-farm_${version}_windows-x64.exe" -Force
+          Copy-Item dist\llama-peer-agent.exe "llama-peer-agent_${version}_windows-x64.exe" -Force
           Compress-Archive -Path dist\llama-rpc-farm.exe `
             -DestinationPath "llama-rpc-farm_${version}_windows-x64.zip" -Force
           Compress-Archive -Path dist\llama-peer-agent.exe `
             -DestinationPath "llama-peer-agent_${version}_windows-x64.zip" -Force
           $files = @(
+            "llama-rpc-farm_${version}_windows-x64.exe",
+            "llama-peer-agent_${version}_windows-x64.exe",
             "llama-rpc-farm_${version}_windows-x64.zip",
             "llama-peer-agent_${version}_windows-x64.zip"
           )
@@ -214,6 +218,7 @@ jobs:
         with:
           name: windows-x64
           path: |
+            *.exe
             *.zip
             *.sha256
 
@@ -274,13 +279,13 @@ jobs:
 
           - **Linux:** `llama-rpc-farm_{version}_amd64.deb` · `llama-rpc-farm_{version}_linux-x64.tar.gz`
           - **macOS (Apple Silicon):** `llama-rpc-farm_{version}_macos-arm64.dmg` · `llama-rpc-farm_{version}_macos-arm64.tar.gz`
-          - **Windows:** `llama-rpc-farm_{version}_windows-x64.zip`
+          - **Windows:** `llama-rpc-farm_{version}_windows-x64.exe` · `llama-rpc-farm_{version}_windows-x64.zip`
 
           ### Peer agent — `llama-peer-agent`
 
           - **Linux:** `llama-rpc-farm-agent_{version}_amd64.deb` · `llama-peer-agent_{version}_linux-x64.tar.gz`
           - **macOS (Apple Silicon):** `llama-peer-agent_{version}_macos-arm64.dmg` · `llama-peer-agent_{version}_macos-arm64.tar.gz`
-          - **Windows:** `llama-peer-agent_{version}_windows-x64.zip`
+          - **Windows:** `llama-peer-agent_{version}_windows-x64.exe` · `llama-peer-agent_{version}_windows-x64.zip`
 
           Each platform uploads a matching `.sha256` checksum file.
 
