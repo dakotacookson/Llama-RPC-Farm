@@ -9,9 +9,7 @@ Nothing outside the project folder is ever modified.
 | Where you need it | Requirement |
 |---|---|
 | Master (this app's box) | Python 3.11+, a terminal, network reach to every peer (Tailscale or LAN) |
-| Master (Linux) | `sshpass` only for SSH transport (bootstrap/fallback + generated scripts that SSH to peers). The `.deb` declares it as a dependency; source installs: `sudo apt install -y sshpass` |
-| Master (Windows/macOS) | Prefer the peer-agent transport; it needs no `sshpass`. macOS SSH transport: `brew install hudochenkov/sshpass/sshpass` |
-| Peers | Either the peer agent (recommended) or an OpenSSH server/account for SSH mode |
+| Peers | The peer agent package (`.deb` / `.dmg` / `.exe`) — no SSH server needed |
 | Models | llama.cpp `llama-server` built (or installed later via the UI) + GGUF files on a shared path |
 | Serving clients | Any OpenAI-compatible client (opencode, SillyTavern, curl, …) |
 | Optional | `curl` (used by run.sh / run.bat health checks) |
@@ -48,7 +46,7 @@ Open `http://localhost:8199`. Stop later with
 | Tab | What it does |
 |-----|--------------|
 | Dashboard | Live status of every machine: reachability, RPC server, GPU VRAM/temp |
-| Machines | Add/edit machines (ip, ssh credentials, GPUs, rpc port); start/stop RPC servers |
+| Machines | Add/edit machines (IP, agent port, agent token, GPUs); start/stop RPC servers |
 | Groups | Cluster groups of machines for multi-AI setups |
 | Models | Scan directories for GGUF files (shards shown as ONE model); per-model: servers, tensor split, flags key/value editor |
 | Run | Generate the full bash script (RPC startup on peers + llama-server) for any model + server set |
@@ -64,8 +62,8 @@ cp .env.example .env
 
 - `FARM_SECRET_KEY` + `FARM_SALT` — auto-generated vault key material
 - `HF_TOKEN_ENC` — Hugging Face token (set it in the UI, it is encrypted on save)
-- `MACHINE_<ID>_PASSWORD_ENC` — per-machine SSH passwords (set via the
-  Machines tab; stored Fernet-encrypted, never in the browser or YAML)
+- `MACHINE_<ID>_AGENT_TOKEN_ENC` — per-machine peer-agent tokens (set via
+  the Machines tab; stored Fernet-encrypted, never in the browser or YAML)
 
 All `config/*.yaml` beyond the shipped templates (`settings.example.yaml`
 and similar) are **per-install user data and git-ignored** — a fresh clone
@@ -74,9 +72,8 @@ lists, access keys, and LAN paths never leave your box through this repo.
 
 ## 4. Add machines (Machines tab)
 
-For each machine enter: name, IP, connection mode (`SSH`, `peer agent`, or
-`SSH + peer agent`), credentials/token, port, OS, and share mode (`vram` /
-`ram` / `both`) plus which
+Install the agent package on the peer, then enter: name, IP, agent port
+(default 8198), agent token, OS, and share mode (`vram` / `ram` / `both`) plus which
 GPU device tokens to share (`CUDA0`, `ROCm1`, … — see `src/gpu_vendor.py`).
 `Hardware Detect` fills in GPU names, VRAM, core/RAM totals. The app's own
 machine is auto-registered as master.
@@ -113,17 +110,11 @@ fallback. Peers run `ggml-rpc-server` from the same build.
 
 ## 7. Start RPC servers + launch models (Run tab)
 
-The Run tab generates a full launch script. Agent-backed peers use typed
-agent endpoints; SSH-backed peers still use SSH `ggml-rpc-server`
-startup on each selected peer (ports rolled per model if busy, base 50052
-is legacy) + the `llama-server` command with your per-model flags. Run it
-from the UI or yourself:
-
-```bash
-scripts/farm-run.sh aibox1 generated/start-my-model-RPC.sh 8080
-# decrypts that machine's vault password and exports SSH_PASS; the
-# script itself contains no secrets and fails fast without $SSH_PASS
-```
+The Run tab generates a full launch script. Every peer is started through
+its peer agent's typed endpoints (`/rpc/ensure`, `/rpc/stop`), with ports
+rolled per model if busy (base 50052 is legacy), then the `llama-server`
+command runs with your per-model flags. The script contains no secrets;
+agent tokens come from the pushed `swap-secrets.env` sidecar.
 
 ## 8. Install llama-swap and push config (Swap tab)
 
@@ -193,9 +184,8 @@ minutes between streamed chunks (prefill, RPC backends, memory pressure).
   for that machine's OS; add it in `stores.yaml`.
 - **Port 50052 family busy on a peer** — per-model ports roll
   automatically; check the generated script's port line.
-- **Generated scripts ask for `$SSH_PASS`** — only when the plan contains
-  SSH-backed peers; agent-only plans do not require it. Use
-  `scripts/farm-run.sh` or export it yourself.
+- **Agent token missing** — set it in the Machines tab (stored in the
+  vault); generated scripts read it from `swap-secrets.env`.
 - **llama-swap exits and stays down after a kill** — a bare SIGTERM exits
   "cleanly" and `Restart=on-failure` skips respawn; bounce the unit
   (`systemctl --user restart llama-swap`) — `restart-llama-swap.sh` does

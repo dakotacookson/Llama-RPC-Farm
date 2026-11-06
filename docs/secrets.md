@@ -9,7 +9,7 @@ YAML, generated scripts, API responses, or git.
 |---|---|
 | `FARM_SECRET_KEY` + `FARM_SALT` | Vault key material (auto-generated on first run) |
 | `HF_TOKEN_ENC` | Hugging Face token, Fernet-encrypted |
-| `MACHINE_<ID>_PASSWORD_ENC` | Per-machine SSH password, Fernet-encrypted (id uppercased, non-alnum → `_`) |
+| `MACHINE_<ID>_AGENT_TOKEN_ENC` | Per-machine peer-agent token, Fernet-encrypted (id uppercased, non-alnum → `_`) |
 
 Crypto (`src/secrets_vault.py`): SHA-256+salt fingerprints
 (`hash_password`/`verify_password`) for verification-only cases; Fernet
@@ -25,31 +25,21 @@ cp .env.example .env
 .venv/bin/python scripts/migrate_secrets_to_env.py
 ```
 
-The legacy `password:` field in `machines.yaml` still exists in some
-installs; `_inject_machine_secret` prefers the vault value and treats the
-YAML field as stale. New/edited machines always write to the vault.
+Machine records no longer carry SSH passwords; only the agent token is
+stored (encrypted in `.env`).
 
-## The three launch paths (all vault-fed, nothing baked)
+## Launch paths (agent-only)
 
-1. **Manual scripts** — generated `generated/*.sh` contain NO passwords
-   and require `$SSH_PASS` in the environment:
-
-   ```bash
-   scripts/farm-run.sh aibox1 generated/start-my-model-RPC.sh 8080
-   # wrapper decrypts the machine password from .env and execs
-   # equivalent: SSH_PASS='...' generated/start-my-model-RPC.sh
-   ```
-
+1. **Generated scripts** — `generated/*.sh` contain no passwords. They call
+   each peer's agent over HTTP with `AGENT_TOKEN_<NAME>` values supplied by
+   the runtime sidecar.
 2. **llama-swap launches** — push writes a `swap-secrets.env` sidecar
    (0600, host-side only) next to the scripts; each model cmd sources it
    before exec. The pushed `config.yaml` never holds secrets.
+3. **Tuner trials** — use the same agent endpoints for remote work.
 
-3. **Tuner trials** — the trial runner injects `SSH_PASS` into the
-   subprocess environment (never argv, never disk).
-
-Same rule elsewhere: the tuner bandwidth probe uses `sshpass -e`
-(env-based, invisible in `ps`); live SSH is paramiko with the in-memory
-vault-resolved password.
+There is no SSH password path: `sshpass`, `paramiko`, and `$SSH_PASS` were
+removed. Agents are installed from their own `.deb`/`.dmg`/`.exe`.
 
 ## Injection defenses (enforced by tests)
 

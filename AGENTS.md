@@ -39,9 +39,9 @@ test-stub keys (`sk-dad-test-…`).
 ## What this is
 
 FastAPI web UI (`src/app.py`, port **8199**) that manages a llama.cpp RPC
-cluster. The optional peer agent is the preferred transport for configured
-machines; SSH remains the bootstrap/recovery fallback. A Linux master runs
-llama-swap + llama-server, peers run `ggml-rpc-server` or native
+cluster. Peers are reached **only** through the peer agent; agents ship as
+their own `.deb`/`.dmg`/`.exe` packages (no SSH, no sshpass). A Linux master
+runs llama-swap + llama-server, peers run `ggml-rpc-server` or native
 `llama-server` via the agent. Vanilla-JS frontend (`ui/`), YAML configs
 (`config/`). Nothing outside this folder is ever modified.
 
@@ -65,19 +65,16 @@ fuser -k 8199/tcp     # stop the UI (Linux) — then ./run.sh to restart
   templates, and icons is git-ignored per-install user data; the app
   creates defaults for missing files (`src/settings_persister.py` and
   `config_loader.py` tolerate empty/missing YAML).
-- Peer agent: per-machine `transport: auto|ssh|agent`, `agent_port`
-  (default 8198), and a vault-only agent token. Use the Machines page to
-  install/update agents; the Agent button shows current→latest and runs
-  `/agent/update` for existing agents. Linux installs must enable linger
-  (`scripts/install-peer-agent.sh` does); Windows uses a boot Scheduled
-  Task (`LlamaPeerAgent`). Agent-only mode means SSH must not be used for
-  normal operations.
-- Secrets NEVER go in YAML or generated scripts: machine SSH passwords +
-  HF token + agent tokens live in the Fernet vault (`.env`, keys
-  `FARM_SECRET_KEY`,
-  `FARM_SALT`, `HF_TOKEN_ENC`, `MACHINE_<ID>_PASSWORD_ENC`). Agents set
-  passwords via the Machines UI/API (`password_set` flags only; no
-  plaintext in responses) or `scripts/migrate_secrets_to_env.py`.
+- Peer agent: per-machine `agent_port` (default 8198) and a vault-only
+  agent token. Agents are installed from their own platform packages; the
+  Machines page only adds their IP/port/token. `/agent/update` performs
+  in-place upgrades. Linux installs should enable linger; Windows uses a
+  boot Scheduled Task (`LlamaPeerAgent`).
+- Secrets NEVER go in YAML or generated scripts: HF token + agent tokens
+  live in the Fernet vault (`.env`, keys `FARM_SECRET_KEY`, `FARM_SALT`,
+  `HF_TOKEN_ENC`, `MACHINE_<ID>_AGENT_TOKEN_ENC`). Tokens are set via the
+  Machines UI/API (`agent_token_set` flags only; no plaintext in
+  responses) or `scripts/set-agent-token.py`.
 - Managing models/machines as an agent: use the HTTP API at `:8199`
   (complete route reference: `docs/api.md`) rather than hand-editing YAML
   — the running app holds in-memory state and YAML CRUD from outside is
@@ -116,8 +113,8 @@ fuser -k 8199/tcp     # stop the UI (Linux) — then ./run.sh to restart
   :8199. Frontend `app.js` IS cache-busted automatically
   (`asset_v` = mtime+boot); a hard reload after restart is still wise.
 - Chat testing is a native tab (same UI, `GET /api/chat/models` + streaming `POST /api/chat` proxied to llama-swap) — chainlit was removed, no :8191 service exists.
-- Tests are all unit-stubbed (SSH faked in `tests/conftest.py`) — no real
-  hosts contacted, safe to run anywhere.
+- Tests are all unit-stubbed (peer-agent calls faked) — no real hosts
+  contacted, safe to run anywhere.
 
 ## Verification order that matters
 
@@ -135,7 +132,7 @@ fuser -k 8199/tcp     # stop the UI (Linux) — then ./run.sh to restart
   (`swap_manager.get_host()`), not necessarily the master role.
 - **Machine identity = MAC, not IP.** DHCP re-leases drift IPs;
   `rpc_manager._sync_machine_ip()` auto-heals via ARP (only for machines
-  with a stored `mac`, and only after the new IP answers SSH). Code that
+  with a stored `mac`, and only after the new IP answers on the agent port). Code that
   targets peers should tolerate the config IP being stale.
 - **RPC numbering has ONE source of truth:** `rpc_manager.compute_rpc_map()`
   (and its mirror `_rpc_legend`). Peer order = `--rpc` order; per peer,
@@ -189,16 +186,14 @@ anything that runs shell commands:
   its own in-memory state; don't edit while it's serving without restarting.
 - Model paths use `store://` aliases (`config/stores.yaml` maps alias →
   real path per OS) — never store absolute model paths.
-- **Secrets**: machine SSH passwords + HF token live ONLY in the Fernet
-  vault (`.env`, git-ignored). Generated scripts take `$SSH_PASS` from the
-  environment (`scripts/farm-run.sh` wrapper or `swap-secrets.env`
-  sidecar). Never bake a password into YAML, generated scripts, or API
-  responses (`password_set` flags only). There are injection tests
-  (`test_shell_injection.py`, `test_script_injection.py`) — flag values
-  are `shlex.quote`d; keep it that way.
-- Generated scripts are chmod 0700, vault `.env` 0600 — they drive SSH
-  sessions via `$SSH_PASS`; don't loosen permissions or write secrets at
-  world-readable paths.
+- **Secrets**: HF token + peer-agent tokens live ONLY in the Fernet vault
+  (`.env`, git-ignored). Generated scripts read `AGENT_TOKEN_<NAME>` from
+  the `swap-secrets.env` sidecar. Never bake a token into YAML, generated
+  scripts, or API responses (`agent_token_set` flags only). There are
+  injection tests (`test_shell_injection.py`, `test_script_injection.py`)
+  — flag values are `shlex.quote`d; keep it that way.
+- Generated scripts are chmod 0700, vault `.env` 0600 — don't loosen
+  permissions or write secrets at world-readable paths.
 - User-visible strings/comments in this codebase are often load-bearing
   documentation (long "why" comments citing llama.cpp internals). Preserve
   them when editing; add one when you learn a non-obvious upstream fact.

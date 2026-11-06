@@ -68,28 +68,21 @@ blocks GPU tensors behind a single client connection.
 
 ## Generated scripts (`_render_rpc`, `generate_script`)
 
-Written to `generated/`, chmod 0700, LF endings. Structure:
+Written to `generated/`, chmod 0700, LF endings. Agent-only structure:
 
 ```
-stop_node_rpc_linux / stop_node_rpc_win   # per-port targeted kills only
-start_node_rpc_linux   # sshpass + setsid||nohup ggml-rpc-server -p $port --device ...
-start_node_rpc_win     # scp a per-peer .ps1, run via powershell
-main: start RPC peers, wait /dev/tcp, then llama-server with --rpc/--device
-trap → teardown on exit; peers may belong to co-served models (kills are
-per-port, never blanket pkill)
+agent_ensure(node)   # curl POST /rpc/ensure (port + devices + env)
+agent_stop(node)     # curl POST /rpc/stop
+main: start each peer through its agent, wait for port/open (or /rpc/list),
+      then run llama-server with --rpc/--device
+trap → stop only the peers this run started (per-port, co-serve safe)
 ```
 
-Rendered from an f-string: literal `{`/`}` in the bash output must be
-written `{{`/`}}` in the source — the same string also embeds PowerShell
-`{ }` blocks, which is the #1 source of escaping bugs here.
-
-Env baked into scripts: `GGML_SCHED_DEBUG=3` + `GGML_RPC_DEBUG=3`
-(visualizer + log tails ground truth), `CUDA_DEVICE_ORDER=PCI_BUS_ID`,
-`GGML_CUDA_P2P=1`, and RDMA gating (`GGML_RPC_NO_RDMA=1` default;
-`GGML_RDMA_DEV/GGML_RDMA_GID/USE_CM` when enabled).
-
-`$SSH_PASS` must be in the environment (see secrets.md) — the script
-fails fast with a clear message otherwise.
+No SSH/sshpass is emitted. Env baked into scripts: `GGML_SCHED_DEBUG=3` +
+`GGML_RPC_DEBUG=3` (visualizer + log tails ground truth),
+`CUDA_DEVICE_ORDER=PCI_BUS_ID`, `GGML_CUDA_P2P=1`, and RDMA gating
+(`GGML_RPC_NO_RDMA=1` default; `GGML_RDMA_DEV/GGML_RDMA_GID/USE_CM` when
+enabled). Agent tokens come from `swap-secrets.env` at runtime, never baked.
 
 ## llama-server command (`build_llama_command`)
 

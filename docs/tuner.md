@@ -46,7 +46,7 @@ tiers) weight split distribution by memory bandwidth, not just VRAM.
 
 ## Safety properties
 
-- Trials run with `SSH_PASS` in the subprocess env only (never argv/disk).
+- Trials run through the peer agent; no SSH password is used.
 - `cancel_tune` kills the bench server (Windows: deliberately skipped —
   the bench process is killed by timeout instead; documented in code).
 - Trials refuse to run from a Windows master (POSIX scripts required).

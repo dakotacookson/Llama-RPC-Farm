@@ -17,8 +17,7 @@ and hand-rolled startup scripts.
 ## What it does
 
 - **Pool machines into one cluster** — pick which GPUs (and RAM) each box
-  shares; peers run RPC servers started through the peer agent (SSH
-  remains the bootstrap/fallback path).
+  shares; peers run RPC servers started through the peer agent.
 
   ![Model editor: pick GPU/RAM chips across machines, device order at the bottom](docs/img/model-hardware.png)
 
@@ -134,7 +133,7 @@ scripts, same probe, same dashboard), it just needs real-world users**:
 |---|---|
 | x86_64 Linux (master & peers) | ✅ Tested — this is the daily-driver config |
 | NVIDIA GPUs, Linux (CUDA) | ✅ Tested — multi-GPU tensor-split, RPC + local GPU mix |
-| NVIDIA GPUs, Windows peers | ✅ Tested — RPC over OpenSSH, firewall rules auto-managed |
+| NVIDIA GPUs, Windows peers | ✅ Tested — RPC over the peer agent |
 | CPU + RAM sharing over RPC | 🧪 Code paths complete, needs contributors to test |
 | AMD GPUs (ROCm/HIP, `rocm-smi` stats) | 🧪 Code paths complete, needs contributors to test |
 | Apple Silicon (Metal backend) | ✅ Tested by @joshuamsalazar — Metal backend |
@@ -152,8 +151,7 @@ The machine you run the UI on is the master; everything you add is a peer.
 Model configs live as YAML, the app generates the exact launch scripts
 (RPC nodes first, llama-server last), and llama-swap fronts it all so
 clients always hit one endpoint. The app also runs the `:8090` view/access
-gateway in-process — no separate service to install. Secrets (SSH
-passwords, HF token) live in an encrypted vault on your box, never in
+gateway in-process — no separate service to install. Secrets (agent tokens, HF token) live in an encrypted vault on your box, never in
 configs, never in scripts.
 
 ### Expectations: speed
@@ -181,10 +179,9 @@ It's a farm you shape, not a fixed topology.
 is unauthenticated by design; the farm assumes your LAN or a VPN
 (Tailscale-style) is the boundary. Don't port-forward the RPC ports or
 the UI to the public internet. What the app does touch: peer-agent HTTP
-and SSH for bootstrap/fallback to machines
-you add (credentials in the encrypted `.env` vault, never in configs or
-scripts), and Windows firewall allow rules for the two llama.cpp
-binaries so peers can reach each other. Everything else stays inside the
+and HTTP for the peer agents on machines
+you add (agent tokens live in the encrypted `.env` vault, never in
+configs or scripts). Everything else stays inside the
 project folder.
 
 ## Documentation

@@ -6,9 +6,9 @@ A single FastAPI process (`src/app.py`) that:
 
 1. Serves the web UI (`ui/templates/index.html` + `ui/static/*`) on :8199.
 2. Exposes a JSON API the UI drives.
-3. Manages remote machines through the peer agent where configured;
-   SSH remains the bootstrap/recovery fallback — starting/stopping
-   `ggml-rpc-server` on peers, launching `llama-server`, pushing configs.
+3. Manages remote machines **only** through the peer agent — starting/
+   stopping `ggml-rpc-server` on peers, launching `llama-server`, pushing
+   configs and files. Agents are installed from their own packages.
 4. Owns the llama-swap daemon lifecycle and its generated config.
 5. Subscribes to llama-swap's HTTP log streams and re-publishes them as
    WebSockets for the visualizer and live-logs tabs.
@@ -28,9 +28,8 @@ A single FastAPI process (`src/app.py`) that:
 | `vllm_installer.py` | Installs vLLM on ONE machine (local or SSH) as a `steps.run_steps` report, mirroring llamacpp_installer: gates (OS linux-only — Windows/macOS refused before any command; nvidia-smi must answer; AMD needs rocm-smi + Python 3.12), then delivery per settings `vllm:` — venv (uv when available, else `python3 -m venv`, pinned wheel `0.18.0`, ROCm hosts get the ROCm wheel index) or docker (`docker pull` of the configured image). Post-install verify: `vllm --version`; on AMD a backend probe asserts `torch.version.hip` (the silent-CUDA-fallback guard). Success points settings `vllm.venv_bin` at the installed binary. `plan()` is the no-side-effect preview. The experimental vllm-gguf-plugin is never auto-installed. |
 | `vllm_manager.py` | All vLLM knowledge: `build_vllm_command` (venv `vllm serve` or `docker run`, multi-line shell like rpc_manager), `build_cmd_stop` (`docker stop farm-<id>` / `pkill -f "vllm serve.*<id>"` — llama-swap stops via cmdStop, not the process group), `swap_entry_parts` (cmd/cmdStop/checkEndpoint=`/health`/env — empty by design: device pinning travels inside cmd), HTTP probing (`probe_health` /health, `probe_identity` /v1/models served-name match, `probe_capacity` /metrics gauges), static validation (single host, fp8-only kv cache, GGUF needs `vllm.tokenizer`, TP-vs-GPU-count cross-check), the engine×OS gate (`validate_hosts`: no native Windows, no macOS, ROCm wheels need Python 3.12), and `ui_hints()` (labels/hidden panels/flag presets). Farm device chips map to `CUDA_VISIBLE_DEVICES` index lists. |
 | `swap_installer.py` | Downloads the official llama-swap prebuilt per OS/arch, skip-if-present, updates swap settings' binary. Single-host tool — no fleet install. |
-| `stats_collector.py` | GPU/CPU/RAM stats: local, agent, or SSH fallback; three OS branches (linux `/proc`+nvidia-smi, Windows PowerShell, macOS sysctl/top). |
-| `ssh_manager.py` | paramiko wrapper: `run`, `push_file`, `push_text` (os-aware rename), `check_port`, known_hosts fingerprint store. |
-| `discovery.py` | LAN host discovery: UDP peer-agent discovery plus optional SSH scan/ARP/OS/MAC probing. |
+| `stats_collector.py` | GPU/CPU/RAM stats: local or peer-agent; three OS branches (linux `/proc`+nvidia-smi, Windows PowerShell, macOS sysctl/top). |
+| `discovery.py` | LAN identity helpers: UDP peer-agent discovery + ARP/MAC healing. No SSH scan. |
 | `local_node.py` | Which machine am I? `is_local()` decides master vs peer everywhere. |
 | `gpu_vendor.py` | Vendor normalization + device token prefixes (`CUDA0`, `ROCm0`, `SYCL0`, `Metal`). |
 | `model_parser.py` | Directory scan for GGUF; collapses `-000XX-of-000YY` shards into one model. |
@@ -50,8 +49,8 @@ A single FastAPI process (`src/app.py`) that:
 `config.yaml` from every model config, pushes scripts + sidecar to the
 host, launches via systemd/detached/Win32_Process.
 
-Both produce step reports via `steps.run_steps`; both push files via
-`ssh_manager.push_text`.
+Both produce step reports via `steps.run_steps`; files are pushed through
+the peer agent (`/files/write`) or written locally.
 
 ## Engine registry (llama.cpp | vLLM)
 
@@ -107,7 +106,7 @@ emits the vllm cmd/cmdStop/`/health` entries.
 ```
 client → llama-swap :8080 (proxy)
   → matches model id → starts/keeps warm its wrapper script
-    → script starts RPC peers (sshpass) + llama-server --rpc host:port,host:port
+    → script starts RPC peers through each agent (/rpc/ensure) + llama-server --rpc host:port,host:port
   → llama-server logs GGML_SCHED_DEBUG per-tensor lines + upstream chunks
     → app tails /logs/stream/{proxy,upstream} → WebSockets → UI
 ```

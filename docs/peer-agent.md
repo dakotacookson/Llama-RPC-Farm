@@ -1,11 +1,11 @@
 # Optional peer agent (design plan)
 
-Status: **agent-first** in `peer_agent/` (agent 0.3.4). RPC + native
+Status: **agent-only** in `peer_agent/` (agent 0.3.4). RPC + native
 llama-server lifecycle, remote-local models, multi-host RPC scripts,
 vLLM/Ray workers, custom Windows runtimes, process/status views, logs,
 files, service control, installers, stats/tuner probes, discovery, and
-in-place agent updates are agent-backed. SSH remains only for first-time
-bootstrap, recovery, and explicit SSH discovery.
+in-place agent updates are agent-backed. SSH/sshpass/paramiko have been
+removed; agents are installed from their own `.deb`/`.dmg`/`.exe`.
 Separate release artifacts are built automatically on every `main` push by
 `.github/workflows/rolling-main.yml`; the agent is published in the rolling
 `main-latest` prerelease.
@@ -15,10 +15,10 @@ Separate release artifacts are built automatically on every `main` push by
 SSH works for bootstrap and most lifecycle actions, but every action is a
 new connection with OS-specific shell/quoting. The remaining sharp edges:
 
-- `cmdStop`/cleanup needs the right environment (`SSH_PASS` sidecar)
+- `cmdStop`/cleanup historically needed the right environment (sidecar)
 - Windows remote-local launches cannot read SMB model paths
 - process/metrics queries differ across Linux, Windows, macOS
-- a dropped SSH connection can leave an action half-done
+- a dropped connection can leave an action half-done
 
 A tiny peer agent makes those deterministic without changing the
 architecture for users who prefer SSH.
