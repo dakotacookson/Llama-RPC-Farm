@@ -1836,6 +1836,14 @@ async function showHostFingerprint() {
   if (!box) return;
   const ip = $("#m-ip").value.trim();
   if (!ip) { box.textContent = ""; return; }
+  const tok = ($("#m-agent-token")?.value || "").trim();
+  const editing = Boolean($("#machine-original-name").value);
+  const tokHint = ($("#m-agent-token-hint")?.textContent || "");
+  const savedToken = editing && /leave blank to keep/i.test(tokHint);
+  if (!tok && !savedToken) {
+    box.innerHTML = '<span class="hint"><i class="fa-solid fa-plug"></i> Agent discovered — enter its token to verify. Tokens are never broadcast by discovery.</span>';
+    return;
+  }
   box.innerHTML = '<span class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Checking peer agent…</span>';
   try {
     const a = await api("POST", "/api/machines/agent-check", {
