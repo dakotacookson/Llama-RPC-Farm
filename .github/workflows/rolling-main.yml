@@ -29,25 +29,193 @@ jobs:
           echo "version=${base}-main.${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
   linux:
-    name: Linux
+    name: Build (Linux)
     needs: prepare
-    uses: ./.github/workflows/build-linux.yml
-    with:
-      version: ${{ needs.prepare.outputs.version }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+      - name: Test before packaging
+        run: |
+          python -m py_compile src/*.py scripts/*.py peer_agent/llama_peer_agent/*.py tests/*.py
+          node --check ui/static/app.js
+          bash -n run.sh restart-llama-swap.sh install.sh
+          python -m pytest tests -q
+      - name: Build bundled agent wheel
+        run: python -m pip wheel --no-deps -w agent-wheel ./peer_agent
+      - name: Build standalone app
+        run: pyinstaller --noconfirm --clean packaging/app.spec
+      - name: Build standalone agent
+        run: |
+          pyinstaller --noconfirm --clean --onefile \
+            --name llama-peer-agent \
+            --paths peer_agent packaging/agent_entry.py
+      - name: Package Linux
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          # app
+          mkdir -p pkg-app/DEBIAN pkg-app/usr/local/bin
+          cp dist/llama-rpc-farm pkg-app/usr/local/bin/llama-rpc-farm
+          chmod 755 pkg-app/usr/local/bin/llama-rpc-farm
+          cat > pkg-app/DEBIAN/control <<EOF
+          Package: llama-rpc-farm
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Llama RPC Farm contributors
+          Description: Web UI and cluster manager for llama.cpp RPC farms
+          EOF
+          dpkg-deb --build pkg-app "llama-rpc-farm_${VERSION}_amd64.deb"
+          tar -czf "llama-rpc-farm_${VERSION}_linux-x64.tar.gz" -C dist llama-rpc-farm
+          # agent
+          mkdir -p pkg-agent/DEBIAN pkg-agent/usr/local/bin
+          cp dist/llama-peer-agent pkg-agent/usr/local/bin/llama-peer-agent
+          chmod 755 pkg-agent/usr/local/bin/llama-peer-agent
+          cat > pkg-agent/DEBIAN/control <<EOF
+          Package: llama-rpc-farm-agent
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Llama RPC Farm contributors
+          Description: Peer agent for Llama RPC Farm
+          EOF
+          dpkg-deb --build pkg-agent "llama-rpc-farm-agent_${VERSION}_amd64.deb"
+          tar -czf "llama-peer-agent_${VERSION}_linux-x64.tar.gz" -C dist llama-peer-agent
+          sha256sum *.deb *.tar.gz > "llama-rpc-farm_${VERSION}_linux-x64.sha256"
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: |
+            *.deb
+            *.tar.gz
+            *.sha256
 
   macos:
-    name: macOS
+    name: Build (macOS)
     needs: prepare
-    uses: ./.github/workflows/build-macos.yml
-    with:
-      version: ${{ needs.prepare.outputs.version }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+      - name: Build bundled agent wheel
+        run: python -m pip wheel --no-deps -w agent-wheel ./peer_agent
+      - name: Build standalone app
+        run: pyinstaller --noconfirm --clean packaging/app.spec
+      - name: Build standalone agent
+        run: |
+          pyinstaller --noconfirm --clean --onefile \
+            --name llama-peer-agent \
+            --paths peer_agent packaging/agent_entry.py
+      - name: Package macOS
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dmg-app/LlamaRPCFarm dmg-agent/LlamaPeerAgent
+          # app
+          cp dist/llama-rpc-farm dmg-app/LlamaRPCFarm/llama-rpc-farm
+          chmod 755 dmg-app/LlamaRPCFarm/llama-rpc-farm
+          cat > dmg-app/LlamaRPCFarm/README.txt <<EOF
+          Llama RPC Farm ${VERSION}
+          Run: ./llama-rpc-farm
+          Open http://127.0.0.1:8199
+          Runtime data: ~/Library/Application Support/LlamaRPCFarm
+          EOF
+          hdiutil create -volname "Llama RPC Farm" -srcfolder dmg-app \
+            -ov -format UDZO "llama-rpc-farm_${VERSION}_macos-arm64.dmg"
+          tar -czf "llama-rpc-farm_${VERSION}_macos-arm64.tar.gz" -C dist llama-rpc-farm
+          # agent
+          cp dist/llama-peer-agent dmg-agent/LlamaPeerAgent/llama-peer-agent
+          chmod 755 dmg-agent/LlamaPeerAgent/llama-peer-agent
+          cat > dmg-agent/LlamaPeerAgent/README.txt <<EOF
+          Llama Peer Agent ${VERSION}
+          Run: ./llama-peer-agent --host 0.0.0.0 --port 8198
+          Configure PEER_AGENT_TOKEN in the environment.
+          EOF
+          hdiutil create -volname "Llama Peer Agent" -srcfolder dmg-agent \
+            -ov -format UDZO "llama-peer-agent_${VERSION}_macos-arm64.dmg"
+          tar -czf "llama-peer-agent_${VERSION}_macos-arm64.tar.gz" -C dist llama-peer-agent
+          shasum -a 256 *.dmg *.tar.gz > "llama-rpc-farm_${VERSION}_macos-arm64.sha256"
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: |
+            *.dmg
+            *.tar.gz
+            *.sha256
 
   windows:
-    name: Windows
+    name: Build (Windows)
     needs: prepare
-    uses: ./.github/workflows/build-windows.yml
-    with:
-      version: ${{ needs.prepare.outputs.version }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+      - name: Build bundled agent wheel
+        run: python -m pip wheel --no-deps -w agent-wheel ./peer_agent
+      - name: Build standalone app
+        run: pyinstaller --noconfirm --clean packaging/app.spec
+      - name: Build standalone agent
+        shell: bash
+        run: |
+          pyinstaller --noconfirm --clean --onefile \
+            --name llama-peer-agent \
+            --paths peer_agent packaging/agent_entry.py
+      - name: Package Windows
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          $version = $env:VERSION
+          Compress-Archive -Path dist\llama-rpc-farm.exe `
+            -DestinationPath "llama-rpc-farm_${version}_windows-x64.zip" -Force
+          Compress-Archive -Path dist\llama-peer-agent.exe `
+            -DestinationPath "llama-peer-agent_${version}_windows-x64.zip" -Force
+          $files = @(
+            "llama-rpc-farm_${version}_windows-x64.zip",
+            "llama-peer-agent_${version}_windows-x64.zip"
+          )
+          $lines = foreach ($f in $files) {
+            (Get-FileHash $f -Algorithm SHA256).Hash.ToLower() + "  " + $f
+          }
+          $lines | Set-Content "llama-rpc-farm_${version}_windows-x64.sha256"
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: |
+            *.zip
+            *.sha256
 
   publish:
     name: Publish main-latest
