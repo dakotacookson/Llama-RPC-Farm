@@ -79,3 +79,9 @@ htmlcov/
 
 # local agent wheel builds (release workflow rebuilds these)
 generated/agent-wheel/
+
+# release build artifacts (repo-root dist/build, bundled agent wheel)
+/dist/
+/build/
+/agent-wheel/
+/llama-peer-agent.spec

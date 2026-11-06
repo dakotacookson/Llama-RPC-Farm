@@ -20,6 +20,7 @@ Frontend is vanilla JS; all state lives in `config/*.yaml`.
 | [models-and-variants.md](models-and-variants.md) | Model configs, flags, device_order, variants, serve groups |
 | [development.md](development.md) | Running, testing, the string-assertion test style, common pitfalls (see also `AGENTS.md`) |
 | [peer-agent.md](peer-agent.md) | Peer agent: agent-first transport, endpoints, discovery, auto-start, in-place updates, packaging roadmap |
+| [release.md](release.md) | Tag-driven agent/app release pipelines and native artifacts |
 
 ## Quick orientation
 

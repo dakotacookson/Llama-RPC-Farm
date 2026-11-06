@@ -10,6 +10,7 @@ from datetime import datetime
 import yaml
 
 import path_resolver
+from runtime_paths import data_dir
 import gguf_inspect
 
 # Cache for MTP detection results keyed by resolved absolute path to avoid re-reading GGUF files
@@ -56,7 +57,7 @@ def _get_decision_type(gguf_path):
     _decision_cache[gguf_path] = result
     return result
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = data_dir()
 CONFIG_DIR = os.path.join(BASE_DIR, "config")
 MODELS_DIR = os.path.join(CONFIG_DIR, "models")
 

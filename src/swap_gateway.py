@@ -33,7 +33,8 @@ import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from runtime_paths import data_dir
+BASE_DIR = data_dir()
 SETTINGS_FILE = os.path.join(BASE_DIR, "config", "settings.yaml")
 
 LISTEN_PORT = int(os.environ.get("GATEWAY_PORT", "8090"))
