@@ -2072,6 +2072,13 @@ def _device_env_exports(master):
 
 def _render_single_node(model_cfg, master):
     """Mirrors start-huihui-35b.sh."""
+    model_cfg = dict(model_cfg)
+    gpus = [d.strip() for d in (master.get("gpu", "") or "").split(",")
+            if d.strip()]
+    if (master.get("os") == "macos" and len(gpus) == 1
+            and gpus[0] in ("Metal", "MTL0")):
+        model_cfg["tensor_split_mode"] = "auto"
+        model_cfg["tensor_split"] = ""
     cmd = build_llama_command(model_cfg, [master["name"]])
     return f"""#!/bin/bash
 {_device_env_exports(master)}
@@ -2137,7 +2144,13 @@ def render_remote_local_script(model_cfg, master, remote_port,
     # fitter's by-free-VRAM distribution can thrash when a slow big-VRAM
     # card (P100) fills up and spills layers to CPU (observed: 121 CPU
     # layers on the 27B dad model = half the model in system RAM).
-    if not (model_cfg.get("tensor_split_mode") == "split"
+    is_metal_single = (master.get("os") == "macos"
+                       and len(gpus) == 1
+                       and gpus[0] in ("Metal", "MTL0"))
+    if is_metal_single:
+        model_cfg["tensor_split_mode"] = "auto"
+        model_cfg["tensor_split"] = ""
+    elif not (model_cfg.get("tensor_split_mode") == "split"
             and (model_cfg.get("tensor_split") or "").strip()):
         model_cfg["tensor_split_mode"] = "fit"
         model_cfg["tensor_split"] = ""
