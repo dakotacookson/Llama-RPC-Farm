@@ -1955,7 +1955,7 @@ async function loadMachines(skipCaps = false) {
         <button class="small" data-act="edit">Edit</button>
         <button class="small" data-act="detect">Detect</button>
         <button class="small" data-act="update">Update</button>
-        <button class="small" data-act="agent-update" title="Install or update the peer agent on this machine">Agent ⟳</button>
+        ${(m.role === "master" || m.is_local) ? "" : '<button class="small" data-act="agent-update" title="Install or update the peer agent on this machine">Agent ⟳</button>'}
         <button class="small danger" data-act="delete">Delete</button>
       </div>`;
       tr.classList.add("scan-model");
@@ -1982,7 +1982,8 @@ async function loadMachines(skipCaps = false) {
           toast(err.message, "bad");
         }
       };
-      tr.querySelector('[data-act="agent-update"]').onclick = async (e) => {
+      const agentUpdateBtn = tr.querySelector('[data-act="agent-update"]');
+      if (agentUpdateBtn) agentUpdateBtn.onclick = async (e) => {
         const btn = e.currentTarget;
         if (!window.confirm(`Install/update the peer agent on ${m.name}?\n\nThe agent will be restarted.`)) return;
         btn.disabled = true;
