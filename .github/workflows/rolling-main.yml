@@ -149,6 +149,19 @@ jobs:
           chmod 755 pkg-agent/DEBIAN/postinst
           dpkg-deb --build pkg-agent "llama-rpc-farm-agent_${VERSION}_amd64.deb"
           sha256sum *.deb > "llama-rpc-farm_${VERSION}_linux-x64.sha256"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.hf-cache
+          key: hf-${{ runner.os }}-qwen2.5-0.5b-q4
+      - name: E2E - install .deb + tiny model load
+        env:
+          HF_HOME: ${{ github.workspace }}/.hf-cache
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y ./llama-rpc-farm_*.deb ./llama-rpc-farm-agent_*.deb
+          python tests/e2e/single_node.py \
+            --app /usr/local/bin/llama-rpc-farm \
+            --agent /usr/local/bin/llama-peer-agent
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -283,6 +296,24 @@ jobs:
             echo "No Apple notarization credentials — not skipping signing, only notarization."
           fi
           shasum -a 256 *.pkg > "llama-rpc-farm_${VERSION}_macos-arm64.sha256"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.hf-cache
+          key: hf-${{ runner.os }}-qwen2.5-0.5b-q4
+      - name: E2E - install .pkg + tiny model load
+        env:
+          HF_HOME: ${{ github.workspace }}/.hf-cache
+        run: |
+          set -euo pipefail
+          sudo installer -pkg llama-rpc-farm_*.pkg -target /
+          sudo installer -pkg llama-peer-agent_*.pkg -target /
+          # the pkg postinstall may have bootstrapped LaunchAgents; stop them
+          launchctl bootout gui/$(id -u)/com.llamarpc.farm.app 2>/dev/null || true
+          launchctl bootout gui/$(id -u)/com.llamarpc.farm.agent 2>/dev/null || true
+          killall llama-rpc-farm llama-peer-agent 2>/dev/null || true
+          python tests/e2e/single_node.py \
+            --app /usr/local/bin/llama-rpc-farm \
+            --agent /usr/local/bin/llama-peer-agent
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -375,6 +406,25 @@ jobs:
             (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower() + "  " + $f.Name
           }
           $lines | Set-Content "llama-rpc-farm_${env:VERSION}_windows-x64.sha256"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.hf-cache
+          key: hf-${{ runner.os }}-qwen2.5-0.5b-q4
+      - name: E2E - install setup.exe + tiny model load
+        shell: pwsh
+        env:
+          HF_HOME: ${{ github.workspace }}/.hf-cache
+        run: |
+          $app = Get-ChildItem llama-rpc-farm_*_windows-x64-setup.exe | Select-Object -First 1
+          $agent = Get-ChildItem llama-peer-agent_*_windows-x64-setup.exe | Select-Object -First 1
+          Start-Process -Wait -FilePath $app.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'
+          Start-Process -Wait -FilePath $agent.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'
+          schtasks /End /TN LlamaRPCFarm 2>$null
+          schtasks /End /TN LlamaPeerAgent 2>$null
+          Get-Process llama-rpc-farm,llama-peer-agent -ErrorAction SilentlyContinue | Stop-Process -Force
+          python tests/e2e/single_node.py `
+            --app "C:\Program Files\LlamaRPCFarm\llama-rpc-farm.exe" `
+            --agent "C:\Program Files\LlamaRPCFarmAgent\llama-peer-agent.exe"
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
