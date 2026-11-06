@@ -54,6 +54,14 @@ Because the publish step is gated on `needs: [linux, macos, windows]` and
 the workflow serializes on the `rolling-main` concurrency group, a failed
 build leaves the previous release untouched — no partial releases.
 
+## First-run automation
+
+Packaged binaries self-register a login service (systemd user unit,
+launchd LaunchAgent, or Windows Scheduled Task) and the Windows agent adds
+inbound rules for TCP 8198 + UDP 8199. Unpaired agents open a bounded
+pairing window and are enrolled by the app with its farm token. Opt out with
+`LLAMA_FARM_NO_SERVICE=1` / `PEER_AGENT_NO_SERVICE=1`.
+
 ## Local release smoke test
 
 ```bash

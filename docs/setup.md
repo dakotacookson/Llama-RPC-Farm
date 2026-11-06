@@ -87,6 +87,16 @@ once in Settings if all agents share a token — new discovered agents then
 verify and save without typing it. With per-machine tokens, enter the
 token once for that machine.
 
+**Packaged binaries self-register.** On first run the app/agent installs a
+login service (systemd user unit on Linux, LaunchAgent on macOS, Scheduled
+Task on Windows) so they come back after reboot/login, and the Windows agent
+adds inbound firewall rules for TCP 8198 + UDP 8199. An agent with no token
+starts in a 10-minute **pairing window**; the app generates a farm token and
+enrolls it automatically (set `PEER_AGENT_PAIRING=0` to disable, or
+`PEER_AGENT_PAIRING_WINDOW=<seconds>` to change it). Opt out of auto-start
+with `LLAMA_FARM_NO_SERVICE=1` / `PEER_AGENT_NO_SERVICE=1`; run either binary
+with `--install-service` / `--uninstall-service` to manage it manually.
+
 Machine identity is the MAC, not the IP — DHCP drift self-heals when the
 new IP answers SSH (only for machines with a stored MAC).
 

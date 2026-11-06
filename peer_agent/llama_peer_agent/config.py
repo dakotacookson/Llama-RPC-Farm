@@ -1,11 +1,54 @@
 """Agent configuration (env + CLI)."""
 from dataclasses import dataclass, field
 import os
+import sys
 from pathlib import Path
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8198
 DEFAULT_DISCOVERY_PORT = 8199
+
+
+def env_file_path() -> Path:
+    if os.name == "nt":
+        base = Path(os.environ.get("APPDATA") or Path.home())
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+    return base / "llama-peer-agent" / "agent.env"
+
+
+def load_env_file() -> None:
+    """Load PEER_AGENT_* values written by pairing/install; real env wins."""
+    try:
+        for line in env_file_path().read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k, v = k.strip(), v.strip().strip('"').strip("'")
+            if k and k not in os.environ:
+                os.environ[k] = v
+    except OSError:
+        pass
+
+
+def save_token(token: str) -> None:
+    """Persist the bearer token for services/scheduled tasks (0600)."""
+    p = env_file_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            if not line.strip().startswith("PEER_AGENT_TOKEN="):
+                lines.append(line)
+    except OSError:
+        pass
+    lines.append(f"PEER_AGENT_TOKEN={token}")
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        os.chmod(p, 0o600)
+    except OSError:
+        pass
 
 
 def _int_env(name, default):

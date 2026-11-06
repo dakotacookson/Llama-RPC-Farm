@@ -81,8 +81,12 @@ def _post(port, path, body, token=TOKEN):
 
 
 def test_health_requires_token(live_agent):
+    # /health and /version stay open (discovery/pairing); everything
+    # else requires the bearer token.
+    status, health = _get(live_agent, "/health", token=None)
+    assert status == 200 and health["ok"] is True
     with pytest.raises(urllib.error.HTTPError) as exc:
-        _get(live_agent, "/health", token=None)
+        _get(live_agent, "/status", token=None)
     assert exc.value.code == 401
 
 

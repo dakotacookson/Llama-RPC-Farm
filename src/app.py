@@ -50,6 +50,7 @@ templates.env.auto_reload = True  # pick up index.html edits without a restart
 
 app = FastAPI(title="Llama RPC Farm")
 
+
 _GATEWAY_SERVER = None
 
 
@@ -131,6 +132,13 @@ def seed_local_master():
     # reads them. Best-effort, never blocks boot.
     ensure_runtime_layout()
     local_node.ensure_local_master()
+    try:
+        import secrets as _secrets
+        import secrets_vault as _vault
+        if not _vault.farm_agent_token_set():
+            _vault.set_farm_agent_token(_secrets.token_urlsafe(32))
+    except Exception:
+        pass
     start_swap_gateway()
     # DEC-17: one-time stamp of `engine` on legacy group entries (both
     # collections) so existing groups keep rendering under their engine.
@@ -829,9 +837,20 @@ async def machine_agent_check(p: AgentCheckIn):
     try:
         out = await run_in_threadpool(
             agent_client.health, machine, 4.0, p.agent_token or None)
-    except Exception as e:
-        raise HTTPException(status_code=502,
-                            detail=f"peer agent unreachable: {e}")
+    except Exception:
+        # Unpaired agent + farm token: enroll automatically, then retry.
+        try:
+            import secrets_vault as _vault
+            farm = _vault.get_farm_agent_token()
+            if farm and not p.agent_token:
+                await run_in_threadpool(agent_client.pair, machine, farm)
+                out = await run_in_threadpool(
+                    agent_client.health, machine, 4.0, farm)
+            else:
+                raise
+        except Exception as e:
+            raise HTTPException(status_code=502,
+                                detail=f"peer agent unreachable: {e}")
     return {"ok": True, **out}
 
 
@@ -1067,6 +1086,17 @@ async def probe_hardware(p: ProbeIn):
         raise HTTPException(status_code=503, detail=detail)
 
     def run():
+        if not local_node.is_local(machine):
+            try:
+                agent_client.health(machine, timeout=4)
+            except Exception:
+                try:
+                    import secrets_vault as _vault
+                    farm = _vault.get_farm_agent_token()
+                    if farm:
+                        agent_client.pair(machine, farm)
+                except Exception:
+                    pass
         s = stats_collector.machine_stats(machine)
         if s["status"] != "online":
             return {"online": False}
@@ -1124,6 +1154,7 @@ async def discover_hosts(p: DiscoverIn):
     import discovery
 
     def run():
+        discovery.pair_agents(include_known=True)
         return discovery.discover_agents(include_known=p.include_known)
 
     result = await run_in_threadpool(run)
@@ -1245,6 +1276,7 @@ def _hw_watcher_loop():
             # MAC-based IP healing: the agent's UDP responder reports its
             # current addresses, so DHCP re-leases fix themselves.
             import discovery
+            discovery.pair_agents(include_known=True)
             healed = discovery.reconcile_machine_ips()
             if healed:
                 print("[ip-sync] updated: " + ", ".join(

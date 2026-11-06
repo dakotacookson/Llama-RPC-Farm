@@ -57,6 +57,7 @@ jobs:
         run: |
           pyinstaller --noconfirm --clean --onefile \
             --name llama-peer-agent \
+            --hidden-import llama_peer_agent.selfservice \
             --paths peer_agent packaging/agent_entry.py
       - name: Package Linux
         env:
@@ -123,6 +124,7 @@ jobs:
         run: |
           pyinstaller --noconfirm --clean --onefile \
             --name llama-peer-agent \
+            --hidden-import llama_peer_agent.selfservice \
             --paths peer_agent packaging/agent_entry.py
       - name: Package macOS
         env:
@@ -184,6 +186,7 @@ jobs:
         run: |
           pyinstaller --noconfirm --clean --onefile \
             --name llama-peer-agent \
+            --hidden-import llama_peer_agent.selfservice \
             --paths peer_agent packaging/agent_entry.py
       - name: Package Windows
         shell: pwsh

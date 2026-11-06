@@ -70,6 +70,9 @@ fuser -k 8199/tcp     # stop the UI (Linux) — then ./run.sh to restart
   Machines page only adds their IP/port/token. `/agent/update` performs
   in-place upgrades. Linux installs should enable linger; Windows uses a
   boot Scheduled Task (`LlamaPeerAgent`).
+  Packaged binaries self-register at next login; an agent with no token
+  opens a bounded pairing window and the app auto-enrolls it with the farm
+  token. Windows agent adds TCP 8198/UDP 8199 firewall rules.
 - Secrets NEVER go in YAML or generated scripts: HF token + agent tokens
   live in the Fernet vault (`.env`, keys `FARM_SECRET_KEY`, `FARM_SALT`,
   `HF_TOKEN_ENC`, `MACHINE_<ID>_AGENT_TOKEN_ENC`). Tokens are set via the

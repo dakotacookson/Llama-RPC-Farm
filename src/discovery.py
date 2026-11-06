@@ -133,7 +133,8 @@ def discover_agents(port=8199, timeout=2.0, include_known=True):
             "username": None,
             "mac": a.get("mac", ""), "mac_ip": ip,
             "already_added": ip in known,
-            "agent": True, "agent_port": a.get("agent_port"),
+            "agent": True, "pairing": bool(a.get("pairing")),
+            "agent_port": a.get("agent_port"),
             "agent_version": a.get("agent_version"),
             "protocol_version": a.get("protocol_version"),
             "agent_addresses": a.get("addresses") or [],
@@ -190,3 +191,29 @@ def reconcile_machine_ips():
         except Exception:
             pass
     return changed
+
+
+def pair_agents(include_known=True):
+    """Auto-enroll unpaired agents with the farm token (paired once)."""
+    import secrets_vault
+    import agent_client
+    tok = secrets_vault.get_farm_agent_token()
+    if not tok:
+        return []
+    try:
+        found = discover_agents(include_known=include_known).get("results") or []
+    except Exception:
+        return []
+    paired = []
+    for a in found:
+        if not a.get("pairing") or not a.get("ip"):
+            continue
+        m = {"name": a.get("hostname") or a["ip"], "ip": a["ip"],
+             "agent_port": a.get("agent_port") or 8198}
+        try:
+            agent_client.pair(m, tok)
+            paired.append(a["ip"])
+            print(f"[pairing] paired {a.get('hostname') or a['ip']} with farm token")
+        except Exception as e:
+            print(f"[pairing] {a.get('ip')}: failed: {e}")
+    return paired

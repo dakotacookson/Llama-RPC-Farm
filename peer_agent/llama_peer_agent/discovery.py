@@ -70,6 +70,7 @@ def payload(config: AgentConfig) -> dict:
         "magic": MAGIC.decode("ascii"),
         "protocol_version": PROTOCOL_VERSION,
         "agent_version": __version__,
+        "pairing": not bool((getattr(config, "token", "") or "").strip()),
         "hardware": _hardware(),
     })
     return body

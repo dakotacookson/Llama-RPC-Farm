@@ -36,7 +36,13 @@ def main(argv=None) -> int:
                     help="discovery UDP port (default: 8199)")
     ap.add_argument("--version", action="store_true",
                     help="print version + protocol and exit")
+    ap.add_argument("--install-service", action="store_true",
+                    help="register login auto-start + firewall rules")
+    ap.add_argument("--uninstall-service", action="store_true",
+                    help="remove the login auto-start registration")
     args = ap.parse_args(argv)
+    from . import selfservice
+    selfservice.maybe_auto_install(argv)
     if args.version:
         print(f"llama-peer-agent {__version__} protocol={PROTOCOL_VERSION}")
         return 0
@@ -54,8 +60,10 @@ def main(argv=None) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
     if not config.token:
-        print("error: PEER_AGENT_TOKEN is required (or --token)", file=sys.stderr)
-        return 2
+        print("llama-peer-agent: no token configured — starting in PAIRING "
+              "MODE (open for PEER_AGENT_PAIRING_WINDOW seconds). The app can "
+              "enroll it automatically; set PEER_AGENT_TOKEN to skip.",
+              file=sys.stderr)
     try:
         serve(config)
     except (OSError, ValueError) as e:

@@ -98,6 +98,26 @@ def _request(machine, method: str, path: str, body=None, timeout=6.0,
         raise AgentError(f"agent request failed: {e}") from e
 
 
+def pair(machine, token, timeout=8.0) -> dict:
+    """Enroll an unpaired agent (its /pair window) with the farm token."""
+    data = json.dumps({"token": token}, separators=(",", ":")).encode()
+    req = urllib.request.Request(
+        _base(machine) + "/pair", data=data, method="POST",
+        headers={"Content-Type": "application/json",
+                 "Accept": "application/json"})
+    try:
+        with _OPENER.open(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read(1000).decode("utf-8", "replace")
+        except Exception:
+            detail = ""
+        raise AgentError(f"pair HTTP {e.code}: {detail or e.reason}") from e
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise AgentError(f"pair request failed: {e}") from e
+
+
 def health(machine, timeout=2.0, token=None) -> dict:
     out = _request(machine, "GET", "/health", timeout=timeout, token=token)
     proto = out.get("protocol_version")

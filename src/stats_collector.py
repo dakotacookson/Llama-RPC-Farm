@@ -107,7 +107,10 @@ def _parse_gpus(output):
     (normalized to csv rows first) so both vendors share one parser."""
     stripped = (output or "").strip()
     if stripped.startswith("{") or stripped.startswith("["):
-        output = "\n".join(gpu_vendor.parse_rocm_json(stripped))
+        rows = gpu_vendor.parse_rocm_json(stripped)
+        if not rows:
+            rows = gpu_vendor.parse_xpu_smi_json(stripped)
+        output = "\n".join(rows)
     gpus = []
     for line in (output or "").splitlines():
         parts = [p.strip() for p in line.split(",")]
@@ -223,6 +226,7 @@ def collect_local(machine_os, machine=None):
                 o = json.loads(proc.stdout.strip().splitlines()[-1])
                 return {
                     "status": "online", "os_type": "windows",
+                    "gpu_vendor": gpu_vendor.detect_vendor_local(),
                     "gpus": _parse_gpus(o.get("gpus", "")),
                     "cpu_pct": float(o.get("cpu") or 0),
                     "cores": int(o.get("cores") or 0), "load": "",
@@ -237,9 +241,13 @@ def collect_local(machine_os, machine=None):
     # local linux — GPU query per vendor, with auto-fallback when the
     # configured vendor's tool is missing (e.g. mislabeled machine)
     if machine_os == "macos":
-        return collect_macos(None, machine)
+        res = collect_macos(None, machine)
+        res["gpu_vendor"] = "apple" if res.get("gpus") else ""
+        return res
     vendor = gpu_vendor.normalize_vendor(machine.get("gpu_vendor"))
     if vendor not in ("nvidia", "amd", "intel"):
+        vendor = gpu_vendor.detect_vendor_local()
+    if vendor == "cpu":
         vendor = gpu_vendor.detect_vendor_local()
     if vendor == "amd":
         gpu_cmd = (AMD_GPU_QUERY + " || " + GPU_QUERY
@@ -257,7 +265,9 @@ def collect_local(machine_os, machine=None):
         )
         if proc.returncode == 0:
             fake = type("S", (), {"run": lambda self, c, timeout=30: (0, proc.stdout, "")})()
-            return collect_linux(fake)
+            res = collect_linux(fake)
+            res["gpu_vendor"] = vendor
+            return res
     except (OSError, subprocess.TimeoutExpired):
         pass
     return _empty("linux")

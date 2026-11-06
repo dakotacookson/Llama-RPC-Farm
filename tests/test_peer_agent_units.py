@@ -359,7 +359,8 @@ def test_main_cli(monkeypatch, capsys):
     assert cli.main([]) == 2
     monkeypatch.setattr(cli.AgentConfig, "from_env",
                         lambda **k: AgentConfig(token=""))
-    assert cli.main([]) == 2
+    monkeypatch.setattr(cli, "serve", lambda c: None)
+    assert cli.main([]) == 0   # pairing mode allowed
     monkeypatch.setattr(cli.AgentConfig, "from_env",
                         lambda **k: AgentConfig(token="t"))
     monkeypatch.setattr(cli, "serve", lambda c: None)
@@ -508,10 +509,12 @@ def test_server_all_endpoints(monkeypatch):
             post("/build/update", {"src_root": "/nope", "build_dir": "/nope",
                                    "bin_path": "/nope"})
         assert e.value.code == 400
-        # unauthenticated
+        # /health is open (discovery/pairing); /status still needs auth
         req = urllib.request.Request(f"http://127.0.0.1:{port}/health")
+        assert urllib.request.urlopen(req, timeout=5).status == 200
         with pytest.raises(urllib.error.HTTPError) as e:
-            urllib.request.urlopen(req, timeout=5)
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/status",
+                                   timeout=5)
         assert e.value.code == 401
         # invalid JSON / bad content length / speedtest validation
         import http.client

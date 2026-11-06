@@ -250,14 +250,17 @@ def get_machine_agent_token(machine):
             return decrypt_value(enc)
         except Exception:
             return ""
+    env = (os.environ.get("FARM_AGENT_TOKEN")
+           or os.environ.get("AGENT_TOKEN") or "").strip()
+    if env:
+        return env
     enc = (os.environ.get("AGENT_TOKEN_ENC") or "").strip()
     if enc:
         try:
             return decrypt_value(enc)
         except Exception:
             return ""
-    return (os.environ.get("FARM_AGENT_TOKEN")
-            or os.environ.get("AGENT_TOKEN") or "").strip()
+    return ""
 
 
 def machine_agent_token_set(machine):
@@ -400,3 +403,8 @@ def set_farm_agent_token(plain):
 
 def farm_agent_token_set():
     return bool((os.environ.get("AGENT_TOKEN_ENC") or "").strip())
+
+
+def get_farm_agent_token():
+    enc = (os.environ.get("AGENT_TOKEN_ENC") or "").strip()
+    return decrypt_value(enc) if enc else ""
