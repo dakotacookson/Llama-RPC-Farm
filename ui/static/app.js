@@ -1688,6 +1688,14 @@ function syncTransportFields() {
   if (tr) tr.value = "agent";
 }
 
+function syncRoleFields() {
+  const master = ($("#m-role")?.value || "peer") === "master";
+  for (const id of ["m-agent-port-label", "m-agent-token-label"]) {
+    const el = $("#" + id);
+    if (el) el.style.display = master ? "none" : "";
+  }
+}
+
 function syncRdmaFields() {
   const on = Boolean($("#m-rdma")?.checked);
   const box = $("#m-rdma-options");
@@ -1728,6 +1736,7 @@ function machineFormLoad(m, isEdit) {
   $("#m-agent-port").value = m.agent_port ?? 8198;
   syncTransportFields();
   $("#m-role").value = m.role || "peer";
+  syncRoleFields();
   $("#m-os").value = m.os || "linux";
   $("#m-gpu-vendor").value = m.gpu_vendor || "nvidia";
   $("#m-rpc-port").value = m.rpc_port ?? 50052;
@@ -2039,8 +2048,8 @@ function fillAgentUpdateState(tr, name) {
     .then(v => {
       if (!btn.isConnected) return;
       if (v.local) {
-        btn.disabled = true;
-        btn.textContent = "Master (no agent)";
+        btn.hidden = true;
+        btn.style.display = "none";
         btn.title = "The UI host is managed locally; it runs no peer agent.";
         return;
       }
@@ -2291,6 +2300,7 @@ function discoveredFill(h) {
   toast("Review the details, then Save (Save verifies the peer agent before storing)", "ok");
 }
 // IP / SSH port edits change which host we fingerprint — re-check live
+on("#m-role", "change", syncRoleFields);
 on("#m-rdma", "change", syncRdmaFields);
 on("#m-rdma-toggle", "click", () => {
   const cb = $("#m-rdma");
