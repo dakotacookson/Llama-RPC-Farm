@@ -415,8 +415,9 @@ jobs:
         env:
           HF_HOME: ${{ github.workspace }}/.hf-cache
         run: |
-          $app = Get-ChildItem llama-rpc-farm_*_windows-x64-setup.exe | Select-Object -First 1
-          $agent = Get-ChildItem llama-peer-agent_*_windows-x64-setup.exe | Select-Object -First 1
+          $app = Get-ChildItem dist\llama-rpc-farm_*_windows-x64-setup.exe | Select-Object -First 1
+          $agent = Get-ChildItem dist\llama-peer-agent_*_windows-x64-setup.exe | Select-Object -First 1
+          if (-not $app -or -not $agent) { throw "Windows installer assets missing from dist\" }
           Start-Process -Wait -FilePath $app.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'
           Start-Process -Wait -FilePath $agent.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'
           schtasks /End /TN LlamaRPCFarm 2>$null
