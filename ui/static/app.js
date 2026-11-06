@@ -2410,6 +2410,7 @@ on("#m-detect-form", "click", async (e) => {
       agent_token: $("#m-agent-token").value,
       name: $("#m-name").value.trim(),
     });
+    if (m.gpu_vendor) $("#m-gpu-vendor").value = m.gpu_vendor;
     $("#m-gpu").value = m.gpu || "";
     $("#m-ram").value = m.ram_total_gb || "";
     $("#m-expose-gpus").placeholder = m.gpu ? `available: ${m.gpu}` : "all (not detected)";

@@ -22,7 +22,7 @@ def _run(args, timeout=20, shell=False):
         return 1, "", str(e)
 
 
-def _gpus():
+def _nvidia_gpus():
     if not shutil.which(_NVIDIA[0]):
         return []
     code, out, _ = _run(list(_NVIDIA), timeout=15)
@@ -49,6 +49,196 @@ def _gpus():
         except (ValueError, TypeError, ZeroDivisionError):
             continue
     return rows
+
+
+_gpus = _nvidia_gpus  # backward-compatible name (NVIDIA rows)
+
+
+def _vendor_from_names(names):
+    blob = " ".join(str(n) for n in names if n).lower()
+    if any(k in blob for k in ("nvidia", "geforce", "rtx", "tesla", "quadro")):
+        return "nvidia"
+    if any(k in blob for k in ("amd", "radeon", "instinct", "firepro")):
+        return "amd"
+    if "apple" in blob:
+        return "apple"
+    if "intel" in blob or "arc" in blob:
+        return "intel"
+    return ""
+
+
+def _amd_gpus():
+    if not shutil.which("rocm-smi"):
+        return []
+    code, out, _ = _run([
+        "rocm-smi", "--showproductname", "--showmeminfo", "vram", "--json",
+    ], timeout=25)
+    if code != 0 or not out.strip():
+        return []
+    try:
+        data = json.loads(out[out.find("{"):out.rfind("}") + 1])
+    except (ValueError, TypeError):
+        return []
+    rows = []
+    for i, (_key, val) in enumerate(sorted(data.items())):
+        if not isinstance(val, dict):
+            continue
+        name = next((val[k] for k in (
+            "Card series", "Card Series", "Card SKU", "Device Name",
+            "GPU Name", "Product Name") if val.get(k)), "AMD GPU")
+        total_b = next((val[k] for k in (
+            "VRAM Total Memory (B)", "VRAM Total Memory (byte)",
+            "VRAM Total Memory (bytes)") if val.get(k)), 0)
+        used_b = next((val[k] for k in (
+            "VRAM Total Used Memory (B)", "VRAM Total Used Memory (byte)",
+            "VRAM Total Used Memory (bytes)") if val.get(k)), 0)
+        try:
+            total = float(total_b) / 1024 ** 3
+        except (TypeError, ValueError):
+            total = 0.0
+        try:
+            used = float(used_b) / 1024 ** 3
+        except (TypeError, ValueError):
+            used = 0.0
+        rows.append({
+            "index": str(i), "name": str(name), "util": 0.0,
+            "mem_used_gb": round(used, 1),
+            "mem_total_gb": round(total, 1),
+            "mem_pct": round(used / total * 100) if total else 0,
+            "temp": 0,
+        })
+    return rows
+
+
+def _intel_gpus():
+    if not shutil.which("xpu-smi"):
+        return []
+    code, out, _ = _run(["xpu-smi", "discovery", "-j"], timeout=25)
+    if code != 0 or not out.strip():
+        return []
+    try:
+        data = json.loads(out[out.find("{"):out.rfind("}") + 1])
+    except (ValueError, TypeError):
+        return []
+
+    found = []
+
+    def walk(obj):
+        if isinstance(obj, list):
+            for item in obj:
+                walk(item)
+        elif isinstance(obj, dict):
+            name = obj.get("device_name") or obj.get("name")
+            mem = (obj.get("memory_physical_size_byte")
+                   or obj.get("memory_physical_size")
+                   or obj.get("memory_size"))
+            if name and mem not in (None, "", 0):
+                found.append((str(name), mem))
+            for v in obj.values():
+                walk(v)
+
+    walk(data)
+    rows = []
+    seen = set()
+    for i, (name, mem) in enumerate(found):
+        if name in seen:
+            continue
+        seen.add(name)
+        try:
+            total = float(mem) / 1024 ** 3
+        except (TypeError, ValueError):
+            total = 0.0
+        rows.append({
+            "index": str(i), "name": name, "util": 0.0,
+            "mem_used_gb": 0, "mem_total_gb": round(total, 1),
+            "mem_pct": 0, "temp": 0,
+        })
+    return rows
+
+
+def _apple_gpus():
+    if sys.platform != "darwin":
+        return []
+    code, out, _ = _run(
+        ["system_profiler", "SPDisplaysDataType", "-json"], timeout=35)
+    if code != 0 or not out.strip():
+        return []
+    try:
+        data = json.loads(out[out.find("{"):out.rfind("}") + 1])
+    except (ValueError, TypeError):
+        return []
+    rows = []
+    idx = 0
+    for g in (data.get("SPDisplaysDataType") or []):
+        for item in (g.get("spdisplays_ndrvs") or [g]):
+            name = item.get("_name") or item.get("sppci_model") or "Apple GPU"
+            import re as _re
+            total = item.get("spdisplays_vram_shared") \
+                or item.get("spdisplays_vram") or ""
+            m = _re.search(r"([\d.]+)\s*(GB|MB|TB)", str(total))
+            total_gb = 0.0
+            if m:
+                val, unit = float(m.group(1)), m.group(2).upper()
+                total_gb = round(
+                    val * 1024 if unit == "TB"
+                    else val if unit == "GB" else val / 1024, 1)
+            rows.append({
+                "index": str(idx), "name": str(name), "util": 0.0,
+                "mem_used_gb": 0, "mem_total_gb": total_gb,
+                "mem_pct": 0, "temp": 0,
+            })
+            idx += 1
+    return rows
+
+
+def _win_fallback_gpus():
+    ps = ("Get-CimInstance Win32_VideoController | "
+          "Select-Object Name,AdapterRAM | ConvertTo-Json -Compress")
+    code, out, _ = _run(["powershell", "-NoProfile", "-Command", ps],
+                        timeout=25)
+    if code != 0 or not out.strip():
+        return []
+    try:
+        data = json.loads(out.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return []
+    if isinstance(data, dict):
+        data = [data]
+    rows = []
+    for i, g in enumerate(data or []):
+        name = str(g.get("Name") or "GPU")
+        try:
+            total = float(g.get("AdapterRAM") or 0) / 1024 ** 3
+        except (TypeError, ValueError):
+            total = 0.0
+        rows.append({
+            "index": str(i), "name": name, "util": 0.0,
+            "mem_used_gb": 0, "mem_total_gb": round(total, 1),
+            "mem_pct": 0, "temp": 0,
+        })
+    return rows
+
+
+def gpus():
+    """(rows, vendor) — NVIDIA first, then ROCm, Intel, Win WMI, Apple."""
+    rows = _nvidia_gpus()
+    if rows:
+        return rows, "nvidia"
+    rows = _amd_gpus()
+    if rows:
+        return rows, "amd"
+    rows = _intel_gpus()
+    if rows:
+        return rows, "intel"
+    if os.name == "nt":
+        rows = _win_fallback_gpus()
+        if rows:
+            return rows, _vendor_from_names([r["name"] for r in rows])
+    if sys.platform == "darwin":
+        rows = _apple_gpus()
+        if rows:
+            return rows, "apple"
+    return [], ""
 
 
 def _linux():
@@ -97,9 +287,10 @@ def _linux():
                     avail_kb = int(line.split()[1])
     except (OSError, ValueError):
         pass
+    rows, vendor = gpus()
     return {
         "status": "online", "os_type": "linux",
-        "gpus": _gpus(), "cpu_pct": cpu_pct,
+        "gpus": rows, "gpu_vendor": vendor, "cpu_pct": cpu_pct,
         "cores": os.cpu_count() or 0, "load": load,
         "ram_total_gb": round(total_kb / 1024 / 1024, 1),
         "ram_used_gb": round((total_kb - avail_kb) / 1024 / 1024, 1),
@@ -133,8 +324,10 @@ def _macos():
         used_gb = round(max(0, total_b - free) / 1024 ** 3, 1)
     except (ValueError, IndexError):
         pass
+    rows = _apple_gpus()
     return {
-        "status": "online", "os_type": "macos", "gpus": [],
+        "status": "online", "os_type": "macos", "gpus": rows,
+        "gpu_vendor": "apple" if rows else "",
         "cpu_pct": pct, "cores": int(cores.strip() or 0) if code == 0 else 0,
         "load": load.strip() if code3 == 0 else "",
         "ram_total_gb": total_gb, "ram_used_gb": used_gb,
@@ -159,13 +352,13 @@ def _windows():
     if code != 0 or not out.strip():
         return {"status": "offline", "os_type": "windows", "gpus": [],
                 "cpu_pct": 0.0, "cores": 0, "load": "",
-                "ram_total_gb": 0, "ram_used_gb": 0}
+                "gpu_vendor": "", "ram_total_gb": 0, "ram_used_gb": 0}
     try:
         o = json.loads(out.strip().splitlines()[-1])
     except (ValueError, IndexError):
         return {"status": "offline", "os_type": "windows", "gpus": [],
                 "cpu_pct": 0.0, "cores": 0, "load": "",
-                "ram_total_gb": 0, "ram_used_gb": 0}
+                "gpu_vendor": "", "ram_total_gb": 0, "ram_used_gb": 0}
     rows = []
     for line in str(o.get("gpus") or "").splitlines():
         parts = [p.strip() for p in line.split(",")]
@@ -181,9 +374,14 @@ def _windows():
                          "temp": int(float(parts[5]))})
         except (ValueError, TypeError, ZeroDivisionError):
             continue
+    vendor = "nvidia" if rows else ""
+    if not rows:
+        rows = _win_fallback_gpus()
+        vendor = _vendor_from_names([r["name"] for r in rows]) if rows else ""
     total = int(o.get("ram_total") or 0)
     free = int(o.get("ram_free") or 0)
     return {"status": "online", "os_type": "windows", "gpus": rows,
+            "gpu_vendor": vendor,
             "cpu_pct": float(o.get("cpu") or 0),
             "cores": int(o.get("cores") or 0), "load": "",
             "ram_total_gb": round(total / 1024 / 1024, 1),

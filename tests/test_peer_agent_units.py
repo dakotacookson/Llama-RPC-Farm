@@ -1177,3 +1177,43 @@ def test_discovery_payload_includes_hardware(monkeypatch):
     assert hw["vram_total_gb"] == 24
     assert hw["ram_total_gb"] == 64
     assert body["mac"] == "de:ad:be:ef:12:34"
+
+
+def test_metrics_amd_intel_apple_windows(monkeypatch):
+    import llama_peer_agent.metrics as mm
+    monkeypatch.setattr(mm.shutil, "which", lambda n: n if n in (
+        "rocm-smi", "xpu-smi") else None)
+    monkeypatch.setattr(mm, "_run", lambda args, timeout=20, shell=False: (
+        0,
+        '{"card0":{"Card series":"Radeon RX 7900 XTX",'
+        '"VRAM Total Memory (B)":"25753026560",'
+        '"VRAM Total Used Memory (B)":"1073741824"}}'
+        if "rocm-smi" in args else
+        '{"device_list":[{"device_name":"Intel Arc A770",'
+        '"memory_physical_size_byte":"17179869184"}]}', ""))
+    rows = mm._amd_gpus()
+    assert rows and rows[0]["name"] == "Radeon RX 7900 XTX"
+    assert rows[0]["mem_total_gb"] == 24.0
+    rows = mm._intel_gpus()
+    assert rows and rows[0]["name"] == "Intel Arc A770"
+    assert rows[0]["mem_total_gb"] == 16.0
+
+    monkeypatch.setattr(mm.sys, "platform", "darwin")
+    monkeypatch.setattr(mm, "_run", lambda *a, **k: (
+        0, '{"SPDisplaysDataType":[{"sppci_model":"Apple M3 Pro",'
+           '"spdisplays_vram":"18 GB"}]}', ""))
+    rows = mm._apple_gpus()
+    assert rows and rows[0]["name"] == "Apple M3 Pro"
+    assert rows[0]["mem_total_gb"] == 18.0
+
+    monkeypatch.setattr(mm.os, "name", "nt")
+    monkeypatch.setattr(mm, "_run", lambda *a, **k: (
+        0, '[{"Name":"AMD Radeon RX 6800","AdapterRAM":17179869184}]', ""))
+    rows = mm._win_fallback_gpus()
+    assert rows and rows[0]["name"] == "AMD Radeon RX 6800"
+    assert mm._vendor_from_names([rows[0]["name"]]) == "amd"
+
+
+def test_agent_client_token_override():
+    import agent_client as ac
+    assert ac._token({"name": "x", "_agent_token": "typed"}) == "typed"

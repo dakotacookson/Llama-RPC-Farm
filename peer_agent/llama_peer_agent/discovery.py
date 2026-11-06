@@ -51,7 +51,7 @@ def _hardware() -> dict:
             vendor = "apple"
         data = {
             "gpu_names": names,
-            "gpu_vendor": vendor,
+            "gpu_vendor": m.get("gpu_vendor") or vendor,
             "gpu_count": len(names),
             "vram_total_gb": round(sum(
                 float(g.get("mem_total_gb") or 0) for g in gpus), 1),

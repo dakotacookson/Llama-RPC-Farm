@@ -157,3 +157,35 @@ def test_sync_new_ip_without_ssh_is_rejected(monkeypatch):
 
 
 # ---------------- MAC capture on successful connect ----------------
+
+
+def test_reconcile_machine_ips_by_agent_mac(monkeypatch):
+    """Agent UDP discovery heals a stale DHCP IP by stable MAC."""
+    machines = [
+        {"name": "aibox3", "id": "aibox2", "ip": "10.0.0.53",
+         "mac": "bc:24:11:88:ae:15", "role": "peer"},
+        {"name": "aibox1", "id": "aibox1", "ip": "127.0.0.1",
+         "mac": "bc:24:11:e0:5c:8a", "role": "master"},
+    ]
+
+    class _Machines:
+        def all(self):
+            return machines
+        def update(self, name, upd):
+            for m in machines:
+                if m["name"] == name or m.get("id") == name:
+                    m.update(upd)
+
+    monkeypatch.setattr(discovery, "discover_agents",
+                        lambda **k: {"results": [
+                            {"ip": "10.0.0.99",
+                             "mac": "bc:24:11:88:ae:15",
+                             "hostname": "aibox3"}]})
+    import config_loader, local_node
+    monkeypatch.setattr(config_loader, "machines", _Machines())
+    monkeypatch.setattr(local_node, "is_local",
+                        lambda m: m.get("role") == "master")
+    changed = discovery.reconcile_machine_ips()
+    assert changed == [("aibox3", "10.0.0.53", "10.0.0.99")]
+    assert machines[0]["ip"] == "10.0.0.99"
+    assert machines[1]["ip"] == "127.0.0.1"

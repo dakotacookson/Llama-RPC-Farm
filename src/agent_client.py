@@ -54,6 +54,9 @@ def agent_port(machine) -> int:
 
 
 def _token(machine) -> str:
+    override = str((machine or {}).get("_agent_token") or "").strip()
+    if override:
+        return override
     try:
         return secrets_vault.get_machine_agent_token(machine)
     except Exception:

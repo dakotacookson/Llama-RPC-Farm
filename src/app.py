@@ -1053,9 +1053,11 @@ async def probe_hardware(p: ProbeIn):
     """Detect hardware from raw form inputs -- works for machines that
     aren't saved yet. Returns gpu list + RAM + detected block; persists
     nothing."""
+    existing = cfg.machines.get(p.name) if p.name else None
     machine = {"name": p.name or p.ip, "ip": p.ip, "os": p.os,
                "gpu_vendor": p.gpu_vendor, "rpc_port": p.rpc_port,
-               "agent_port": p.agent_port, "transport": "agent"}
+               "agent_port": p.agent_port, "transport": "agent",
+               "id": (existing or {}).get("id")}
     if p.agent_token:
         machine["_agent_token"] = p.agent_token
     detail = _ssh_port_guard(machine)
@@ -1066,8 +1068,12 @@ async def probe_hardware(p: ProbeIn):
         s = stats_collector.machine_stats(machine)
         if s["status"] != "online":
             return {"online": False}
+        vendor = (s.get("gpu_vendor")
+                  or machine.get("gpu_vendor") or "nvidia")
+        machine["gpu_vendor"] = vendor
         return {
             "online": True,
+            "gpu_vendor": vendor,
             "gpu": ",".join(gpu_vendor.gpu_token(machine, g["index"]) for g in s["gpus"]),
             "ram_total_gb": float(math.floor(s["ram_total_gb"])) if s["ram_total_gb"] else None,
             "cores": s["cores"],
@@ -1135,8 +1141,12 @@ async def detect_all():
             return None
         if stats["status"] != "online":
             return None
-        gpus = [gpu_vendor.gpu_token(m, g["index"]) for g in stats["gpus"]]
+        vendor = (stats.get("gpu_vendor")
+                  or m.get("gpu_vendor") or "nvidia")
+        m2 = dict(m, gpu_vendor=vendor)
+        gpus = [gpu_vendor.gpu_token(m2, g["index"]) for g in stats["gpus"]]
         upd = {
+            "gpu_vendor": vendor,
             "gpu": ",".join(gpus),
             "detected": {
                 "gpu_names": [g["name"] for g in stats["gpus"]],

@@ -1104,15 +1104,39 @@ def machine_status(machine_name, use_agent=True):
                 "processes": st,
             }
         except Exception as e:
-            if agent_client.transport(machine) == "agent":
+            # DHCP drift: the agent may now answer at a different IP. MAC
+            # is the stable identity — reconcile from UDP discovery + ARP,
+            # then retry once before reporting the machine down.
+            try:
+                import discovery as _disc
+                _disc.reconcile_machine_ips()
+            except Exception:
+                pass
+            try:
+                machine = _sync_machine_ip(cfg.machines.require(machine_name))
+            except Exception:
+                pass
+            try:
+                st = agent_client.status(machine)
+                return {
+                    "name": machine_name, "ip": machine["ip"],
+                    "reachable": True,
+                    "rpc_running": bool(st.get("rpc_running")
+                                        or st.get("rpc")),
+                    "gpus": st.get("gpus") or [],
+                    "is_local": False,
+                    "is_master": machine.get("role") == "master",
+                    "agent": True,
+                    "processes": st,
+                }
+            except Exception as e2:
                 return {
                     "name": machine_name, "ip": machine["ip"],
                     "reachable": False, "rpc_running": False,
                     "gpus": [], "is_local": False,
                     "is_master": machine.get("role") == "master",
-                    "error": f"agent error: {e}",
+                    "error": f"agent error: {e2}",
                 }
-            print(f"[agent] {machine_name}: status failed, falling back to SSH: {e}")
     if not is_local:
         ssh = _ssh_for(machine)
         reachable = ssh.is_reachable()
