@@ -24,10 +24,9 @@ import gguf_inspect
 import local_node
 import path_resolver
 import stats_collector
+from runtime_paths import data_dir
 
-GENERATED_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "generated"
-)
+GENERATED_DIR = os.path.join(data_dir(), "generated")
 
 DEFAULT_BIN = "~/llama.cpp/build/bin"
 
@@ -278,10 +277,10 @@ def _global_bin():
     """Global default from config/settings.yaml — fallback when machine has no override."""
     try:
         import yaml as _yaml
-        from pathlib import Path as _P
-        p = _P(__file__).resolve().parents[1] / "config" / "settings.yaml"
-        if p.exists():
-            data = _yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        p = os.path.join(data_dir(), "config", "settings.yaml")
+        if os.path.exists(p):
+            with open(p, encoding="utf-8") as f:
+                data = _yaml.safe_load(f) or {}
             v = (data.get("llama_bin") or "").strip()
             if v:
                 return v

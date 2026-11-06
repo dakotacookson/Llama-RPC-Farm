@@ -20,6 +20,8 @@ import socket
 
 import paramiko
 
+from runtime_paths import data_dir
+
 
 class SSHError(Exception):
     pass
@@ -33,8 +35,7 @@ class HostKeyMismatch(SSHError):
 
 
 def _known_hosts_path():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
-                        "config", "ssh_known_hosts.json")
+    return os.path.join(data_dir(), "config", "ssh_known_hosts.json")
 
 
 def load_known_hosts():
