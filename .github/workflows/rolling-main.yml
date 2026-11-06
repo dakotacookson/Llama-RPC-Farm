@@ -1,0 +1,78 @@
+name: Rolling main build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rolling-main
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Compute version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Read VERSION
+        run: |
+          set -euo pipefail
+          base=$(tr -d '[:space:]' < VERSION)
+          test -n "$base" || { echo "VERSION file is empty" >&2; exit 1; }
+          echo "version=${base}-main.${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Linux
+    needs: prepare
+    uses: ./.github/workflows/build-linux.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+
+  macos:
+    name: macOS
+    needs: prepare
+    uses: ./.github/workflows/build-macos.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+
+  windows:
+    name: Windows
+    needs: prepare
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+
+  publish:
+    name: Publish main-latest
+    needs: [prepare, linux, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Replace main-latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          TITLE="Llama RPC Farm (main rolling)"
+          NOTES="Automatic build of ${GITHUB_SHA} from main — version ${VERSION}."
+          if gh release view main-latest >/dev/null 2>&1; then
+            gh release delete main-latest --yes
+          fi
+          git tag -f main-latest "$GITHUB_SHA"
+          git push -f origin refs/tags/main-latest
+          gh release create main-latest release-assets/* \
+            --prerelease \
+            --title "$TITLE" \
+            --notes "$NOTES"

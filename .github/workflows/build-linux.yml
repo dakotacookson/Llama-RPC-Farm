@@ -1,12 +1,12 @@
-name: Rolling main build (Linux)
+name: Build (Linux)
 
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:
-
-permissions:
-  contents: write
+  workflow_call:
+    inputs:
+      version:
+        description: Version string baked into artifact names
+        required: true
+        type: string
 
 jobs:
   build:
@@ -39,9 +39,10 @@ jobs:
             --name llama-peer-agent \
             --paths peer_agent packaging/agent_entry.py
       - name: Package Linux
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          VERSION="0.0.0-main.${GITHUB_SHA::7}"
           # app
           mkdir -p pkg-app/DEBIAN pkg-app/usr/local/bin
           cp dist/llama-rpc-farm pkg-app/usr/local/bin/llama-rpc-farm
@@ -76,13 +77,8 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: main-linux-x64
+          name: linux-x64
           path: |
             *.deb
             *.tar.gz
             *.sha256
-
-  publish:
-    name: Publish
-    needs: build
-    uses: ./.github/workflows/publish-main-latest.yml

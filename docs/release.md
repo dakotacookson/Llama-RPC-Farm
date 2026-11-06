@@ -4,31 +4,53 @@ Releases are rolling **`main-latest`** prereleases built automatically on
 every push to `main` (and manually via `workflow_dispatch`). There are no
 tag-driven release workflows.
 
-## Platform workflows
+## Versioning
 
-One workflow per platform, each building **both** the app and the peer agent:
+The repo-root `VERSION` file is the single source of truth for the base
+version. Builds append the `main` suffix and short commit:
 
-| Workflow | Runner | Artifacts |
+```
+<VERSION>-main.<short-sha>      e.g. 0.1.0-main.100de53
+```
+
+Bump `VERSION` when you want a new base version. Artifact filenames and
+`.deb` control versions use the computed string, so every download is
+traceable to a commit.
+
+## Orchestration
+
+`rolling-main.yml` is the only workflow triggered by `main` pushes. It:
+
+1. Reads `VERSION` and computes `<VERSION>-main.<short-sha>`.
+2. Runs the three per-platform **reusable** build workflows in parallel:
+   - `build-linux.yml` — linux-x64, also runs the pre-release checks
+     (py_compile, `node --check`, `bash -n`, pytest)
+   - `build-macos.yml` — macos-arm64
+   - `build-windows.yml` — windows-x64
+3. Runs a **single** publish job only after **all three** builds succeed.
+
+Each build workflow produces both the app and the peer agent:
+
+| Platform | App artifacts | Agent artifacts |
 |---|---|---|
-| `main-build-linux.yml` | `ubuntu-latest` | `llama-rpc-farm`, `llama-peer-agent`, `.deb`, `.tar.gz`, SHA-256 |
-| `main-build-macos.yml` | `macos-latest` | `llama-rpc-farm`, `llama-peer-agent`, `.dmg`, `.tar.gz`, SHA-256 |
-| `main-build-windows.yml` | `windows-latest` | `llama-rpc-farm.exe`, `llama-peer-agent.exe`, `.zip`, SHA-256 |
+| Linux | `.deb`, `.tar.gz` | `.deb`, `.tar.gz` |
+| macOS | `.dmg`, `.tar.gz` | `.dmg`, `.tar.gz` |
+| Windows | `.zip` | `.zip` |
 
-The Linux workflow also runs the pre-release checks (py_compile,
-`node --check`, `bash -n`, pytest) before packaging.
+Each platform also emits a SHA-256 checksum file.
 
 ## Publishing
 
-Each platform workflow calls the reusable `publish-main-latest.yml`, which:
+The publish job runs once, after all builds pass:
 
-1. Moves the `main-latest` tag to the current `main` commit.
-2. Creates the `main-latest` prerelease if missing.
-3. Uploads that platform's assets with `--clobber`.
+1. Deletes any previous `main-latest` release (so stale artifacts from old
+   commits never accumulate).
+2. Moves the `main-latest` tag to the current `main` commit.
+3. Creates a fresh `main-latest` prerelease with all platform assets.
 
-Publishing is serialized with the `main-latest-release` concurrency group,
-so all three platforms accumulate into one prerelease without racing.
-
-Artifacts are versioned `0.0.0-main.<short-sha>`.
+Because the publish step is gated on `needs: [linux, macos, windows]` and
+the workflow serializes on the `rolling-main` concurrency group, a failed
+build leaves the previous release untouched — no partial releases.
 
 ## Local release smoke test
 
