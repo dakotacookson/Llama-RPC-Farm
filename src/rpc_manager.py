@@ -3121,9 +3121,16 @@ def _launch_model_remote_local(model, master, peers, port):
     model = dict(model)
     model["device_order"] = ",".join(gpus)
     # same single-box split policy as render_remote_local_script: keep an
-    # explicit variant-provided split, else fit mode
-    if not (model.get("tensor_split_mode") == "split"
-            and (model.get("tensor_split") or "").strip()):
+    # explicit variant-provided split, else fit mode — except a single Metal
+    # device, where fit mode is broken and auto mode is required.
+    is_metal_single = (master.get("os") == "macos"
+                       and len(gpus) == 1
+                       and gpus[0] in ("Metal", "MTL0"))
+    if is_metal_single:
+        model["tensor_split_mode"] = "auto"
+        model["tensor_split"] = ""
+    elif not (model.get("tensor_split_mode") == "split"
+              and (model.get("tensor_split") or "").strip()):
         model["tensor_split_mode"] = "fit"
         model["tensor_split"] = ""
     from steps import run_steps

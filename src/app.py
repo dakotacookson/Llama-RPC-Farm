@@ -5943,7 +5943,8 @@ async def stop_launch(l: LaunchIn):
     if not engine.capable("rpc_cluster"):
         try:
             return await run_in_threadpool(
-                engine.stop_model, l.model_id, l.servers, l.variant)
+                engine.stop_model, l.model_id, l.servers, l.variant,
+                None, l.port)
         except vllm_manager.SwapDownError as e:
             raise HTTPException(status_code=503, detail=str(e)) from None
     valid = {m["name"] for m in cfg.machines.all()}
@@ -5966,7 +5967,7 @@ async def stop_launch(l: LaunchIn):
         return await _proxy_swap_unload(verdict["swap_key"])
     return await run_in_threadpool(rpc_manager.stop_model, l.servers,
                                    l.model_id, l.variant, l.master_name,
-                                   l.model_id)
+                                   l.port)
 
 
 @app.get("/api/launch/active")

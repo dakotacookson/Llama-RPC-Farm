@@ -2071,15 +2071,8 @@ def launch(binary=None, listen_port=None, config_path=None,
             "warnings": gen["warnings"], "failed": True,
         }
 
-    # Stop any existing daemon BEFORE choosing the listen port. Otherwise a
-    # still-running llama-swap on the configured port forces a launch-only
-    # roll (8080 -> 8081), while status/gateway clients remain on 8080.
-    try:
-        prestop = stop()
-    except Exception as e:
-        prestop = {"stopped": False, "note": f"stop failed: {e}"}
-    port, port_rolled = rpc_manager._roll_port_if_busy(host, settings["listen_port"],
-                                                       is_local)
+    port = settings["listen_port"]
+    port_rolled = False
     abs_config = gen["abs_config"]
     report = {"host": gen["host"], "port": port,
               "port_rolled": port_rolled,
@@ -2157,6 +2150,24 @@ def launch(binary=None, listen_port=None, config_path=None,
                         "error": f"YAML parse failed: {ye}"}
         return {"valid": False, "output": tail, "error": "config invalid"}
 
+    def do_stop_swap():
+        nonlocal port, port_rolled
+        # Stop any existing daemon BEFORE choosing the listen port. Otherwise
+        # a still-running llama-swap on the configured port forces a
+        # launch-only roll (8080 -> 8081), while status/gateway clients stay
+        # on 8080. This runs AFTER backup/write/validate so a failed plan
+        # never tears down a healthy daemon.
+        try:
+            res = stop()
+        except Exception as e:
+            res = {"stopped": False, "note": f"stop failed: {e}"}
+        port, port_rolled = rpc_manager._roll_port_if_busy(
+            host, settings["listen_port"], is_local)
+        report["port"] = port
+        report["port_rolled"] = port_rolled
+        return {"stopped": res.get("stopped", False),
+                **({"note": res["note"]} if res.get("note") else {})}
+
     # RPC peers up -- but only for direct-cmd models. Script-mode models
     # own their peers inside the .sh (spin up on load, down on exit),
     # so pre-starting them would just be torn down and redone.
@@ -2189,6 +2200,7 @@ def launch(binary=None, listen_port=None, config_path=None,
     steps.append(("backup", do_backup))
     steps.append(("write", do_write))
     steps.append(("validate", do_validate))
+    steps.append(("swap:stop", do_stop_swap))
     steps.append((f"stop:{host['name']}", rpc_manager.stop_rpc,
                    host["name"]))
     # Pre-start a base-port rpc-server on each peer for any DIRECT-cmd
@@ -2197,9 +2209,6 @@ def launch(binary=None, listen_port=None, config_path=None,
     # per-model rpc-servers (other ports) from co-served scripts survive.
     steps.extend((f"rpc:{p}", rpc_manager.start_rpc, p, None, None, None, True)
                  for p in peer_names)
-    report["steps"].append({
-        "step": "swap:stop", "stopped": prestop.get("stopped", False),
-        **({"note": prestop["note"]} if prestop.get("note") else {})})
     steps.append(("swap:start", do_start))
     run_steps(report, steps)
     if report["failed"]:
