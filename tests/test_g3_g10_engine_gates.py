@@ -226,7 +226,8 @@ def test_launch_stop_llama_cpp_unchanged(client, settings_file, monkeypatch):
 
     def fake_stop(servers, model_id=None, variant=None, master_name=None,
                   launch_port=None):
-        calls["args"] = (servers, model_id, variant, master_name)
+        calls["args"] = (servers, model_id, variant, master_name,
+                         launch_port)
         return [{"machine": servers[0], "stopped": True}]
 
     monkeypatch.setattr(app_module.rpc_manager, "stop_model", fake_stop)
@@ -237,7 +238,7 @@ def test_launch_stop_llama_cpp_unchanged(client, settings_file, monkeypatch):
                     json={"model_id": "Qwen3-8B", "servers": ["aibox1"],
                           "port": 8080})
     assert r.status_code == 200, r.text
-    assert calls["args"] == (["aibox1"], "Qwen3-8B", None, None)
+    assert calls["args"] == (["aibox1"], "Qwen3-8B", None, None, 8080)
 
 
 def test_launch_stop_remote_proxy_unloads_via_swap(client, settings_file,
