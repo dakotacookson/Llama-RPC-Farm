@@ -1836,6 +1836,10 @@ async function showHostFingerprint() {
   if (!box) return;
   const ip = $("#m-ip").value.trim();
   if (!ip) { box.textContent = ""; return; }
+  if (($("#m-role")?.value || "peer") === "master") {
+    box.innerHTML = '<span class="hint"><i class="fa-solid fa-server"></i> Local master — managed directly by the app; no peer agent needed.</span>';
+    return;
+  }
   const tok = ($("#m-agent-token")?.value || "").trim();
   const editing = Boolean($("#machine-original-name").value);
   const tokHint = ($("#m-agent-token-hint")?.textContent || "");
@@ -1977,7 +1981,9 @@ async function loadMachines(skipCaps = false) {
         btn.textContent = "Updating agent…";
         try {
           const r = await api("POST", `/api/machines/${encodeURIComponent(m.name)}/update-agent`);
-          toast(`${m.name}: peer agent ${r.agent_version || "updated"}`, "ok");
+          toast(r.skipped ? `${m.name}: ${r.detail || "no peer agent needed"}`
+                          : `${m.name}: peer agent ${r.agent_version || "updated"}`,
+                "ok");
           loadMachines(true);
         } catch (err) {
           toast(`Agent update failed on ${m.name}: ${err.message}`, "bad");
@@ -2032,6 +2038,12 @@ function fillAgentUpdateState(tr, name) {
   api("GET", `/api/machines/${encodeURIComponent(name)}/agent-version`)
     .then(v => {
       if (!btn.isConnected) return;
+      if (v.local) {
+        btn.disabled = true;
+        btn.textContent = "Master (no agent)";
+        btn.title = "The UI host is managed locally; it runs no peer agent.";
+        return;
+      }
       if (v.on_latest) {
         btn.disabled = true;
         btn.textContent = `Agent on latest (${v.latest})`;

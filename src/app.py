@@ -1058,6 +1058,8 @@ async def probe_hardware(p: ProbeIn):
                "gpu_vendor": p.gpu_vendor, "rpc_port": p.rpc_port,
                "agent_port": p.agent_port, "transport": "agent",
                "id": (existing or {}).get("id")}
+    if local_node.is_local(machine):
+        machine["gpu_vendor"] = ""  # detect the real local vendor
     if p.agent_token:
         machine["_agent_token"] = p.agent_token
     detail = _ssh_port_guard(machine)
@@ -4497,6 +4499,9 @@ def _agent_latest_version():
 
 def _agent_version_payload(machine):
     latest = _agent_latest_version()
+    if local_node.is_local(machine):
+        return {"current": None, "latest": latest, "on_latest": True,
+                "local": True}
     current = None
     try:
         current = agent_client.version(machine, timeout=4).get("agent_version")
@@ -4509,6 +4514,9 @@ def _agent_version_payload(machine):
 def _update_agent_remote(machine):
     """Install/update the agent through its in-place /agent/update endpoint."""
     name = machine.get("name") or machine.get("id") or "?"
+    if local_node.is_local(machine):
+        return {"ok": True, "machine": name, "skipped": True, "local": True,
+                "detail": "local master uses the app directly; no peer agent"}
     wheel = _agent_wheel_path()
     version = _agent_latest_version()
     if True:
