@@ -5966,7 +5966,7 @@ async def stop_launch(l: LaunchIn):
         return await _proxy_swap_unload(verdict["swap_key"])
     return await run_in_threadpool(rpc_manager.stop_model, l.servers,
                                    l.model_id, l.variant, l.master_name,
-                                   l.model)
+                                   l.model_id)
 
 
 @app.get("/api/launch/active")
