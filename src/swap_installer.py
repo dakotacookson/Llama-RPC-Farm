@@ -29,10 +29,14 @@ def _fetch_latest_assets(limit=10):
     """(tag, [asset names], download_base) of the newest llama-swap
     release. Per-tag download base (NOT releases/latest/download —
     same rule as the llama.cpp installer)."""
+    _hdrs = {"Accept": "application/vnd.github+json",
+             "User-Agent": "llama-rpc-farm"}
+    _tok = (os.environ.get("GITHUB_TOKEN")
+            or os.environ.get("GH_TOKEN") or "").strip()
+    if _tok:
+        _hdrs["Authorization"] = f"Bearer {_tok}"
     req = urllib.request.Request(
-        f"{GITHUB_API}?per_page={limit}",
-        headers={"Accept": "application/vnd.github+json",
-                 "User-Agent": "llama-rpc-farm"})
+        f"{GITHUB_API}?per_page={limit}", headers=_hdrs)
     with urllib.request.urlopen(req, timeout=30) as r:
         releases = json.loads(r.read().decode())
     for rel in releases:

@@ -156,6 +156,7 @@ jobs:
       - name: E2E - install .deb + tiny model load
         env:
           HF_HOME: ${{ github.workspace }}/.hf-cache
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           sudo apt-get install -y ./llama-rpc-farm_*.deb ./llama-rpc-farm-agent_*.deb
@@ -303,6 +304,7 @@ jobs:
       - name: E2E - install .pkg + tiny model load
         env:
           HF_HOME: ${{ github.workspace }}/.hf-cache
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           sudo installer -pkg llama-rpc-farm_*.pkg -target /
@@ -414,6 +416,7 @@ jobs:
         shell: pwsh
         env:
           HF_HOME: ${{ github.workspace }}/.hf-cache
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $app = Get-ChildItem dist\llama-rpc-farm_*_windows-x64-setup.exe | Select-Object -First 1
           $agent = Get-ChildItem dist\llama-peer-agent_*_windows-x64-setup.exe | Select-Object -First 1
