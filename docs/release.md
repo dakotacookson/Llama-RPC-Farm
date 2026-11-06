@@ -3,6 +3,13 @@
 Two tag-driven GitHub Actions workflows publish separate release artifacts.
 Both build on Ubuntu, Windows, and macOS runners.
 
+A third workflow, **Rolling main build** (`release-main.yml`), runs on every
+push to `main` (and via `workflow_dispatch`). It builds **both** the app and
+the peer agent on all three runners, then refreshes a single prerelease named
+`main-latest` (tag `main-latest`, moved to the newest `main` commit). Artifacts
+are versioned `0.0.0-main.<short-sha>`. This is a convenience snapshot, not an
+official release — tag workflows remain the supported release path.
+
 ## Agent — tags `agent-v*`
 
 ```bash
