@@ -166,6 +166,7 @@ def seed_local_master():
         import access as _access
         with _access.trust_current_thread():
             try:
+                _sm.sync_service_unit()
                 report = _sm.push_scripts()
                 if report.get("error"):
                     print(f"[boot-reconcile] push failed: {report['error']}")

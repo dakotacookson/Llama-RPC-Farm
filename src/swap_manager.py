@@ -874,9 +874,30 @@ def launch_plan(config_path=None, host_name=None):
         return k, w
 
     def _wrap_cmdstop(mid_for_key, cmdstop, force=False):
-        # Agent-only: cmdStop is already a pushed script that sources the
-        # sidecar itself, so no SSH password wrapping is needed.
-        return cmdstop
+        """Wrap secret-bearing cmdStop in a pushed script.
+
+        llama-swap expands `${...}` in cmd/cmdStop as macros; an agent token
+        placeholder like ${AGENT_TOKEN_WINBOX} made the whole config fail
+        with "unknown macro". Run the command from a bash script that sources
+        swap-secrets.env instead, so no macro syntax reaches llama-swap.
+        """
+        if not cmdstop or host_os == "windows":
+            return cmdstop
+        needs = force or any(tok in cmdstop for tok in (
+            "$SSH_PASS", "sshpass", "${AGENT_TOKEN_", "$AGENT_TOKEN_"))
+        if not needs:
+            return cmdstop
+        safe = "".join(c if c.isalnum() or c in "-_."
+                       else "-" for c in str(mid_for_key or "model"))
+        safe = safe.strip("-") or "model"
+        fname = f"stop-{safe}.sh"
+        scripts[fname] = (
+            "#!/bin/bash\n"
+            "set -uo pipefail\n"
+            f"source \"{scripts_dir}/{SIDECAR_NAME}\" 2>/dev/null || true\n"
+            f"{cmdstop}\n"
+        )
+        return f'/bin/bash \"{scripts_dir}/{fname}\"' 
 
     def _process_one(deploy_model, mid_for_key, label_for_log, is_variant=False):
         # SERVE-GROUP key for the actual-port state file, by group kind:
@@ -2345,6 +2366,51 @@ def _wait_gone(host, tries=6):
             return True
         time.sleep(1)
     return not _process_running(host)
+
+
+def sync_service_unit():
+    """Keep the systemd user unit's --listen port in sync with swap.yaml.
+
+    A launch-time port roll can write :8081 into the unit while clients
+    still expect the configured :8080; after a reboot that reads as
+    "swap FAILED". Rewrite + restart when they disagree.
+    """
+    import re
+    import sys as _sys
+    if os.name == "nt" or _sys.platform == "darwin":
+        return {"skipped": True}
+    s = load_settings()
+    host = get_host(s.get("host_name"))
+    try:
+        import local_node
+        if not local_node.is_local(host):
+            return {"skipped": True}
+    except Exception:
+        pass
+    unit = os.path.expanduser("~/.config/systemd/user/llama-swap.service")
+    if not os.path.exists(unit):
+        return {"skipped": True}
+    try:
+        text = open(unit, encoding="utf-8").read()
+    except OSError:
+        return {"skipped": True}
+    want = int(s.get("listen_port") or 8080)
+    m = re.search(r"--listen\s+:(\d+)", text)
+    if not m or int(m.group(1)) == want:
+        return {"updated": False, "port": want}
+    new = re.sub(r"--listen\s+:\d+", f"--listen :{want}", text)
+    try:
+        with open(unit, "w", encoding="utf-8") as f:
+            f.write(new)
+        import subprocess
+        subprocess.run(["systemctl", "--user", "daemon-reload"],
+                       capture_output=True, timeout=20)
+        subprocess.run(["systemctl", "--user", "restart", "llama-swap"],
+                       capture_output=True, timeout=30)
+        print(f"[swap] unit port corrected to :{want}")
+        return {"updated": True, "port": want}
+    except Exception as e:
+        return {"updated": False, "error": str(e)}
 
 
 def status():

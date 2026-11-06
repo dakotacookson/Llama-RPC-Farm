@@ -102,8 +102,14 @@ def test_llama_cpp_mode_keeps_rpc_wrapper(monkeypatch, tmp_path):
     assert entry["rpc_map"]  # RPC ids exist in llama.cpp mode
     emitted = yaml.safe_load(plan["yaml"])["models"]["qwen3-8b"]
     # script-mode RPC deployments carry an explicit cmdStop so peer
-    # rpc-servers die even when the start-script EXIT trap is bypassed
-    assert "curl" in emitted["cmdStop"] and "/rpc/stop" in emitted["cmdStop"]
+    # rpc-servers die even when the start-script EXIT trap is bypassed.
+    # It must be a pushed bash script (sources the sidecar) — a raw curl
+    # with ${AGENT_TOKEN_*} would be parsed by llama-swap as a macro.
+    assert emitted["cmdStop"].startswith('/bin/bash "')
+    stop_name = emitted["cmdStop"].split("/")[-1].strip('"')
+    stop_script = plan["_scripts"][stop_name]
+    assert "/rpc/stop" in stop_script and "swap-secrets.env" in stop_script
+    assert "AGENT_TOKEN_" in stop_script
     script = plan["_scripts"]["start-qwen3-8b.sh"]
     assert "--rpc" in script
     assert "/rpc/ensure" in script
