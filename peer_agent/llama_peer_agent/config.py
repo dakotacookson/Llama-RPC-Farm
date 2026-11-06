@@ -1,6 +1,7 @@
 """Agent configuration (env + CLI)."""
 from dataclasses import dataclass, field
 import os
+from pathlib import Path
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8198
@@ -71,3 +72,20 @@ class AgentConfig:
                             else _int_env("PEER_AGENT_DISCOVERY_PORT",
                                           DEFAULT_DISCOVERY_PORT)),
         )
+
+
+def ensure_dirs(config: "AgentConfig") -> None:
+    """Create the log/state dirs the agent writes into on first use.
+
+    A freshly installed standalone agent starts with no ~/.cache tree;
+    the writers already mkdir lazily, but doing it at startup makes the
+    install self-contained and surfaces permission problems early.
+    """
+    log_dir = Path(config.log_dir).expanduser() if config.log_dir else Path.home()
+    state_dir = (Path(config.state_dir).expanduser() if config.state_dir
+                 else Path.home() / ".cache" / "llama-wrapper")
+    for path in (log_dir, state_dir):
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass

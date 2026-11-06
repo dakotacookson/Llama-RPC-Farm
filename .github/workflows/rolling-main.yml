@@ -77,7 +77,6 @@ jobs:
           Description: Web UI and cluster manager for llama.cpp RPC farms
           EOF
           dpkg-deb --build pkg-app "llama-rpc-farm_${VERSION}_amd64.deb"
-          tar -czf "llama-rpc-farm_${VERSION}_linux-x64.tar.gz" -C dist llama-rpc-farm
           # agent
           mkdir -p pkg-agent/DEBIAN pkg-agent/usr/local/bin
           cp dist/llama-peer-agent pkg-agent/usr/local/bin/llama-peer-agent
@@ -92,15 +91,13 @@ jobs:
           Description: Peer agent for Llama RPC Farm
           EOF
           dpkg-deb --build pkg-agent "llama-rpc-farm-agent_${VERSION}_amd64.deb"
-          tar -czf "llama-peer-agent_${VERSION}_linux-x64.tar.gz" -C dist llama-peer-agent
-          sha256sum *.deb *.tar.gz > "llama-rpc-farm_${VERSION}_linux-x64.sha256"
+          sha256sum *.deb > "llama-rpc-farm_${VERSION}_linux-x64.sha256"
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: linux-x64
           path: |
             *.deb
-            *.tar.gz
             *.sha256
 
   macos:
@@ -144,7 +141,6 @@ jobs:
           EOF
           hdiutil create -volname "Llama RPC Farm" -srcfolder dmg-app \
             -ov -format UDZO "llama-rpc-farm_${VERSION}_macos-arm64.dmg"
-          tar -czf "llama-rpc-farm_${VERSION}_macos-arm64.tar.gz" -C dist llama-rpc-farm
           # agent
           cp dist/llama-peer-agent dmg-agent/LlamaPeerAgent/llama-peer-agent
           chmod 755 dmg-agent/LlamaPeerAgent/llama-peer-agent
@@ -155,15 +151,13 @@ jobs:
           EOF
           hdiutil create -volname "Llama Peer Agent" -srcfolder dmg-agent \
             -ov -format UDZO "llama-peer-agent_${VERSION}_macos-arm64.dmg"
-          tar -czf "llama-peer-agent_${VERSION}_macos-arm64.tar.gz" -C dist llama-peer-agent
-          shasum -a 256 *.dmg *.tar.gz > "llama-rpc-farm_${VERSION}_macos-arm64.sha256"
+          shasum -a 256 *.dmg > "llama-rpc-farm_${VERSION}_macos-arm64.sha256"
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: macos-arm64
           path: |
             *.dmg
-            *.tar.gz
             *.sha256
 
   windows:
@@ -197,13 +191,11 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           $version = $env:VERSION
-          Compress-Archive -Path dist\llama-rpc-farm.exe `
-            -DestinationPath "llama-rpc-farm_${version}_windows-x64.zip" -Force
-          Compress-Archive -Path dist\llama-peer-agent.exe `
-            -DestinationPath "llama-peer-agent_${version}_windows-x64.zip" -Force
+          Copy-Item dist\llama-rpc-farm.exe "llama-rpc-farm_${version}_windows-x64.exe" -Force
+          Copy-Item dist\llama-peer-agent.exe "llama-peer-agent_${version}_windows-x64.exe" -Force
           $files = @(
-            "llama-rpc-farm_${version}_windows-x64.zip",
-            "llama-peer-agent_${version}_windows-x64.zip"
+            "llama-rpc-farm_${version}_windows-x64.exe",
+            "llama-peer-agent_${version}_windows-x64.exe"
           )
           $lines = foreach ($f in $files) {
             (Get-FileHash $f -Algorithm SHA256).Hash.ToLower() + "  " + $f
@@ -214,7 +206,7 @@ jobs:
         with:
           name: windows-x64
           path: |
-            *.zip
+            *.exe
             *.sha256
 
   publish:
@@ -272,15 +264,15 @@ jobs:
 
           ### App — `llama-rpc-farm`
 
-          - **Linux:** `llama-rpc-farm_{version}_amd64.deb` · `llama-rpc-farm_{version}_linux-x64.tar.gz`
-          - **macOS (Apple Silicon):** `llama-rpc-farm_{version}_macos-arm64.dmg` · `llama-rpc-farm_{version}_macos-arm64.tar.gz`
-          - **Windows:** `llama-rpc-farm_{version}_windows-x64.zip`
+          - **Linux:** `llama-rpc-farm_{version}_amd64.deb`
+          - **macOS (Apple Silicon):** `llama-rpc-farm_{version}_macos-arm64.dmg`
+          - **Windows:** `llama-rpc-farm_{version}_windows-x64.exe`
 
           ### Peer agent — `llama-peer-agent`
 
-          - **Linux:** `llama-rpc-farm-agent_{version}_amd64.deb` · `llama-peer-agent_{version}_linux-x64.tar.gz`
-          - **macOS (Apple Silicon):** `llama-peer-agent_{version}_macos-arm64.dmg` · `llama-peer-agent_{version}_macos-arm64.tar.gz`
-          - **Windows:** `llama-peer-agent_{version}_windows-x64.zip`
+          - **Linux:** `llama-rpc-farm-agent_{version}_amd64.deb`
+          - **macOS (Apple Silicon):** `llama-peer-agent_{version}_macos-arm64.dmg`
+          - **Windows:** `llama-peer-agent_{version}_windows-x64.exe`
 
           Each platform uploads a matching `.sha256` checksum file.
 
