@@ -527,7 +527,7 @@ def _derive_tensor_parallel_size(model_cfg, servers):
 def _agent_ray_lines(machine, model_id, ray_bin, ids, num_gpus, ray_port,
                      log, pidf):
     """Shell lines that start/stop a Ray worker through the peer agent,
-    with the existing sshpass command kept as a runtime fallback."""
+    """
     import swap_manager
     token_var = swap_manager._agent_token_var(machine.get("name"))
     base = f"http://{machine.get('ip')}:{agent_client.agent_port(machine)}"
@@ -583,8 +583,8 @@ def build_vllm_cluster_command(model_cfg, master, peers, vllm_cfg=None):
     """Build the multi-host vLLM start script for one model (Ray cluster).
 
     Per design §1.1 (mirrors vLLM's own multi-node-serving.sh + the
-    repo's _render_rpc pattern): ray workers are ssh'd (sshpass +
-    $SSH_PASS from the sourced swap-secrets.env sidecar) onto every peer,
+    repo's agent pattern): ray workers are started through each peer's
+    /ray/start endpoint,
     the ray head starts on the master, the script polls `ray status`
     until all N nodes are alive (ray_init_timeout, default 300 s) and
     only then execs `vllm serve` with --distributed-executor-backend ray.

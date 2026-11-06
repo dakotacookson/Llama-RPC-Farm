@@ -1237,7 +1237,7 @@ def _run_trial(model_id, trial, port, label, path_map=None):
     import subprocess
     import copy
     import platform as _platform
-    # Trials execute generated POSIX shell scripts (bash, sshpass, /dev/tcp
+    # Trials execute generated POSIX shell scripts (bash, curl, /dev/tcp
     # probes) — Windows can't run them locally. macOS works (bash exists).
     if _platform.system() == "Windows":
         return False, {"ok": False, "error": "tuning runs locally only on Linux/macOS (POSIX shell required)"}
@@ -1279,16 +1279,11 @@ def _run_trial(model_id, trial, port, label, path_map=None):
         m, peers = rpc_manager._split_servers(servers)
         if peers:
             script = rpc_manager.generate_script(trial, servers)
-            # generated scripts are vault-only (no baked password): supply
-            # $SSH_PASS from the in-memory vault-resolved master password.
-            # Env-only — never on the command line (ps-visible) or on disk.
-            import os as _os2
-            trial_env = dict(_os2.environ,
-                             SSH_PASS=m.get("password") or "")
+            # Agent-only scripts read AGENT_TOKEN_* from swap-secrets.env.
             proc = subprocess.Popen(
                 ["bash", script, str(port)],
                 stdout=blog, stderr=subprocess.STDOUT,
-                start_new_session=True, env=trial_env)
+                start_new_session=True)
         else:
             cmd = rpc_manager.build_llama_command(
                 trial, servers).replace('"$PORT"', str(port))

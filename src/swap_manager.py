@@ -794,7 +794,7 @@ def launch_plan(config_path=None, host_name=None):
     out during one plan must not constrain a different later plan.
 
     Linux host + peers: a per-model start-<id>.sh owns the RPC peers
-    (spin up on load via sshpass, tear down on EXIT -- the proven
+    (spin up on load via the peer agent, tear down on EXIT -- the proven
     start-rpc-qwen.sh shape) and cmd calls it, exactly like the live
     config. Single-node models and Windows hosts embed the direct
     llama-server command with the ${PORT} placeholder.

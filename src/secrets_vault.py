@@ -348,7 +348,7 @@ def reload_env():
     while the farm app keeps WRITING the vault (new logins, sessions,
     rotated keys) — env was snapshotted at import, so session/cookie
     resolution silently went stale until restart (401s with valid
-    grants). override=False: real env vars (SSH_PASS etc.) still win."""
+    grants). override=False: real env vars still win."""
     try:
         from dotenv import load_dotenv as _load_dotenv
         _load_dotenv(ENV_PATH, override=False)

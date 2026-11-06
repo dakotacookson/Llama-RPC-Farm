@@ -2026,7 +2026,7 @@ def generate_script(model_cfg, servers, script_path=None):
     with open(script_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(content)
     try:
-        # 0700: scripts drive SSH sessions via $SSH_PASS — owner-only even
+        # 0700: launcher scripts are owner-only even
         # though no secret is baked in anymore (defense in depth)
         os.chmod(script_path, 0o700)
     except OSError:
