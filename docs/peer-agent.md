@@ -7,8 +7,8 @@ files, service control, installers, stats/tuner probes, discovery, and
 in-place agent updates are agent-backed. SSH remains only for first-time
 bootstrap, recovery, and explicit SSH discovery.
 Separate release artifacts are built automatically on every `main` push by
-`.github/workflows/main-build-{linux,macos,windows}.yml`; the agent is
-published in the rolling `main-latest` prerelease.
+`.github/workflows/rolling-main.yml` (via the reusable `build-*.yml`
+workflows); the agent is published in the rolling `main-latest` prerelease.
 
 ## Why
 

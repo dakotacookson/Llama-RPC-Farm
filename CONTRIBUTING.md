@@ -57,9 +57,8 @@ single-source-of-truth rules catch most newcomers.
 ## Great first contributions
 
 - 🧪 **Hardware matrix testing** (see README "Supported hardware"): real
-  reports for AMD ROCm, Apple Silicon/metal, CPU-RAM-sharing or Intel XPU
-  setups — "works on my box" reports, logs, and PRs that fix what breaks
-  on them are gold.
+  reports for AMD ROCm, CPU-RAM-sharing or Intel XPU setups — "works on
+  my box" reports, logs, and PRs that fix what breaks on them are gold.
 - Docs improvements (especially for platforms beyond the maintainer's).
 - Test coverage in areas the string tests don't reach.
 

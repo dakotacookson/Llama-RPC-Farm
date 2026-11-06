@@ -1,12 +1,12 @@
-name: Rolling main build (Windows)
+name: Build (Windows)
 
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:
-
-permissions:
-  contents: write
+  workflow_call:
+    inputs:
+      version:
+        description: Version string baked into artifact names
+        required: true
+        type: string
 
 jobs:
   build:
@@ -35,8 +35,10 @@ jobs:
             --paths peer_agent packaging/agent_entry.py
       - name: Package Windows
         shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          $version = "0.0.0-main." + $env:GITHUB_SHA.Substring(0,7)
+          $version = $env:VERSION
           Compress-Archive -Path dist\llama-rpc-farm.exe `
             -DestinationPath "llama-rpc-farm_${version}_windows-x64.zip" -Force
           Compress-Archive -Path dist\llama-peer-agent.exe `
@@ -52,12 +54,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: main-windows-x64
+          name: windows-x64
           path: |
             *.zip
             *.sha256
-
-  publish:
-    name: Publish
-    needs: build
-    uses: ./.github/workflows/publish-main-latest.yml
