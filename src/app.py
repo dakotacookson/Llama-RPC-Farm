@@ -806,6 +806,35 @@ async def machine_connections():
         return dict(pool.map(one, machines))
 
 
+class AgentCheckIn(pydantic.BaseModel):
+    ip: str
+    agent_port: int = 8198
+    agent_token: str = ""
+    name: str = ""
+
+
+@app.post("/api/machines/agent-check")
+async def machine_agent_check(p: AgentCheckIn):
+    """Pre-save peer-agent reachability check for the add/edit form."""
+    try:
+        port = int(p.agent_port or 8198)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="agent port must be an integer")
+    if not 1 <= port <= 65535:
+        raise HTTPException(status_code=400, detail="agent port must be in 1..65535")
+    existing = cfg.machines.get(p.name) if p.name else None
+    machine = {"name": p.name or p.ip, "ip": p.ip, "agent_port": port,
+               "transport": "agent",
+               "id": (existing or {}).get("id")}
+    try:
+        out = await run_in_threadpool(
+            agent_client.health, machine, 4.0, p.agent_token or None)
+    except Exception as e:
+        raise HTTPException(status_code=502,
+                            detail=f"peer agent unreachable: {e}")
+    return {"ok": True, **out}
+
+
 def _ssh_port_guard(machine):
     """Fail fast with an actionable error when a new (non-local) machine's
     peer agent is unreachable. Agent-only: there is no SSH preflight."""
