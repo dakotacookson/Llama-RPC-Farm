@@ -1081,6 +1081,42 @@ def _sync_machine_ip(machine):
     return machine
 
 
+def has_live_llama(machine_name, use_agent=True):
+    """True if a native llama-server is running on this machine (any port).
+
+    The Launch page's live launch runs llama-server directly — it opens no
+    RPC port, so an RPC-port probe alone reports the machine idle even
+    while a model is serving. Remote peers are asked through the agent.
+    """
+    machine = cfg.machines.require(machine_name)
+    is_local = local_node.is_local(machine)
+    if not is_local and use_agent and agent_client.should_use_agent(machine):
+        try:
+            return bool(agent_client.status(machine).get("llama_running"))
+        except Exception:
+            return False
+    if is_local:
+        import subprocess as _sp
+        if os.name == "nt":
+            try:
+                p = _sp.run(["tasklist", "/FI", "IMAGENAME eq llama-server.exe"],
+                            capture_output=True, text=True, timeout=8)
+                return "llama-server.exe" in (p.stdout or "").lower()
+            except (OSError, _sp.SubprocessError):
+                return False
+        try:
+            if machine.get("os") == "macos":
+                p = _sp.run(["ps", "-axc", "-o", "comm"], capture_output=True,
+                            text=True, timeout=8)
+                return "llama-server" in (p.stdout or "")
+            p = _sp.run(["pgrep", "-f", "llama-[s]erver"], capture_output=True,
+                        timeout=8)
+            return p.returncode == 0
+        except (OSError, _sp.SubprocessError):
+            return False
+    return False
+
+
 def machine_status(machine_name, use_agent=True):
     """Per-machine status. rpc_running is True if ANY ggml-rpc-server is
     running on the box (not just the base port), since per-model ports

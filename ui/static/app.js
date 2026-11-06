@@ -5759,9 +5759,11 @@ async function loadSwap() {
 
 async function loadLaunch() {
   loadSwap();
-  const [models, machines, active] = await Promise.all([
-    api("GET", "/api/models"), api("GET", "/api/machines"), api("GET", "/api/launch/active"),
+  const [models, machines, swapLoaded] = await Promise.all([
+    api("GET", "/api/models"), api("GET", "/api/machines"),
+    api("GET", "/api/swap/loaded").catch(() => ({ loaded: [] })),
   ]);
+  const loadedSet = new Set((swapLoaded && swapLoaded.loaded) || []);
   // vLLM mode: per-model launch cards (configured options + Load/Evict)
   // live in #vllm-launch-view — the llama.cpp RPC grid below stays hidden
   // via the rpc_launch panel gate. Same card idiom, vLLM vocabulary.
@@ -5797,8 +5799,16 @@ async function loadLaunch() {
         ? `<i class="fa-solid fa-triangle-exclamation"></i> needs ${down.map(d => escHtml(d)).join(", ")} — offline (change servers in the Models tab)`
         : "";
     }
+    const cst = card.querySelector(".card-loaded");
+    if (cst) {
+      const key = card.dataset.variant
+        ? `${card.dataset.model}--${card.dataset.variant}`
+        : card.dataset.model;
+      const on = loadedSet.has(key);
+      cst.className = `serving-ind card-loaded ${on ? "status-ok" : "status-warn"}`;
+      cst.textContent = on ? "loaded" : "idle";
+    }
   }
-  const servingSet = new Set(active.filter(a => a.serving).map(a => a.name));
   const grid = $("#launch-grid");
   // flatten primary + variants into deployments
   const deployments = [];
@@ -5838,20 +5848,12 @@ async function loadLaunch() {
           </label>`;}).join("") || '<span class="hint">no servers configured — set them in the Models tab</span>'}
       </div>
       <div class="launch-ready-hint"></div>
-      <label class="auto-refresh">Port <input type="number" value="8081" class="port-input" data-model="${escHtml(m.model_id)}"></label>
-      <label class="auto-refresh">Run on <select class="run-on-select" data-model="${escHtml(m.model_id)}">
-        ${cardServers.map(s => `<option value="${escHtml(s)}">${escHtml(s)}${(machines.find(x => x.name===s)||{}).role === "master" ? " (master)" : ""}</option>`).join("")}
-      </select></label>
-      <label class="auto-refresh">Mode <select class="launch-mode-select" data-model="${escHtml(m.model_id)}">
-        <option value="auto" selected>Auto (device heuristic)</option>
-        <option value="rpc">RPC cluster</option>
-        <option value="local">Local only (this machine, no RPC)</option>
-      </select></label>
+      <p class="hint">Served via llama-swap — the same path as the client API. Configure servers/flags in the Models tab.</p>
       <div class="actions">
         <button class="small" data-act="launch">Launch</button>
         <button class="small danger" data-act="stop">Stop</button>
         <button class="small" data-act="swap-disable" title="Hide this model from the swap config until re-enabled (takes effect on next push / Launch All)">Disable</button>
-        <span class="serving-ind ${servingSet.size ? "status-ok" : "status-warn"}">${servingSet.size ? `live (${servingSet.size} node)` : "idle"}</span>
+        <span class="serving-ind card-loaded status-warn">idle</span>
       </div>
     </div>`;
   }).join("");
@@ -5900,46 +5902,23 @@ async function loadLaunch() {
     btn.onclick = async () => {
       const card = btn.closest(".launch-card");
       const mid = card.dataset.model;
-      const variant = card.dataset.variant || null;
-      const servers = [...card.querySelectorAll("input[type=checkbox]:checked")].map(cb => cb.value);
-      const downNow = servers.filter(isDown);
-      if (downNow.length) {
-        toast(`Cannot launch ${mid}: ${downNow.join(", ")} is down (change servers in the Models tab)`, "bad");
-        loadLaunch();
-        return;
-      }
-      const port = parseInt(card.querySelector(".port-input").value, 10) || 8081;
-      const runOn = card.querySelector(".run-on-select");
-      const modeSel = card.querySelector(".launch-mode-select");
-      const mode = modeSel ? modeSel.value : "auto";
-      const masterName = runOn ? runOn.value : null;
-      if (mode === "local" && masterName && !servers.includes(masterName)) {
-        toast(`Cannot launch ${mid} local: ${masterName} is not among the configured servers`, "bad");
-        btn.disabled = false; btn.textContent = "Launch";
-        return;
-      }
-      btn.disabled = true; btn.textContent = "launching...";
+      const variant = card.dataset.variant || "";
+      const key = variant ? `${mid}--${variant}` : mid;
+      btn.disabled = true; btn.textContent = "loading…";
       try {
-        const body = { model_id: mid, servers, port };
-        if (variant) body.variant = variant;
-        if (masterName) body.master_name = masterName;
-        if (mode !== "rpc") body.mode = mode;
-        const r = await api("POST", "/api/launch", body);
-        const ok = !r.failed;
-        const livePort = r.port || port;
-        const liveHost = r.master || masterName || servers[0] || "?";
-        const steps = r.steps.map(s => `${s.step}: ${s.error ? "ERR " + s.error : (s.running !== undefined ? (s.running ? "up" : "DOWN") : (s.killed !== undefined ? (s.killed ? "cleared" : "STUCK") : "?"))}`).join("\n");
-        const rolledNote = r.port_rolled ? ` (port ${port} busy — moved to ${livePort})` : "";
-        toast(ok ? `Launched ${mid}${variant?` (${variant})`:``} on ${liveHost}:${livePort}${rolledNote}: ${steps}` : `Launch failed: ${steps}`, ok ? "ok" : "bad", 10000);
-        const portInput = card.querySelector(".port-input");
-        if (r.port_rolled && portInput) portInput.value = livePort;
+        // Same method as the client API: refresh llama-swap's config from
+        // the model configs, then load through llama-swap (:8080/:8090).
+        await api("POST", "/api/swap/push");
+        // llama-swap --watch-config polls every 2s; give it a beat so the
+        // freshly pushed entry exists before the warmup request.
+        await new Promise(res => setTimeout(res, 2300));
+        const r = await api("POST", `/api/swap/load/${encodeURIComponent(key)}`);
+        toast(`Serving ${key} via llama-swap: ${r.ok ? "loaded" : "started"}`, "ok", 8000);
         loadLaunch();
       } catch (err) {
-        toast(err.message, "bad");
-        // 409 (vllm mode) and other launch errors land inline on the card
-        // — the hint element already exists in the card template
         const hint = card.querySelector(".launch-ready-hint");
         if (hint) hint.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> ' + escHtml(err.message);
+        toast(err.message, "bad");
       }
       btn.disabled = false; btn.textContent = "Launch";
     };
@@ -5948,14 +5927,12 @@ async function loadLaunch() {
     btn.onclick = async () => {
       const card = btn.closest(".launch-card");
       const mid = card.dataset.model;
-      const servers = [...card.querySelectorAll("input[type=checkbox]:checked")].map(cb => cb.value);
-      const port = parseInt(card.querySelector(".port-input").value, 10) || 8081;
-      const runOn = card.querySelector(".run-on-select");
-      btn.disabled = true; btn.textContent = "stopping...";
+      const variant = card.dataset.variant || "";
+      const key = variant ? `${mid}--${variant}` : mid;
+      btn.disabled = true; btn.textContent = "stopping…";
       try {
-        const stopBody = { model_id: mid, servers, port };
-        if (runOn && runOn.value) stopBody.master_name = runOn.value;
-        await api("POST", "/api/launch/stop", stopBody);
+        await api("POST", `/api/swap/evict/${encodeURIComponent(key)}`);
+        toast(`Evicted ${key} from llama-swap`, "ok");
         loadLaunch();
       } catch (err) { toast(err.message, "bad"); }
       btn.disabled = false; btn.textContent = "Stop";

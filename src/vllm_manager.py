@@ -68,7 +68,7 @@ def swap_host_unload(model_id):
     import urllib.error
     req = urllib.request.Request(url, data=b"", method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=60) as r:
             return {"ok": True, "status": r.status,
                     "body": r.read().decode()[:500]}
     except urllib.error.HTTPError as e:
