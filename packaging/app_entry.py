@@ -9,9 +9,11 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from app import app  # noqa: E402
 import uvicorn  # noqa: E402
+from runtime_paths import ensure_runtime_layout  # noqa: E402
 
 
 def main():
+    ensure_runtime_layout()
     host = (os.environ.get("LLAMA_FARM_HOST") or "0.0.0.0").strip()
     try:
         port = int(os.environ.get("LLAMA_FARM_PORT") or 8199)

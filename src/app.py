@@ -42,7 +42,7 @@ import agent_client
 import reaper
 import gguf_inspect
 
-from runtime_paths import asset_dir, data_dir
+from runtime_paths import asset_dir, data_dir, ensure_runtime_layout
 BASE_DIR = data_dir()
 ASSET_DIR = asset_dir()
 templates = Jinja2Templates(directory=os.path.join(ASSET_DIR, "ui", "templates"))
@@ -56,6 +56,10 @@ app = FastAPI(title="Llama RPC Farm")
 @app.on_event("startup")
 def seed_local_master():
     """The machine running this app is the default master node."""
+    # Frozen/portable builds start with an empty data dir: create config/,
+    # generated/, model/usage dirs and minimal defaults before anything
+    # reads them. Best-effort, never blocks boot.
+    ensure_runtime_layout()
     local_node.ensure_local_master()
     # DEC-17: one-time stamp of `engine` on legacy group entries (both
     # collections) so existing groups keep rendering under their engine.

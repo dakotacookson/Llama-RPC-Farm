@@ -15,7 +15,7 @@ import sys
 import tempfile
 
 from . import PROTOCOL_VERSION, __version__
-from .config import AgentConfig
+from .config import AgentConfig, ensure_dirs
 from . import processes
 from . import discovery
 from . import files
@@ -456,6 +456,7 @@ def create_server(config: AgentConfig) -> AgentHTTPServer:
 
 
 def serve(config: AgentConfig):
+    ensure_dirs(config)
     server = create_server(config)
     config.port = int(server.server_address[1])
     logging.basicConfig(

@@ -33,9 +33,9 @@ Each build job produces both the app and the peer agent:
 
 | Platform | App artifacts | Agent artifacts |
 |---|---|---|
-| Linux | `.deb`, `.tar.gz` | `.deb`, `.tar.gz` |
-| macOS | `.dmg`, `.tar.gz` | `.dmg`, `.tar.gz` |
-| Windows | `.exe`, `.zip` | `.exe`, `.zip` |
+| Linux | `.deb` | `.deb` |
+| macOS | `.dmg` | `.dmg` |
+| Windows | `.exe` | `.exe` |
 
 Each platform also emits a SHA-256 checksum file.
 
@@ -64,7 +64,12 @@ LLAMA_FARM_DATA_DIR=/tmp/llama-farm-data LLAMA_FARM_PORT=8187 ./dist/llama-rpc-f
 
 ## Runtime data
 
-Packaged builds never write into the bundle. On first run they create:
+Packaged builds never write into the bundle. On first run they create the
+platform data dir plus `config/`, `config/models/`, `config/usage/`,
+`generated/`, and minimal default config files (`settings.yaml`,
+`machines.yaml`, `groups.yaml`, `swap_groups.yaml`, `stores.yaml`,
+`swap.yaml`). The standalone peer agent creates its log/state dirs at
+startup. On first run they create:
 - Linux: `~/.config/llama-rpc-farm/`
 - macOS: `~/Library/Application Support/LlamaRPCFarm/`
 - Windows: `%APPDATA%\\LlamaRPCFarm\\`
