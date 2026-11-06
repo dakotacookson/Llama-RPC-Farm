@@ -27,7 +27,8 @@ import os
 import re
 import secrets
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from runtime_paths import data_dir
+BASE_DIR = data_dir()
 ENV_PATH = os.path.join(BASE_DIR, ".env")
 
 try:

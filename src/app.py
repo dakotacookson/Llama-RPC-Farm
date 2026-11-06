@@ -42,8 +42,10 @@ import agent_client
 import reaper
 import gguf_inspect
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "ui", "templates"))
+from runtime_paths import asset_dir, data_dir
+BASE_DIR = data_dir()
+ASSET_DIR = asset_dir()
+templates = Jinja2Templates(directory=os.path.join(ASSET_DIR, "ui", "templates"))
 templates.env.auto_reload = True  # pick up index.html edits without a restart
 
 app = FastAPI(title="Llama RPC Farm")
@@ -136,7 +138,7 @@ class NoCacheStaticFiles(StaticFiles):
         resp.headers["Cache-Control"] = "no-cache, must-revalidate"
         return resp
 
-app.mount("/static", NoCacheStaticFiles(directory=os.path.join(BASE_DIR, "ui", "static")), name="static")
+app.mount("/static", NoCacheStaticFiles(directory=os.path.join(ASSET_DIR, "ui", "static")), name="static")
 
 
 # ---------------- client-IP view gate ----------------
@@ -562,7 +564,7 @@ def _asset_version():
     guarantees a fresh URL after every daemon restart, so Firefox can
     never serve a stale cached app.js against a new index.html."""
     try:
-        paths = [os.path.join(BASE_DIR, "ui", "static", f)
+        paths = [os.path.join(ASSET_DIR, "ui", "static", f)
                  for f in ("app.js", "style.css")]
         mt = str(int(max(os.path.getmtime(p) for p in paths)))
     except OSError:
@@ -4435,6 +4437,13 @@ _AGENT_WHEEL_LOCK = threading.Lock()
 def _agent_wheel_path():
     """Build/cache the current peer-agent wheel from this checkout."""
     import glob
+    if getattr(sys, "frozen", False):
+        wheels = sorted(glob.glob(os.path.join(
+            ASSET_DIR, "agent-wheel", "llama_rpc_farm_agent-*.whl")),
+            key=os.path.getmtime, reverse=True)
+        if wheels:
+            return wheels[0]
+        raise RuntimeError("bundled agent wheel is missing from this build")
     src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "peer_agent")
     out = os.path.join(rpc_manager.GENERATED_DIR, "agent-wheel")
@@ -4466,6 +4475,15 @@ def _agent_wheel_path():
 
 
 def _agent_latest_version():
+    if getattr(sys, "frozen", False):
+        import glob
+        wheels = sorted(glob.glob(os.path.join(
+            ASSET_DIR, "agent-wheel", "llama_rpc_farm_agent-*.whl")))
+        if wheels:
+            base = os.path.basename(wheels[-1])
+            m = re.match(r"llama_rpc_farm_agent-([^-]+)-", base)
+            return m.group(1) if m else None
+        return None
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "peer_agent", "pyproject.toml")
     try:

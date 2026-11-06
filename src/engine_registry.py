@@ -20,7 +20,8 @@ import rpc_manager
 import engine_manifest
 from engine_manifest import UiHintsMixin
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from runtime_paths import data_dir
+BASE_DIR = data_dir()
 SETTINGS_FILE = os.path.join(BASE_DIR, "config", "settings.yaml")
 
 VALID_ENGINES = cfg.VALID_ENGINES

@@ -22,7 +22,8 @@ import queue
 import threading
 import time
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from runtime_paths import data_dir
+BASE_DIR = data_dir()
 USAGE_DIR = os.path.join(BASE_DIR, "config", "usage")
 USAGE_SETTINGS_KEY = "usage_tracking"   # settings.yaml gate (default on)
 
