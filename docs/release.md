@@ -22,14 +22,14 @@ traceable to a commit.
 `rolling-main.yml` is the only workflow triggered by `main` pushes. It:
 
 1. Reads `VERSION` and computes `<VERSION>-main.<short-sha>`.
-2. Runs the three per-platform **reusable** build workflows in parallel:
-   - `build-linux.yml` — linux-x64, also runs the pre-release checks
+2. Runs three platform **build jobs** in parallel in the same workflow:
+   - `linux` — linux-x64, also runs the pre-release checks
      (py_compile, `node --check`, `bash -n`, pytest)
-   - `build-macos.yml` — macos-arm64
-   - `build-windows.yml` — windows-x64
+   - `macos` — macos-arm64
+   - `windows` — windows-x64
 3. Runs a **single** publish job only after **all three** builds succeed.
 
-Each build workflow produces both the app and the peer agent:
+Each build job produces both the app and the peer agent:
 
 | Platform | App artifacts | Agent artifacts |
 |---|---|---|
@@ -46,7 +46,9 @@ The publish job runs once, after all builds pass:
 1. Deletes any previous `main-latest` release (so stale artifacts from old
    commits never accumulate).
 2. Moves the `main-latest` tag to the current `main` commit.
-3. Creates a fresh `main-latest` prerelease with all platform assets.
+3. Creates a fresh `main-latest` prerelease with all platform assets and a
+   generated body: version, commit link, changelog since the previous roll,
+   download names per platform, checksum note, and quick-start instructions.
 
 Because the publish step is gated on `needs: [linux, macos, windows]` and
 the workflow serializes on the `rolling-main` concurrency group, a failed
