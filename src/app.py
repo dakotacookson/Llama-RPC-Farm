@@ -5290,8 +5290,8 @@ async def restart_app():
             # manual start. Poll for the port going free BEFORE setsid, so
             # the handoff never races (max 15s).
             "for i in $(seq 0 30); do "
-            "  python3 -c \"import socket;s=socket.socket();\\"
-            "s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);\\"
+            "  python3 -c \"import socket;s=socket.socket();"
+            "s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);"
             "s.bind(('0.0.0.0',8199));s.close()\" 2>/dev/null && break; "
             "  sleep 0.5; "
             "done; "
@@ -6194,15 +6194,24 @@ async def stop_launch(l: LaunchIn):
     # stop actually unloads it and the serve group frees the box.
     # Swap down -> 503, same as the Swap tab's Evict. Unknown ids keep
     # the legacy path.
+    # Stop BOTH possible owners: a live launch (llama-server on the
+    # requested port) and, when the same deployment is served by
+    # llama-swap, its remote-proxy entry. A live launch on a remote box is
+    # indistinguishable by model id alone, so do the live port-targeted
+    # stop first, then best-effort unload the swap entry.
+    res = await run_in_threadpool(rpc_manager.stop_model, l.servers,
+                                  l.model_id, l.variant, l.master_name,
+                                  l.port)
     try:
         verdict = swap_manager.deployment_launch_mode(l.model_id, l.variant)
     except ValueError:
         verdict = None
     if verdict and verdict["mode"] == "local" and verdict["box"]:
-        return await _proxy_swap_unload(verdict["swap_key"])
-    return await run_in_threadpool(rpc_manager.stop_model, l.servers,
-                                   l.model_id, l.variant, l.master_name,
-                                   l.port)
+        try:
+            await _proxy_swap_unload(verdict["swap_key"])
+        except Exception:
+            pass
+    return res
 
 
 @app.get("/api/launch/active")
@@ -6509,12 +6518,26 @@ async def swap_load_model(model_id: str):
         base = (f"http://127.0.0.1:{st['port']}"
                 if local_node.is_local(cfg.machines.require(st["host"]))
                 else f"http://{st.get('host_ip')}:{st['port']}")
-        payload = _json.dumps(
-            {"model": model_id,
-             "messages": [{"role": "user", "content": "hi"}],
-             "max_tokens": 1}).encode()
+        is_embed = False
+        try:
+            engine = engine_registry.get_engine()
+            emb_ids = {m.get("model_id") for m in
+                       (engine.filter_embedding_models(cfg.list_models()) or [])}
+            is_embed = model_id.split("--")[0] in emb_ids
+        except Exception:
+            pass
+        if is_embed:
+            payload = _json.dumps(
+                {"model": model_id, "input": "hi"}).encode()
+            path = "/v1/embeddings"
+        else:
+            payload = _json.dumps(
+                {"model": model_id,
+                 "messages": [{"role": "user", "content": "hi"}],
+                 "max_tokens": 1}).encode()
+            path = "/v1/chat/completions"
         req = urllib.request.Request(
-            base + "/v1/chat/completions", data=payload,
+            base + path, data=payload,
             headers={"Content-Type": "application/json"}, method="POST")
         t0 = _time.time()
         try:
@@ -6524,9 +6547,12 @@ async def swap_load_model(model_id: str):
             raise RuntimeError(f"daemon refused load: HTTP {e.code} "
                                f"{e.read(300).decode('utf-8', 'replace')}")
         choice = ((body.get("choices") or [{}])[0].get("message") or {})
+        preview = (choice.get("content") or "")
+        if not preview and body.get("data"):
+            preview = "(embedding ok)"
         return {"ok": True, "model": model_id,
                 "elapsed_s": round(_time.time() - t0, 1),
-                "preview": (choice.get("content") or "")[:120]}
+                "preview": preview[:120]}
     try:
         return await run_in_threadpool(warmup)
     except RuntimeError as e:

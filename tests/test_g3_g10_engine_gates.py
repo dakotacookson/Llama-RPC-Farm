@@ -253,9 +253,9 @@ def test_launch_stop_remote_proxy_unloads_via_swap(client, settings_file,
         lambda mid, variant=None, host_name=None: {
             "mode": "local", "box": "aibox3", "peers": ["aibox3"],
             "swap_key": "qwen3-8b--DAD"})
+    stopped = []
     monkeypatch.setattr(app_module.rpc_manager, "stop_model",
-                        lambda *a, **k: (_ for _ in ()).throw(
-                            AssertionError("remote-proxy stop must proxy")))
+                        lambda *a, **k: stopped.append((a, k)) or [])
 
     async def fake_unload(model_id):
         proxied.append(model_id)
@@ -267,6 +267,7 @@ def test_launch_stop_remote_proxy_unloads_via_swap(client, settings_file,
                     json={"model_id": "qwen3-8b", "servers": ["aibox3"],
                           "port": 8080})
     assert r.status_code == 200, r.text
+    assert stopped, "live-port stop must run first"
     assert proxied == ["qwen3-8b--DAD"]
 
 

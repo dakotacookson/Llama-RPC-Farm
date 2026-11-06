@@ -332,7 +332,7 @@ def stop_rpc(machine_name, port=None, use_agent=True):
 
     # Optional agent: per-port RPC stop, or the explicit stop-all parity
     # endpoint when port is None.
-    if use_agent and agent_client.should_use_agent(machine):
+    if use_agent and not is_local and agent_client.should_use_agent(machine):
         if port is None:
             try:
                 res = agent_client.stop_all(machine)
@@ -748,7 +748,7 @@ def start_rpc(machine_name, port=None, expose_override=None, device_list=None,
     want = _rpc_state_want(machine, expose_override, device_list)
     # Optional agent: the agent owns the start/reuse/stop decision and
     # writes the same per-port state file as the generated scripts.
-    if agent_client.should_use_agent(machine):
+    if not is_local and agent_client.should_use_agent(machine):
         devices = [] if want in ("", "default") else [
             d.strip() for d in want.split(",") if d.strip()]
         try:
@@ -1302,7 +1302,7 @@ def list_rpc_servers(machine_name, use_agent=True):
     is_win = machine.get("os", "linux") == "windows"
     is_local = local_node.is_local(machine)
     os_type = "windows" if is_win else machine.get("os", "linux")
-    if use_agent and agent_client.should_use_agent(machine):
+    if use_agent and not is_local and agent_client.should_use_agent(machine):
         try:
             return agent_client.rpc_list(machine)
         except Exception as e:

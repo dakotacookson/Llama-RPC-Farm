@@ -1584,6 +1584,8 @@ def _remote_home(ssh, os_type="linux"):
 
 def _host_home(host):
     """Home directory on the host, via agent when selected."""
+    if local_node.is_local(host):
+        return os.path.expanduser("~")
     if agent_client.should_use_agent(host):
         try:
             home = agent_client.info(host).get("home")
@@ -1718,7 +1720,7 @@ def _port_open(host, port):
 
 def _process_running(host):
     os_type = host.get("os", "linux")
-    if agent_client.should_use_agent(host):
+    if not local_node.is_local(host) and agent_client.should_use_agent(host):
         try:
             return bool(agent_client.service_status(host).get("running"))
         except Exception as e:
@@ -1962,7 +1964,7 @@ def _backup_host_file(host, path, stamp):
     overwritten (DEC-13, T2-G4). Returns the backup path, or None when the
     source doesn't exist. Never raises — backup is best-effort, the write
     itself is the hard gate."""
-    if agent_client.should_use_agent(host):
+    if not local_node.is_local(host) and agent_client.should_use_agent(host):
         try:
             res = agent_client.file_backup(host, path, stamp)
             return res.get("backup") if res.get("backed_up") else None
@@ -2270,7 +2272,7 @@ def stop():
     """Stop the llama-swap daemon on the host (peers stay up)."""
     host = get_host(load_settings()["host_name"])
     os_type = host.get("os", "linux")
-    if agent_client.should_use_agent(host):
+    if not local_node.is_local(host) and agent_client.should_use_agent(host):
         try:
             res = agent_client.service_stop(host)
             return {"host": host["name"],
