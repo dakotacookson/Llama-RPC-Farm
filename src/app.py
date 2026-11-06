@@ -294,6 +294,12 @@ def _access_filter_models(models):
 LOGIN_COOKIE = "farm_session"
 
 
+def _gateway_url(path=""):
+    """Local :8090 gateway URL; GATEWAY_PORT overrides for isolated tests."""
+    port = (os.environ.get("GATEWAY_PORT") or "8090").strip()
+    return f"http://127.0.0.1:{port}{path}"
+
+
 def _gateway_headers(request=None):
     """Identity headers for a server-side call to the :8090 gateway.
 
@@ -2482,7 +2488,7 @@ async def chat_models(request: Request):
                 import urllib.request
                 import json as _json
                 req = urllib.request.Request(
-                    "http://127.0.0.1:8090/models",
+                    _gateway_url("/models"),
                     headers=_gateway_headers(request))
                 with urllib.request.urlopen(req, timeout=10) as r:
                     return _json.loads(r.read().decode()).get("data", [])
@@ -2548,7 +2554,7 @@ async def chat_complete(c: ChatIn, request: Request = None):
     # upstream = THE FARM GATEWAY (:8090): every chat crosses key-auth
     # + usage tracking; the caller's identity (cookie/Bearer) forwards
     # so the usage row attributes to THEM, not "console"
-    base = "http://127.0.0.1:8090"
+    base = _gateway_url("")
     import httpx as _httpx
     msgs = ([{"role": "system", "content": c.system_prompt}]
             if (c.system_prompt or "").strip() else []) + (c.messages or [])
@@ -6447,7 +6453,7 @@ async def flow_vllm_metrics():
         import urllib.request, json as _json
         # Go through the farm gateway (:8090) with the logged-in user's
         # identity (session cookie → access key), exactly like API clients.
-        base = "http://127.0.0.1:8090"
+        base = _gateway_url("")
         with urllib.request.urlopen(base + "/v1/models", timeout=5) as r:
             models = _json.load(r).get("data", [])
         loaded = [m["id"] for m in models
@@ -6566,7 +6572,7 @@ async def swap_load_model(model_id: str, request: Request):
         import urllib.request, urllib.error, json as _json
         # Go through the farm gateway (:8090) with the logged-in user's
         # identity (session cookie → access key), exactly like API clients.
-        base = "http://127.0.0.1:8090"
+        base = _gateway_url("")
         is_embed = False
         try:
             engine = engine_registry.get_engine()
@@ -6731,7 +6737,7 @@ async def create_embeddings(e: EmbedIn, request: Request):
         raise HTTPException(status_code=503, detail="swap not running — Launch All first")
     host = cfg.machines.require(st["host"])
     is_local = local_node.is_local(host)
-    url = "http://127.0.0.1:8090/v1/embeddings"  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
+    url = _gateway_url("/v1/embeddings")  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
     def do():
         import urllib.request, json as _json, urllib.error
         payload = _json.dumps({"model": e.model, "input": e.input}).encode()
@@ -6793,7 +6799,7 @@ async def audio_test(v: AudioIn, request: Request):
         raise HTTPException(status_code=503, detail="swap not running — Launch All first")
     host = cfg.machines.require(st["host"])
     is_local = local_node.is_local(host)
-    url = "http://127.0.0.1:8090/v1/chat/completions"  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
+    url = _gateway_url("/v1/chat/completions")  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
     def do():
         import urllib.request, json as _json, urllib.error
         msgs = []
@@ -6867,7 +6873,7 @@ async def vision_test(v: VisionIn, request: Request):
         raise HTTPException(status_code=503, detail="swap not running — Launch All first")
     host = cfg.machines.require(st["host"])
     is_local = local_node.is_local(host)
-    url = "http://127.0.0.1:8090/v1/chat/completions"  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
+    url = _gateway_url("/v1/chat/completions")  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
     def do():
         import urllib.request, json as _json, urllib.error
         payload = _json.dumps({

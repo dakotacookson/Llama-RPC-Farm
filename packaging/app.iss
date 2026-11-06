@@ -1,4 +1,4 @@
-# Inno Setup script for the Llama RPC Farm app (Windows).
+; Inno Setup script for the Llama RPC Farm app (Windows).
 #define MyAppVersion GetEnv('APP_VERSION')
 #define MyBuildVersion GetEnv('BUILD_VERSION')
 #ifndef MyAppVersion
