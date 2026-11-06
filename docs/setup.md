@@ -78,6 +78,14 @@ GPU device tokens to share (`CUDA0`, `ROCm1`, … — see `src/gpu_vendor.py`).
 `Hardware Detect` fills in GPU names, VRAM, core/RAM totals. The app's own
 machine is auto-registered as master.
 
+**Auto-discovery is near zero-touch.** The agent's UDP responder reports
+identity **and** hardware (GPU vendor/names, VRAM, RAM, cores), so a
+discovered agent prefills the form. The agent token is never broadcast
+(that would hand the peer to anyone on the LAN); set a **Farm agent token**
+once in Settings if all agents share a token — new discovered agents then
+verify and save without typing it. With per-machine tokens, enter the
+token once for that machine.
+
 Machine identity is the MAC, not the IP — DHCP drift self-heals when the
 new IP answers SSH (only for machines with a stored MAC).
 
