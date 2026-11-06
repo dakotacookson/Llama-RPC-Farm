@@ -88,34 +88,6 @@ except Exception as e:
     sys.exit(1)
 """
 
-_REPO_CHILD = """\
-import os, sys
-from huggingface_hub import snapshot_download
-repo_id, local_dir = sys.argv[1:3]
-# weights + everything needed to load the model from Python + companion
-# GGUFs (mmproj/MTP/draft). Other GGUF quants are deliberately NOT pulled
-# by the whole-repo path. The .cache dir snapshot_download writes inside
-# local_dir is pruned by the parent at the end (keeps the store clean).
-try:
-    path = snapshot_download(
-        repo_id=repo_id, local_dir=local_dir,
-        allow_patterns=["*.safetensors", "*.json", "*.txt", "*.model",
-                        "*.py", "*.jinja", "*.jinja2", "*.tiktoken",
-                        "*.yaml", "*.yml",
-                        "LICENSE*", "LICENCE*", "COPYING*", "NOTICE*",
-                        "README*", "requirements*.txt",
-                        "mmproj*.gguf", "*mmproj*.gguf",
-                        "mtp-*.gguf", "*draft*.gguf"],
-        ignore_patterns=["*.bin", "*.pt", "*.pth", "*.ckpt",
-                         "*.h5", "*.msgpack", "*.onnx", "*.tflite",
-                         "*.gitattributes", "*.pdf"])
-    print("OK:" + path, flush=True)
-except Exception as e:
-    print("ERR:" + str(e), flush=True)
-    sys.exit(1)
-"""
-
-
 def parse_link(link):
     """hf://owner/repo/path/file.gguf -> (repo_id, filename).
 
@@ -431,7 +403,7 @@ def _finalize_bundle(bundle_id):
     while any(JOBS.get(j, {}).get("status") == "downloading" for j in ids):
         time.sleep(1)
     # hf leaves .cache/<...>/download metadata + hf-xet under the bundle;
-    # keep the model folder clean for model_parser / vllm.
+    # keep the model folder clean for model_parser.
     shutil.rmtree(os.path.join(bundle["dir"], ".cache"), ignore_errors=True)
     statuses = {JOBS.get(j, {}).get("status") for j in ids}
     bundle["status"] = ("done" if statuses and statuses <= {"done"}
@@ -670,152 +642,6 @@ def start_shards(link, store):
         "model_jobs": res["model_jobs"],
         "bundle": res["bundle"],
     }
-
-
-def repo_size(repo_id):
-    """Total bytes of the safetensors files snapshot_download would fetch.
-    Best-effort: None when the listing fails (gated/offline)."""
-    try:
-        from huggingface_hub import HfApi
-        info = HfApi().model_info(repo_id, files_metadata=True,
-                                  token=_token())
-        total = 0
-        for s in (info.siblings or []):
-            fn = s.rfilename or ""
-            if fn.lower().endswith(".safetensors"):
-                total += (s.size or 0)
-        return total or None
-    except Exception:
-        return None
-
-
-def start_repo(repo_id, store):
-    """Download a whole HF/safetensors repo into its own subfolder of the
-    store (config.json + *.safetensors = what model_parser and vllm serve
-    expect). One job, one child process; progress tracks the .incomplete
-    files snapshot_download writes under the repo subfolder.
-
-    The snapshot also carries tokenizer/config/remote-code, LICENSE and
-    README files, plus any mmproj/MTP/draft GGUF companions present in
-    the repo. A farm-bundle.json manifest is written on completion."""
-    repo_id = (repo_id or "").strip().strip("/")
-    if repo_id.count("/") != 1:
-        raise ValueError("expected owner/name repo id (e.g. Qwen/Qwen3-0.6B)")
-    root = path_resolver.resolve(f"store://{store}")
-    if not root or root.startswith("store://"):
-        raise ValueError(f"unknown store '{store}'")
-    job_id = uuid.uuid4().hex[:8]
-    dest = os.path.join(root, repo_id.split("/")[-1])
-    bundle_id = uuid.uuid4().hex[:8]
-    info = _repo_info(repo_id)
-    bundle = {
-        "id": bundle_id,
-        "name": repo_id.split("/")[-1],
-        "dir": dest,
-        "store": store,
-        "repo_id": repo_id,
-        "repo_revision": getattr(info, "sha", None),
-        "selected_file": None,
-        "base_model": (_base_model_ids(info) or [None])[0],
-        "license": _license_meta(info),
-        "created": datetime.now().isoformat(timespec="seconds"),
-        "status": "downloading",
-        "warnings": [],
-        "job_ids": [],
-        "kind": "repo",
-    }
-    BUNDLES[bundle_id] = bundle
-    job = {
-        "id": job_id, "link": f"hf://{repo_id}", "repo_id": repo_id,
-        "filename": repo_id.split("/")[-1] + "/", "store": store,
-        "dest": dest, "status": "downloading", "kind": "repo",
-        "bundle": bundle["name"], "bundle_dir": dest,
-        "started": datetime.now().isoformat(timespec="seconds"),
-        "total_bytes": repo_size(repo_id),
-        "done_bytes": 0, "error": None, "finished": None,
-    }
-    bundle["job_ids"].append(job_id)
-    if os.path.isdir(dest) and os.path.isfile(os.path.join(dest, "config.json")):
-        job["status"] = "done"
-        job["error"] = "model already exists at destination"
-        job["finished"] = datetime.now().isoformat(timespec="seconds")
-        JOBS[job_id] = job
-        bundle["status"] = "done"
-        _write_manifest(bundle)
-        return job
-    JOBS[job_id] = job
-    t = threading.Thread(target=_run_repo, args=(job_id,), daemon=True)
-    t.start()
-    return job
-
-
-def _run_repo(job_id):
-    job = JOBS[job_id]
-    local_dir = path_resolver.resolve(f"store://{job['store']}")
-    repo_dir = os.path.join(local_dir, job["repo_id"].split("/")[-1])
-    env = dict(os.environ)
-    env["HF_HUB_DISABLE_XET"] = "1"
-    env["HF_XET_CACHE"] = os.path.join(repo_dir, ".cache", "hf-xet")
-    env.pop("HF_HUB_ENABLE_HF_TRANSFER", None)
-    _tok = _token()
-    if _tok:
-        env["HF_TOKEN"] = _tok
-    os.makedirs(repo_dir, exist_ok=True)
-    proc = subprocess.Popen(
-        [sys.executable, "-u", "-c", _REPO_CHILD, job["repo_id"], repo_dir],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        bufsize=1, env=env)
-    _PROCS[job_id] = proc
-    lines = deque(maxlen=200)
-    reader = threading.Thread(target=_pump, args=(proc, lines), daemon=True)
-    reader.start()
-    while proc.poll() is None:
-        # progress = finished safetensors bytes + in-flight .incomplete bytes
-        done = _safetensors_bytes(repo_dir)
-        done += _incomplete_bytes(repo_dir)
-        job["done_bytes"] = done
-        job["log"] = list(lines)
-        time.sleep(1)
-    reader.join(timeout=5)
-    job["done_bytes"] = max(job["done_bytes"], _safetensors_bytes(repo_dir))
-    job["log"] = list(lines)
-    # snapshot_download leaves a .cache folder inside the repo dir; prune it
-    # so model_parser/vllm see a clean model dir
-    shutil.rmtree(os.path.join(repo_dir, ".cache"), ignore_errors=True)
-    if proc.returncode == 0:
-        job["status"] = "done"
-        job["total_bytes"] = _safetensors_bytes(repo_dir)
-        job["done_bytes"] = job["total_bytes"]
-    elif job["status"] != "canceled":
-        job["status"] = "error"
-        job["error"] = (lines[-1] if lines else "") or \
-            f"exit code {proc.returncode}"
-    job["finished"] = datetime.now().isoformat(timespec="seconds")
-    _PROCS.pop(job_id, None)
-    for b in BUNDLES.values():
-        if job_id in (b.get("job_ids") or []):
-            b["status"] = "done" if job["status"] == "done" else "error"
-            try:
-                _write_manifest(b)
-            except Exception:
-                pass
-            break
-
-
-def _safetensors_bytes(repo_dir):
-    total = 0
-    if not os.path.isdir(repo_dir):
-        return 0
-    for root, _, files in os.walk(repo_dir):
-        if os.path.basename(root) == ".cache":
-            continue
-        for f in files:
-            if f.lower().endswith(".safetensors"):
-                try:
-                    total += os.path.getsize(os.path.join(root, f))
-                except OSError:
-                    pass
-    return total
 
 
 def _run(job_id):

@@ -6,10 +6,9 @@ round-trip pair: ruamel.yaml keeps comments/quotes/key order; plain
 PyYAML is only a fallback when ruamel is absent (bare install —
 comments lost but unknown keys still preserved).
 
-Extracted from app.py (DEC-14) so vllm_installer / vllm_uninstaller can
-write settings.yaml through the SAME persister instead of plain
-yaml.safe_dump, which silently destroyed all comments on every install
-or uninstall run.
+Extracted from app.py (DEC-14) so installers can write settings.yaml
+through the SAME persister instead of plain yaml.safe_dump, which
+silently destroyed all comments on every install or uninstall run.
 """
 
 import os

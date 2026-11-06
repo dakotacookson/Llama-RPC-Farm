@@ -3,13 +3,6 @@ llama_bin: ~/llama.cpp/build/bin
 theme_family: steel
 theme_mode: light
 engine: llama_cpp
-vllm:
-  delivery: venv
-  venv_bin: ~/vllm-env-030/bin/vllm
-  docker_image: vllm/vllm-openai:latest
-  default_gpu_memory_utilization: 0.9
-  ray_port: 6379
-  ray_init_timeout: 300
 views:
   Dad:
     ips:

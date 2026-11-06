@@ -95,13 +95,11 @@ def cuda_visible_devices(machine):
 
 # Compute capability (best-effort, live data only).
 #
-# What the vLLM community actually does for the bf16 problem (upstream
-# PRs #1901/#17265, cuda.py `supported_dtypes`): check the DEVICE's
-# compute capability — `torch.cuda.get_device_capability()[0] < 8` — or
-# equivalently `nvidia-smi --query-gpu=compute_cap`, and pass
-# `--dtype half` explicitly. vLLM deliberately does NO silent
-# auto-fallback (accuracy changes must stay a user decision), so neither
-# do we: capability data only ever produces a *warning*.
+# The bf16 problem: check the DEVICE's compute capability — e.g.
+# `nvidia-smi --query-gpu=compute_cap` — and pass `--dtype half`
+# explicitly. We deliberately do NO silent auto-fallback (accuracy
+# changes must stay a user decision): capability data only ever produces
+# a *warning*.
 #
 # No product-name tables here by design: names rot (every generation
 # needs an update), while compute_cap is reported by the driver itself
@@ -119,7 +117,7 @@ def parse_compute_cap(text):
 
 
 def sm_supports_bf16(major, minor=0):
-    """Mirrors vLLM cuda.py: bf16 needs sm >= 8.0 (Ampere+)."""
+    """bf16 needs sm >= 8.0 (Ampere+)."""
     try:
         return (int(major), int(minor)) >= (8, 0)
     except (ValueError, TypeError):

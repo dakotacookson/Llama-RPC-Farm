@@ -65,13 +65,12 @@ def _default_engine_llama_cpp(monkeypatch, tmp_path):
     settings file defaulting to llama_cpp, not the farm's live
     config/settings.yaml.
 
-    Before this fixture the engine leaked from the live settings — the
-    suite silently changed behavior when the operator switched engines
-    (vllm-era runs made llama_cpp-context tests delegate to the vllm
-    adapter and vice versa). Tests that need engine=vllm write it into
-    their own settings_file fixture (which monkeypatches SETTINGS_FILE
-    AFTER this fixture, so the test's file wins). Tests that patch
-    load_settings directly also win (their setattr runs later)."""
+    Before this fixture the engine leaked from the live settings, so the
+    suite silently changed behavior when the operator switched engines.
+    Tests that need a specific engine write it into their own
+    settings_file fixture (which monkeypatches SETTINGS_FILE AFTER this
+    fixture, so the test's file wins). Tests that patch load_settings
+    directly also win (their setattr runs later)."""
     import engine_registry
     default = tmp_path / "settings.yaml"
     default.write_text("engine: llama_cpp\n")

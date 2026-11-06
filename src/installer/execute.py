@@ -259,8 +259,8 @@ class Executor:
     @staticmethod
     def _persist_setting(path, key, value):
         """Comment-preserving write via the app's shared persister
-        (src/settings_persister.py — the SAME code path vllm_installer/
-        vllm_uninstaller use). Never raw-dump YAML (would strip comments).
+        (src/settings_persister.py). Never raw-dump YAML (would strip
+        comments).
         Fresh installs may target a not-yet-existing file — the parent
         dir is created; the persister loads a missing file as {}."""
         repo_src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

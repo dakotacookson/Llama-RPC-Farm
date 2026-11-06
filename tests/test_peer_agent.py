@@ -19,7 +19,6 @@ import peer_transport  # noqa: E402
 import rpc_manager  # noqa: E402
 import swap_manager  # noqa: E402
 import stats_collector  # noqa: E402
-import vllm_manager  # noqa: E402
 import subprocess  # noqa: E402
 import secrets_vault  # noqa: E402
 
@@ -494,24 +493,11 @@ def test_system_detail_and_speedtest(live_agent, monkeypatch):
     assert agent_client.speedtest(machine, mb=1) > 0
 
 
-def test_rdma_ray_install_endpoints(live_agent, monkeypatch):
+def test_rdma_install_endpoints(live_agent, monkeypatch):
     monkeypatch.setattr(agent_server.system, "rdma",
                         lambda: {"dev": "mlx5_0", "ip": "10.0.0.5"})
     status, body = _get(live_agent, "/system/rdma")
     assert status == 200 and body["dev"] == "mlx5_0"
-    monkeypatch.setattr(agent_server.ray, "start",
-                        lambda c, b, a, n, e, m, l, p, w:
-                        {"pid": 99, "address": a})
-    monkeypatch.setattr(agent_server.ray, "stop",
-                        lambda c, b, p: {"stopped": True})
-    status, body = _post(live_agent, "/ray/start", {
-        "ray_bin": "/home/u/venv/bin/ray", "address": "10.0.0.1:6379",
-        "num_gpus": 2, "env": {"A": "1"}, "master_ip": "10.0.0.1",
-        "log": "~/ray.log", "pid_file": "~/ray.pid"})
-    assert status == 200 and body["pid"] == 99
-    status, body = _post(live_agent, "/ray/stop", {
-        "ray_bin": "/home/u/venv/bin/ray", "pid_file": "~/ray.pid"})
-    assert status == 200 and body["stopped"] is True
     monkeypatch.setattr(agent_server.install, "artifact",
                         lambda c, u, d, a, s, m, mode:
                         {"dest": d, "urls": u, "written": []})
@@ -526,26 +512,7 @@ def test_rdma_ray_install_endpoints(live_agent, monkeypatch):
     assert status == 200 and body["returncode"] == 0
 
 
-def test_vllm_agent_ray_snippet_syntax():
-    machine = {"name": "peer1", "ip": "10.0.0.2", "transport": "agent"}
-    start, stop = vllm_manager._agent_ray_lines(
-        machine, "m1", "~/vllm-env/bin/ray", "0,1", 2, 6379,
-        "ray-worker-m1.log", "ray-worker-m1.pid")
-    script = ("#!/bin/bash\nMASTER_IP=10.0.0.1\n" + start +
-              "    true\n  fi\n" + stop + "    true\n  fi\n")
-    proc = subprocess.run(["bash", "-n"], input=script, text=True,
-                          capture_output=True)
-    assert proc.returncode == 0, proc.stderr
-
-
-def test_vllm_build_endpoints(live_agent, monkeypatch):
-    monkeypatch.setattr(agent_server.install, "vllm",
-                        lambda c, p, v, ver, r: {"ok": True,
-                                                  "venv_bin": v + "/bin/vllm"})
-    status, body = _post(live_agent, "/install/vllm", {
-        "python": "python3", "venv_root": "~/vllm-env",
-        "version": "0.30.0", "rocm": False})
-    assert status == 200 and body["ok"] is True
+def test_build_endpoints(live_agent, monkeypatch):
     monkeypatch.setattr(agent_server.build, "probe",
                         lambda c, lb: {"kind": "source", "llama_bin": lb})
     monkeypatch.setattr(agent_server.build, "update",

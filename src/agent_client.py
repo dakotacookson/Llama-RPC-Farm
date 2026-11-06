@@ -314,14 +314,6 @@ def install_verify(machine, path, args=None, timeout=130.0) -> dict:
     }, timeout=timeout)
 
 
-def vllm_install(machine, python="python3", venv_root="~/vllm-env",
-                 version="0.30.0", rocm=False, timeout=2000.0) -> dict:
-    return _request(machine, "POST", "/install/vllm", {
-        "python": python, "venv_root": venv_root,
-        "version": version, "rocm": bool(rocm),
-    }, timeout=timeout)
-
-
 def custom_start(machine, bat, port, log=None, workdir=None,
                  timeout=60.0) -> dict:
     return _request(machine, "POST", "/custom/start", {

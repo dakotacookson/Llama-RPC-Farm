@@ -548,9 +548,9 @@ body {
 }
 .nav-sec:first-child .nav-label { display: none; }
 
-/* [hidden] must beat the flex rule below — engine-exclusive tabs (G-8,
-   vLLM hides Audio) rely on the hidden attribute, and an author
-   display:flex here would override the UA's [hidden]{display:none} */
+/* [hidden] must beat the flex rule below — engine-exclusive tabs (G-8)
+   rely on the hidden attribute, and an author display:flex here would
+   override the UA's [hidden]{display:none} */
 #sidebar nav button[hidden] { display: none; }
 
 #sidebar nav button {
@@ -1259,41 +1259,7 @@ tr.row-selected td:first-child {
   box-shadow: 0 0 0 1px rgba(158, 206, 106, 0.25);
 }
 
-/* B8: vLLM-ineligible machine (Windows host) — greyed out, not checkable */
-.hw-chip.vllm-disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-  filter: grayscale(0.7);
-}
-.hw-chip.vllm-disabled:hover { border-color: var(--border); }
-/* B14: full-width info section inside a vllm-disabled chip — platform +
-   reason + what to use instead (the audit's "proper info section",
-   rendered on the chip's own line so the label wraps cleanly) */
 .hw-chip { flex-wrap: wrap; }
-.vllm-capability-info {
-  flex-basis: 100%;
-  display: block;
-  font-size: 11px;
-  line-height: 1.45;
-  color: var(--text);
-  background: var(--warn-dim, rgba(224, 175, 104, 0.14));
-  border: 1px solid var(--warn);
-  border-radius: var(--r-sm, 6px);
-  padding: 6px 8px;
-  margin-top: 4px;
-  cursor: not-allowed;
-}
-.vllm-capability-info .vllm-cap-platform {
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-}
-.vllm-capability-info .vllm-cap-alt {
-  display: block;
-  margin-top: 2px;
-  color: var(--muted);
-  font-style: italic;
-}
 
 .server-chip {
   display: inline-flex;
@@ -1491,9 +1457,9 @@ tr.row-selected td:first-child {
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: var(--s-3);
 }
-/* FIX-A7: the grid is a data-panel (rpc_launch) hidden via el.hidden under
-   vLLM — author display here would override the UA's [hidden]{display:none},
-   so keep the attribute authoritative. */
+/* the grid is a data-panel (rpc_launch) hidden via el.hidden — author
+   display here would override the UA's [hidden]{display:none}, so keep
+   the attribute authoritative. */
 .launch-grid[hidden] { display: none; }
 .launch-card .actions { align-items: center; }
 /* config needs a down node: grayed out like offline overview cards */
@@ -2602,27 +2568,7 @@ main {
   background: color-mix(in srgb, var(--surface) 90%, transparent);
 }
 
-/* DEC-17: vLLM-incapable machine surfaces (dashboard cards + Machines
-   tab rows) under the vllm engine — dimmed/unavailable treatment
-   consistent with the vllm-disabled chip idiom above. The verdict is
-   the server's (vllm_capable from /api/machines + /api/stats) — never
-   client-side OS re-derivation (B14). Under llama_cpp these classes
-   are never applied. */
-.machine-status-card.vllm-unavailable,
-.scan-main.vllm-unavailable {
-  opacity: 0.45;
-  filter: grayscale(0.7);
-}
-.vllm-unavailable-tag {
-  display: block;
-  margin-top: 4px;
-  font-size: 11px;
-  color: var(--text);
-  background: var(--warn-dim, rgba(224, 175, 104, 0.14));
-  border: 1px solid var(--warn);
-  border-radius: 6px;
-  padding: 2px 8px;
-}
+
 
 /* native chat test tab: message log + bubbles in the farm's own idiom
    (card/border vars, serving-ind statuses) — no chainlit iframe. */

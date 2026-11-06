@@ -2,7 +2,7 @@
 
 Status: **agent-only** in `peer_agent/` (agent 0.3.4). RPC + native
 llama-server lifecycle, remote-local models, multi-host RPC scripts,
-vLLM/Ray workers, custom Windows runtimes, process/status views, logs,
+custom Windows runtimes, process/status views, logs,
 files, service control, installers, stats/tuner probes, discovery, and
 in-place agent updates are agent-backed. SSH/sshpass/paramiko have been
 removed; agents are installed from their own `.deb`/`.pkg`/`setup.exe`.
@@ -37,7 +37,7 @@ architecture for users who prefer SSH.
 - `peer_agent/` — dependency-free wheel + sdist (`llama-rpc-farm-agent`)
   with `/health`, `/version`, `/capabilities`, `/info`, `/status`,
   `/processes`, `/metrics`, `/system/detail`, `/system/rdma`, `/speedtest`,
-  `/logs/tail`, `/logs/list`, `/files/*`, `/service/*`, `/ray/*`,
+  `/logs/tail`, `/logs/list`, `/files/*`, `/service/*`,
   `/install/*`, `/build/*`, `/custom/start`, `/custom/stop`,
   `/agent/update`, `/rpc/list`, `/rpc/ensure`, `/rpc/stop`,
   `/llama/list`, `/llama/status`, `/llama/start`, `/llama/stop`, and
@@ -124,8 +124,7 @@ transport. Start scripts and llama-swap config stay transport-agnostic.
 | `GET /system/detail` | kernel/CPU/uptime/network/disk/llama version |
 | `GET /speedtest?mb=N` | bounded throughput stream (1..256 MB) |
 | `GET /system/rdma` | RoCE device/port/GID/IP discovery |
-| `POST /ray/start`, `/ray/stop` | multi-host vLLM Ray workers |
-| `POST /install/artifact`, `/install/verify`, `/install/vllm` | typed installs |
+| `POST /install/artifact`, `/install/verify` | typed installs |
 | `GET /build/probe`, `POST /build/update` | llama.cpp source probe/update |
 | `GET /logs/tail?name=&lines=` | bounded tail of known log files only |
 | `GET /logs/list` | known log filenames |
@@ -218,7 +217,7 @@ should go through `PeerTransport`, not a direct `_ssh_for(...)` call.
 2. **Discovery (done)**: `/info`, UDP responder, master-side collector,
    Add Machine auto-fill and connection detection.
 3. **Agent operations (done)**: files, service control, installers,
-   build probe/update, vLLM/Ray, RDMA, stats/tuner probes, custom runtimes.
+   build probe/update, RDMA, stats/tuner probes, custom runtimes.
 4. **Agent lifecycle (done)**: Linux linger/systemd and Windows boot task,
    in-place `/agent/update`, version display/update button.
 5. **Packaging**: signed/standalone agent and app installers for Linux,

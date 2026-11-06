@@ -1,9 +1,9 @@
 """Model discovery tests: GGUF scan regression + HF/safetensors dirs (B4).
 
 scan_directory is the model wizard's source list — new formats must not
-disturb existing GGUF grouping, and HF/safetensors directories (vLLM's
-native format, ARD §3.4) must collapse into ONE entry whose shards use
-the same -000XX-of-000YY convention as GGUF splits. Fixtures are real
+disturb existing GGUF grouping, and HF/safetensors directories must
+collapse into ONE entry whose shards use the same -000XX-of-000YY
+convention as GGUF splits. Fixtures are real
 temp directories: no monkeypatching the filesystem module under test.
 """
 import os
@@ -66,7 +66,7 @@ def test_mmproj_still_separate(tree):
 
 def test_hf_dir_is_one_model(tree):
     """config.json + safetensors = ONE model; base_path is the directory
-    (what `vllm serve` takes), named after the directory."""
+    named after the directory."""
     d = tree / "Qwen3-27B-HF"
     d.mkdir()
     (d / "config.json").write_text('{"architectures": ["Qwen2ForCausalLM"]}')
@@ -118,7 +118,7 @@ def test_hf_dir_without_safetensors_is_not_a_model(tree):
 
 def test_safetensors_without_config_json_is_not_a_model(tree):
     """Loose safetensors without config.json is not identifiable as an HF
-    model (vLLM reads the architecture from config.json) — not detected."""
+    model (the architecture comes from config.json) — not detected."""
     d = tree / "loose"
     d.mkdir()
     (d / "model.safetensors").write_bytes(b"w")
@@ -199,14 +199,3 @@ def test_recursive_gguf_still_grouped_per_root(tree):
 
 def test_scan_missing_path_returns_empty():
     assert mp.scan_directory("/nonexistent/path/xyz") == ([], [])
-
-
-# ---------------- config_loader: vllm section round-trip -------------------
-
-from config_loader import (  # noqa: E402
-    apply_vllm_section,
-    sanitize_vllm_section,
-    save_model,
-    get_model,
-    VLLM_MODEL_KEYS,
-)
