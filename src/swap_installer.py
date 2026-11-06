@@ -109,7 +109,13 @@ def install_on(machine, log=lambda m: None):
     try:
         # arch probe when not detected yet (same as llama.cpp installer)
         if not ((machine.get("detected") or {}).get("arch")):
-            if is_win:
+            if not is_local:
+                try:
+                    arch = (agent_client.info(machine) or {}).get("arch")
+                except Exception:
+                    arch = None
+                machine.setdefault("detected", {})["arch"] = arch or "x86_64"
+            elif is_win:
                 code, out = run("echo $env:PROCESSOR_ARCHITECTURE")
                 a = (out or "").strip().lower()
                 machine.setdefault("detected", {})["arch"] = \

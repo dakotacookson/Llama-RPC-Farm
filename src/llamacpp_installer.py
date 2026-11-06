@@ -160,6 +160,15 @@ def _fetch_latest_assets(limit=30):
     return None, [], GITHUB_LATEST_DL
 
 
+def _glibc_from_text(text):
+    import re
+    m = re.search(r"(\d+)\.(\d+)", str(text or ""))
+    try:
+        return (int(m.group(1)), int(m.group(2))) if m else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _glibc_version(cmd_prefix, run):
     """(major, minor) glibc of the target machine, or None when unknown.
     Uses `ldd --version` (works on glibc AND musl systems' error path)."""
@@ -287,7 +296,13 @@ def install_on(machine, log=lambda m: None):
     try:
         # arch matters for asset choice; probe it when not detected yet
         if not ((machine.get("detected") or {}).get("arch")):
-            if is_win:
+            if not is_local:
+                try:
+                    arch = (agent_client.info(machine) or {}).get("arch")
+                except Exception:
+                    arch = None
+                machine.setdefault("detected", {})["arch"] = arch or "x86_64"
+            elif is_win:
                 code, out = run("echo $env:PROCESSOR_ARCHITECTURE")
                 a = (out or "").strip().lower()
                 machine.setdefault("detected", {})["arch"] = \
@@ -306,7 +321,16 @@ def install_on(machine, log=lambda m: None):
         return {"ok": False, "machine": name, "detail": f"probe failed: {e}"}
     try:
         tag, assets, base = _fetch_latest_assets()
-        glibc = None if is_win else _glibc_version(None, run)
+        if is_win:
+            glibc = None
+        elif is_local:
+            glibc = _glibc_version(None, run)
+        else:
+            try:
+                sd = agent_client.system_detail(machine) or {}
+                glibc = _glibc_from_text(sd.get("glibc"))
+            except Exception:
+                glibc = None
         names, dest, note, _zip = _pick_assets(machine, tag, assets, glibc)
         plan_info = {"ok": True, "tag": tag, "assets": names, "dest": dest,
                      "backend": note,

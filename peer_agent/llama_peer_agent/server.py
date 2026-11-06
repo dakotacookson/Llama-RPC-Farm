@@ -46,7 +46,7 @@ def _pairing_window() -> int:
     try:
         return max(30, int(os.environ.get("PEER_AGENT_PAIRING_WINDOW") or 600))
     except ValueError:
-        return 600
+        return 86400
 log = logging.getLogger("llama_peer_agent")
 
 

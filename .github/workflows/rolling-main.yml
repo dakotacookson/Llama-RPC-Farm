@@ -77,6 +77,34 @@ jobs:
           Maintainer: Llama RPC Farm contributors
           Description: Web UI and cluster manager for llama.cpp RPC farms
           EOF
+          mkdir -p pkg-app/usr/lib/systemd/user
+          cat > pkg-app/usr/lib/systemd/user/llama-rpc-farm.service <<'UNIT'
+          [Unit]
+          Description=Llama RPC Farm
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          ExecStart=/usr/local/bin/llama-rpc-farm
+          Restart=on-failure
+          RestartSec=3
+
+          [Install]
+          WantedBy=default.target
+          UNIT
+          cat > pkg-app/DEBIAN/postinst <<'POST'
+          #!/bin/sh
+          set -e
+          if command -v systemctl >/dev/null 2>&1; then
+            systemctl --global enable llama-rpc-farm.service || true
+            users=$(getent passwd | awk -F: '$3>=1000 && $3<65534 {print $1}')
+            if [ "$(echo "$users" | wc -w)" -eq 1 ]; then
+              loginctl enable-linger "$users" || true
+            fi
+          fi
+          exit 0
+          POST
+          chmod 755 pkg-app/DEBIAN/postinst
           dpkg-deb --build pkg-app "llama-rpc-farm_${VERSION}_amd64.deb"
           # agent
           mkdir -p pkg-agent/DEBIAN pkg-agent/usr/local/bin
@@ -91,6 +119,34 @@ jobs:
           Maintainer: Llama RPC Farm contributors
           Description: Peer agent for Llama RPC Farm
           EOF
+          mkdir -p pkg-agent/usr/lib/systemd/user
+          cat > pkg-agent/usr/lib/systemd/user/llama-peer-agent.service <<'UNIT'
+          [Unit]
+          Description=Llama RPC Farm peer agent
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          ExecStart=/usr/local/bin/llama-peer-agent --host 0.0.0.0 --port 8198
+          Restart=on-failure
+          RestartSec=5
+
+          [Install]
+          WantedBy=default.target
+          UNIT
+          cat > pkg-agent/DEBIAN/postinst <<'POST'
+          #!/bin/sh
+          set -e
+          if command -v systemctl >/dev/null 2>&1; then
+            systemctl --global enable llama-peer-agent.service || true
+            users=$(getent passwd | awk -F: '$3>=1000 && $3<65534 {print $1}')
+            if [ "$(echo "$users" | wc -w)" -eq 1 ]; then
+              loginctl enable-linger "$users" || true
+            fi
+          fi
+          exit 0
+          POST
+          chmod 755 pkg-agent/DEBIAN/postinst
           dpkg-deb --build pkg-agent "llama-rpc-farm-agent_${VERSION}_amd64.deb"
           sha256sum *.deb > "llama-rpc-farm_${VERSION}_linux-x64.sha256"
       - name: Upload artifacts

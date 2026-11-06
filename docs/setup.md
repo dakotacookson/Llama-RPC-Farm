@@ -91,7 +91,7 @@ token once for that machine.
 login service (systemd user unit on Linux, LaunchAgent on macOS, Scheduled
 Task on Windows) so they come back after reboot/login, and the Windows agent
 adds inbound firewall rules for TCP 8198 + UDP 8199. An agent with no token
-starts in a 10-minute **pairing window**; the app generates a farm token and
+starts in a 24-hour **pairing window**; the app generates a farm token and
 enrolls it automatically (set `PEER_AGENT_PAIRING=0` to disable, or
 `PEER_AGENT_PAIRING_WINDOW=<seconds>` to change it). Opt out of auto-start
 with `LLAMA_FARM_NO_SERVICE=1` / `PEER_AGENT_NO_SERVICE=1`; run either binary
