@@ -2061,6 +2061,16 @@ def launch(binary=None, listen_port=None, config_path=None,
     # stays the user's chosen port; a launch-time collision rolls for
     # that launch alone and the next clean restart lands back on the
     # configured port.
+    if not gen["models"]:
+        return {
+            "host": gen["host"], "port": settings["listen_port"],
+            "port_rolled": False, "config_path": gen["abs_config"],
+            "steps": [{"step": "generate",
+                       "error": "no models generated"}],
+            "models": gen["models"], "scripts": gen["scripts"],
+            "warnings": gen["warnings"], "failed": True,
+        }
+
     # Stop any existing daemon BEFORE choosing the listen port. Otherwise a
     # still-running llama-swap on the configured port forces a launch-only
     # roll (8080 -> 8081), while status/gateway clients remain on 8080.
@@ -2076,12 +2086,6 @@ def launch(binary=None, listen_port=None, config_path=None,
               "config_path": abs_config, "steps": [],
               "models": gen["models"], "scripts": gen["scripts"],
               "warnings": gen["warnings"]}
-
-    if not gen["models"]:
-        report["steps"].append(
-            {"step": "generate", "error": "no models generated"})
-        report["failed"] = True
-        return report
 
     def do_generate():
         return {"models": gen["models"], "scripts": gen["scripts"],
