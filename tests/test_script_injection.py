@@ -180,10 +180,13 @@ def test_render_rpc_password_never_baked_into_script(stub_cfg, bad_password):
         "Plaintext password baked into generated script"
     )
     assert "SSH_PASS" in script, "Expected runtime $SSH_PASS resolution in script"
-    sshpass_lines = [l for l in script.splitlines() if "sshpass" in l]
+    sshpass_lines = [l for l in script.splitlines()
+                     if "sshpass" in l and not l.lstrip().startswith(("#", "sshpass()"))]
     assert sshpass_lines, "Expected at least one sshpass line in generated script"
     for line in sshpass_lines:
-        assert '"$SSH_PASS"' in line or "'$SSH_PASS'" in line or "$SSH_PASS" in line
+        assert ('$SSH_PASS' in line or '"$SSH_PASS"' in line
+                or "'$SSH_PASS'" in line), (
+            f"sshpass line lacks runtime SSH_PASS reference: {line!r}")
 
 
 def _single_quote_escape(s):

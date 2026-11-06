@@ -379,13 +379,14 @@ def test_render_rpc_has_roll_helpers(stub_cfg):
 
 
 def test_render_rpc_roll_updates_live_maps(stub_cfg):
-    """A roll must update RPC_PORTS + RPC_LOGS so the --rpc peer list
-    (built after the waits) serves the rolled ports."""
+    """A roll must record an RPC_PORT_OVERRIDE so later rpc_port_of
+    lookups -- including the --rpc peer list -- serve the rolled port."""
     script = _render_rpc_script(stub_cfg)
-    assert 'RPC_PORTS["$node"]="$port"' in script
-    assert 'RPC_LOGS["$node"]="$(rpc_log_for_port "$port")"' in script
-    # and the peer list is composed from the (possibly rolled) map
-    assert "$node:${RPC_PORTS[$node]}" in script
+    assert "RPC_PORT_OVERRIDE_$key" in script
+    assert "eval" in script
+    assert "RPC_PORT_OVERRIDE_$key:-" in script
+    assert 'rpc_port_of "$node"' in script
+    assert 'rpc_log_for_port "$(rpc_port_of "$1")"' in script
 
 
 def test_render_single_node_has_port_preflight(stub_cfg):
@@ -433,9 +434,8 @@ def test_render_per_peer_bin_map(stub_cfg):
     """Each linux peer launches rpc-server from its OWN bin dir, with
     the master's layout only as fallback."""
     script = _render_rpc_script(stub_cfg)
-    assert "declare -A RPC_BINS" in script
-    assert 'RPC_BINS["10.0.0.98"]=' in script
-    assert "${RPC_BINS[$node]:-" in script
+    assert "rpc_bin_of() {" in script
+    assert 'rpc_bin_of "$node"' in script
 
 
 def test_render_ps1_no_baked_device(stub_cfg):

@@ -2365,6 +2365,19 @@ done
 echo "!!! {master['name']}:{remote_port} did not come up in ~2h — check ~/{remote_log} there" >&2
 exit 1
 """
+def _case_fn(name, pairs, default=""):
+    """Emit a bash-3.2-safe lookup function: a case over the node TAG.
+
+    macOS /bin/bash is 3.2 and lacks declare -A / associative arrays, so the
+    generated start script uses case functions instead of maps. Missing
+    entries echo the default (empty by default).
+    """
+    lines = [name + "() { case \"$1\" in"]
+    for tag, val in pairs:
+        lines.append('        "' + tag + '") echo "' + val + '" ;;')
+    lines.append('        *) echo "' + default + '" ;;')
+    lines.append("    esac; }")
+    return "\n".join(lines)
 
 
 def _render_rpc(model_cfg, master, peers, cmd=None):
@@ -2423,53 +2436,49 @@ def _render_rpc(model_cfg, master, peers, cmd=None):
     # NOTE: the parametrized .ps1 takes per-node --device via -ExtraArgs,
     # so expose_args is intentionally "" (a baked master --device would
     # duplicate the flag on every Windows peer).
-    # per-server backends, keyed by node TAG (IP, or IP#cpu for the
-    # separate CPU/RAM server); the SAME lists the --device RPC mapping
-    # counts, so numbering can never drift from reality
-    peer_dev_pairs = []
-    for n in nodes:
-        if n["devs"]:
-            peer_dev_pairs.append(f'["{n["tag"]}"]="{",".join(n["devs"])}"')
-    peer_devices_decl = "declare -A PEER_DEVICES" + (
-        "\n" + "\n".join(f"PEER_DEVICES{a}" for a in peer_dev_pairs)
-        if peer_dev_pairs else "")
-    # per-server ports, keyed by node TAG
-    peer_port_pairs = [f'["{n["tag"]}"]="{n["port"]}"' for n in nodes]
-    peer_ports_decl = "declare -A RPC_PORTS\n" + "\n".join(
-        f"RPC_PORTS{a}" for a in peer_port_pairs)
-    # per-server log names, keyed by node TAG
-    peer_log_pairs = [f'["{n["tag"]}"]="{_rpc_log_name(n["port"])}"' for n in nodes]
-    peer_logs_decl = "declare -A RPC_LOGS\n" + "\n".join(
-        f"RPC_LOGS{a}" for a in peer_log_pairs)
-    # per-server rpc-server binary, keyed by TAG: each peer launches from
-    # its OWN bin dir (master layout must never be assumed on a peer —
-    # a Windows master + Linux peer would otherwise bake a bad path).
-    # (pre-expanded: the f-string below can't nest ${..:-..} braces)
+    # Bash-3.2-safe per-server lookups. macOS /bin/bash is 3.2 and lacks
+    # `declare -A` / associative arrays, so the generated script uses case
+    # functions instead of maps. rpc_port_of also honors a runtime
+    # RPC_PORT_OVERRIDE_<key> set by roll_rpc_port when a peer's port is
+    # blocked; rpc_log_of derives its name from rpc_port_of via
+    # rpc_log_for_port (no separate log map).
+    peer_dev_pairs = [(n["tag"], ",".join(n["devs"])) for n in nodes if n["devs"]]
+    peer_port_pairs = [(n["tag"], str(n["port"])) for n in nodes]
     _master_rpc_bin = _bin_subdir(master, "ggml-rpc-server")
-    rpc_bins_bin = "${RPC_BINS[$node]:-" + _master_rpc_bin + "}"
-    peer_bin_pairs = [f'["{n["tag"]}"]="{_bin_subdir(n["machine"], "ggml-rpc-server")}"'
+    peer_bin_pairs = [(n["tag"], _bin_subdir(n["machine"], "ggml-rpc-server"))
                       for n in nodes if n["os"] in ("linux", "macos")]
-    peer_bins_decl = "declare -A RPC_BINS\n" + "\n".join(
-        f"RPC_BINS{a}" for a in peer_bin_pairs)
-    # per-server transport mode: 1 = native rdma_cm (no TCP listener on the
-    # peer, so health checks must NOT use /dev/tcp), empty = classic TCP.
-    peer_cm_pairs = [f'["{n["tag"]}"]="1"' for n in nodes
-                     if n["machine"].get("rdma") and n["machine"].get("rdma_cm")]
-    peer_cm_decl = "declare -A RPC_CM\n" + "\n".join(
-        f"RPC_CM{a}" for a in peer_cm_pairs)
-    # per-server RDMA env for the rpc-server launch, keyed by TAG.
-    # rdma=False -> GGML_RPC_NO_RDMA=1 (TCP only, default); rdma=True ->
-    # optional GGML_RDMA_DEV/GGML_RDMA_GID pinning. NVIDIA peers also carry
-    # CUDA_DEVICE_ORDER=PCI_BUS_ID so --device indexes match nvidia-smi
-    # (see _rpc_env_exports); the fallback below mirrors that default.
-    peer_env_pairs = [f'["{n["tag"]}"]="{_rpc_env_exports(n["machine"]).strip()}"'
-                      for n in nodes]
-    peer_envs_decl = "declare -A RPC_ENVS\n" + "\n".join(
-        f"RPC_ENVS{a}" for a in peer_env_pairs)
-    # display-only labels + RPC legend (never fed to any command)
-    label_pairs = [f'["{n["tag"]}"]="{n["label"]}"' for n in nodes]
-    peer_labels_decl = ("declare -A PEER_LABELS\n" + "\n".join(
-        f"PEER_LABELS{a}" for a in label_pairs))
+    peer_cm_pairs = [(n["tag"], "1")
+                     for n in nodes if n["machine"].get("rdma") and n["machine"].get("rdma_cm")]
+    peer_env_pairs = [(n["tag"], _rpc_env_exports(n["machine"]).strip()) for n in nodes]
+    label_pairs = [(n["tag"], n["label"]) for n in nodes]
+    _rpc_env_default = "GGML_SCHED_DEBUG=3 GGML_RPC_DEBUG=3 CUDA_DEVICE_ORDER=PCI_BUS_ID GGML_RPC_NO_RDMA=1"
+
+    peer_devices_decl = _case_fn("peer_devices", peer_dev_pairs)
+    peer_ports_decl = (
+        "rpc_port_of() {\n"
+        "  local node=\"$1\" key ov\n"
+        '  key="${node//[^A-Za-z0-9_]/_}"\n'
+        '  eval "ov=\\${RPC_PORT_OVERRIDE_$key:-}"\n'
+        "  [[ -n \"$ov\" ]] && { echo \"$ov\"; return; }\n"
+        "  case \"$1\" in"
+        + "".join(f'\n    "{tag}") echo "{port}" ;;' for tag, port in peer_port_pairs)
+        + '\n    *) echo "50052" ;;'
+        + "\n  esac\n}"
+    )
+    peer_logs_decl = (
+        "rpc_log_of() {\n"
+        "  rpc_log_for_port \"$(rpc_port_of \"$1\")\"\n"
+        "}\n"
+    )
+    peer_bins_decl = _case_fn("rpc_bin_of", peer_bin_pairs, default=_master_rpc_bin)
+    peer_cm_decl = _case_fn("rpc_cm_of", peer_cm_pairs)
+    peer_envs_decl = (
+        "rpc_env_of() { case \"$1\" in"
+        + "".join(f'\n    "{tag}") echo "{env}" ;;' for tag, env in peer_env_pairs)
+        + f'\n    *) echo "{_rpc_env_default}" ;;'
+        + "\n  esac; }"
+    )
+    peer_labels_decl = _case_fn("peer_label_of", label_pairs)
     rpc_legend = _rpc_legend(raw_order, master, peers)
     # the .ps1 executes ON Windows peers: its exe path must come from a
     # Windows machine's bin dir. Using master (usually Linux) baked a Linux
@@ -2488,16 +2497,30 @@ def _render_rpc(model_cfg, master, peers, cmd=None):
 set -uo pipefail
 LINUX_USER="{master['username']}"
 WIN_USER="{win_user}"
-: "${{SSH_PASS:?SSH_PASS is not set — run via scripts/farm-run.sh <machine> <script> (vault decrypts it at runtime, never baked into this file)}}"
+SSH_PASS="${{SSH_PASS:-}}"
 # NODES are per-SERVER entries (tag = IP, or IP#cpu for the separate
 # CPU/RAM server). SSH targets strip the #group suffix.
 LINUX_NODES=({linux_nodes})
 WIN_NODES=({win_nodes})
-ALL_NODES=("${{LINUX_NODES[@]}}" "${{WIN_NODES[@]}}")
+ALL_NODES=("${{LINUX_NODES[@]}}" "${{WIN_NODES[@]-}}")
 node_ip() {{ local t="$1"; echo "${{t%%#*}}"; }}
 PORT="${{1:-8080}}"
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=5"
 WIN_SSH_OPTS="$SSH_OPTS -o BatchMode=yes"
+# Auth: ssh keys first (BatchMode probe on every linux peer); sshpass only as fallback
+USE_KEY=1
+for _n in "${{LINUX_NODES[@]}}"; do
+  [[ -n "$_n" ]] || continue
+  ssh -n $SSH_OPTS -o BatchMode=yes "$LINUX_USER@$(node_ip "$_n")" true 2>/dev/null || USE_KEY=0
+done
+if [[ "$USE_KEY" == 1 ]]; then
+  echo ">>> ssh auth: keys"
+  sshpass() {{ shift 2; "$@"; }}
+else
+  : "${{SSH_PASS:?no working ssh key and SSH_PASS is not set — run via scripts/farm-run.sh}}"
+  command -v sshpass >/dev/null && : "$SSH_PASS" || {{ echo "!!! no ssh key works and sshpass is missing" >&2; exit 1; }}
+  echo ">>> ssh auth: password"
+fi
 DEVICE_ORDER="{device_order}"
 {peer_devices_decl}
 {peer_ports_decl}
@@ -2509,29 +2532,29 @@ DEVICE_ORDER="{device_order}"
 
     start_rpc_linux() {{
       local node="$1"
-      local port="${{RPC_PORTS[$node]:-50052}}"
-      local log="${{RPC_LOGS[$node]:-rpc-server.log}}"
+      local port="$(rpc_port_of "$node")"
+      local log="$(rpc_log_of "$node")"
       echo ">>> starting rpc-server on $node:$port (linux)"
-      local devs="${{PEER_DEVICES[$node]:-}}"
+      local devs="$(peer_devices "$node")"
       local extra=""
       [[ -n "$devs" ]] && extra=" --device $devs"
-      echo ">>> rpc backends: ${{devs:-default}}  [${{PEER_LABELS[$node]:-}}]"
+      echo ">>> rpc backends: ${{devs:-default}}  [$(peer_label_of "$node")]"
       # Kill only the rpc-server on THIS port (co-served models on other
       # ports must survive), then start a fresh one on this port.
       sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
         "pkill -u $LINUX_USER -f \\"ggml-[r]pc-server.*-p $port \\"" >/dev/null 2>&1 || true
       sleep 1
-      local envs="${{RPC_ENVS[$node]:-GGML_SCHED_DEBUG=3 GGML_RPC_DEBUG=3 CUDA_DEVICE_ORDER=PCI_BUS_ID GGML_RPC_NO_RDMA=1}}"
+      local envs="$(rpc_env_of "$node")"
       # setsid: Linux util-linux. macOS lacks it — fall back to nohup.
       # ($envs already carries GGML_SCHED_DEBUG/RPC_DEBUG + transport flags
       # from the machine config — single source of truth, no hardcoding.)
       sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
          "export $envs; \\
-          setsid \\"{rpc_bins_bin}\\" \\
+          setsid \\"$(rpc_bin_of "$node")\\" \\
            -H 0.0.0.0 -p $port -t \\"$(nproc --all 2>/dev/null || sysctl -n hw.ncpu)\\"$extra \\
            </dev/null > \\"$HOME/$log\\" 2>&1 & \\
          command -v setsid >/dev/null 2>&1 || \\
-         nohup \\"{rpc_bins_bin}\\" \\
+         nohup \\"$(rpc_bin_of "$node")\\" \\
            -H 0.0.0.0 -p $port -t \\"$(nproc --all 2>/dev/null || sysctl -n hw.ncpu)\\"$extra \\
            </dev/null >> \\"$HOME/$log\\" 2>&1 &"
     }}
@@ -2547,13 +2570,13 @@ push_win_launcher() {{
 }}
     start_rpc_win() {{
       local node="$1"
-      local port="${{RPC_PORTS[$node]:-50052}}"
-      local log="${{RPC_LOGS[$node]:-rpc-server.log}}"
+      local port="$(rpc_port_of "$node")"
+      local log="$(rpc_log_of "$node")"
       echo ">>> starting rpc-server on $node:$port (windows)"
-      local devs="${{PEER_DEVICES[$node]:-}}"
+      local devs="$(peer_devices "$node")"
       local args=""
       [[ -n "$devs" ]] && args=" --device $devs"
-      echo ">>> rpc backends: ${{devs:-default}}  [${{PEER_LABELS[$node]:-}}]"
+      echo ">>> rpc backends: ${{devs:-default}}  [$(peer_label_of "$node")]"
       # Kill only the rpc-server on THIS port (CIM filter on command line),
       # leaving co-served models' rpc-servers on other ports running.
       ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" \\
@@ -2565,7 +2588,7 @@ push_win_launcher() {{
     }}
 stop_node_rpc_linux() {{
   local node="$1"
-  local port="${{RPC_PORTS[$node]:-50052}}"
+  local port="$(rpc_port_of "$node")"
   # ONLY the rpc daemon on this port: llama-server / llama-swap on this
   # box may belong to co-served models and must survive our exit.
   sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
@@ -2579,7 +2602,7 @@ stop_node_rpc_linux() {{
 }}
 stop_node_rpc_win() {{
   local node="$1"
-  local port="${{RPC_PORTS[$node]:-50052}}"
+  local port="$(rpc_port_of "$node")"
   ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" \\
     "powershell -NoProfile -Command \\"Get-CimInstance Win32_Process | Where-Object {{ (' ' + \$_.CommandLine + ' ') -like '* -p $port *' -and \\$_.Name -like 'ggml-rpc-server*' }} | ForEach-Object {{ Stop-Process -Id \\$_.ProcessId -Force }}\\"" >/dev/null 2>&1 || true
   ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" \\
@@ -2598,7 +2621,7 @@ note_started() {{
 stop_started_rpc() {{
   local node
   for node in $STARTED_NODES; do
-    if [[ " ${{WIN_NODES[@]}} " == *" $node "* ]]; then
+    if [[ " ${{WIN_NODES[@]-}} " == *" $node "* ]]; then
       stop_node_rpc_win "$node"
     else
       stop_node_rpc_linux "$node"
@@ -2607,7 +2630,7 @@ stop_started_rpc() {{
 }}
 rpc_state_linux() {{
   local node="$1"
-  local port="${{RPC_PORTS[$node]:-50052}}"
+  local port="$(rpc_port_of "$node")"
   # $HOME first, /tmp fallback (a full home disk must not silently
   # disable reuse -- it would restart the peer on every load)
   sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
@@ -2615,26 +2638,26 @@ rpc_state_linux() {{
 }}
 rpc_state_win() {{
   local node="$1"
-  local port="${{RPC_PORTS[$node]:-50052}}"
+  local port="$(rpc_port_of "$node")"
   ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" \\
     "powershell -NoProfile -Command \\"if (Test-Path \\$env:USERPROFILE/.cache/llama-wrapper/rpc.state.$port) {{ Get-Content \\$env:USERPROFILE/.cache/llama-wrapper/rpc.state.$port }} elseif (Test-Path \\$env:TEMP/llama-wrapper-rpc.state.$port) {{ Get-Content \\$env:TEMP/llama-wrapper-rpc.state.$port }}\\"" || true
 }}
 set_rpc_state_linux() {{
   local node="$1" want="$2"
-  local port="${{RPC_PORTS[$node]:-50052}}"
+  local port="$(rpc_port_of "$node")"
   sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
     "mkdir -p $HOME/.cache/llama-wrapper && echo \\"$want\\" > $HOME/.cache/llama-wrapper/rpc.state.$port || echo \\"$want\\" > /tmp/llama-wrapper-rpc.state.$port" >/dev/null 2>&1 || true
 }}
 set_rpc_state_win() {{
   local node="$1" want="$2"
-  local port="${{RPC_PORTS[$node]:-50052}}"
+  local port="$(rpc_port_of "$node")"
   ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" \\
     "powershell -NoProfile -Command \\"New-Item -ItemType Directory -Force \\$env:USERPROFILE/.cache/llama-wrapper -ErrorAction SilentlyContinue | Out-Null; Set-Content \\$env:USERPROFILE/.cache/llama-wrapper/rpc.state.$port -Value \\"$want\\" -ErrorAction SilentlyContinue; if (-not (Test-Path \\$env:USERPROFILE/.cache/llama-wrapper/rpc.state.$port)) {{ Set-Content \\$env:TEMP/llama-wrapper-rpc.state.$port -Value \\"$want\\" }}\\"" >/dev/null 2>&1 || true
 }}
 port_open() {{
   local node="$1" port="${{2:-}}"
-  [[ -z "$port" ]] && port="${{RPC_PORTS[$node]:-50052}}"
-  if [[ -n "${{RPC_CM[$node]:-}}" ]]; then
+  [[ -z "$port" ]] && port="$(rpc_port_of "$node")"
+  if [[ -n "$(rpc_cm_of "$node")" ]]; then
     # native-CM peer: no TCP listener exists — alive == process running
     sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
       "pgrep -f \\"ggml-[r]pc-server.*-p $port \\" >/dev/null" 2>/dev/null
@@ -2673,18 +2696,18 @@ roll_rpc_port() {{
   # live maps, so the peer list, waits, state files and cleanup below
   # all stay consistent on the ports actually serving.
   local node="$1"
-  local port="${{RPC_PORTS[$node]:-50052}}"
+  local port="$(rpc_port_of "$node")"
   local old_port="$port"
   local is_win=0
-  [[ " ${{WIN_NODES[@]}} " == *" $node "* ]] && is_win=1
+  [[ " ${{WIN_NODES[@]-}} " == *" $node "* ]] && is_win=1
   local tries=0
   while (( tries < 25 )); do
     port=$((port + 1))
     if (( is_win )) && win_port_excluded "$port"; then continue; fi
     if ! tcp_probe "$node" "$port"; then
       echo ">>> $node: RPC port $old_port blocked — rolling to $port"
-      RPC_PORTS["$node"]="$port"
-      RPC_LOGS["$node"]="$(rpc_log_for_port "$port")"
+      local key="${{node//[^A-Za-z0-9_]/_}}"
+      eval "RPC_PORT_OVERRIDE_$key=\"$port\""
       return 0
     fi
     tries=$((tries + 1))
@@ -2694,7 +2717,7 @@ roll_rpc_port() {{
 }}
 ensure_node() {{
   local node="$1"
-  if [[ " ${{WIN_NODES[@]}} " == *" $node "* ]]; then
+  if [[ " ${{WIN_NODES[@]-}} " == *" $node "* ]]; then
     ensure_rpc_win "$node"
   else
     ensure_rpc_linux "$node"
@@ -2705,15 +2728,15 @@ ensure_rpc_linux() {{
   # only on mismatch. Per-port: co-served models on other ports are never
   # touched, so they never need to "agree" on backends anymore.
   local node="$1" want have
-  want="${{PEER_DEVICES[$node]:-}}"
+  want="$(peer_devices "$node")"
   [[ -z "$want" ]] && want="default"
   if port_open "$node"; then
     have="$(rpc_state_linux "$node")"
     if [[ "$have" == "$want" ]]; then
-      echo ">>> reusing rpc-server on $node:${{RPC_PORTS[$node]}} (linux) [$want]"
+      echo ">>> reusing rpc-server on $node:$(rpc_port_of "$node") (linux) [$want]"
       return 0
     fi
-    echo ">>> rpc-server on $node:${{RPC_PORTS[$node]}} backends mismatch (have '${{have:-none}}' want '$want'), restarting"
+    echo ">>> rpc-server on $node:$(rpc_port_of "$node") backends mismatch (have '${{have:-none}}' want '$want'), restarting"
   fi
   stop_node_rpc_linux "$node"
   sleep 1
@@ -2723,15 +2746,15 @@ ensure_rpc_linux() {{
 }}
 ensure_rpc_win() {{
   local node="$1" want have
-  want="${{PEER_DEVICES[$node]:-}}"
+  want="$(peer_devices "$node")"
   [[ -z "$want" ]] && want="default"
   if port_open "$node"; then
     have="$(rpc_state_win "$node")"
     if [[ "$have" == "$want" ]]; then
-      echo ">>> reusing rpc-server on $node:${{RPC_PORTS[$node]}} (windows) [$want]"
+      echo ">>> reusing rpc-server on $node:$(rpc_port_of "$node") (windows) [$want]"
       return 0
     fi
-    echo ">>> rpc-server on $node:${{RPC_PORTS[$node]}} backends mismatch (have '${{have:-none}}' want '$want'), restarting"
+    echo ">>> rpc-server on $node:$(rpc_port_of "$node") backends mismatch (have '${{have:-none}}' want '$want'), restarting"
   fi
   stop_node_rpc_win "$node"
   sleep 1
@@ -2743,9 +2766,9 @@ wait_for_rpc() {{
   local node="$1"
   local rolls=0
   while :; do
-  local port="${{RPC_PORTS[$node]:-50052}}"
-  local log="${{RPC_LOGS[$node]:-rpc-server.log}}"
-  if [[ -n "${{RPC_CM[$node]:-}}" ]]; then
+  local port="$(rpc_port_of "$node")"
+  local log="$(rpc_log_of "$node")"
+  if [[ -n "$(rpc_cm_of "$node")" ]]; then
     # native-CM peer: wait for the process + its "listening" line in the log
     for i in $(seq 1 60); do
       if sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
@@ -2780,7 +2803,7 @@ wait_for_rpc() {{
   fi
   echo "!!! rpc-server never came up on $node:$port" >&2
   echo "--- last log lines from $node ---" >&2
-  if [[ " ${{WIN_NODES[@]}} " == *" $node "* ]]; then
+  if [[ " ${{WIN_NODES[@]-}} " == *" $node "* ]]; then
     ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" "powershell -NoProfile -Command \\"Get-Content \\$env:USERPROFILE\\$log -Tail 20\\"" >&2 2>/dev/null || true
   else
     sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" "tail -20 \\"$HOME/$log\\"" >&2 2>/dev/null || true
@@ -2790,7 +2813,7 @@ wait_for_rpc() {{
 }}
 
 for node in "${{LINUX_NODES[@]}}"; do [[ -n "$node" ]] && ensure_rpc_linux "$node"; done
-for node in "${{WIN_NODES[@]}}"; do [[ -n "$node" ]] && {{ ensure_rpc_win "$node" || {{ stop_started_rpc; exit 1; }}; }}; done
+for node in "${{WIN_NODES[@]-}}"; do [[ -n "$node" ]] && {{ ensure_rpc_win "$node" || {{ stop_started_rpc; exit 1; }}; }}; done
 for node in "${{ALL_NODES[@]}}"; do
   [[ -n "$node" ]] || continue
   wait_for_rpc "$node" || {{ stop_started_rpc; exit 1; }}
@@ -2799,7 +2822,7 @@ trap 'stop_started_rpc' EXIT
 RPC_LIST=""
 for node in "${{ALL_NODES[@]}}"; do
   [[ -n "$node" ]] || continue
-  RPC_LIST="${{RPC_LIST:+$RPC_LIST,}}$node:${{RPC_PORTS[$node]}}"
+  RPC_LIST="${{RPC_LIST:+$RPC_LIST,}}$node:$(rpc_port_of "$node")"
 done
 echo ">>> rpc peers:    $RPC_LIST"
 echo ">>> device order: $DEVICE_ORDER"
