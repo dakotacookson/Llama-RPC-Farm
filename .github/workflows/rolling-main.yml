@@ -233,14 +233,75 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+          SHA="$GITHUB_SHA"
+          PREV=$(gh api "repos/${REPO}/git/ref/tags/main-latest" --jq .object.sha 2>/dev/null || true)
+          if [ -n "$PREV" ] && [ "$PREV" != "$SHA" ]; then
+            COMPARE="https://github.com/${REPO}/compare/${PREV}...${SHA}"
+            gh api "repos/${REPO}/compare/${PREV}...${SHA}" \
+              --jq '.commits[0:30][] | "- " + (.commit.message | split("\n")[0]) + " (`" + .sha[0:7] + "`)"' \
+              > changes.md || true
+          else
+            COMPARE="https://github.com/${REPO}/commits/main"
+            : > changes.md
+          fi
+          [ -s changes.md ] || echo "- No new commits since the previous rolling build." > changes.md
+
+          python3 - <<'PY'
+          import datetime, os, pathlib
+          version = os.environ["VERSION"]
+          repo = os.environ["REPO"]
+          sha = os.environ["SHA"]
+          short = sha[:7]
+          compare = os.environ["COMPARE"]
+          changes = pathlib.Path("changes.md").read_text().strip()
+          notes = f"""# Llama RPC Farm — main rolling build
+
+          Automatic prerelease snapshot of `main`. Not a versioned, supported release.
+
+          - **Version:** `{version}`
+          - **Commit:** [`{short}`](https://github.com/{repo}/commit/{sha})
+          - **Built:** {datetime.datetime.now(datetime.timezone.utc):%Y-%m-%d %H:%M UTC}
+          - **Compare:** {compare}
+
+          ## Changes since the previous roll
+
+          {changes}
+
+          ## Downloads
+
+          ### App — `llama-rpc-farm`
+
+          - **Linux:** `llama-rpc-farm_{version}_amd64.deb` · `llama-rpc-farm_{version}_linux-x64.tar.gz`
+          - **macOS (Apple Silicon):** `llama-rpc-farm_{version}_macos-arm64.dmg` · `llama-rpc-farm_{version}_macos-arm64.tar.gz`
+          - **Windows:** `llama-rpc-farm_{version}_windows-x64.zip`
+
+          ### Peer agent — `llama-peer-agent`
+
+          - **Linux:** `llama-rpc-farm-agent_{version}_amd64.deb` · `llama-peer-agent_{version}_linux-x64.tar.gz`
+          - **macOS (Apple Silicon):** `llama-peer-agent_{version}_macos-arm64.dmg` · `llama-peer-agent_{version}_macos-arm64.tar.gz`
+          - **Windows:** `llama-peer-agent_{version}_windows-x64.zip`
+
+          Each platform uploads a matching `.sha256` checksum file.
+
+          ## Quick start
+
+          1. Download the archive for your platform (or the `.deb` on Linux).
+          2. Start the app: `./llama-rpc-farm` (Linux/macOS) or `llama-rpc-farm.exe` (Windows).
+          3. Open http://127.0.0.1:8199 and follow `docs/setup.md`.
+
+          Binaries are unsigned: on macOS use **right-click → Open** the first time.
+          """
+          pathlib.Path("release-notes.md").write_text(notes)
+          PY
+
           TITLE="Llama RPC Farm (main rolling)"
-          NOTES="Automatic build of ${GITHUB_SHA} from main — version ${VERSION}."
           if gh release view main-latest >/dev/null 2>&1; then
             gh release delete main-latest --yes
           fi
-          git tag -f main-latest "$GITHUB_SHA"
+          git tag -f main-latest "$SHA"
           git push -f origin refs/tags/main-latest
           gh release create main-latest release-assets/* \
             --prerelease \
             --title "$TITLE" \
-            --notes "$NOTES"
+            --notes-file release-notes.md

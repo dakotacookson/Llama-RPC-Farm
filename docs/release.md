@@ -46,7 +46,9 @@ The publish job runs once, after all builds pass:
 1. Deletes any previous `main-latest` release (so stale artifacts from old
    commits never accumulate).
 2. Moves the `main-latest` tag to the current `main` commit.
-3. Creates a fresh `main-latest` prerelease with all platform assets.
+3. Creates a fresh `main-latest` prerelease with all platform assets and a
+   generated body: version, commit link, changelog since the previous roll,
+   download names per platform, checksum note, and quick-start instructions.
 
 Because the publish step is gated on `needs: [linux, macos, windows]` and
 the workflow serializes on the `rolling-main` concurrency group, a failed
