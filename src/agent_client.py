@@ -39,8 +39,10 @@ class AgentError(RuntimeError):
 
 
 def transport(machine) -> str:
-    value = str((machine or {}).get("transport") or "auto").strip().lower()
-    return value if value in ("auto", "ssh", "agent") else "auto"
+    """Agent-only architecture: every configured peer is reached over the
+    peer agent. The legacy `transport:` value is accepted for config
+    compatibility but no longer changes behaviour."""
+    return "agent"
 
 
 def agent_port(machine) -> int:
@@ -52,6 +54,9 @@ def agent_port(machine) -> int:
 
 
 def _token(machine) -> str:
+    override = str((machine or {}).get("_agent_token") or "").strip()
+    if override:
+        return override
     try:
         return secrets_vault.get_machine_agent_token(machine)
     except Exception:
@@ -91,6 +96,26 @@ def _request(machine, method: str, path: str, body=None, timeout=6.0,
         raise AgentError(f"agent HTTP {e.code}: {detail or e.reason}") from e
     except (urllib.error.URLError, OSError, ValueError) as e:
         raise AgentError(f"agent request failed: {e}") from e
+
+
+def pair(machine, token, timeout=8.0) -> dict:
+    """Enroll an unpaired agent (its /pair window) with the farm token."""
+    data = json.dumps({"token": token}, separators=(",", ":")).encode()
+    req = urllib.request.Request(
+        _base(machine) + "/pair", data=data, method="POST",
+        headers={"Content-Type": "application/json",
+                 "Accept": "application/json"})
+    try:
+        with _OPENER.open(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read(1000).decode("utf-8", "replace")
+        except Exception:
+            detail = ""
+        raise AgentError(f"pair HTTP {e.code}: {detail or e.reason}") from e
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise AgentError(f"pair request failed: {e}") from e
 
 
 def health(machine, timeout=2.0, token=None) -> dict:
@@ -382,26 +407,6 @@ def _cache_key(machine) -> str:
 
 
 def should_use_agent(machine) -> bool:
-    """Per-machine transport decision. `auto` probes /health (15s cache)."""
-    mode = transport(machine)
-    if mode == "ssh":
-        return False
-    # native RDMA/CM peers have no TCP listener for the agent's readiness
-    # probe, so auto stays on SSH; an explicit `agent` choice is honoured
-    # and the agent must implement its own probe.
-    if (machine or {}).get("rdma_cm") and mode == "auto":
-        return False
-    if mode == "agent":
-        return True
-    key = _cache_key(machine)
-    now = time.monotonic()
-    hit = _health_cache.get(key)
-    if hit and hit[0] > now:
-        return hit[1]
-    try:
-        health(machine, timeout=1.5)
-        ok = True
-    except AgentError:
-        ok = False
-    _health_cache[key] = (now + _HEALTH_TTL, ok)
-    return ok
+    """Agent-only: always true. SSH is no longer a runtime transport —
+    agents are installed from their own platform packages."""
+    return True

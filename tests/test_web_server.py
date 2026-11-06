@@ -47,6 +47,15 @@ def _make_stub_cfg():
 
     stub.cfg = _Cfg()
     stub.Cfg = _Cfg
+    # engine_registry reads these at import time; keep the stub
+    # order-independent so this module can run first in isolation.
+    stub.VALID_ENGINES = ("llama_cpp", "vllm")
+    stub.DEFAULT_ENGINE = "llama_cpp"
+    stub.ENGINE_LLAMA_CPP = "llama_cpp"
+    stub.ENGINE_VLLM = "vllm"
+    stub.VLLM_MODEL_KEYS = frozenset()
+    stub.VALID_KV_CACHE_DTYPES = ("q4_0", "q8_0", "fp8")
+    stub.VALID_COMPUTE_DTYPES = ("auto", "half", "bfloat16", "float")
     return stub
 
 

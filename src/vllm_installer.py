@@ -32,9 +32,6 @@ import gpu_vendor
 import agent_client
 import local_node
 from steps import run_steps
-# NOTE: vllm_uninstaller imports helpers back from this module, so it is
-# imported lazily inside _rollback_failed_install (a module-level import
-# here would be circular and silently resolve to None).
 
 VLLM_VERSION_PIN = "0.30.0"
 # USER DIRECTIVE (2026-09-24): vLLM installation supports ONLY the PyPI
@@ -110,12 +107,7 @@ def _make_runner(machine):
             proc = subprocess.run(["bash", "-c", cmd], capture_output=True,
                                   text=True, timeout=timeout)
             return proc.returncode, proc.stdout + proc.stderr
-        from ssh_manager import SSHManager
-        ssh = SSHManager(machine["ip"], machine.get("username", ""),
-                         machine.get("password", ""),
-                         port=machine.get("port", 22))
-        code, out, err = ssh.run(cmd, timeout=timeout)
-        return code, out + err
+        raise RuntimeError("remote vLLM install is agent-only; use the peer agent")
 
     return run
 

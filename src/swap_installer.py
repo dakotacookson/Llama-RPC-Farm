@@ -19,6 +19,7 @@ import os
 import agent_client
 import urllib.request
 
+
 GITHUB_API = "https://api.github.com/repos/mostlygeek/llama-swap/releases"
 DEST_POSIX = "~/.local/bin"
 DEST_WIN = "%USERPROFILE%\\llama-swap"
@@ -85,7 +86,6 @@ def install_on(machine, log=lambda m: None):
     """Install the official llama-swap binary on a machine (local or SSH).
     Returns dict {ok, machine, bin, detail}."""
     import config_loader as cfg
-    from ssh_manager import SSHManager, SSHError
     import local_node
     import subprocess   # TimeoutExpired is a SubprocessError, NOT an OSError
 
@@ -103,25 +103,19 @@ def install_on(machine, log=lambda m: None):
         return proc.returncode, proc.stdout + proc.stderr
 
     def run_remote(cmd, timeout=600):
-        # Normalize to the run_local (code, out) shape — ssh.run returns
-        # a 3-tuple, which used to crash install_on's unpack on EVERY
-        # remote install (fixed 2026-10-31).
-        # Remote Windows: the default OpenSSH shell is cmd.exe; PS-syntax
-        # bodies must be wrapped in powershell -NoProfile with escaped
-        # quotes (same pattern as llamacpp_installer.run_remote).
-        ssh = SSHManager(machine.get("ip"), machine.get("username"),
-                         machine.get("password"), port=machine.get("port", 22))
-        if is_win:
-            cmd = ('powershell -NoProfile -Command "'
-                   + cmd.replace('"', '\\"') + '"')
-        code, out, err = ssh.run(cmd, timeout=timeout)
-        return code, (out or "") + (err or "")
+        raise RuntimeError("remote install is agent-only; use the peer agent")
 
     run = run_local if is_local else run_remote
     try:
         # arch probe when not detected yet (same as llama.cpp installer)
         if not ((machine.get("detected") or {}).get("arch")):
-            if is_win:
+            if not is_local:
+                try:
+                    arch = (agent_client.info(machine) or {}).get("arch")
+                except Exception:
+                    arch = None
+                machine.setdefault("detected", {})["arch"] = arch or "x86_64"
+            elif is_win:
                 code, out = run("echo $env:PROCESSOR_ARCHITECTURE")
                 a = (out or "").strip().lower()
                 machine.setdefault("detected", {})["arch"] = \
@@ -188,7 +182,7 @@ def install_on(machine, log=lambda m: None):
         if code != 0:
             return {"ok": False, "machine": name,
                     "detail": f"install failed (exit {code}): {out[-500:]}"}
-    except (SSHError, OSError, subprocess.TimeoutExpired) as e:
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
         return {"ok": False, "machine": name, "detail": f"transfer failed: {e}"}
 
     # post-install verify: the binary must exist and be executable —
@@ -199,7 +193,7 @@ def install_on(machine, log=lambda m: None):
         vcmd = '[ -x "$HOME/.local/bin/llama-swap" ] && echo OK || { echo MISSING; exit 1; }'
     try:
         vcode, vout = run(vcmd, timeout=60)
-    except (SSHError, OSError, subprocess.TimeoutExpired) as e:
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
         vcode, vout = 1, f"verify crashed: {e}"
     if vcode != 0:
         return {"ok": False, "machine": name,
@@ -289,18 +283,4 @@ def detect_on(machine):
                 return False, None
             print(f"[agent] {machine.get('name')}: swap probe failed, "
                   f"falling back to SSH: {e}")
-    try:
-        from ssh_manager import SSHManager
-        ssh = SSHManager(machine.get("ip"), machine.get("username"),
-                         machine.get("password"), port=machine.get("port", 22))
-        if is_win:
-            # same cmd.exe->PowerShell wrapper rule as install_on
-            probe = ('powershell -NoProfile -Command "'
-                     + probe.replace('"', '\\"') + '"')
-        code, out, _ = ssh.run(probe, timeout=15)
-        out = (out or "").strip()
-        if out and "MISSING" not in out:
-            return True, out.splitlines()[0]
-    except Exception:
-        pass
     return False, None

@@ -1,57 +1,15 @@
-"""LAN discovery: find live machines, grab their SSH banner pre-auth to
-classify the OS (no login required), and — only when credentials are
-supplied — SSH in for hostname + GPU details.
+"""LAN identity helpers + peer-agent discovery (agent-only).
 
-No-login OS detection comes from the SSH identification banner every
-server sends before authentication, e.g.:
-  SSH-2.0-OpenSSH_for_Windows_8.1      -> windows
-  SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13 -> linux
-ICMP ping marks live hosts even when SSH is absent or filtered.
+There is no SSH scanning: peers are found through the peer agent's UDP
+responder, and MAC/IP healing uses the local ARP cache. Identity is the
+MAC, so DHCP re-leases do not break a configured machine.
 """
 import ipaddress
 import subprocess
-import socket
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from ssh_manager import SSHManager, SSHError
 import agent_discovery
-
-IDENTIFY_CMD = (
-    'uname -s 2>/dev/null; hostname 2>/dev/null; echo ---; '
-    'nvidia-smi --query-gpu=index,name,memory.total '
-    '--format=csv,noheader,nounits 2>/dev/null || '
-    'rocm-smi --showproductname --showmeminfo vram --json 2>/dev/null || '
-    'xpu-smi discovery -j 2>/dev/null || '
-    'cmd.exe /c "ver & hostname & (nvidia-smi --query-gpu=index,name,'
-    'memory.total --format=csv,noheader,nounits)" 2>/dev/null'
-)
-
-# MAC of the interface that answers for the machine's own IP, per OS.
-# Used to pin a machine's identity across DHCP re-leases: the MAC is
-# stable, the IP is not.
-MAC_CMD_LINUX = (
-    "for f in /sys/class/net/*/address; do "
-    "d=$(dirname $f); br=$(cat $f/brport 2>/dev/null); "
-    "[ -n \"$br\" ] && continue; "
-    "ip=$(ip -4 addr show $(basename $d) 2>/dev/null | grep -o 'inet [0-9.]*' | awk '{print $2}'); "
-    "[ -z \"$ip\" ] && continue; echo \"$ip $(cat $f)\"; done"
-)
-MAC_CMD_WINDOWS = (
-    'powershell -NoProfile -Command "Get-NetIPAddress -AddressFamily IPv4 '
-    '| Where-Object {$_.IPAddress -ne \'127.0.0.1\'} '
-    '| ForEach-Object { $a = Get-NetAdapter -InterfaceIndex $_.InterfaceIndex '
-    '-ErrorAction SilentlyContinue; if ($a -and $a.MacAddress) '
-    '{ \"{0} {1}\" -f $_.IPAddress, ($a.MacAddress -replace \'-\', \':\') } }"'
-)
-MAC_CMD_MACOS = (
-    "for i in $(networksetup -listallhardwareports 2>/dev/null "
-    "| awk '/Device/ {print $2}'); do "
-    "ip=$(ipconfig getifaddr $i 2>/dev/null); "
-    "[ -z \"$ip\" ] && continue; "
-    "mac=$(ifconfig $i 2>/dev/null | awk '/ether/ {print $2}'); "
-    "[ -n \"$mac\" ] && echo \"$ip $mac\"; done"
-)
 
 
 def _normalize_mac(mac):
@@ -65,29 +23,8 @@ def _normalize_mac(mac):
     return ":".join(parts) if len(parts) == 6 else ""
 
 
-def query_machine_mac(ssh, os_type="linux"):
-    """The machine's primary NIC MAC (the interface holding its main IPv4).
-    Returns (ip_on_nic, mac) or ("", ""). Best-effort."""
-    cmd = {"linux": MAC_CMD_LINUX, "windows": MAC_CMD_WINDOWS,
-           "macos": MAC_CMD_MACOS}.get(os_type, MAC_CMD_LINUX)
-    try:
-        code, out, _ = ssh.run(cmd, timeout=15)
-    except (SSHError, OSError):
-        return "", ""
-    for line in (out or "").splitlines():
-        parts = line.split()
-        if len(parts) == 2:
-            mac = _normalize_mac(parts[1])
-            if mac and not mac.startswith(("00:15:5d", "00:1c:14")):
-                # skip Hyper-V / VirtualBox virtual NICs: the physical MAC
-                # is the stable identity across reboots
-                return parts[0], mac
-    return "", ""
-
-
 def arp_table():
     """Local ARP cache: {mac: ip} (MAC normalized). Empty when unavailable."""
-    import subprocess
     entries = {}
     for args in (["ip", " neigh"], ["arp", "-a"]):
         try:
@@ -96,8 +33,6 @@ def arp_table():
         except (OSError, subprocess.SubprocessError):
             continue
         for line in out.splitlines():
-            # "ip neigh": 10.0.0.1 dev ... lladdr aa:bb:cc:dd:ee:ff REACHABLE
-            # "arp -a": ? (10.0.0.1) at aa:bb:cc:dd:ee:ff [ether] on eth0
             ip, mac = "", ""
             toks = line.split()
             if args[0] == "ip":
@@ -116,26 +51,45 @@ def arp_table():
     return entries
 
 
+def _ping(ip, timeout_s=1):
+    """ICMP ping (exit 0 = alive)."""
+    ms = max(1, int(timeout_s)) * 1000
+    if sys.platform == "win32":
+        args = ["ping", "-n", "1", "-w", str(ms), ip]
+    elif sys.platform == "darwin":
+        args = ["ping", "-c", "1", "-W", str(ms), ip]
+    else:
+        args = ["ping", "-c", "1", "-W", str(max(1, int(timeout_s))), ip]
+    try:
+        return subprocess.run(args, capture_output=True,
+                              timeout=timeout_s + 1).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _warm_arp(subnet):
+    try:
+        net = ipaddress.ip_network(subnet, strict=False)
+    except ValueError:
+        return
+    hosts = [str(h) for h in net.hosts()]
+    with ThreadPoolExecutor(max_workers=128) as pool:
+        futs = {pool.submit(_ping, h, 0.5): h for h in hosts}
+        for fut in as_completed(futs):
+            fut.result()
+
+
 def resolve_ip_by_mac(mac):
-    """Current IP for a MAC from the local ARP cache, or None.
-    Broadcasts a cheap reachability probe first so the cache is warm
-    for machines we haven't talked to recently."""
-    import socket
+    """Current IP for a MAC from the local ARP cache, or None."""
     mac = _normalize_mac(mac)
     if not mac:
         return None
     table = arp_table()
     if mac not in table:
-        # warm the ARP cache: connect to SSH port of every IP we know about
-        # won't help (we don't have an IP), so sweep the /24 quickly
         sub = local_subnet()
         if not sub:
             return None
-        net = ipaddress.ip_network(sub, strict=False)
-        with ThreadPoolExecutor(max_workers=128) as pool:
-            list(pool.map(
-                lambda h: _scan_port(h, 22, 0.4),
-                [str(h) for h in net.hosts()]))
+        _warm_arp(sub)  # populate the cache so the next read can match
         table = arp_table()
     return table.get(mac)
 
@@ -152,204 +106,8 @@ def local_subnet():
     return subs[0] if subs else None
 
 
-def _ping(ip, timeout_s=1):
-    """ICMP ping (exit 0 = alive). No root needed with setuid ping.
-    Flags are platform-specific: Windows ping has no -c/-W (uses -n/-w ms);
-    macOS/BSD -W is in MILLISECONDS (Linux -W is seconds)."""
-    ms = max(1, int(timeout_s)) * 1000
-    if sys.platform == "win32":
-        args = ["ping", "-n", "1", "-w", str(ms), ip]
-    elif sys.platform == "darwin":
-        args = ["ping", "-c", "1", "-W", str(ms), ip]
-    else:
-        args = ["ping", "-c", "1", "-W", str(max(1, int(timeout_s))), ip]
-    try:
-        return subprocess.run(
-            args, capture_output=True, timeout=timeout_s + 1,
-        ).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-
-
-def _grab_banner(ip, port, timeout=2.0):
-    """Connect and read the SSH identification string (sent pre-auth).
-    Returns banner text or None. This needs no credentials of any kind."""
-    try:
-        with socket.create_connection((ip, port), timeout=timeout) as s:
-            s.settimeout(timeout)
-            data = s.recv(96)
-            return data.decode("utf-8", errors="replace").strip() or None
-    except (OSError, UnicodeDecodeError):
-        return None
-
-
-def _os_from_banner(banner):
-    """Classify OS from an SSH banner. Windows OpenSSH always carries
-    'for_Windows'; other OpenSSH builds (Linux/BSD/macOS) do not, so
-    they land on 'linux' as the pre-auth best guess — post-login
-    `uname` (Darwin vs Linux) refines it to 'macos' when creds work."""
-    if not banner:
-        return None
-    b = banner.lower()
-    if "windows" in b:
-        return "windows"
-    if "openssh" in b or "dropbear" in b:
-        # dropbear is linux/embedded; plain OpenSSH without 'windows'
-        # is overwhelmingly Linux/BSD/macOS
-        return "linux"
-    return None
-
-
-def _scan_port(ip, port, timeout):
-    """True if a TCP connection to ip:port succeeds."""
-    try:
-        with socket.create_connection((ip, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
-def _ping_hosts(hosts, timeout_s=1, workers=128):
-    """Return set of IPs answering ICMP ping."""
-    alive = set()
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futs = {pool.submit(_ping, h, timeout_s): h for h in hosts}
-        for fut in as_completed(futs):
-            if fut.result():
-                alive.add(futs[fut])
-    return alive
-
-
-def scan_ssh_hosts(subnet, port=22, timeout=0.5, workers=128):
-    """Return sorted list of IPs in `subnet` with the SSH port open."""
-    net = ipaddress.ip_network(subnet, strict=False)
-    hosts = [str(h) for h in net.hosts()]
-    open_hosts = []
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futs = {pool.submit(_scan_port, h, port, timeout): h for h in hosts}
-        for fut in as_completed(futs):
-            if fut.result():
-                open_hosts.append(futs[fut])
-    return sorted(open_hosts, key=lambda x: tuple(int(p) for p in x.split(".")))
-
-
-def _identify(ssh):
-    """Run the identify command; parse OS / hostname / GPUs (post-login
-    enrichment only — never required for basic discovery)."""
-    info = {"os": None, "hostname": None, "gpus": [], "gpu_vendor": None}
-    try:
-        code, out, err = ssh.run(IDENTIFY_CMD, timeout=20)
-    except (SSHError, OSError):
-        return info
-    text = (out or "") + "\n" + (err or "")
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    head, tail, seen_sep = [], [], False
-    for l in lines:
-        if l == "---":
-            seen_sep = True
-            continue
-        (head if not seen_sep else tail).append(l)
-    for l in head:
-        first = l.split()[0:1]
-        if first and first[0] == "Darwin":
-            info["os"] = "macos"
-            break
-        if first and first[0] == "Linux":
-            info["os"] = "linux"
-            break
-    blob = "\n".join(lines)
-    if info["os"] is None and (
-            "Microsoft" in blob or "Windows" in blob
-            or "cmd.exe" in blob.lower() or "'uname' is not recognized" in blob):
-        info["os"] = "windows"
-    # hostname: scan backwards for the first line that isn't the uname
-    # answer, a Windows banner/version line, a cmd error, or a GPU row
-    for l in reversed(lines):
-        low = l.lower()
-        if l in ("Linux", "Darwin") or l == "---":
-            continue
-        if "not recognized" in low or "microsoft" in low or low.startswith("ver"):
-            continue
-        if l.lstrip().startswith(("{", "[", '"card')):
-            continue  # rocm-smi / xpu-smi JSON rows
-        parts = [p.strip() for p in l.split(",")]
-        if len(parts) == 3 and parts[0].isdigit():
-            continue  # nvidia-smi row
-        if "nvidia-smi" in low or "cmd.exe" in low:
-            continue
-        info["hostname"] = l
-        break
-    for l in lines:
-        parts = [p.strip() for p in l.split(",")]
-        if len(parts) == 3 and parts[0].isdigit():
-            try:
-                float(parts[2])
-                info["gpus"].append(parts[1])
-                info["gpu_vendor"] = "nvidia"
-            except ValueError:
-                continue
-    # AMD path: rocm-smi --json output in the tail
-    import gpu_vendor as _gv
-    blob = "\n".join(tail)
-    if blob.lstrip().startswith(("{", "[")):
-        rows = _gv.parse_rocm_json(blob)
-        if rows:
-            info["gpus"] = [r.split(",")[1] for r in rows]
-            info["gpu_vendor"] = "amd"
-        else:
-            rows = _gv.parse_xpu_smi_json(blob)
-            if rows:
-                info["gpus"] = [r.split(",")[1] for r in rows]
-                info["gpu_vendor"] = "intel"
-    elif info["gpus"]:
-        info["gpu_vendor"] = "nvidia"
-    return info
-
-
-def _probe_host(ip, port, cred_list, known_ips):
-    """Banner-based classification (no login). SSH login only adds
-    hostname + GPU preview when credentials work."""
-    entry = {
-        "ip": ip, "port": port,
-        "ssh_port_open": True, "ping_alive": None,
-        "banner": None, "os": None,
-        "ssh_ok": False, "auth_failed": False,
-        "hostname": None, "gpus": [], "gpu_vendor": None, "username": None,
-        "mac": "", "mac_ip": "",
-        "already_added": ip in known_ips,
-    }
-    entry["banner"] = _grab_banner(ip, port)
-    entry["os"] = _os_from_banner(entry["banner"])
-    for user, pwd in cred_list:
-        if not user:
-            continue
-        ssh = SSHManager(ip, user, pwd, port=port, timeout=8)
-        try:
-            code, out, err = ssh.run("echo ok", timeout=12)
-        except SSHError as e:
-            msg = str(e)
-            if "Permission" in msg or "Authentication" in msg or "auth" in msg.lower():
-                entry["auth_failed"] = True
-            continue
-        if code == 0 and "ok" in out:
-            entry["ssh_ok"] = True
-            entry["username"] = user
-            info = _identify(ssh)
-            entry["os"] = info["os"] or entry["os"]  # login result wins
-            entry["hostname"] = info["hostname"]
-            entry["gpus"] = info["gpus"]
-            entry["gpu_vendor"] = info["gpu_vendor"]
-            # MAC = stable identity across DHCP re-leases; capture it so
-            # later IP drift can be auto-corrected
-            mac_ip, mac = query_machine_mac(ssh, entry["os"] or "linux")
-            entry["mac"] = mac
-            entry["mac_ip"] = mac_ip
-            break
-    return entry
-
-
 def discover_agents(port=8199, timeout=2.0, include_known=True):
-    """UDP peer-agent discovery in the same result shape as SSH scan."""
+    """UDP peer-agent discovery. Returns the machine-card result shape."""
     import config_loader as cfg
     known = {m["ip"] for m in cfg.machines.all()}
     try:
@@ -361,15 +119,22 @@ def discover_agents(port=8199, timeout=2.0, include_known=True):
         ip = a.get("ip")
         if not ip or (not include_known and ip in known):
             continue
+        hw = a.get("hardware") or {}
         results.append({
-            "ip": ip, "port": 22, "ssh_port_open": False,
+            "ip": ip, "port": 0, "ssh_port_open": False,
             "ping_alive": None, "banner": None, "os": a.get("os"),
             "ssh_ok": False, "auth_failed": False,
-            "hostname": a.get("hostname"), "gpus": [],
-            "gpu_vendor": None, "username": None,
+            "hostname": a.get("hostname"),
+            "gpus": hw.get("gpu_names") or [],
+            "gpu_vendor": hw.get("gpu_vendor") or None,
+            "ram_total_gb": hw.get("ram_total_gb"),
+            "cores": hw.get("cores"),
+            "vram_total_gb": hw.get("vram_total_gb"),
+            "username": None,
             "mac": a.get("mac", ""), "mac_ip": ip,
             "already_added": ip in known,
-            "agent": True, "agent_port": a.get("agent_port"),
+            "agent": True, "pairing": bool(a.get("pairing")),
+            "agent_port": a.get("agent_port"),
             "agent_version": a.get("agent_version"),
             "protocol_version": a.get("protocol_version"),
             "agent_addresses": a.get("addresses") or [],
@@ -380,97 +145,75 @@ def discover_agents(port=8199, timeout=2.0, include_known=True):
             "results": results}
 
 
-def discover(subnet=None, port=22, credentials=None, include_known=True,
-             scan_timeout=0.5, ping=True, agent_discovery_enabled=True,
-             agent_discovery_port=8199, agent_discovery_timeout=1.0):
-    """Full scan: ICMP ping sweep + SSH port sweep + banner OS classify
-    (+ optional post-login enrichment). Persists nothing."""
-    if not subnet:
-        subnet = local_subnet()
-    if not subnet:
-        return {"error": "could not determine local subnet; pass one "
-                         "explicitly (e.g. 192.168.1.0/24)"}
+def discover(subnet=None, include_known=True, **_kwargs):
+    """Compatibility shim: discovery is agent-only."""
+    return discover_agents(include_known=include_known)
+
+
+def reconcile_machine_ips():
+    """Agent UDP discovery -> config IP healing.
+
+    The MAC is the stable identity; the agent's UDP responder reports its
+    current addresses. When a configured machine's stored MAC shows up at
+    a different IP, update machines.yaml in place and return the changes.
+    Only machines with a stored MAC are touched (same safety rule as the
+    legacy ARP path); the local master is never rewritten.
+    """
     import config_loader as cfg
-    known = {m["ip"] for m in cfg.machines.all()}
-    if credentials:
-        cred_list = list(credentials)
-    else:
-        seen, cred_list = set(), []
-        for m in cfg.machines.all():
-            key = (m.get("username"), m.get("password"))
-            if key not in seen and m.get("username"):
-                seen.add(key)
-                cred_list.append(key)
+    import local_node
     try:
-        net = ipaddress.ip_network(subnet, strict=False)
-    except ValueError as e:
-        return {"error": f"bad subnet: {e}"}
-    hosts = [str(h) for h in net.hosts()]
-
-    alive = _ping_hosts(hosts) if ping else set()
-    with ThreadPoolExecutor(max_workers=128) as pool:
-        futs = {pool.submit(_scan_port, h, port, scan_timeout): h
-                for h in hosts}
-        open_hosts = {futs[f] for f in as_completed(futs) if f.result()}
-
-    # report ping-capable hosts even without SSH; SSH hosts always
-    targets = (alive | open_hosts) if ping else open_hosts
-    if not include_known:
-        targets -= known
-    targets = sorted(targets, key=lambda x: tuple(int(p) for p in x.split(".")))
-
-    results = []
-    with ThreadPoolExecutor(max_workers=min(32, len(targets) or 1)) as pool:
-        futs = [pool.submit(_probe_host, h, port, cred_list, known)
-                for h in targets]
-        for fut in as_completed(futs):
-            r = fut.result()
-            if ping:
-                r["ping_alive"] = r["ip"] in alive
-            results.append(r)
-    results.sort(key=lambda x: tuple(int(p) for p in x["ip"].split(".")))
-    agents = []
-    if agent_discovery_enabled:
+        found = discover_agents(include_known=True).get("results") or []
+    except Exception:
+        return []
+    by_mac = {}
+    for a in found:
+        mac = _normalize_mac(a.get("mac"))
+        ip = (a.get("ip") or "").strip()
+        if mac and ip:
+            by_mac[mac] = ip
+    changed = []
+    for m in cfg.machines.all():
         try:
-            agents = agent_discovery.discover(
-                port=agent_discovery_port, timeout=agent_discovery_timeout)
-        except Exception:
-            agents = []
-        by_ip = {r["ip"]: r for r in results}
-        for a in agents:
-            ip = a.get("ip")
-            if not ip or (not include_known and ip in known):
+            if local_node.is_local(m):
                 continue
-            entry = by_ip.get(ip)
-            if entry is None:
-                entry = {
-                    "ip": ip, "port": port, "ssh_port_open": False,
-                    "ping_alive": None, "banner": None, "os": a.get("os"),
-                    "ssh_ok": False, "auth_failed": False,
-                    "hostname": a.get("hostname"), "gpus": [],
-                    "gpu_vendor": None, "username": None,
-                    "mac": a.get("mac", ""), "mac_ip": ip,
-                    "already_added": ip in known,
-                }
-                results.append(entry)
-                by_ip[ip] = entry
-            entry.update({
-                "agent": True, "agent_port": a.get("agent_port"),
-                "agent_version": a.get("agent_version"),
-                "protocol_version": a.get("protocol_version"),
-                "agent_addresses": a.get("addresses") or [],
-            })
-            if not entry.get("hostname"):
-                entry["hostname"] = a.get("hostname")
-            if not entry.get("os"):
-                entry["os"] = a.get("os")
-            if not entry.get("mac"):
-                entry["mac"] = a.get("mac", "")
-    results.sort(key=lambda x: tuple(int(p) for p in x["ip"].split(".")))
-    # drop hosts we couldn't fingerprint (no usable banner and no login):
-    # they can't be added safely and only clutter the results table
-    unknown = [r for r in results if not r["os"]]
-    results = [r for r in results if r["os"]]
-    return {"subnet": subnet, "port": port, "alive": len(alive),
-            "ssh_hosts": len(open_hosts), "unknown": len(unknown),
-            "agents": len(agents), "results": results}
+        except Exception:
+            pass
+        mac = _normalize_mac(m.get("mac"))
+        new_ip = by_mac.get(mac)
+        old_ip = (m.get("ip") or "").strip()
+        if not new_ip or new_ip == old_ip:
+            continue
+        try:
+            cfg.machines.update(m.get("name") or m.get("id"), {"ip": new_ip})
+            changed.append((m.get("name"), old_ip, new_ip))
+            print(f"[ip-sync] {m.get('name')}: {old_ip} -> {new_ip} "
+                  f"(agent MAC {mac})")
+        except Exception:
+            pass
+    return changed
+
+
+def pair_agents(include_known=True):
+    """Auto-enroll unpaired agents with the farm token (paired once)."""
+    import secrets_vault
+    import agent_client
+    tok = secrets_vault.get_farm_agent_token()
+    if not tok:
+        return []
+    try:
+        found = discover_agents(include_known=include_known).get("results") or []
+    except Exception:
+        return []
+    paired = []
+    for a in found:
+        if not a.get("pairing") or not a.get("ip"):
+            continue
+        m = {"name": a.get("hostname") or a["ip"], "ip": a["ip"],
+             "agent_port": a.get("agent_port") or 8198}
+        try:
+            agent_client.pair(m, tok)
+            paired.append(a["ip"])
+            print(f"[pairing] paired {a.get('hostname') or a['ip']} with farm token")
+        except Exception as e:
+            print(f"[pairing] {a.get('ip')}: failed: {e}")
+    return paired

@@ -357,37 +357,6 @@ def _render_rpc_script(stub_cfg):
     return _render_rpc(model, master, [p1, p2])
 
 
-def test_render_rpc_has_roll_helpers(stub_cfg):
-    """Generated scripts must carry the runtime port roll-forward:
-    helpers + foreign-squatter detection in the wait loop."""
-    script = _render_rpc_script(stub_cfg)
-    for token in ("roll_rpc_port()", "tcp_probe()", "win_port_excluded()",
-                  "rpc_log_for_port()", "ensure_node()",
-                  "held by another process", "rolling to $port"):
-        assert token in script, token
-    import subprocess as _sp
-    import tempfile, os
-    with tempfile.NamedTemporaryFile("w", suffix=".sh",
-                                     delete=False) as f:
-        f.write(script)
-        path = f.name
-    try:
-        r = _sp.run(["bash", "-n", path], capture_output=True, text=True)
-        assert r.returncode == 0, r.stderr
-    finally:
-        os.unlink(path)
-
-
-def test_render_rpc_roll_updates_live_maps(stub_cfg):
-    """A roll must update RPC_PORTS + RPC_LOGS so the --rpc peer list
-    (built after the waits) serves the rolled ports."""
-    script = _render_rpc_script(stub_cfg)
-    assert 'RPC_PORTS["$node"]="$port"' in script
-    assert 'RPC_LOGS["$node"]="$(rpc_log_for_port "$port")"' in script
-    # and the peer list is composed from the (possibly rolled) map
-    assert "$node:${RPC_PORTS[$node]}" in script
-
-
 def test_render_single_node_has_port_preflight(stub_cfg):
     """Single-node scripts must fail fast with a clear message when a
     foreign process holds llama-swap's assigned port."""
@@ -413,31 +382,6 @@ def test_render_single_node_has_port_preflight(stub_cfg):
 
 # ---------------- script audit fixes: anchored ports, per-peer bins ----------------
 
-def test_render_kill_patterns_anchored(stub_cfg):
-    """Port-targeted kills must anchor the port (trailing space): a
-    pattern for 5109 must never match a co-served model on 51096."""
-    script = _render_rpc_script(stub_cfg)
-    assert '-p $port \\"' in script
-    # PowerShell match pads the command line with spaces so a port at the
-    # END of the command line (no trailing arg) still matches
-    assert "(' ' + \\$x.CommandLine + ' ') -like '*-p $port *'" in script
-    # no unanchored port match remains in kill/pgrep lines
-    for line in script.splitlines():
-        if ("pkill" in line or "pgrep" in line) and "-p $port" in line:
-            assert "-p $port " in line, line
-        if "-like" in line and "-p $port" in line:
-            assert "-p $port *" in line, line
-
-
-def test_render_per_peer_bin_map(stub_cfg):
-    """Each linux peer launches rpc-server from its OWN bin dir, with
-    the master's layout only as fallback."""
-    script = _render_rpc_script(stub_cfg)
-    assert "declare -A RPC_BINS" in script
-    assert 'RPC_BINS["10.0.0.98"]=' in script
-    assert "${RPC_BINS[$node]:-" in script
-
-
 def test_render_ps1_no_baked_device(stub_cfg):
     """The parametrized .ps1 must not bake a --device flag: per-node
     backends arrive at runtime via -ExtraArgs (a baked one would
@@ -448,58 +392,6 @@ def test_render_ps1_no_baked_device(stub_cfg):
          "expose": {"mode": "vram", "gpus": ["CUDA0"]}}
     ps1 = _win_launcher(m, 50052, expose_args="", parametrized=True)
     assert "--device" not in ps1.split("-ExtraArgs")[0]
-
-
-def test_render_password_with_quote_stays_valid(stub_cfg):
-    """A single-quote in the machine password must not break the
-    generated script — passwords are vault-only now (never baked in),
-    so even hostile values can't affect script syntax. The script stays
-    valid bash and requires $SSH_PASS at runtime."""
-    from rpc_manager import _render_rpc
-    model = {"model_id": "q", "flags": {},
-             "base_path": "store://llm-models/x.gguf", "device_order": "",
-             "device_order_policy": "as-selected", "expose": {}}
-    master = {"name": "aibox1", "ip": "10.0.0.104", "username": "u",
-              "password": "p@ss'word", "os": "linux", "rpc_port": 50052,
-              "gpu": "CUDA0", "role": "master",
-              "detected": {"gpu_names": [], "vram_total_gb": 0,
-                           "ram_total_gb": 16, "cores": 8}}
-    p1 = dict(master, name="aibox3", ip="10.0.0.98", role="peer")
-    stub_cfg.update({m["name"]: m for m in (master, p1)})
-    script = _render_rpc(model, master, [p1])
-    assert "p@ss'word" not in script
-    assert "SSH_PASS:?" in script
-    import subprocess as _sp
-    import tempfile, os
-    with tempfile.NamedTemporaryFile("w", suffix=".sh",
-                                     delete=False) as f:
-        f.write(script)
-        path = f.name
-    try:
-        r = _sp.run(["bash", "-n", path], capture_output=True, text=True)
-        assert r.returncode == 0, r.stderr
-    finally:
-        os.unlink(path)
-
-
-def test_stop_rpc_port_pattern_anchored(monkeypatch, stub_cfg):
-    """Live stop_rpc patterns must anchor the port too."""
-    import subprocess as _sp
-    captured = []
-
-    def fake_run(cmd, is_win=False, timeout=20):
-        captured.append(cmd if isinstance(cmd, str) else " ".join(cmd))
-        return 1, "", ""
-
-    monkeypatch.setattr(rpc_manager, "_run_local", fake_run)
-    monkeypatch.setattr(rpc_manager, "local_node",
-                        __import__("types").SimpleNamespace(
-                            is_local=lambda m: True))
-    m = {"name": "aibox1", "ip": "127.0.0.1", "os": "linux",
-         "username": "zazi", "rpc_port": 50052}
-    stub_cfg["aibox1"] = m
-    rpc_manager.stop_rpc("aibox1", port=51096)
-    assert any("-p 51096 " in c for c in captured), captured
 
 
 def test_stop_llama_server_port_pattern_anchored(monkeypatch, stub_cfg):

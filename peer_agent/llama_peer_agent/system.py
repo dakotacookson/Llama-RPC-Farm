@@ -60,6 +60,7 @@ def _linux(config: AgentConfig):
         "DT=$(df -k / | tail -n1 | awk '{print $2}'); "
         "V=$(systemd-detect-virt 2>/dev/null || echo bare); "
         "CF=$(lscpu | grep '^Flags:' | cut -d: -f2- | sed 's/^ *//'); "
+        'G=$(ldd --version 2>&1 | head -1); '
         "P=$(nvidia-smi --query-gpu=pcie.link.gen.current,pcie.link.width.current "
         "--format=csv,noheader,nounits 2>/dev/null); "
         "R=$(nvidia-smi --query-gpu=pci.bar1_memory_total "
@@ -93,6 +94,7 @@ def _linux(config: AgentConfig):
         "llama_version": p.get("L", ""), "cores": os.cpu_count() or 0,
         "cpu_cores": cores,
         "virt": p.get("V", ""), "cpu_flags": p.get("CF", ""),
+        "glibc": p.get("G", ""),
         "pcie": _pcie_tags(p.get("P", "")),
         "rebar": _rebar_values(p.get("R", "")),
     }

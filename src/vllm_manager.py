@@ -68,7 +68,7 @@ def swap_host_unload(model_id):
     import urllib.error
     req = urllib.request.Request(url, data=b"", method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=60) as r:
             return {"ok": True, "status": r.status,
                     "body": r.read().decode()[:500]}
     except urllib.error.HTTPError as e:
@@ -527,7 +527,7 @@ def _derive_tensor_parallel_size(model_cfg, servers):
 def _agent_ray_lines(machine, model_id, ray_bin, ids, num_gpus, ray_port,
                      log, pidf):
     """Shell lines that start/stop a Ray worker through the peer agent,
-    with the existing sshpass command kept as a runtime fallback."""
+    """
     import swap_manager
     token_var = swap_manager._agent_token_var(machine.get("name"))
     base = f"http://{machine.get('ip')}:{agent_client.agent_port(machine)}"
@@ -583,8 +583,8 @@ def build_vllm_cluster_command(model_cfg, master, peers, vllm_cfg=None):
     """Build the multi-host vLLM start script for one model (Ray cluster).
 
     Per design §1.1 (mirrors vLLM's own multi-node-serving.sh + the
-    repo's _render_rpc pattern): ray workers are ssh'd (sshpass +
-    $SSH_PASS from the sourced swap-secrets.env sidecar) onto every peer,
+    repo's agent pattern): ray workers are started through each peer's
+    /ray/start endpoint,
     the ray head starts on the master, the script polls `ray status`
     until all N nodes are alive (ray_init_timeout, default 300 s) and
     only then execs `vllm serve` with --distributed-executor-backend ray.
@@ -745,52 +745,15 @@ def build_vllm_cluster_command(model_cfg, master, peers, vllm_cfg=None):
         # double-quotes made the outer shell eat $(...) at the wrong
         # time or the peer hit $() reparsing with stripped quotes
         # ("syntax error near unexpected token '('").
-        ssh_start = (
-            f"  sshpass -p \"$SSH_PASS\" ssh -n $SSH_OPTS \"{user}@{ip}\" \\\n"
-            f"    'MIP='\"$MASTER_IP\"'; "
-            f"set -- $(ip route get $MIP 2>/dev/null); "
-            f"while [ $# -gt 1 ]; do [ $1 = dev ] && "
-            f"{{ export GLOO_SOCKET_IFNAME=$2 NCCL_SOCKET_IFNAME=$2; "
-            f"break; }}; shift; done; "
-            f"export PATH={peer_bin_dir}:$PATH; "
-            # PYTORCH_ALLOC_CONF must live HERE (worker-side), not in
-            # ray_env: Ray only copies HF_/NCCL_/VLLM_/etc. prefixes to
-            # workers, so a head-side export never reaches the peer's
-            # vLLM worker process. expandable_segments lets the torch
-            # allocator release reserved-but-unallocated pages — the
-            # FP8 Marlin repack pass (gptq_marlin_repack, one 170MB
-            # chunk per layer) OOM'd on a 12GB Turing card with 491MB
-            # reserved-but-unallocated and only 127MB free. Also
-            # CUDA_DEVICE_ORDER: heterogeneous nodes must map "GPU 0"
-            # deterministically (FASTEST_FIRST default would reorder).
-            + "export PYTORCH_ALLOC_CONF=expandable_segments:True; "
-            + (f"export CUDA_VISIBLE_DEVICES={ids}; " if ids else "")
-            + f"{ray_bin} stop --force >/dev/null 2>&1; "
-            f"{ray_bin} start --address=$MIP:{ray_port} "
-            f"--num-gpus={num_gpus} >> {log} 2>&1 & echo \\$! > {pidf}'")
-        ssh_stop = (
-            f'  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\\n'
-            f"    '[ -f {pidf} ] && kill \"$(cat {pidf})\" >/dev/null "
-            f"2>&1 || true; {ray_bin} stop --force >/dev/null 2>&1 "
-            f"|| true'")
-        if agent_client.should_use_agent(p):
-            astart, astop = _agent_ray_lines(
-                p, model_id, ray_bin, ids, num_gpus, ray_port,
-                f"ray-worker-{model_id}.log",
-                f"ray-worker-{model_id}.pid")
-            if agent_client.transport(p) == "agent":
-                # Agent-only machines must never fall back to SSH.
-                worker_starts.append(
-                    astart + "    echo \"agent ray/start failed\" >&2\n"
-                    "    exit 1\n  fi")
-                worker_stops.append(
-                    astop + "    echo \"agent ray/stop failed\" >&2\n  fi")
-            else:
-                worker_starts.append(astart + ssh_start + "\n" + f"  fi")
-                worker_stops.append(astop + ssh_stop + "\n" + f"  fi")
-        else:
-            worker_starts.append(ssh_start)
-            worker_stops.append(ssh_stop)
+        astart, astop = _agent_ray_lines(
+            p, model_id, ray_bin, ids, num_gpus, ray_port,
+            f"ray-worker-{model_id}.log",
+            f"ray-worker-{model_id}.pid")
+        worker_starts.append(
+            astart + "    echo \"agent ray/start failed\" >&2\n"
+            "    exit 1\n  fi")
+        worker_stops.append(
+            astop + "    echo \"agent ray/stop failed\" >&2\n  fi")
         worker_pids.append(ip)
     workers_start = "\n".join(worker_starts)
     workers_stop = "\n".join(worker_stops)

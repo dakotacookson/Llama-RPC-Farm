@@ -378,8 +378,15 @@ class LlamaCppAdapter(UiHintsMixin):
         "serving"})."""
         port = (machine or {}).get("rpc_port") or 0
         is_local = local_node.is_local(machine or {})
-        ok = bool(port) and rpc_manager._port_open(machine, port, is_local)
-        return {"name": (machine or {}).get("name"), "serving": bool(ok)}
+        rpc = bool(port) and rpc_manager._port_open(machine, port, is_local)
+        live = False
+        try:
+            live = rpc_manager.has_live_llama((machine or {}).get("name"))
+        except Exception:
+            live = False
+        return {"name": (machine or {}).get("name"),
+                "serving": bool(rpc or live), "rpc": bool(rpc),
+                "llama": bool(live)}
 
     # -- acquisition (DEC-07: llama.cpp vocabulary = GGUF) --
 

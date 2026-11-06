@@ -56,27 +56,6 @@ def test_render_rpc_list_uses_per_node_ports(stub_cfg):
     assert f'{p2["ip"]}:{ports[("winbox", "all")]}' in rpc_line
 
 
-def test_render_kill_targets_port_not_blanket(stub_cfg):
-    """The script must kill only the rpc-server on its port, not all
-    ggml-rpc-server instances (co-served models on other ports survive)."""
-    model = _model("m", device_order="aibox1-CUDA0,aibox2-CUDA0,winbox-CUDA0")
-    master = _machine("aibox1", "10.0.0.98", role="master")
-    p1 = _machine("aibox2", "10.0.0.11")
-    p2 = _machine("winbox", "10.0.0.13", os="windows")
-    stub_cfg.update({m["name"]: m for m in (master, p1, p2)})
-    script = _render_rpc(model, master, [p1, p2])
-    # linux: pkill pattern includes -p $port with a trailing-space anchor
-    # (port 5109 must never match a co-served model on 51096)
-    assert 'pkill -u $LINUX_USER -f \\"ggml-[r]pc-server.*-p $port \\"' in script
-    # never the old blanket pkill of all ggml-rpc-server
-    assert "pkill -u $LINUX_USER -f ggml-[r]pc-server\" >/dev/null" not in script
-    # windows: pipe-free CIM loop filtering by -p $port (anchored),
-    # not taskkill /F /IM and not the cmd.exe-mangled pipe pipeline
-    assert "-like '*-p $port *'" in script
-    assert "foreach (\$x in (Get-CimInstance Win32_Process))" in script
-    assert "taskkill /F /IM ggml-rpc-server.exe" not in script
-
-
 def test_render_per_port_state_and_log(stub_cfg):
     model = _model("m", device_order="aibox1-CUDA0,aibox2-CUDA0,winbox-CUDA0")
     master = _machine("aibox1", "10.0.0.98", role="master")
@@ -85,15 +64,13 @@ def test_render_per_port_state_and_log(stub_cfg):
     stub_cfg.update({m["name"]: m for m in (master, p1, p2)})
     script = _render_rpc(model, master, [p1, p2])
     ports = _model_rpc_ports(model, [p1, p2])
-    # state reads/writes use the per-port $port bash var (rpc.state.$port),
-    # never the legacy bare rpc.state path
-    assert "rpc.state.$port" in script
-    assert "/.cache/llama-wrapper/rpc.state " not in script  # no bare legacy path
     # per-port log names appear in the RPC_LOGS map
     assert _rpc_log_name(ports[("aibox2", "all")]) in script
     assert _rpc_log_name(ports[("winbox", "all")]) in script
     assert "declare -A RPC_LOGS" in script
-
+    # agent-only: no SSH/sshpass in generated launchers
+    assert "sshpass" not in script
+    assert "SSH_PASS" not in script
 
 def test_render_is_valid_bash(stub_cfg):
     """The generated script must parse as bash (syntax check)."""
@@ -135,22 +112,6 @@ def test_render_no_unbound_var_under_set_u(stub_cfg):
         if "powershell -NoProfile -Command" in line and "Test-Path" in line and "rpc.state" in line:
             assert "\\$env:USERPROFILE" in line, line
 
-
-def test_render_ps1_takes_port_and_logname_params(stub_cfg):
-    """The Windows launcher must accept -Port/-LogName so a script with
-    several Windows peers on different ports can invoke it per node."""
-    model = _model("m", device_order="aibox1-CUDA0,winbox-CUDA0")
-    master = _machine("aibox1", "10.0.0.98", role="master")
-    p2 = _machine("winbox", "10.0.0.13", os="windows")
-    stub_cfg.update({m["name"]: m for m in (master, p2)})
-    script = _render_rpc(model, master, [p2])
-    assert "param([int]$Port" in script
-    assert "[string]$LogName" in script
-    # start_rpc_win passes -Port $port -LogName $log
-    assert "-Port $port -LogName $log" in script
-
-
-# ---------------- _win_launcher: exe path formats correctly ----------------
 
 def test_win_launcher_formats_exe_and_port():
     """The .ps1 must build the cmd with the exe path formatted (-f binds

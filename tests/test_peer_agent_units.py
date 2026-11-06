@@ -334,9 +334,7 @@ def test_agent_client_wrappers(monkeypatch):
         ac.health(m)
     monkeypatch.setattr(ac, "_request", lambda *a, **k: {"protocol_version": 1})
     assert ac.health(m)["protocol_version"] == 1
-    monkeypatch.setattr(ac, "health", lambda m, timeout=0: (_ for _ in ()).throw(ac.AgentError("x")))
-    ac._health_cache.clear()
-    assert ac.should_use_agent({**m, "transport": "auto"}) is False
+    assert ac.should_use_agent({**m, "transport": "auto"}) is True
 
 
 def test_peer_transport_both(monkeypatch):
@@ -347,33 +345,11 @@ def test_peer_transport_both(monkeypatch):
         def logs_tail(self, m, n, l=20): return {"text": "a"}
         def processes(self, m): return {"rpc": []}
     monkeypatch.setattr(pt, "AgentTransport", FakeAgent)
-    monkeypatch.setattr(pt.agent_client, "should_use_agent", lambda m: True)
     t = pt.for_machine({"name": "p"})
     assert t.status({})["agent"] is True
-
-    class FakeRM:
-        def machine_status(self, name, use_agent=True): return {"name": name}
-        def stop_rpc(self, name, port=None, use_agent=True): return {"stopped": True}
-        def _tail_log(self, *a, **k): return "rpc"
-        def list_rpc_servers(self, name, use_agent=True): return []
-        def _ssh_for(self, m):
-            class S:
-                def run(self, cmd, timeout=10): return (0, "generic", "")
-            return S()
-    monkeypatch.setattr(pt.agent_client, "should_use_agent", lambda m: False)
-    monkeypatch.setattr(pt.SSHTransport, "_rpc", lambda self: FakeRM())
-    import local_node
-    monkeypatch.setattr(local_node, "is_local", lambda m: False)
-    s = pt.SSHTransport()
-    m = {"name": "p", "os": "linux"}
-    assert s.status(m)["name"] == "p"
-    assert s.stop_all(m)["stopped"] is True
-    assert s.logs_tail(m, "rpc-server.log")["text"] == "rpc"
-    assert s.logs_tail(m, "llama-swap.log")["text"] == "generic"
-    assert s.processes(m)["rpc"] == []
-    monkeypatch.setattr(local_node, "is_local", lambda m: True)
-    assert s.logs_tail(m, "llama-swap.log")["text"] == ""
-
+    assert t.stop_all({})["killed"] is True
+    assert t.logs_tail({}, "x")["text"] == "a"
+    assert t.processes({})["rpc"] == []
 
 def test_main_cli(monkeypatch, capsys):
     from llama_peer_agent import __main__ as cli
@@ -383,7 +359,8 @@ def test_main_cli(monkeypatch, capsys):
     assert cli.main([]) == 2
     monkeypatch.setattr(cli.AgentConfig, "from_env",
                         lambda **k: AgentConfig(token=""))
-    assert cli.main([]) == 2
+    monkeypatch.setattr(cli, "serve", lambda c: None)
+    assert cli.main([]) == 0   # pairing mode allowed
     monkeypatch.setattr(cli.AgentConfig, "from_env",
                         lambda **k: AgentConfig(token="t"))
     monkeypatch.setattr(cli, "serve", lambda c: None)
@@ -532,10 +509,12 @@ def test_server_all_endpoints(monkeypatch):
             post("/build/update", {"src_root": "/nope", "build_dir": "/nope",
                                    "bin_path": "/nope"})
         assert e.value.code == 400
-        # unauthenticated
+        # /health is open (discovery/pairing); /status still needs auth
         req = urllib.request.Request(f"http://127.0.0.1:{port}/health")
+        assert urllib.request.urlopen(req, timeout=5).status == 200
         with pytest.raises(urllib.error.HTTPError) as e:
-            urllib.request.urlopen(req, timeout=5)
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/status",
+                                   timeout=5)
         assert e.value.code == 401
         # invalid JSON / bad content length / speedtest validation
         import http.client
@@ -665,7 +644,7 @@ def test_agent_client_error_and_branch_paths(monkeypatch):
     import urllib.error, io
     assert ac.agent_port({"agent_port": "bad"}) == 8198
     assert ac.agent_port({"agent_port": 0}) == 8198
-    assert ac.transport({"transport": "bad"}) == "auto"
+    assert ac.transport({"transport": "bad"}) == "agent"
     monkeypatch.setattr(ac.secrets_vault, "get_machine_agent_token",
                         lambda m: (_ for _ in ()).throw(RuntimeError("x")))
     monkeypatch.setenv("AGENT_TOKEN", "a")
@@ -724,11 +703,7 @@ def test_agent_client_error_and_branch_paths(monkeypatch):
     with pytest.raises(ac.AgentError):
         ac.speedtest({"ip": "1.2.3.4"})
     # should_use_agent cache and rdma
-    monkeypatch.setattr(ac, "transport", lambda m: "auto")
-    assert ac.should_use_agent({"rdma_cm": True}) is False
-    monkeypatch.setattr(ac, "health", lambda m, timeout=0: {"ok": True})
-    ac._health_cache.clear()
-    assert ac.should_use_agent({"name": "c", "ip": "1"}) is True
+    assert ac.should_use_agent({"rdma_cm": True}) is True
     assert ac.should_use_agent({"name": "c", "ip": "1"}) is True
     assert ac._cache_key({"id": "i"}) == "i"
     assert ac._cache_key({"ip": "ip"}) == "ip"
@@ -841,6 +816,7 @@ def test_install_more_paths(monkeypatch, tmp_path):
 
 def test_service_more_paths(monkeypatch, tmp_path):
     from llama_peer_agent import service as sv
+    monkeypatch.setattr(sv.Path, "home", lambda: tmp_path)
     c = AgentConfig(token="t", file_roots=[str(tmp_path)])
     monkeypatch.setattr(sv.shutil, "which", lambda n: "")
     with pytest.raises(sv.AgentServiceError):
@@ -1185,3 +1161,63 @@ def test_processes_stop_and_log_errors(monkeypatch, tmp_path):
     # port open invalid
     with pytest.raises(p.AgentProcessError):
         p.port_open("x")
+
+
+def test_discovery_payload_includes_hardware(monkeypatch):
+    """UDP discovery carries hardware so a discovered agent prefills the form."""
+    from llama_peer_agent import discovery, processes
+
+    monkeypatch.setattr(processes, "info",
+                        lambda c: {"mac": "de:ad:be:ef:12:34",
+                                   "agent_port": 8198})
+    monkeypatch.setattr(metrics, "collect", lambda: {
+        "gpus": [{"name": "NVIDIA GeForce RTX 4090", "mem_total_gb": 24}],
+        "ram_total_gb": 64, "cores": 16})
+    discovery._hw_cache.update({"ts": 0.0, "data": {}})
+    body = discovery.payload(None)
+    hw = body["hardware"]
+    assert hw["gpu_vendor"] == "nvidia"
+    assert hw["gpu_names"] == ["NVIDIA GeForce RTX 4090"]
+    assert hw["vram_total_gb"] == 24
+    assert hw["ram_total_gb"] == 64
+    assert body["mac"] == "de:ad:be:ef:12:34"
+
+
+def test_metrics_amd_intel_apple_windows(monkeypatch):
+    import llama_peer_agent.metrics as mm
+    monkeypatch.setattr(mm.shutil, "which", lambda n: n if n in (
+        "rocm-smi", "xpu-smi") else None)
+    monkeypatch.setattr(mm, "_run", lambda args, timeout=20, shell=False: (
+        0,
+        '{"card0":{"Card series":"Radeon RX 7900 XTX",'
+        '"VRAM Total Memory (B)":"25753026560",'
+        '"VRAM Total Used Memory (B)":"1073741824"}}'
+        if "rocm-smi" in args else
+        '{"device_list":[{"device_name":"Intel Arc A770",'
+        '"memory_physical_size_byte":"17179869184"}]}', ""))
+    rows = mm._amd_gpus()
+    assert rows and rows[0]["name"] == "Radeon RX 7900 XTX"
+    assert rows[0]["mem_total_gb"] == 24.0
+    rows = mm._intel_gpus()
+    assert rows and rows[0]["name"] == "Intel Arc A770"
+    assert rows[0]["mem_total_gb"] == 16.0
+
+    monkeypatch.setattr(mm.sys, "platform", "darwin")
+    monkeypatch.setattr(mm, "_run", lambda *a, **k: (
+        0, '{"SPDisplaysDataType":[{"sppci_model":"Apple M3 Pro",'
+           '"spdisplays_vram":"18 GB"}]}', ""))
+    rows = mm._apple_gpus()
+    assert rows and rows[0]["name"] == "Apple M3 Pro"
+    assert rows[0]["mem_total_gb"] == 18.0
+
+    monkeypatch.setattr(mm.os, "name", "nt")
+    monkeypatch.setattr(mm, "_run", lambda *a, **k: (
+        0, '[{"Name":"AMD Radeon RX 6800","AdapterRAM":17179869184}]', ""))
+    rows = mm._win_fallback_gpus()
+    assert rows and rows[0]["name"] == "AMD Radeon RX 6800"
+    assert mm._vendor_from_names([rows[0]["name"]]) == "amd"
+
+
+def test_agent_client_token_override():
+    import agent_client as ac
+    assert ac._token({"name": "x", "_agent_token": "typed"}) == "typed"

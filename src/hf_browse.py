@@ -19,6 +19,8 @@ from urllib.parse import quote
 
 import httpx
 
+from runtime_paths import data_dir
+
 HF_API = "https://huggingface.co/api"
 CACHE_TTL = 300
 _cache = {}  # key -> (expires_at, data)
@@ -43,7 +45,7 @@ def _token():
     try:
         import yaml
         from pathlib import Path
-        p = Path(__file__).resolve().parents[1] / "config" / "settings.yaml"
+        p = Path(data_dir()) / "config" / "settings.yaml"
         if p.exists():
             data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
             v = (data.get("hf_token") or "").strip()
@@ -590,7 +592,7 @@ async def search_gguf(query: str = "", sort: str = "downloads", limit: int = 20,
 
         # ---- persistent snapshot store ----
         import json as _json
-        SNAPSHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "generated", "hf_snapshot")
+        SNAPSHOT_DIR = os.path.join(data_dir(), "generated", "hf_snapshot")
         os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 
         def _snap_path(a):

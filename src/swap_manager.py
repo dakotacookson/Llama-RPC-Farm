@@ -598,160 +598,6 @@ def _custom_stop_predicates(spec, bat):
     return " -or ".join(conds), match_subs[0]
 
 
-def _render_winbox_bat_script(mid, peer, bat, port, probe, conds):
-    """Launcher script for runtime: custom / kind winbox-bat.
-
-    Written to the swap scripts_dir and executed by llama-swap's cmd on
-    model load. Over SSH it: (1) KILLS any existing run of this stack
-    first (stale server, half-loaded process, orphan from a dead swap
-    daemon — same predicates as cmdStop) and waits for the port to close
-    PLUS for the GPU VRAM to drain (port-closed does not mean VRAM-freed:
-    the driver can hold the card for up to ~60s after the kill, and a
-    fresh Strata engine started too soon OOMs on the MTP draft head with
-    only ~800 MiB free — observed live on winbox), so every load starts
-    clean; (2) uploads a .ps1 launcher (the proven -File shape from
-    render_remote_local_script: cmd.exe-safe double-quoted path) that
-    starts the .bat DETACHED via Win32_Process.Create with logging to
-    %USERPROFILE%; (3) waits for the port (~2h budget, thin-link rule)
-    with fast-fail when the server process dies pre-listen (port is the
-    primary readiness signal — the cmd.exe wrapper PID stays alive even
-    through a `pause` after a crash, so PID-alive alone means nothing);
-    (4) stays alive as llama-swap's child until the port closes
-    (cmdStop's kill closes it). Requires $SSH_PASS from the sidecar.
-    ASCII ONLY in the ps1: Win PowerShell 5.1 -File reads BOM-less
-    scripts as Windows-1252.
-    """
-    user = peer.get("username") or "root"
-    ip = (peer.get("ip") or "").strip()
-    box = peer["name"]
-    import re as _re
-    safe = _re.sub(r"[^A-Za-z0-9._-]", "-", mid).strip("-") or "custom"
-    ps1_name = f"start-custom-{safe}.ps1"
-    log_name = f"custom-{safe}-{port}.log"
-    # PowerShell single-quoted string literal: only ' needs doubling
-    bat_ps = "'" + bat.replace("'", "''") + "'"
-    ps1 = f"""$ErrorActionPreference = 'Stop'
-$port = {port}
-# guard: the bash wrapper kills first, but if the port is somehow serving
-# here (kill raced a fresh load), attach to it instead of stacking a
-# second server on the same bind.
-try {{ $c = New-Object Net.Sockets.TcpClient('127.0.0.1', $port); $c.Close(); Write-Output 'already serving'; exit 0 }} catch {{ }}
-$log = Join-Path $env:USERPROFILE '{log_name}'
-$cmd = 'cmd.exe /c "call ' + {bat_ps} + ' > "' + $log + '" 2>&1"'
-$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{{ CommandLine = $cmd }}
-if ($r.ReturnValue -ne 0) {{ Write-Error "Win32_Process.Create failed: $($r.ReturnValue)"; exit 1 }}
-$wrapperPid = $r.ProcessId
-Write-Output "started $wrapperPid"
-for ($i = 0; $i -lt 2400; $i++) {{
-  try {{ $c = New-Object Net.Sockets.TcpClient('127.0.0.1', $port); $c.Close(); Write-Output 'server up'; exit 0 }} catch {{ Start-Sleep -Seconds 2 }}
-  if (($i % 20) -eq 0) {{
-    $alive = @(Get-CimInstance Win32_Process | Where-Object {{ (' ' + $_.CommandLine + ' ') -like '*{probe}*' }})
-    if ($alive.Count -eq 0) {{ Write-Error "server process died before opening port {port} - check ~/{log_name}"; exit 1 }}
-    $wp = Get-Process -Id $wrapperPid -ErrorAction SilentlyContinue
-    if ($null -eq $wp) {{ Write-Error "launcher wrapper died before opening port {port} - check ~/{log_name}"; exit 1 }}
-  }}
-}}
-Write-Error "port {port} did not come up in ~2h - check ~/{log_name}"
-exit 1
-"""
-    # Embedded inside a bash double-quoted ssh argument, so the inner
-    # PowerShell double quotes are backslash-escaped (\\" idiom — the
-    # proven shape from render_remote_local_script).
-    # NOTE: these run inside the launcher's bash double quotes under
-    # `set -u` — every PowerShell $ MUST be backslash-escaped (\\$ idiom,
-    # same as render_remote_local_script) or bash eats it as an (unset)
-    # variable. cmdStop keeps BARE $ (llama-swap execs it directly, no
-    # local shell), so the shared conds are escaped only here.
-    probe_ps = (
-        'powershell -NoProfile -Command \\"try { \\$c = New-Object '
-        "Net.Sockets.TcpClient('127.0.0.1', " + str(port) + "); "
-        '\\$c.Close(); exit 0 } catch { exit 1 }\\"')
-    alive_ps = (
-        'powershell -NoProfile -Command \\"Get-CimInstance Win32_Process | '
-        "Where-Object { (' ' + \\$_.CommandLine + ' ') -like '*" + probe
-        + "*' } | Select-Object -First 1\\\"")
-    # Same kill as cmdStop (braces literal — plain string, not f-string).
-    kill_ps = ('powershell -NoProfile -Command \\"Get-CimInstance '
-               'Win32_Process | Where-Object { '
-               + conds.replace("$", "\\$")
-               + ' } | ForEach-Object { Stop-Process -Id '
-               '\\$_.ProcessId -Force }\\"')
-    return f"""#!/bin/bash
-# runtime: custom (winbox-bat) launcher — server lives on {box}
-set -uo pipefail
-: "${{SSH_PASS:?SSH_PASS is not set — sourced from swap-secrets.env}}"
-SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=5"
-# FRESH START: kill any existing run of this stack first — a stale server,
-# a half-loaded process, or an orphan from a dead swap daemon. Every load
-# starts clean; the wait-for-up loop below attaches to the new server.
-echo ">>> clearing any existing custom server on {box}:{port}"
-sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
-  "{kill_ps}" 2>/dev/null || true
-sleep 3
-# wait for the port to actually close (max ~90s) before starting the new
-# run — else the fresh server races the dying one for the bind.
-for _i in $(seq 1 45); do
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
-    "{probe_ps}" 2>/dev/null || break
-  sleep 2
-done
-# VRAM settle: port-closed does NOT mean VRAM-freed. The driver can hold
-# the card for up to ~60s after the kill, and a fresh Strata engine
-# started too soon OOMs on the MTP draft head (observed: 213 MiB needed,
-# only ~800 MiB free right after a kill). Poll for strata compute
-# processes to drain, then sleep once more for the release to settle.
-# A dead .bat stuck on `pause` (no console under Win32_Process.Create)
-# still matches the kill predicates above, so it is already gone here.
-for _i in $(seq 1 30); do
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
-    "nvidia-smi --query-compute-apps=process_name --format=csv,noheader" \\
-    2>/dev/null | grep -qi strata || break
-  sleep 2
-done
-sleep 15
-echo ">>> starting custom server on {box}:{port} ({bat})"
-tmp="$(mktemp /tmp/start-custom-XXXXXX.ps1)"
-cat > "$tmp" <<'PS1'
-{ps1}PS1
-sshpass -p "$SSH_PASS" scp $SSH_OPTS -q "$tmp" "{user}@{ip}:{ps1_name}"
-rc=$?
-rm -f "$tmp"
-[ $rc -ne 0 ] && {{ echo ">>> ps1 upload failed" >&2; exit 1; }}
-# -File path in DOUBLE quotes (\\" idiom): remote cmd.exe expands
-# %USERPROFILE% and hands child powershell.exe a double-quoted path —
-# the proven shape from the RPC launcher. Single quotes arrive doubled
-# (''C:\\...'') and -File rejects them.
-sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
-  "powershell -NoProfile -ExecutionPolicy Bypass -File \\"%USERPROFILE%\\{ps1_name}\\""
-# Load/readiness budget: ~2h (2400 polls x ~3s). Only a dead server process
-# (fast-fail below) or an explicit evict ends the wait.
-for _i in $(seq 1 2400); do
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
-    "{probe_ps}" 2>/dev/null && {{
-    echo ">>> {box}:{port} is up"
-    while sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
-        "{probe_ps}" 2>/dev/null; do
-      sleep 5
-    done
-    echo ">>> {box}:{port} closed — exiting"
-    exit 0
-  }}
-  # fast-fail: server process died without ever opening the port — say so
-  # now instead of idling the full ~2h with no context.
-  if [ $((_i % 20)) -eq 0 ]; then
-    sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
-      "{alive_ps}" 2>/dev/null | grep -q . || {{
-      echo "!!! {box}:{port} server process died before opening the port — check ~/{log_name} there" >&2
-      exit 1
-    }}
-  fi
-  sleep 2
-done
-echo "!!! {box}:{port} did not come up in ~2h — check ~/{log_name} there" >&2
-exit 1
-"""
-
-
 def _agent_custom_start_script(scripts_dir, machine, bat, port):
     import shlex
     var = _agent_token_var(machine.get("name"))
@@ -930,37 +776,6 @@ def _rpc_cmdstop(model_cfg, peers):
                     f'--data-binary \'{{"port":{port}}}\' '
                     f'"{_agent_base(p)}/rpc/stop" >/dev/null 2>&1 || true')
                 continue
-            if is_win:
-                # Pipe-free PowerShell: cmd.exe over OpenSSH mangles the
-                # pipe form (Stop-Process never ran but the old stop script
-                # still exited 0).
-                ps = (
-                    "$c=0; foreach ($x in (Get-CimInstance Win32_Process)) { "
-                    "if ($x.Name -like 'ggml-rpc-server*' -and "
-                    "((' ' + $x.CommandLine + ' ') -like '*-p " + str(port)
-                    + " *')) { Stop-Process -Id $x.ProcessId -Force; $c++ } }; "
-                    "Remove-Item $env:USERPROFILE/.cache/llama-wrapper/rpc.state."
-                    + str(port) + ", $env:TEMP/llama-wrapper-rpc.state."
-                    + str(port) + " -ErrorAction SilentlyContinue")
-                # escape PowerShell $vars for the local shell; keep inner
-                # quotes escaped for the remote powershell wrapper
-                ps_shell = ps.replace("$", "\\$")
-                cmds.append(
-                    'ssh -n -o StrictHostKeyChecking=no -o ConnectTimeout=5 '
-                    '-o BatchMode=yes ' + user + '@' + ip
-                    + ' "powershell -NoProfile -Command \\"'
-                    + ps_shell + '\\"" || true')
-            else:
-                remote = (
-                    'pkill -u ' + user + ' -f \\"ggml-[r]pc-server.*-p '
-                    + str(port) + ' \\" 2>/dev/null || true; '
-                    'rm -f \\$HOME/.cache/llama-wrapper/rpc.state.'
-                    + str(port)
-                    + ' /tmp/llama-wrapper-rpc.state.' + str(port))
-                cmds.append(
-                    'sshpass -p "$SSH_PASS" ssh -n '
-                    '-o StrictHostKeyChecking=no -o ConnectTimeout=5 '
-                    + user + '@' + ip + ' "' + remote + '" || true')
     return " ; ".join(cmds) if cmds else None
 
 
@@ -979,7 +794,7 @@ def launch_plan(config_path=None, host_name=None):
     out during one plan must not constrain a different later plan.
 
     Linux host + peers: a per-model start-<id>.sh owns the RPC peers
-    (spin up on load via sshpass, tear down on EXIT -- the proven
+    (spin up on load via the peer agent, tear down on EXIT -- the proven
     start-rpc-qwen.sh shape) and cmd calls it, exactly like the live
     config. Single-node models and Windows hosts embed the direct
     llama-server command with the ${PORT} placeholder.
@@ -1059,19 +874,18 @@ def launch_plan(config_path=None, host_name=None):
         return k, w
 
     def _wrap_cmdstop(mid_for_key, cmdstop, force=False):
-        """Make a cmdStop that needs $SSH_PASS actually receive it.
+        """Wrap secret-bearing cmdStop in a pushed script.
 
-        llama-swap runs cmdStop in the DAEMON's environment, not inside the
-        model `cmd` shell — the sidecar sourced by cmd is gone by then. A
-        bare `sshpass -p "$SSH_PASS" ...` therefore ran with an empty
-        password and never killed remote-local models / RPC peers. Wrap such
-        cmdStops in a tiny pushed script that sources the sidecar first.
-        (POSIX swap host only; Windows hosts have no bash/sidecar path.)
+        llama-swap expands `${...}` in cmd/cmdStop as macros; an agent token
+        placeholder like ${AGENT_TOKEN_WINBOX} made the whole config fail
+        with "unknown macro". Run the command from a bash script that sources
+        swap-secrets.env instead, so no macro syntax reaches llama-swap.
         """
         if not cmdstop or host_os == "windows":
             return cmdstop
-        if (not force and "$SSH_PASS" not in cmdstop
-                and "sshpass" not in cmdstop):
+        needs = force or any(tok in cmdstop for tok in (
+            "$SSH_PASS", "sshpass", "${AGENT_TOKEN_", "$AGENT_TOKEN_"))
+        if not needs:
             return cmdstop
         safe = "".join(c if c.isalnum() or c in "-_."
                        else "-" for c in str(mid_for_key or "model"))
@@ -1083,7 +897,7 @@ def launch_plan(config_path=None, host_name=None):
             f"source \"{scripts_dir}/{SIDECAR_NAME}\" 2>/dev/null || true\n"
             f"{cmdstop}\n"
         )
-        return f'/bin/bash "{scripts_dir}/{fname}"'
+        return f'/bin/bash \"{scripts_dir}/{fname}\"' 
 
     def _process_one(deploy_model, mid_for_key, label_for_log, is_variant=False):
         # SERVE-GROUP key for the actual-port state file, by group kind:
@@ -1248,61 +1062,9 @@ def launch_plan(config_path=None, host_name=None):
                                 "base_model": mid_for_key.split("--")[0],
                                 "rpc_map": {}})
                 return
-            if remote_os == "windows":
-                # Windows llama-server box: render_remote_local_script
-                # pushes a .ps1 launcher over SSH and drives it — same
-                # start/stop semantics as the POSIX path.
-                script_name = f"start-{mid_for_key}.sh"
-                scripts[script_name] = rpc_manager.render_remote_local_script(
-                    deploy_model, peer_m, remote_port, state_key=_sg_key)
-                script_mids.add(mid_for_key)
-                models[key] = {
-                    "cmd": (
-                        f"/bin/bash -c 'source \"{scripts_dir}/swap-secrets.env\" "
-                        f"2>/dev/null; exec /bin/bash \"{scripts_dir}/{script_name}\"'"),
-                    "proxy": f"http://{remote_ip}:{remote_port}",
-                    # ACTUAL-PORT kill (rpc_manager.swap_state_killer_snippet):
-                    # kills every --port recorded in the launcher's state
-                    # file (config port when none) — a port that rolled
-                    # past `remote_port` still dies on unload/swap. State
-                    # key = the deployment's SERVE GROUP (group-scoped
-                    # kick-out), or the model id when ungrouped — resolved
-                    # at push time, never hard-coded.
-                    "cmdStop": _wrap_cmdstop(
-                        mid_for_key,
-                        rpc_manager.swap_state_killer_snippet(
-                            peer_m, _sg_key, remote_port,
-                            os_type="windows")),
-                    # /health: poll until the remote model finishes
-                    # loading (llama-server 503s while loading)
-                    "checkEndpoint": "/health",
-                }
-            else:
-                # llama-swap's cmd IS the launcher: on model load it SSHes
-                # to the box, reuses an already-serving port (config
-                # reloads never restart a healthy server), else clears
-                # stale processes and starts llama-server THERE with the
-                # box's own GPUs (fit mode), waits for the port, exits 0 —
-                # then llama-swap proxies every request to it.
-                script_name = f"start-{mid_for_key}.sh"
-                scripts[script_name] = rpc_manager.render_remote_local_script(
-                    deploy_model, peer_m, remote_port, state_key=_sg_key)
-                script_mids.add(mid_for_key)
-                models[key] = {
-                    "cmd": (
-                        f"/bin/bash -c 'source \"{scripts_dir}/swap-secrets.env\" "
-                        f"2>/dev/null; exec /bin/bash \"{scripts_dir}/{script_name}\"'"),
-                    "proxy": f"http://{remote_ip}:{remote_port}",
-                    # ACTUAL-PORT kill (see the windows branch above);
-                    # state key = serve group (group-scoped kick-out)
-                    "cmdStop": _wrap_cmdstop(
-                        mid_for_key,
-                        rpc_manager.swap_state_killer_snippet(
-                            peer_m, _sg_key, remote_port)),
-                    # /health: poll until the remote model finishes
-                    # loading (llama-server 503s while loading)
-                    "checkEndpoint": "/health",
-                }
+            warnings.append(
+                f"{mid_for_key}: peer agent required for remote-local launch")
+            return
             entries.append({"key": key, "model_id": mid_for_key,
                             "mode": "remote-proxy",
                             "pinned": bool(deploy_model.get("pinned")),
@@ -1505,40 +1267,7 @@ def launch_plan(config_path=None, host_name=None):
             _custom_record(key, mid_for_key, deploy_model, "script",
                            *_custom_ttl_pinned(deploy_model), is_variant)
             return
-        script_name = f"start-{mid_for_key}.sh"
-        scripts[script_name] = _render_winbox_bat_script(
-            mid_for_key, peer, bat, port, probe, conds)
-        script_mids.add(mid_for_key)
-        user = peer.get("username") or "root"
-        # Powershell braces are literal here (plain string, not f-string)
-        # — the kill matches the live tree: wrapper cmd.exe carrying the
-        # .bat name, server/engine processes via stop_match, engine exes
-        # via stop_names. Port-anchored like the llama-server kills
-        # elsewhere: only this stack's port is ever touched (the probe in
-        # the launcher prevents cross-model kills by construction).
-        ps_kill = (
-            "Get-CimInstance Win32_Process | Where-Object { " + conds
-            + " } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }")
-        models[key] = {
-            "cmd": (
-                f"/bin/bash -c 'source \"{scripts_dir}/swap-secrets.env\" "
-                f"2>/dev/null; exec /bin/bash \"{scripts_dir}/{script_name}\"'"),
-            "proxy": f"http://{remote_ip}:{port}",
-            # /health: Strata answers 200 once the model is loaded (probed
-            # live on winbox) — the client's first request waits for the
-            # load instead of surfacing a 502/503.
-            "checkEndpoint": "/health",
-            "cmdStop": _wrap_cmdstop(
-                mid_for_key,
-                ('sshpass -p "$SSH_PASS" ssh -n '
-                 '-o StrictHostKeyChecking=no -o ConnectTimeout=5 '
-                 f"{user}@{remote_ip} "
-                 '"powershell -NoProfile -Command \\"' + ps_kill + '\\""')),
-        }
-        ttl, pinned = _custom_ttl_pinned(deploy_model)
-        models[key]["ttl"] = ttl
-        _custom_record(key, mid_for_key, deploy_model, "custom-proxy",
-                       ttl, pinned, is_variant)
+        return
 
     def _process_custom_raw(deploy_model, mid_for_key, spec, is_variant=False):
         """Kind raw: the user's own swap entry, passed through verbatim
@@ -1644,20 +1373,11 @@ def launch_plan(config_path=None, host_name=None):
         "models": models,
     }
     # runtime secrets sidecar: pushed next to the scripts (0600) and sourced
-    # by the wrapped model cmds above. Built from the in-memory
-    # vault-resolved host password — the tracked swap.yaml never holds it,
-    # and generated scripts never bake it. Only emitted when at least one
-    # script actually requires $SSH_PASS (the _render_rpc guard). Lives in
-    # the per-engine scripts_dir (DEC-13) so each engine has its own copy.
-    # sidecar is also required when a remote-proxy entry's cmdStop SSHes
-    # to the llama-server box (it needs $SSH_PASS at evict time) even
-    # though that entry ships no script.
-    # A raw custom entry (or its pushed script) may reference $SSH_PASS /
-    # sshpass itself — same vault-fed sidecar, never baked secrets.
+    # by the wrapped model cmds above. Agent-only: it carries per-machine
+    # AGENT_TOKEN_<NAME> values from the vault. Lives in the per-engine
+    # scripts_dir (DEC-13) so each engine has its own copy.
     def _needs_sidecar_text(*texts):
-        return any(t and ("SSH_PASS" in t or "sshpass" in t
-                          or "AGENT_TOKEN_" in t)
-                   for t in texts)
+        return any(t and "AGENT_TOKEN_" in t for t in texts)
 
     if any(_needs_sidecar_text(c) for c in scripts.values()) or any(
             _needs_sidecar_text(e.get("cmd"), e.get("cmdStop"))
@@ -1671,7 +1391,6 @@ def launch_plan(config_path=None, host_name=None):
             "# llama-swap runtime secrets — generated at push time from the",
             "# encrypted vault (never committed, never baked into scripts).",
             "# Sourced by model launch commands before start-*.sh runs.",
-            f"export SSH_PASS={_shlex.quote(host.get('password') or '')}",
         ]
         # Per-machine agent tokens: only the agent-native scripts reference
         # these; 0600 sidecar, same trust boundary as SSH_PASS.
@@ -1865,6 +1584,8 @@ def _remote_home(ssh, os_type="linux"):
 
 def _host_home(host):
     """Home directory on the host, via agent when selected."""
+    if local_node.is_local(host):
+        return os.path.expanduser("~")
     if agent_client.should_use_agent(host):
         try:
             home = agent_client.info(host).get("home")
@@ -1999,7 +1720,7 @@ def _port_open(host, port):
 
 def _process_running(host):
     os_type = host.get("os", "linux")
-    if agent_client.should_use_agent(host):
+    if not local_node.is_local(host) and agent_client.should_use_agent(host):
         try:
             return bool(agent_client.service_status(host).get("running"))
         except Exception as e:
@@ -2243,7 +1964,7 @@ def _backup_host_file(host, path, stamp):
     overwritten (DEC-13, T2-G4). Returns the backup path, or None when the
     source doesn't exist. Never raises — backup is best-effort, the write
     itself is the hard gate."""
-    if agent_client.should_use_agent(host):
+    if not local_node.is_local(host) and agent_client.should_use_agent(host):
         try:
             res = agent_client.file_backup(host, path, stamp)
             return res.get("backup") if res.get("backed_up") else None
@@ -2551,7 +2272,7 @@ def stop():
     """Stop the llama-swap daemon on the host (peers stay up)."""
     host = get_host(load_settings()["host_name"])
     os_type = host.get("os", "linux")
-    if agent_client.should_use_agent(host):
+    if not local_node.is_local(host) and agent_client.should_use_agent(host):
         try:
             res = agent_client.service_stop(host)
             return {"host": host["name"],
@@ -2647,6 +2368,51 @@ def _wait_gone(host, tries=6):
             return True
         time.sleep(1)
     return not _process_running(host)
+
+
+def sync_service_unit():
+    """Keep the systemd user unit's --listen port in sync with swap.yaml.
+
+    A launch-time port roll can write :8081 into the unit while clients
+    still expect the configured :8080; after a reboot that reads as
+    "swap FAILED". Rewrite + restart when they disagree.
+    """
+    import re
+    import sys as _sys
+    if os.name == "nt" or _sys.platform == "darwin":
+        return {"skipped": True}
+    s = load_settings()
+    host = get_host(s.get("host_name"))
+    try:
+        import local_node
+        if not local_node.is_local(host):
+            return {"skipped": True}
+    except Exception:
+        pass
+    unit = os.path.expanduser("~/.config/systemd/user/llama-swap.service")
+    if not os.path.exists(unit):
+        return {"skipped": True}
+    try:
+        text = open(unit, encoding="utf-8").read()
+    except OSError:
+        return {"skipped": True}
+    want = int(s.get("listen_port") or 8080)
+    m = re.search(r"--listen\s+:(\d+)", text)
+    if not m or int(m.group(1)) == want:
+        return {"updated": False, "port": want}
+    new = re.sub(r"--listen\s+:\d+", f"--listen :{want}", text)
+    try:
+        with open(unit, "w", encoding="utf-8") as f:
+            f.write(new)
+        import subprocess
+        subprocess.run(["systemctl", "--user", "daemon-reload"],
+                       capture_output=True, timeout=20)
+        subprocess.run(["systemctl", "--user", "restart", "llama-swap"],
+                       capture_output=True, timeout=30)
+        print(f"[swap] unit port corrected to :{want}")
+        return {"updated": True, "port": want}
+    except Exception as e:
+        return {"updated": False, "error": str(e)}
 
 
 def status():

@@ -151,41 +151,6 @@ def _qe__model(mid, flags=None, **kw):
     return m
 
 
-# ---------------------------------------------------------------------------
-# _render_rpc: password with shell metacharacters must not break sshpass line
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("bad_password", [
-    "p@ss'word",
-    'p"ass"word',
-    "pass;word",
-    "pass$(evil)",
-    "pass`whoami`",
-    "pass word",  # space
-])
-def test_render_rpc_password_never_baked_into_script(stub_cfg, bad_password):
-    """Secrets are vault-only: no password ( however metachar-heavy ) may
-    appear anywhere in the generated script. The script requires $SSH_PASS
-    at runtime (scripts/farm-run.sh decrypts the vault and exports it)."""
-    master = _qe__machine("aibox1", "10.0.0.98", role="master")
-    peer = _qe__machine("aibox2", "10.0.0.11", password=bad_password)
-    stub_cfg.update({m["name"]: m for m in (master, peer)})
-    model = _qe__model(
-        "m",
-        device_order="aibox1-CUDA0,aibox2-CUDA0",
-    )
-    script = _render_rpc(model, master, [peer])
-
-    assert bad_password not in script, (
-        "Plaintext password baked into generated script"
-    )
-    assert "SSH_PASS" in script, "Expected runtime $SSH_PASS resolution in script"
-    sshpass_lines = [l for l in script.splitlines() if "sshpass" in l]
-    assert sshpass_lines, "Expected at least one sshpass line in generated script"
-    for line in sshpass_lines:
-        assert '"$SSH_PASS"' in line or "'$SSH_PASS'" in line or "$SSH_PASS" in line
-
-
 def _single_quote_escape(s):
     """Return the standard single-quote escape form of s: 'a'\''b' for a'b."""
     return s.replace("'", "'\"'\"'")

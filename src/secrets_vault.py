@@ -250,14 +250,17 @@ def get_machine_agent_token(machine):
             return decrypt_value(enc)
         except Exception:
             return ""
+    env = (os.environ.get("FARM_AGENT_TOKEN")
+           or os.environ.get("AGENT_TOKEN") or "").strip()
+    if env:
+        return env
     enc = (os.environ.get("AGENT_TOKEN_ENC") or "").strip()
     if enc:
         try:
             return decrypt_value(enc)
         except Exception:
             return ""
-    return (os.environ.get("FARM_AGENT_TOKEN")
-            or os.environ.get("AGENT_TOKEN") or "").strip()
+    return ""
 
 
 def machine_agent_token_set(machine):
@@ -348,7 +351,7 @@ def reload_env():
     while the farm app keeps WRITING the vault (new logins, sessions,
     rotated keys) — env was snapshotted at import, so session/cookie
     resolution silently went stale until restart (401s with valid
-    grants). override=False: real env vars (SSH_PASS etc.) still win."""
+    grants). override=False: real env vars still win."""
     try:
         from dotenv import load_dotenv as _load_dotenv
         _load_dotenv(ENV_PATH, override=False)
@@ -387,3 +390,21 @@ def get_web_session(sid):
 
 def delete_web_session(sid):
     delete_env_value(f"WEB_SESSION_{sid}")
+
+
+# ---------------- farm-wide agent token (one token for all agents) ---------
+def set_farm_agent_token(plain):
+    """Shared token used by every agent when no per-machine token is set."""
+    if plain and plain.strip():
+        set_env_value("AGENT_TOKEN_ENC", encrypt_value(plain.strip()))
+    else:
+        delete_env_value("AGENT_TOKEN_ENC")
+
+
+def farm_agent_token_set():
+    return bool((os.environ.get("AGENT_TOKEN_ENC") or "").strip())
+
+
+def get_farm_agent_token():
+    enc = (os.environ.get("AGENT_TOKEN_ENC") or "").strip()
+    return decrypt_value(enc) if enc else ""

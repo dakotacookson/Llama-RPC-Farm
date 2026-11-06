@@ -3,6 +3,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 import json
 import logging
+import os
 import platform
 import signal
 import threading
@@ -29,6 +30,23 @@ from . import build
 
 _START_TS = time.time()
 _MAX_BODY = 1_048_576
+_PAIRING_DEADLINE = 0.0
+
+
+def _pairing_open() -> bool:
+    return bool(_PAIRING_DEADLINE and time.time() < _PAIRING_DEADLINE)
+
+
+def _pairing_enabled() -> bool:
+    return (os.environ.get("PEER_AGENT_PAIRING") or "1").lower() not in (
+        "0", "false", "no", "off")
+
+
+def _pairing_window() -> int:
+    try:
+        return max(30, int(os.environ.get("PEER_AGENT_PAIRING_WINDOW") or 600))
+    except ValueError:
+        return 86400
 log = logging.getLogger("llama_peer_agent")
 
 
@@ -184,7 +202,25 @@ class AgentHandler(BaseHTTPRequestHandler):
         return 404, {"error": "not found"}
 
     def _dispatch_post(self, path: str, body: dict):
+        global _PAIRING_DEADLINE
         config = self.server.config
+        if path == "/pair":
+            if (config.token or "").strip():
+                return 400, {"error": "already paired"}
+            if not _pairing_open():
+                return 400, {"error": "pairing window closed"}
+            tok = str(body.get("token") or "").strip()
+            if len(tok) < 16:
+                return 400, {"error": "token must be at least 16 chars"}
+            from .config import save_token
+            try:
+                save_token(tok)
+            except OSError as e:
+                return 500, {"error": f"could not persist token: {e}"}
+            config.token = tok
+            _PAIRING_DEADLINE = 0.0
+            log.warning("paired successfully; token persisted")
+            return 200, {"ok": True, "paired": True}
         if path == "/files/write":
             try:
                 mode = body.get("mode")
@@ -412,10 +448,13 @@ class AgentHandler(BaseHTTPRequestHandler):
             pass
 
     def _handle(self, method: str):
-        if not self._authorized():
-            self._send_json(401, {"error": "unauthorized"})
-            return
         path = (self.path or "/").split("?", 1)[0].rstrip("/") or "/"
+        if not self._authorized():
+            allowed = path in ("/health", "/version") or (
+                path == "/pair" and _pairing_open())
+            if not allowed:
+                self._send_json(401, {"error": "unauthorized"})
+                return
         if method == "GET" and path == "/speedtest":
             self._send_speedtest()
             return
@@ -447,8 +486,13 @@ class AgentHandler(BaseHTTPRequestHandler):
 
 
 def create_server(config: AgentConfig) -> AgentHTTPServer:
+    global _PAIRING_DEADLINE
     if not (config.token or "").strip():
-        raise ValueError("PEER_AGENT_TOKEN is required")
+        if not _pairing_enabled():
+            raise ValueError("PEER_AGENT_TOKEN is required")
+        _PAIRING_DEADLINE = time.time() + _pairing_window()
+        log.warning("no token — PAIRING MODE open for %ss",
+                    _pairing_window())
     if not 0 <= int(config.port) <= 65535:
         raise ValueError("port must be in 0..65535 (0 = ephemeral)")
     return AgentHTTPServer((config.host, int(config.port)),

@@ -6,7 +6,9 @@ metadata (no secrets). Enrollment still requires the bearer token.
 import json
 import logging
 import socket
+import sys
 import threading
+import time
 
 from . import PROTOCOL_VERSION, __version__
 from . import processes
@@ -16,6 +18,51 @@ MAGIC = b"LLAMA_FARM_DISCOVER_V1"
 DEFAULT_DISCOVERY_PORT = 8199
 log = logging.getLogger("llama_peer_agent.discovery")
 
+_hw_cache = {"ts": 0.0, "data": {}}
+
+
+def _hardware() -> dict:
+    """Lightweight hardware summary for discovery (cached 60s).
+
+    Identity is still MAC/IP; this only lets the master pre-fill the
+    machine form (GPU vendor + device names, RAM, cores) so adding a
+    discovered agent needs no manual hardware entry.
+    """
+    now = time.time()
+    if now - _hw_cache["ts"] < 60:
+        return _hw_cache["data"]
+    data = {}
+    try:
+        from . import metrics
+        m = metrics.collect()
+        gpus = m.get("gpus") or []
+        names = [g.get("name") for g in gpus if g.get("name")]
+        blob = " ".join(names).lower()
+        vendor = ""
+        if any(k in blob for k in ("nvidia", "geforce", "rtx", "tesla", "quadro")):
+            vendor = "nvidia"
+        elif any(k in blob for k in ("amd", "radeon", "instinct")):
+            vendor = "amd"
+        elif "apple" in blob:
+            vendor = "apple"
+        elif "intel" in blob:
+            vendor = "intel"
+        if not vendor and sys.platform == "darwin":
+            vendor = "apple"
+        data = {
+            "gpu_names": names,
+            "gpu_vendor": m.get("gpu_vendor") or vendor,
+            "gpu_count": len(names),
+            "vram_total_gb": round(sum(
+                float(g.get("mem_total_gb") or 0) for g in gpus), 1),
+            "ram_total_gb": m.get("ram_total_gb"),
+            "cores": m.get("cores"),
+        }
+    except Exception:
+        data = {}
+    _hw_cache.update({"ts": now, "data": data})
+    return data
+
 
 def payload(config: AgentConfig) -> dict:
     body = processes.info(config)
@@ -23,6 +70,8 @@ def payload(config: AgentConfig) -> dict:
         "magic": MAGIC.decode("ascii"),
         "protocol_version": PROTOCOL_VERSION,
         "agent_version": __version__,
+        "pairing": not bool((getattr(config, "token", "") or "").strip()),
+        "hardware": _hardware(),
     })
     return body
 

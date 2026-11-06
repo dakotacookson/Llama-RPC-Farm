@@ -113,6 +113,24 @@ function _toastHost() {
 
 /* Toast: replaces native alert()/confirm(), which browsers block or
    suppress (that silently killed the delete/status buttons). */
+function loadedNotice(key, label) {
+  const el = stickyNotice(
+    `✓ ${label} loaded — serving via the farm API (:8090)`,
+    "ok", `loaded:${key}`,
+    "Model is loaded on the swap host and available to API clients.");
+  el.classList.add("toast-loaded");
+  // long enough to notice from any tab, still self-clears
+  setTimeout(() => { if (el && el.isConnected) el.remove(); }, 20000);
+  return el;
+}
+
+function clearLoadedNotice(key) {
+  const host = _toastHost();
+  [...host.children].forEach(c => {
+    if (c.dataset && c.dataset.noticeKey === `loaded:${key}`) c.remove();
+  });
+}
+
 function toast(msg, kind = "info", ms = 6000) {
   const host = _toastHost();
   const el = document.createElement("div");
@@ -1579,7 +1597,7 @@ on("#stop-swap", "click", async (e) => {
   const btn = e.currentTarget;
   dashStatus("stop-all clicked");
   if (!armed(btn, "Stop All")) return;
-  btn.disabled = true; btn.textContent = "stopping…";
+  btn.disabled = true; btn.textContent = "evicting…";
   dashStatus("stopping llama-swap + all RPC…");
   try {
     const r = await api("POST", "/api/swap/stop", {});
@@ -1664,7 +1682,7 @@ on("#start-all", "click", async (e) => {
 });
 
 /* ---------------- machines ---------------- */
-const EMPTY_MACHINE = { name: "", ip: "", username: "zazi", password: "", port: 22, transport: "auto", agent_port: 8198, agent_token: "", role: "peer", os: "linux", rpc_port: 50052, gpu: "", llama_bin: "", rdma: false, rdma_ip: "", rdma_dev: "", rdma_gid: "", rdma_cm: false };
+const EMPTY_MACHINE = { name: "", ip: "", username: "", password: "", port: 1, transport: "agent", agent_port: 8198, agent_token: "", role: "peer", os: "linux", rpc_port: 50052, gpu: "", llama_bin: "", rdma: false, rdma_ip: "", rdma_dev: "", rdma_gid: "", rdma_cm: false };
 
 async function defaultLlamaBin() {
   const s = await getAppSettings();
@@ -1672,19 +1690,28 @@ async function defaultLlamaBin() {
 }
 
 function syncTransportFields() {
-  const t = $("#m-transport")?.value || "auto";
-  const ssh = t === "ssh" || t === "auto";
-  const agent = t === "agent" || t === "auto";
+  // Agent-only: SSH fields are retired. Keep the hidden inputs for payload
+  // compatibility but never show or require them.
   for (const id of ["m-username-label", "m-password-label", "m-port-label"]) {
     const el = $("#" + id);
-    if (el) el.style.display = ssh ? "" : "none";
+    if (el) el.style.display = "none";
   }
   for (const id of ["m-agent-port-label", "m-agent-token-label"]) {
     const el = $("#" + id);
-    if (el) el.style.display = agent ? "" : "none";
+    if (el) el.style.display = "";
   }
   const user = $("#m-username");
-  if (user) user.required = ssh;
+  if (user) user.required = false;
+  const tr = $("#m-transport");
+  if (tr) tr.value = "agent";
+}
+
+function syncRoleFields() {
+  const master = ($("#m-role")?.value || "peer") === "master";
+  for (const id of ["m-agent-port-label", "m-agent-token-label"]) {
+    const el = $("#" + id);
+    if (el) el.style.display = master ? "none" : "";
+  }
 }
 
 function syncRdmaFields() {
@@ -1711,8 +1738,8 @@ function machineFormLoad(m, isEdit) {
   $("#machine-original-name").value = editing ? (m.name || "") : "";
   $("#m-name").value = m.name || "";
   $("#m-ip").value = m.ip || "";
-  $("#m-username").value = m.username || "zazi";
-  $("#m-password").value = ""; // never fill the real password — hint shows state
+  $("#m-username").value = "";
+  $("#m-password").value = "";
   $("#m-agent-token").value = ""; // write-only: stored in the vault
   const atHint = $("#m-agent-token-hint");
   if (atHint) atHint.textContent = (editing && m.agent_token_set)
@@ -1722,11 +1749,12 @@ function machineFormLoad(m, isEdit) {
   if (pwHint) pwHint.textContent = (editing && m.password_set)
     ? "Password saved in vault — leave blank to keep, type to replace."
     : (editing ? "No password saved — type one to set it." : "Stored encrypted in the vault (.env).");
-  $("#m-port").value = m.port ?? 22;
-  $("#m-transport").value = m.transport || "auto";
+  $("#m-port").value = 1;
+  $("#m-transport").value = "agent";
   $("#m-agent-port").value = m.agent_port ?? 8198;
   syncTransportFields();
   $("#m-role").value = m.role || "peer";
+  syncRoleFields();
   $("#m-os").value = m.os || "linux";
   $("#m-gpu-vendor").value = m.gpu_vendor || "nvidia";
   $("#m-rpc-port").value = m.rpc_port ?? 50052;
@@ -1835,34 +1863,29 @@ async function showHostFingerprint() {
   if (!box) return;
   const ip = $("#m-ip").value.trim();
   if (!ip) { box.textContent = ""; return; }
-  if (($("#m-transport")?.value || "auto") === "agent") {
-    box.innerHTML = '<span class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Checking peer agent…</span>';
-    try {
-      const a = await api("POST", "/api/machines/agent-check", {
-        ip,
-        agent_port: parseInt($("#m-agent-port").value, 10) || 8198,
-        agent_token: $("#m-agent-token").value,
-        name: $("#machine-original-name").value || $("#m-name").value.trim(),
-      });
-      box.innerHTML = `<span class="status-ok"><i class="fa-solid fa-plug"></i> Peer agent connected — v${escHtml(a.agent_version || "?")} (protocol ${escHtml(String(a.protocol_version ?? "?"))})</span>`;
-    } catch (e) {
-      box.innerHTML = `<span class="status-bad"><i class="fa-solid fa-plug"></i> Peer agent check failed: ${escHtml(e.message)}</span>`;
-    }
+  if (($("#m-role")?.value || "peer") === "master") {
+    box.innerHTML = '<span class="hint"><i class="fa-solid fa-server"></i> Local master — managed directly by the app; no peer agent needed.</span>';
     return;
   }
-  const port = parseInt($("#m-port").value, 10) || 22;
-  box.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> checking host key…';
+  const tok = ($("#m-agent-token")?.value || "").trim();
+  const editing = Boolean($("#machine-original-name").value);
+  const tokHint = ($("#m-agent-token-hint")?.textContent || "");
+  const savedToken = editing && /leave blank to keep/i.test(tokHint);
+  if (!tok && !savedToken) {
+    box.innerHTML = '<span class="hint"><i class="fa-solid fa-plug"></i> Agent discovered — enter its token to verify. Tokens are never broadcast by discovery.</span>';
+    return;
+  }
+  box.innerHTML = '<span class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Checking peer agent…</span>';
   try {
-    const r = await api("POST", "/api/machines/fingerprint",
-      { ip, port, username: $("#m-username").value.trim() });
-    const mismatch = r.known && r.stored_fingerprint && r.stored_fingerprint !== r.fingerprint;
-    box.innerHTML = mismatch
-      ? `<span class="status-bad"><i class="fa-solid fa-triangle-exclamation"></i> Host key CHANGED for ${escHtml(ip)}! stored: <code>${escHtml(r.stored_fingerprint)}</code> · now: <code>${escHtml(r.fingerprint)}</code> — verify before trusting</span>`
-      : r.known
-        ? `<i class="fa-solid fa-fingerprint"></i> Host key (trusted): <code>${escHtml(r.fingerprint)}</code> <small class="hint">(${escHtml(r.type)}, saved on first login)</small>`
-        : `<i class="fa-solid fa-fingerprint"></i> First login — host key <code>${escHtml(r.fingerprint)}</code> <small class="hint">(${escHtml(r.type)}) will be trusted on save and pinned for future logins</small>`;
+    const a = await api("POST", "/api/machines/agent-check", {
+      ip,
+      agent_port: parseInt($("#m-agent-port").value, 10) || 8198,
+      agent_token: $("#m-agent-token").value,
+      name: $("#machine-original-name").value || $("#m-name").value.trim(),
+    });
+    box.innerHTML = `<span class="status-ok"><i class="fa-solid fa-plug"></i> Peer agent connected — v${escHtml(a.agent_version || "?")} (protocol ${escHtml(String(a.protocol_version ?? "?"))})</span>`;
   } catch (e) {
-    box.innerHTML = `<span class="status-warn"><i class="fa-solid fa-triangle-exclamation"></i> Host key check failed: ${escHtml(e.message)}</span>`;
+    box.innerHTML = `<span class="status-bad"><i class="fa-solid fa-plug"></i> Peer agent check failed: ${escHtml(e.message)}</span>`;
   }
 }
 
@@ -1870,10 +1893,10 @@ function machineFormRead() {
   return {
     name: $("#m-name").value.trim(),
     ip: $("#m-ip").value.trim(),
-    username: $("#m-username").value.trim(),
-    password: $("#m-password").value,
-    port: parseInt($("#m-port").value, 10),
-    transport: $("#m-transport").value,
+    username: "",
+    password: "",
+    port: 1,
+    transport: "agent",
     agent_port: parseInt($("#m-agent-port").value, 10) || 8198,
     agent_token: $("#m-agent-token").value,
     role: $("#m-role").value,
@@ -1950,7 +1973,7 @@ async function loadMachines(skipCaps = false) {
         <button class="small" data-act="edit">Edit</button>
         <button class="small" data-act="detect">Detect</button>
         <button class="small" data-act="update">Update</button>
-        <button class="small" data-act="agent-update" title="Install or update the peer agent on this machine">Agent ⟳</button>
+        ${(m.role === "master" || m.is_local) ? "" : '<button class="small" data-act="agent-update" title="Install or update the peer agent on this machine">Agent ⟳</button>'}
         <button class="small danger" data-act="delete">Delete</button>
       </div>`;
       tr.classList.add("scan-model");
@@ -1977,7 +2000,8 @@ async function loadMachines(skipCaps = false) {
           toast(err.message, "bad");
         }
       };
-      tr.querySelector('[data-act="agent-update"]').onclick = async (e) => {
+      const agentUpdateBtn = tr.querySelector('[data-act="agent-update"]');
+      if (agentUpdateBtn) agentUpdateBtn.onclick = async (e) => {
         const btn = e.currentTarget;
         if (!window.confirm(`Install/update the peer agent on ${m.name}?\n\nThe agent will be restarted.`)) return;
         btn.disabled = true;
@@ -1985,7 +2009,9 @@ async function loadMachines(skipCaps = false) {
         btn.textContent = "Updating agent…";
         try {
           const r = await api("POST", `/api/machines/${encodeURIComponent(m.name)}/update-agent`);
-          toast(`${m.name}: peer agent ${r.agent_version || "updated"}`, "ok");
+          toast(r.skipped ? `${m.name}: ${r.detail || "no peer agent needed"}`
+                          : `${m.name}: peer agent ${r.agent_version || "updated"}`,
+                "ok");
           loadMachines(true);
         } catch (err) {
           toast(`Agent update failed on ${m.name}: ${err.message}`, "bad");
@@ -2040,6 +2066,12 @@ function fillAgentUpdateState(tr, name) {
   api("GET", `/api/machines/${encodeURIComponent(name)}/agent-version`)
     .then(v => {
       if (!btn.isConnected) return;
+      if (v.local) {
+        btn.hidden = true;
+        btn.style.display = "none";
+        btn.title = "The UI host is managed locally; it runs no peer agent.";
+        return;
+      }
       if (v.on_latest) {
         btn.disabled = true;
         btn.textContent = `Agent on latest (${v.latest})`;
@@ -2130,15 +2162,15 @@ async function discoverInit() {
 }
 
 function syncDiscoveryMode() {
-  const peer = ($("#d-mode")?.value || "peer") === "peer";
+  // Agent-only discovery: UDP peer-agent responder, never an SSH scan.
   const subnet = $("#d-subnet-label");
   const port = $("#d-port-label");
-  if (subnet) subnet.style.display = peer ? "none" : "";
-  if (port) port.style.display = peer ? "none" : "";
+  if (subnet) subnet.style.display = "none";
+  if (port) port.style.display = "none";
+  const mode = $("#d-mode");
+  if (mode) mode.value = "peer";
   const hint = $("#wiz-scan-hint");
-  if (hint) hint.textContent = peer
-    ? "Hit Scan to discover peers advertising the Llama RPC Farm agent (UDP 8199). No SSH credentials are used."
-    : "Hit Scan to ping the network and fingerprint SSH hosts. Already know the IP? Just Continue — you can enter it manually in step 2.";
+  if (hint) hint.textContent = "Hit Scan to discover peers advertising the Llama RPC Farm agent (UDP 8199). Peer agents are installed from their own platform package.";
 }
 on("#d-mode", "change", syncDiscoveryMode);
 
@@ -2270,22 +2302,24 @@ function discoveredFill(h) {
   machineFormLoad({
     name: h.hostname || h.ip.replace(/\./g, "-"),
     ip: h.ip,
-    username: h.username || $("#m-username").value.trim() || "zazi",
-    password: $("#m-password").value,
-    port: h.port || 22,
-    transport: h.agent ? (h.ssh_ok ? "auto" : "agent") : "ssh",
+    username: "",
+    password: "",
+    port: 1,
+    transport: "agent",
     agent_port: h.agent_port || 8198,
     os: h.os || "linux",
     gpu_vendor: h.gpu_vendor || "nvidia",
     gpu: (h.gpus || []).length ? h.gpus.map((g, i) => `${pref}${i}`).join(",") : "",
+    ram_total_gb: h.ram_total_gb || null,
   }, false);  // suggested name, but still a NEW machine — keep wizard visible
   if (orig) $("#machine-original-name").value = orig;
   wizForceWizard = fw;
   wizClearPick();
   wizShow(3);
-  toast("Review the details, then Save (Save verifies SSH before storing)", "ok");
+  toast("Review the details, then Save (Save verifies the peer agent before storing)", "ok");
 }
 // IP / SSH port edits change which host we fingerprint — re-check live
+on("#m-role", "change", syncRoleFields);
 on("#m-rdma", "change", syncRdmaFields);
 on("#m-rdma-toggle", "click", () => {
   const cb = $("#m-rdma");
@@ -2306,7 +2340,7 @@ on("#m-transport", "change", () => {
 on("#d-scan", "click", async (e) => {
   const btn = e.currentTarget;
   const res = $("#d-results");
-  const peerMode = ($("#d-mode")?.value || "peer") === "peer";
+  const peerMode = true;
   btn.disabled = true; btn.textContent = peerMode ? "discovering agents…" : "scanning… (~1 min)";
   res.innerHTML = peerMode
     ? '<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Listening for peer agents on UDP 8199…</p>'
@@ -2314,13 +2348,8 @@ on("#d-scan", "click", async (e) => {
   let scanned = false;
   try {
     const r = await api("POST", "/api/discover", {
-      subnet: $("#d-subnet").value,
-      port: parseInt($("#d-port").value, 10) || 22,
-      username: $("#m-username").value.trim(),
-      password: $("#m-password").value,
-      ping: true,
-      agent_only: peerMode,
-      include_known: peerMode ? true : false,
+      agent_only: true,
+      include_known: true,
     });
     r.results.forEach(h => DISCOVERED[h.ip] = h);
     $("#discovered-ips").innerHTML = r.results.map(h => `<option value="${escHtml(h.ip)}">`).join("");
@@ -2400,11 +2429,9 @@ on("#m-ip", "change", () => {
   if (!$("#m-name").value.trim()) $("#m-name").value = h.hostname || h.ip.replace(/\./g, "-");
   if (h.os) $("#m-os").value = h.os;
   if (h.gpu_vendor) $("#m-gpu-vendor").value = h.gpu_vendor;
-  $("#m-port").value = h.port || 22;
-  if (h.agent) {
-    $("#m-transport").value = h.ssh_ok ? "auto" : "agent";
-    $("#m-agent-port").value = h.agent_port || 8198;
-  }
+  $("#m-port").value = 1;
+  $("#m-transport").value = "agent";
+  if (h.agent_port) $("#m-agent-port").value = h.agent_port;
   if ((h.gpus || []).length && !$("#m-gpu").value.trim())
     $("#m-gpu").value = h.gpus.map((g, i) => `${gpuPrefix(h.gpu_vendor)}${i}`).join(",");
 });
@@ -2417,12 +2444,14 @@ on("#m-detect-form", "click", async (e) => {
   try {
     const m = await api("POST", "/api/machines/probe", {
       ip,
-      username: $("#m-username").value.trim() || "zazi",
-      password: $("#m-password").value,
-      port: parseInt($("#m-port").value, 10) || 22,
       os: $("#m-os").value,
+      gpu_vendor: $("#m-gpu-vendor").value,
       rpc_port: parseInt($("#m-rpc-port").value, 10) || 50052,
+      agent_port: parseInt($("#m-agent-port").value, 10) || 8198,
+      agent_token: $("#m-agent-token").value,
+      name: $("#m-name").value.trim(),
     });
+    if (m.gpu_vendor) $("#m-gpu-vendor").value = m.gpu_vendor;
     $("#m-gpu").value = m.gpu || "";
     $("#m-ram").value = m.ram_total_gb || "";
     $("#m-expose-gpus").placeholder = m.gpu ? `available: ${m.gpu}` : "all (not detected)";
@@ -5737,10 +5766,10 @@ async function loadSwap() {
   };
   $("#swap-stop").onclick = async (e) => {
     const btn = e.target;
-    btn.disabled = true; btn.textContent = "stopping…";
+    btn.disabled = true; btn.textContent = "evicting…";
     try { await api("POST", "/api/swap/stop", {}); loadSwap(); }
     catch (err) { toast(err.message, "bad"); }
-    btn.disabled = false; btn.textContent = "Stop";
+    btn.disabled = false; btn.textContent = "Evict";
   };
   /* UX-3: the swap-install button is retired (bootstrap.py owns installs);
      the hidden button has no handler — nothing to do here anymore. */
@@ -5748,9 +5777,14 @@ async function loadSwap() {
 
 async function loadLaunch() {
   loadSwap();
-  const [models, machines, active] = await Promise.all([
-    api("GET", "/api/models"), api("GET", "/api/machines"), api("GET", "/api/launch/active"),
+  const [models, machines, swapLoaded, embModels] = await Promise.all([
+    api("GET", "/api/models"), api("GET", "/api/machines"),
+    api("GET", "/api/swap/loaded").catch(() => ({ loaded: [] })),
+    api("GET", "/api/embeddings/models").catch(() => []),
   ]);
+  const loadedSet = new Set((swapLoaded && swapLoaded.loaded) || []);
+  const embSet = new Set((embModels || []).map(m => m.model_id));
+  const decSet = new Set(models.filter(m => m.decision_type).map(m => m.model_id));
   // vLLM mode: per-model launch cards (configured options + Load/Evict)
   // live in #vllm-launch-view — the llama.cpp RPC grid below stays hidden
   // via the rpc_launch panel gate. Same card idiom, vLLM vocabulary.
@@ -5786,8 +5820,16 @@ async function loadLaunch() {
         ? `<i class="fa-solid fa-triangle-exclamation"></i> needs ${down.map(d => escHtml(d)).join(", ")} — offline (change servers in the Models tab)`
         : "";
     }
+    const cst = card.querySelector(".card-loaded");
+    if (cst) {
+      const key = card.dataset.variant
+        ? `${card.dataset.model}--${card.dataset.variant}`
+        : card.dataset.model;
+      const on = loadedSet.has(key);
+      cst.className = `serving-ind card-loaded ${on ? "status-ok" : "status-warn"}`;
+      cst.textContent = on ? "loaded" : "idle";
+    }
   }
-  const servingSet = new Set(active.filter(a => a.serving).map(a => a.name));
   const grid = $("#launch-grid");
   // flatten primary + variants into deployments
   const deployments = [];
@@ -5827,20 +5869,12 @@ async function loadLaunch() {
           </label>`;}).join("") || '<span class="hint">no servers configured — set them in the Models tab</span>'}
       </div>
       <div class="launch-ready-hint"></div>
-      <label class="auto-refresh">Port <input type="number" value="8080" class="port-input" data-model="${escHtml(m.model_id)}"></label>
-      <label class="auto-refresh">Run on <select class="run-on-select" data-model="${escHtml(m.model_id)}">
-        ${cardServers.map(s => `<option value="${escHtml(s)}">${escHtml(s)}${(machines.find(x => x.name===s)||{}).role === "master" ? " (master)" : ""}</option>`).join("")}
-      </select></label>
-      <label class="auto-refresh">Mode <select class="launch-mode-select" data-model="${escHtml(m.model_id)}">
-        <option value="auto" selected>Auto (device heuristic)</option>
-        <option value="rpc">RPC cluster</option>
-        <option value="local">Local only (this machine, no RPC)</option>
-      </select></label>
+      <p class="hint">Served via llama-swap — the same path as the client API. Configure servers/flags in the Models tab.</p>
       <div class="actions">
-        <button class="small" data-act="launch">Launch</button>
-        <button class="small danger" data-act="stop">Stop</button>
+        <button class="small" data-act="launch">Load</button>
+        <button class="small danger" data-act="stop">Evict</button>
         <button class="small" data-act="swap-disable" title="Hide this model from the swap config until re-enabled (takes effect on next push / Launch All)">Disable</button>
-        <span class="serving-ind ${servingSet.size ? "status-ok" : "status-warn"}">${servingSet.size ? `live (${servingSet.size} node)` : "idle"}</span>
+        <span class="serving-ind card-loaded status-warn">idle</span>
       </div>
     </div>`;
   }).join("");
@@ -5889,64 +5923,77 @@ async function loadLaunch() {
     btn.onclick = async () => {
       const card = btn.closest(".launch-card");
       const mid = card.dataset.model;
-      const variant = card.dataset.variant || null;
-      const servers = [...card.querySelectorAll("input[type=checkbox]:checked")].map(cb => cb.value);
-      const downNow = servers.filter(isDown);
-      if (downNow.length) {
-        toast(`Cannot launch ${mid}: ${downNow.join(", ")} is down (change servers in the Models tab)`, "bad");
-        loadLaunch();
-        return;
-      }
-      const port = parseInt(card.querySelector(".port-input").value, 10) || 8080;
-      const runOn = card.querySelector(".run-on-select");
-      const modeSel = card.querySelector(".launch-mode-select");
-      const mode = modeSel ? modeSel.value : "auto";
-      const masterName = runOn ? runOn.value : null;
-      if (mode === "local" && masterName && !servers.includes(masterName)) {
-        toast(`Cannot launch ${mid} local: ${masterName} is not among the configured servers`, "bad");
-        btn.disabled = false; btn.textContent = "Launch";
-        return;
-      }
-      btn.disabled = true; btn.textContent = "launching...";
+      const variant = card.dataset.variant || "";
+      const key = variant ? `${mid}--${variant}` : mid;
+      const base = `http://${window.location.hostname}:8090`;
+      const headers = {"Content-Type": "application/json"};
+      if (_accessKey) headers["Authorization"] = `Bearer ${_accessKey}`;
+      btn.disabled = true; btn.textContent = "loading…";
       try {
-        const body = { model_id: mid, servers, port };
-        if (variant) body.variant = variant;
-        if (masterName) body.master_name = masterName;
-        if (mode !== "rpc") body.mode = mode;
-        const r = await api("POST", "/api/launch", body);
-        const ok = !r.failed;
-        const livePort = r.port || port;
-        const steps = r.steps.map(s => `${s.step}: ${s.error ? "ERR " + s.error : (s.running !== undefined ? (s.running ? "up" : "DOWN") : (s.killed !== undefined ? (s.killed ? "cleared" : "STUCK") : "?"))}`).join("\n");
-        const rolledNote = r.port_rolled ? ` (port ${port} busy — moved to ${livePort})` : "";
-        toast(ok ? `Launched ${mid}${variant?` (${variant})`:``} on :${livePort}${rolledNote}: ${steps}` : `Launch failed: ${steps}`, ok ? "ok" : "bad", 10000);
-        const portInput = card.querySelector(".port-input");
-        if (r.port_rolled && portInput) portInput.value = livePort;
+        // Ensure llama-swap has the current model config, then call the
+        // REAL API exactly like a client would (same endpoints the Chat /
+        // Tests tabs use) — no server-side warmup imitation.
+        await api("POST", "/api/swap/push");
+        await new Promise(res => setTimeout(res, 2300)); // watch-config poll
+        let path, payload;
+        if (decSet.has(mid)) {
+          path = "/v1/systemone";
+          payload = { model: key, state: "warmup",
+                      questions: { route: { type: "choice",
+                        instructions: "Pick one",
+                        criteria: { yes: 1, no: 2 } } } };
+        } else if (embSet.has(mid)) {
+          path = "/v1/embeddings";
+          payload = { model: key, input: "hi" };
+        } else {
+          path = "/v1/chat/completions";
+          payload = { model: key, max_tokens: 1,
+                      messages: [{ role: "user", content: "hi" }] };
+        }
+        const r = await fetch(base + path, {
+          method: "POST", credentials: "include", headers,
+          body: JSON.stringify(payload),
+        });
+        let detail = "";
+        if (!r.ok) {
+          try { detail = (await r.json())?.error?.message || `HTTP ${r.status}`; }
+          catch (_) { detail = `HTTP ${r.status}`; }
+        }
+        // A decision/embedding warmup may return a non-2xx while still
+        // loading the model; confirm against swap's loaded list.
+        let loaded = false;
+        for (let i = 0; i < 40; i++) {
+          await new Promise(res => setTimeout(res, 500));
+          try {
+            const l = await api("GET", "/api/swap/loaded");
+            if ((l.loaded || []).includes(key)) { loaded = true; break; }
+          } catch (_) { /* keep polling */ }
+        }
+        if (!loaded && !r.ok) throw new Error(detail);
+        loadedNotice(key, key);
         loadLaunch();
       } catch (err) {
-        toast(err.message, "bad");
-        // 409 (vllm mode) and other launch errors land inline on the card
-        // — the hint element already exists in the card template
         const hint = card.querySelector(".launch-ready-hint");
         if (hint) hint.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> ' + escHtml(err.message);
+        toast(err.message, "bad");
       }
-      btn.disabled = false; btn.textContent = "Launch";
+      btn.disabled = false; btn.textContent = "Load";
     };
   });
   grid.querySelectorAll('[data-act="stop"]').forEach(btn => {
     btn.onclick = async () => {
       const card = btn.closest(".launch-card");
       const mid = card.dataset.model;
-      const servers = [...card.querySelectorAll("input[type=checkbox]:checked")].map(cb => cb.value);
-      const port = parseInt(card.querySelector(".port-input").value, 10) || 8080;
-      const runOn = card.querySelector(".run-on-select");
-      btn.disabled = true; btn.textContent = "stopping...";
+      const variant = card.dataset.variant || "";
+      const key = variant ? `${mid}--${variant}` : mid;
+      btn.disabled = true; btn.textContent = "evicting…";
       try {
-        const stopBody = { model_id: mid, servers, port };
-        if (runOn && runOn.value) stopBody.master_name = runOn.value;
-        await api("POST", "/api/launch/stop", stopBody);
+        await api("POST", `/api/swap/evict/${encodeURIComponent(key)}`);
+        clearLoadedNotice(key);
+        toast(`Evicted ${key} from llama-swap`, "ok");
         loadLaunch();
       } catch (err) { toast(err.message, "bad"); }
-      btn.disabled = false; btn.textContent = "Stop";
+      btn.disabled = false; btn.textContent = "Evict";
     };
   });
   grid.querySelectorAll('[data-act="swap-disable"]').forEach(btn => {
@@ -7064,6 +7111,14 @@ async function loadSettings() {
         ? "Token saved — gated models will use it. Paste a new one to replace."
         : "Not set — gated downloads will 401.";
     }
+    const ftok = $("#set-farm-agent-token");
+    if (ftok) ftok.value = "";
+    const fhint = $("#set-farm-agent-token-hint");
+    if (fhint) {
+      fhint.textContent = s.farm_agent_token_set
+        ? "Farm token saved — discovered agents using it verify automatically."
+        : "Not set — per-machine tokens are used.";
+    }
     appSettings = s;
     applyEngineHints(s);
     if (s.theme_family && !localStorage.getItem("ui-theme-family")) {
@@ -7088,6 +7143,8 @@ on("#set-save", "click", async (e) => {
     // only send the token when the user typed one — empty keeps the saved one
     const tok = $("#set-hf-token")?.value.trim();
     if (tok) payload.hf_token = tok;
+    const ftok = $("#set-farm-agent-token")?.value.trim();
+    if (ftok) payload.farm_agent_token = ftok;
     // engine + vllm block; the backend merges the partial vllm dict over
     // the stored one, so only keys the UI owns are sent
     const engSel = $("#set-engine");
@@ -7142,7 +7199,15 @@ on("#set-save", "click", async (e) => {
     }
     const tokInput = $("#set-hf-token");
     if (tokInput) tokInput.value = "";
-    box.innerHTML = `<p class="status-ok">Defaults saved${tok ? " (HF token updated)." : "."}</p>`;
+    const fHint = $("#set-farm-agent-token-hint");
+    if (fHint) {
+      fHint.textContent = saved.farm_agent_token_set
+        ? "Farm token saved — discovered agents using it verify automatically."
+        : "Not set — per-machine tokens are used.";
+    }
+    const fInput = $("#set-farm-agent-token");
+    if (fInput) fInput.value = "";
+    box.innerHTML = `<p class="status-ok">Defaults saved${tok ? " (HF token updated)." : "."}${ftok ? " (farm agent token updated)." : ""}</p>`;
     toast("Defaults saved", "ok");
   } catch (err) {
     box.innerHTML = `<p class="status-bad">${escHtml(err.message)}</p>`;
@@ -7151,6 +7216,22 @@ on("#set-save", "click", async (e) => {
   btn.disabled = false; btn.textContent = "Save defaults";
 });
 
+on("#set-farm-agent-token-toggle", "click", () => {
+  const inp = $("#set-farm-agent-token");
+  if (inp) inp.type = inp.type === "password" ? "text" : "password";
+});
+on("#set-farm-agent-token-clear", "click", async (e) => {
+  e.currentTarget.disabled = true;
+  try {
+    const saved = await api("POST", "/api/settings", { clear_farm_agent_token: true });
+    const hint = $("#set-farm-agent-token-hint");
+    if (hint) hint.textContent = saved.farm_agent_token_set
+      ? "Farm token saved."
+      : "Not set — per-machine tokens are used.";
+    toast(saved.farm_agent_token_set ? "Farm token cleared" : "No farm token was saved", saved.farm_agent_token_set ? "warn" : "ok");
+  } catch (err) { toast(err.message, "bad"); }
+  e.currentTarget.disabled = false;
+});
 on("#set-hf-token-toggle", "click", () => {
   const inp = $("#set-hf-token");
   if (!inp) return;

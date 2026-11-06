@@ -34,8 +34,8 @@ Each build job produces both the app and the peer agent:
 | Platform | App artifacts | Agent artifacts |
 |---|---|---|
 | Linux | `.deb` | `.deb` |
-| macOS | `.dmg` | `.dmg` |
-| Windows | `.exe` | `.exe` |
+| macOS | `.pkg` | `.pkg` |
+| Windows | `setup.exe` | `setup.exe` |
 
 Each platform also emits a SHA-256 checksum file.
 
@@ -53,6 +53,47 @@ The publish job runs once, after all builds pass:
 Because the publish step is gated on `needs: [linux, macos, windows]` and
 the workflow serializes on the `rolling-main` concurrency group, a failed
 build leaves the previous release untouched — no partial releases.
+
+## First-run automation
+
+Packaged binaries self-register a login service (systemd user unit,
+launchd LaunchAgent, or Windows Scheduled Task) and the Windows agent adds
+inbound rules for TCP 8198 + UDP 8199. Unpaired agents open a bounded
+pairing window and are enrolled by the app with its farm token. Opt out with
+`LLAMA_FARM_NO_SERVICE=1` / `PEER_AGENT_NO_SERVICE=1`.
+
+## Signing & notarization
+
+Builds are signed automatically when the repository has the signing secrets.
+Without them the workflow still builds and publishes **unsigned** artifacts.
+
+### macOS (removes Gatekeeper warnings)
+
+Required secrets:
+- `MACOS_CERT_P12_BASE64` — base64 of a `.p12` containing **Developer ID Application** and **Developer ID Installer** certificates
+- `MACOS_CERT_PASSWORD`
+- `MACOS_APP_SIGN_ID` — e.g. `Developer ID Application: Your Name (TEAMID)`
+- `MACOS_INSTALLER_SIGN_ID` — e.g. `Developer ID Installer: Your Name (TEAMID)`
+- `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` — for `notarytool`
+
+The workflow signs the binaries with the hardened runtime
+(`packaging/entitlements.plist`), signs the `.pkg` with `productsign`,
+submits it to `notarytool --wait`, and staples the ticket.
+
+Requires a paid Apple Developer Program membership.
+
+### Windows (reduces/removes SmartScreen warnings)
+
+Required secrets:
+- `WINDOWS_CERT_PFX_BASE64` — base64 of a code-signing `.pfx`
+- `WINDOWS_CERT_PASSWORD`
+
+The workflow signs the inner `.exe` files and the Inno Setup installers with
+`signtool` (SHA-256 + timestamp). A new standard OV certificate may still
+warn until SmartScreen reputation accrues; an **EV** certificate or
+Microsoft Trusted Signing improves this immediately. HSM/cloud signing
+(Azure Trusted Signing, DigiCert KeyLocker) needs a different signtool
+invocation than the `.pfx` path used here.
 
 ## Local release smoke test
 
