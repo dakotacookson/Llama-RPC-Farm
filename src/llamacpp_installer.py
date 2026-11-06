@@ -30,6 +30,7 @@ libcudart/libcublas .so files).
 import json
 import os
 import agent_client
+import local_node
 import urllib.request
 
 GITHUB_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases"

@@ -390,7 +390,9 @@ def machine_stats_light(machine):
                     "is_master": machine.get("role") == "master",
                     "rpc_running": bool(st.get("rpc_running")),
                     "rdma": bool(machine.get("rdma")),
-                    "rdma_cm": bool(machine.get("rdma_cm"))}
+                    "rdma_cm": bool(machine.get("rdma_cm")),
+                    "transport": machine.get("transport") or "auto",
+                    "connection": "agent"}
         except Exception:
             pass
     # rpc_running = any ggml-rpc-server process (per-model ports mean the
@@ -417,7 +419,11 @@ def machine_stats_light(machine):
             "is_master": machine.get("role") == "master",
             "rpc_running": rpc,
             "rdma": bool(machine.get("rdma")),
-            "rdma_cm": bool(machine.get("rdma_cm"))}
+            "rdma_cm": bool(machine.get("rdma_cm")),
+            "transport": machine.get("transport") or "auto",
+            "connection": ("local" if is_local else
+                           "agent" if agent_client.should_use_agent(machine)
+                           else "ssh")}
 
 
 def machine_stats(machine):
@@ -465,7 +471,11 @@ def machine_stats(machine):
     return {**s, "name": machine["name"], "ip": machine["ip"],
             "os": machine_os, "is_local": is_local,
             "is_master": machine.get("role") == "master",
-            "rpc_running": rpc}
+            "rpc_running": rpc,
+            "transport": machine.get("transport") or "auto",
+            "connection": ("local" if is_local else
+                           "agent" if agent_client.should_use_agent(machine)
+                           else "ssh")}
 
 
 def cluster_totals(stats_list):

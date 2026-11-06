@@ -8,9 +8,9 @@ Nothing outside the project folder is ever modified.
 
 | Where you need it | Requirement |
 |---|---|
-| Master (this app's box) | Python 3.11+, a terminal, network reach to every peer over SSH (Tailscale or LAN) |
-| Master (Linux) | `sshpass` for generated scripts and the SSH speed probe (`sudo apt install -y sshpass`) |
-| Peers | OpenSSH server, an account the master can reach with a password or key |
+| Master (this app's box) | Python 3.11+, a terminal, network reach to every peer (Tailscale or LAN) |
+| Master (Linux) | `sshpass` only for SSH bootstrap/fallback and the SSH speed probe (`sudo apt install -y sshpass`) |
+| Peers | Either the peer agent (recommended) or an OpenSSH server/account for SSH mode |
 | Models | llama.cpp `llama-server` built (or installed later via the UI) + GGUF files on a shared path |
 | Serving clients | Any OpenAI-compatible client (opencode, SillyTavern, curl, …) |
 | Optional | `curl` (used by run.sh / run.bat health checks) |
@@ -73,8 +73,9 @@ lists, access keys, and LAN paths never leave your box through this repo.
 
 ## 4. Add machines (Machines tab)
 
-For each machine enter: name, IP, SSH username/password (stored in the
-vault), SSH port, OS, and share mode (`vram` / `ram` / `both`) plus which
+For each machine enter: name, IP, connection mode (`SSH`, `peer agent`, or
+`SSH + peer agent`), credentials/token, port, OS, and share mode (`vram` /
+`ram` / `both`) plus which
 GPU device tokens to share (`CUDA0`, `ROCm1`, … — see `src/gpu_vendor.py`).
 `Hardware Detect` fills in GPU names, VRAM, core/RAM totals. The app's own
 machine is auto-registered as master.
@@ -111,7 +112,8 @@ fallback. Peers run `ggml-rpc-server` from the same build.
 
 ## 7. Start RPC servers + launch models (Run tab)
 
-The Run tab generates a full launch script: SSH'd `ggml-rpc-server`
+The Run tab generates a full launch script. Agent-backed peers use typed
+agent endpoints; SSH-backed peers still use SSH `ggml-rpc-server`
 startup on each selected peer (ports rolled per model if busy, base 50052
 is legacy) + the `llama-server` command with your per-model flags. Run it
 from the UI or yourself:
@@ -179,14 +181,17 @@ minutes between streamed chunks (prefill, RPC backends, memory pressure).
 
 - **UI won't come up** — check the log (`/tmp/llama-web.log` POSIX,
   `%TEMP%\llama-web.log` Windows); free port 8199 and re-run run.sh.
-- **SSH failures to a peer** — password changed, OpenSSH not running, or
+- **Peer-agent failures** — service/task stopped, token missing/rotated, or
+  firewall blocking TCP 8198/UDP 8199. SSH failures still apply to SSH-mode
+  peers: password changed, OpenSSH not running, or
   the OS shell trap: Windows peers need PowerShell-wrapped commands
   (`OpenSSH` default shell is cmd.exe), macOS has no `pgrep`/`pkill`.
 - **Model path not found on a peer** — the `store://` alias lacks a key
   for that machine's OS; add it in `stores.yaml`.
 - **Port 50052 family busy on a peer** — per-model ports roll
   automatically; check the generated script's port line.
-- **Generated scripts ask for `$SSH_PASS`** — that's by design; use
+- **Generated scripts ask for `$SSH_PASS`** — only when the plan contains
+  SSH-backed peers; agent-only plans do not require it. Use
   `scripts/farm-run.sh` or export it yourself.
 - **llama-swap exits and stays down after a kill** — a bare SIGTERM exits
   "cleanly" and `Restart=on-failure` skips respawn; bounce the unit
@@ -196,3 +201,17 @@ minutes between streamed chunks (prefill, RPC backends, memory pressure).
 More depth: [architecture](architecture.md), [secrets](secrets.md),
 [cross-platform](cross-platform.md), [configuration](configuration.md),
 [rpc-model](rpc-model.md), [api](api.md).
+
+## Peer agent (recommended)
+
+Linux:
+
+```bash
+PEER_AGENT_TOKEN='long-random-token' ./scripts/install-peer-agent.sh
+```
+
+Windows: install the wheel into
+`%USERPROFILE%\.llama-peer-agent\venv`, write the token env file, and
+create a boot-triggered Scheduled Task (`LlamaPeerAgent`) that runs the
+venv entry point. The master's Machines page shows current→latest agent
+version and can update existing agents in place.

@@ -348,6 +348,38 @@ def _probe_host(ip, port, cred_list, known_ips):
     return entry
 
 
+def discover_agents(port=8199, timeout=2.0, include_known=True):
+    """UDP peer-agent discovery in the same result shape as SSH scan."""
+    import config_loader as cfg
+    known = {m["ip"] for m in cfg.machines.all()}
+    try:
+        agents = agent_discovery.discover(port=port, timeout=timeout)
+    except Exception:
+        agents = []
+    results = []
+    for a in agents:
+        ip = a.get("ip")
+        if not ip or (not include_known and ip in known):
+            continue
+        results.append({
+            "ip": ip, "port": 22, "ssh_port_open": False,
+            "ping_alive": None, "banner": None, "os": a.get("os"),
+            "ssh_ok": False, "auth_failed": False,
+            "hostname": a.get("hostname"), "gpus": [],
+            "gpu_vendor": None, "username": None,
+            "mac": a.get("mac", ""), "mac_ip": ip,
+            "already_added": ip in known,
+            "agent": True, "agent_port": a.get("agent_port"),
+            "agent_version": a.get("agent_version"),
+            "protocol_version": a.get("protocol_version"),
+            "agent_addresses": a.get("addresses") or [],
+        })
+    results.sort(key=lambda r: (r.get("hostname") or "", r.get("ip") or ""))
+    return {"subnet": "peer-agent", "port": 0, "alive": 0,
+            "ssh_hosts": 0, "unknown": 0, "agents": len(results),
+            "results": results}
+
+
 def discover(subnet=None, port=22, credentials=None, include_known=True,
              scan_timeout=0.5, ping=True, agent_discovery_enabled=True,
              agent_discovery_port=8199, agent_discovery_timeout=1.0):

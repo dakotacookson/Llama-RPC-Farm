@@ -752,6 +752,65 @@ exit 1
 """
 
 
+def _agent_custom_start_script(scripts_dir, machine, bat, port):
+    import shlex
+    var = _agent_token_var(machine.get("name"))
+    base = _agent_base(machine)
+    body = json.dumps({"bat": bat, "port": int(port)},
+                      separators=(",", ":"))
+    return f"""#!/bin/bash
+set -uo pipefail
+source "{scripts_dir}/{SIDECAR_NAME}" 2>/dev/null || true
+: "${{{var}:?agent token not set for {machine.get('name')}}}"
+AGENT="{base}"
+PORT="{int(port)}"
+if ! curl -fsS --max-time 60 -H "Authorization: Bearer ${var}" \
+  -H "Content-Type: application/json" --data-binary {shlex.quote(body)} \
+  "$AGENT/custom/start" >/dev/null; then
+  echo "!!! agent custom/start failed for {machine.get('name')}:{int(port)}" >&2
+  exit 1
+fi
+_down=0
+for _i in $(seq 1 2400); do
+  if curl -fsS --max-time 5 -H "Authorization: Bearer ${var}" \
+      "$AGENT/port/open?port=$PORT" 2>/dev/null | grep -q '"open":true'; then
+    _down=0
+    echo ">>> {machine.get('name')}:{int(port)} is up"
+    while :; do
+      if curl -fsS --max-time 5 -H "Authorization: Bearer ${var}" \
+          "$AGENT/port/open?port=$PORT" 2>/dev/null | grep -q '"open":true'; then
+        _down=0
+      else
+        _down=$((_down + 1))
+        [ "$_down" -ge 3 ] && break
+      fi
+      sleep 5
+    done
+    echo ">>> {machine.get('name')}:{int(port)} closed — exiting"
+    exit 0
+  fi
+  sleep 2
+done
+echo "!!! {machine.get('name')}:{int(port)} did not come up" >&2
+exit 1
+"""
+
+
+def _agent_custom_stop_script(scripts_dir, machine, port):
+    var = _agent_token_var(machine.get("name"))
+    base = _agent_base(machine)
+    body = json.dumps({"port": int(port)}, separators=(",", ":"))
+    import shlex
+    return f"""#!/bin/bash
+set -uo pipefail
+source "{scripts_dir}/{SIDECAR_NAME}" 2>/dev/null || true
+: "${{{var}:?agent token not set for {machine.get('name')}}}"
+curl -fsS --max-time 60 -H "Authorization: Bearer ${var}" \
+  -H "Content-Type: application/json" --data-binary {shlex.quote(body)} \
+  "{base}/custom/stop" >/dev/null 2>&1 || true
+"""
+
+
 def _agent_token_var(machine_name):
     return "AGENT_TOKEN_" + "".join(
         c if c.isalnum() else "_" for c in str(machine_name or "").upper())
@@ -796,7 +855,20 @@ if [ "$_up" -ne 1 ]; then
   echo "!!! {machine.get('name')}:{int(port)} did not open" >&2
   exit 1
 fi
-while curl -s -o /dev/null --max-time 2 "http://{machine.get('ip')}:{int(port)}/"; do
+# Hold until the model port actually closes. Do NOT use an HTTP request
+# here: llama-server can be busy generating and miss a short curl timeout,
+# which previously made this wrapper exit while the server was still alive
+# (llama-swap then saw "upstream exited prematurely"). The agent's
+# /port/open is a local TCP probe and cannot be starved by generation.
+_down=0
+while :; do
+  if curl -fsS -H "Authorization: Bearer ${var}" \
+      "$AGENT/port/open?port=$PORT" 2>/dev/null | grep -q '"open":true'; then
+    _down=0
+  else
+    _down=$((_down + 1))
+    [ "$_down" -ge 3 ] && break
+  fi
   sleep 5
 done
 echo ">>> {machine.get('name')}:{int(port)} closed — exiting"
@@ -849,6 +921,14 @@ def _rpc_cmdstop(model_cfg, peers):
         for gname, _devs in groups:
             port = ports.get((p.get("name"), gname))
             if not port:
+                continue
+            if agent_client.should_use_agent(p):
+                var = _agent_token_var(p.get("name"))
+                cmds.append(
+                    f'curl -fsS --max-time 60 -H "Authorization: Bearer ${{{var}}}" '
+                    f'-H "Content-Type: application/json" '
+                    f'--data-binary \'{{"port":{port}}}\' '
+                    f'"{_agent_base(p)}/rpc/stop" >/dev/null 2>&1 || true')
                 continue
             if is_win:
                 # Pipe-free PowerShell: cmd.exe over OpenSSH mangles the
@@ -1406,6 +1486,25 @@ def launch_plan(config_path=None, host_name=None):
             raise ValueError(f"machine '{peers[0]}' has no ip configured")
         conds, probe = _custom_stop_predicates(spec, bat)
         key = _custom_key(deploy_model, mid_for_key, is_variant)
+        if agent_client.should_use_agent(peer):
+            start_name = f"start-{mid_for_key}.sh"
+            stop_name = f"stop-{mid_for_key}.sh"
+            scripts[start_name] = _agent_custom_start_script(
+                scripts_dir, peer, bat, port)
+            scripts[stop_name] = _agent_custom_stop_script(
+                scripts_dir, peer, port)
+            script_mids.add(mid_for_key)
+            models[key] = {
+                "cmd": (
+                    f"/bin/bash -c 'source \"{scripts_dir}/swap-secrets.env\" "
+                    f"2>/dev/null; exec /bin/bash \"{scripts_dir}/{start_name}\"'"),
+                "proxy": f"http://{remote_ip}:{port}",
+                "checkEndpoint": "/health",
+                "cmdStop": f'/bin/bash "{scripts_dir}/{stop_name}"',
+            }
+            _custom_record(key, mid_for_key, deploy_model, "script",
+                           *_custom_ttl_pinned(deploy_model), is_variant)
+            return
         script_name = f"start-{mid_for_key}.sh"
         scripts[script_name] = _render_winbox_bat_script(
             mid_for_key, peer, bat, port, probe, conds)

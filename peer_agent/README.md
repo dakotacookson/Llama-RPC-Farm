@@ -11,6 +11,8 @@ SSH.
 - `GET /status`, `GET /processes`, `GET /metrics`
 - `GET /system/detail`, `GET /system/rdma`, `GET /speedtest?mb=N`
 - `POST /ray/start|stop`, `POST /install/artifact|verify|vllm`
+- `POST /custom/start|stop` — typed custom Windows `.bat` runtime
+- `POST /agent/update` — in-place wheel upgrade + self-restart
 - `GET /build/probe`, `POST /build/update`
 - `GET /logs/tail?name=&lines=`, `GET /logs/list`
 - `POST /files/write|mkdir|chmod|backup`, `GET /files/stat|list`
@@ -61,6 +63,9 @@ export PEER_AGENT_DISCOVERY_PORT="8199"
 Bind only to your LAN/VPN. Do not port-forward this service. The token is
 the boundary; the agent exposes no arbitrary shell endpoint.
 
+The agent is agent-first for all configured-machine operations. SSH is
+used only for first-time bootstrap/recovery and optional SSH discovery.
+
 ## Master-side setup
 
 Set the same token on the farm master:
@@ -85,4 +90,20 @@ Copy `llama_peer_agent/templates/llama-peer-agent.service` to
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable --now llama-peer-agent
+loginctl enable-linger "$USER"
 ```
+
+`loginctl enable-linger` makes the user service start at boot even when
+the account is not logged in. The installer below does all of this by
+default:
+
+```bash
+PEER_AGENT_TOKEN='long-random-token' ./scripts/install-peer-agent.sh
+```
+
+## Windows auto-start
+
+Install the wheel into a venv, write the token env file, then create a
+boot-triggered Scheduled Task that runs a `.cmd` wrapper loading that env
+file. The master’s **Agent update** button uses `/agent/update` for
+in-place upgrades after the first bootstrap.

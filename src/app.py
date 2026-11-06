@@ -593,6 +593,9 @@ class MachineIn(pydantic.BaseModel):
     username: str
     password: str = ""
     port: int = 22
+    transport: str = "auto"     # auto | ssh | agent
+    agent_port: int = 8198
+    agent_token: str = ""       # write-only; stored in the vault, never YAML
     role: str = "peer"
     os: str = "linux"
     gpu_vendor: str = "nvidia"   # nvidia | amd | cpu
@@ -690,9 +693,54 @@ async def list_machines():
         m["vllm_capable"] = capable
         m["vllm_capability_reason"] = reason
         m["vllm_capability_info"] = info
+        try:
+            import secrets_vault as _vault
+            m["agent_token_set"] = bool(_vault.machine_agent_token_set(m))
+        except Exception:
+            m["agent_token_set"] = False
         m.pop("password", None)
         out.append(m)
     return out
+
+
+def _machine_connection_caps(machine):
+    """Detect usable transports for one machine: local, ssh, agent, both."""
+    name = machine.get("name") or machine.get("id") or "?"
+    try:
+        if local_node.is_local(machine):
+            return {"name": name, "mode": "local", "local": True,
+                    "ssh": True, "agent": False}
+    except Exception:
+        pass
+    agent_ok = False
+    try:
+        agent_client.health(machine, timeout=3.0)
+        agent_ok = True
+    except Exception:
+        agent_ok = False
+    ssh_ok = False
+    try:
+        from ssh_manager import SSHManager
+        ssh = SSHManager(machine.get("ip", ""), machine.get("username", ""),
+                         machine.get("password", ""),
+                         port=machine.get("port", 22), timeout=5)
+        if ssh.ssh_port_open(timeout=3):
+            ssh_ok = bool(ssh.is_reachable())
+    except Exception:
+        ssh_ok = False
+    mode = ("both" if ssh_ok and agent_ok else
+            "agent" if agent_ok else "ssh" if ssh_ok else "none")
+    return {"name": name, "mode": mode, "local": False,
+            "ssh": ssh_ok, "agent": agent_ok}
+
+
+@app.get("/api/machines/connections")
+async def machine_connections():
+    machines = cfg.machines.all()
+    def one(m):
+        return m.get("name"), _machine_connection_caps(m)
+    with ThreadPoolExecutor(max_workers=min(32, len(machines) or 1)) as pool:
+        return dict(pool.map(one, machines))
 
 
 def _ssh_port_guard(machine):
@@ -726,6 +774,35 @@ class FingerprintIn(pydantic.BaseModel):
     os: str = "linux"
 
 
+class AgentCheckIn(pydantic.BaseModel):
+    ip: str
+    agent_port: int = 8198
+    agent_token: str = ""
+    name: str = ""
+
+
+@app.post("/api/machines/agent-check")
+async def machine_agent_check(p: AgentCheckIn):
+    """Pre-save peer-agent reachability check for the add/edit form."""
+    try:
+        port = int(p.agent_port or 8198)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="agent port must be an integer")
+    if not 1 <= port <= 65535:
+        raise HTTPException(status_code=400, detail="agent port must be in 1..65535")
+    existing = cfg.machines.get(p.name) if p.name else None
+    machine = {"name": p.name or p.ip, "ip": p.ip, "agent_port": port,
+               "transport": "agent",
+               "id": (existing or {}).get("id")}
+    try:
+        out = await run_in_threadpool(
+            agent_client.health, machine, 4.0, p.agent_token or None)
+    except Exception as e:
+        raise HTTPException(status_code=502,
+                            detail=f"peer agent unreachable: {e}")
+    return {"ok": True, **out}
+
+
 @app.post("/api/machines/fingerprint")
 async def machine_fingerprint(p: FingerprintIn):
     """SSH host-key fingerprint WITHOUT login (key exchange is pre-auth).
@@ -752,19 +829,42 @@ def _validate_machine_swap_config(payload):
         cfg.machine_swap_config_override(payload, engine)
 
 
+def _validate_machine_connection(payload):
+    transport = str(payload.get("transport") or "auto").strip().lower()
+    if transport not in ("auto", "ssh", "agent"):
+        raise ValueError("transport must be auto, ssh, or agent")
+    try:
+        agent_port = int(payload.get("agent_port") or 8198)
+    except (TypeError, ValueError) as e:
+        raise ValueError("agent_port must be an integer") from e
+    if not 1 <= agent_port <= 65535:
+        raise ValueError("agent_port must be in 1..65535")
+    payload["transport"] = transport
+    payload["agent_port"] = agent_port
+
+
 @app.post("/api/machines")
 async def add_machine(m: MachineIn):
     try:
         payload = m.model_dump()
+        agent_token = payload.pop("agent_token", "")
+        if agent_token:
+            import uuid
+            payload.setdefault("id", uuid.uuid4().hex[:8])
+            import secrets_vault as _vault
+            _vault.set_machine_agent_token(payload["id"], agent_token)
         if not payload.get("password"):
             # fresh add with key-auth (no password): nothing to fill
             pass
         _validate_machine_swap_config(payload)
+        _validate_machine_connection(payload)
         detail = _ssh_port_guard(payload)
         if detail:
             raise HTTPException(status_code=400, detail=detail)
         saved = cfg.machines.add(payload)
         saved = dict(saved)
+        saved["agent_token_set"] = bool(agent_token) or bool(
+            __import__("secrets_vault").machine_agent_token_set(saved))
         saved.pop("password", None)
         return saved
     except ValueError as e:
@@ -775,6 +875,12 @@ async def add_machine(m: MachineIn):
 async def update_machine(name: str, m: MachineIn):
     try:
         payload = m.model_dump()
+        agent_token = payload.pop("agent_token", "")
+        if agent_token:
+            import secrets_vault as _vault
+            target = cfg.machines.get(name) or {}
+            _vault.set_machine_agent_token(target.get("id") or name,
+                                           agent_token)
         if not payload.get("password"):
             # blank = keep vault password: resolve it for the pre-save
             # SSH guard so edits don't falsely fail auth
@@ -785,12 +891,15 @@ async def update_machine(name: str, m: MachineIn):
             except Exception:
                 pass
         _validate_machine_swap_config(payload)
+        _validate_machine_connection(payload)
         detail = _ssh_port_guard(payload)
         if detail:
             raise HTTPException(status_code=400, detail=detail)
-        saved = cfg.machines.update(name, m.model_dump())
+        saved = cfg.machines.update(name, payload)
         saved = dict(saved)
         saved.pop("password", None)
+        saved["agent_token_set"] = bool(agent_token) or bool(
+            __import__("secrets_vault").machine_agent_token_set(saved))
         return saved
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -976,6 +1085,7 @@ class DiscoverIn(pydantic.BaseModel):
     password: str = ""
     include_known: bool = False  # hide already-added machines by default
     ping: bool = True         # ICMP sweep: show live hosts without SSH too
+    agent_only: bool = False  # UDP peer-agent discovery only (no SSH scan)
 
 
 @app.get("/api/discover/subnets")
@@ -996,9 +1106,13 @@ async def discover_hosts(p: DiscoverIn):
     creds = [(p.username, p.password)] if p.username else None
 
     def run():
+        if p.agent_only:
+            return discovery.discover_agents(
+                include_known=p.include_known)
         return discovery.discover(
             subnet=p.subnet or None, port=p.port, credentials=creds,
-            include_known=p.include_known, ping=p.ping)
+            include_known=p.include_known, ping=p.ping,
+            agent_discovery_enabled=False)
 
     result = await run_in_threadpool(run)
     if "error" in result:
@@ -4219,6 +4333,23 @@ def _llama_version_on(machine):
     if not lb:
         return None
     is_win = machine.get("os", "linux") == "windows"
+    if (not local_node.is_local(machine)
+            and agent_client.should_use_agent(machine)):
+        try:
+            path = (f"{lb}\\llama-server.exe" if is_win
+                    else f"{lb}/llama-server")
+            res = agent_client.install_verify(
+                machine, path, ["--version"], timeout=35)
+            out = res.get("output") or ""
+            for line in out.splitlines():
+                if line.strip():
+                    return line.strip()
+            return None
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                return None
+            print(f"[agent] {machine.get('name')}: version probe failed, "
+                  f"falling back to SSH: {e}")
     try:
         from llamacpp_installer import _machine_run
         run, _ = _machine_run(machine)
@@ -4295,6 +4426,171 @@ async def llama_cpp_version_machine(name: str):
     machine grid can re-ask on every render without hammering anything."""
     machine = cfg.machines.require(name)
     return await run_in_threadpool(_llama_version_payload, machine)
+
+
+
+_AGENT_WHEEL_LOCK = threading.Lock()
+
+
+def _agent_wheel_path():
+    """Build/cache the current peer-agent wheel from this checkout."""
+    import glob
+    src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "peer_agent")
+    out = os.path.join(rpc_manager.GENERATED_DIR, "agent-wheel")
+    os.makedirs(out, exist_ok=True)
+    with _AGENT_WHEEL_LOCK:
+        wheels = sorted(glob.glob(os.path.join(out, "llama_rpc_farm_agent-*.whl")),
+                        key=os.path.getmtime, reverse=True)
+        newest_src = 0.0
+        for root, _dirs, names in os.walk(src):
+            if "build" in root.split(os.sep) or "__pycache__" in root:
+                continue
+            for n in names:
+                try:
+                    newest_src = max(newest_src, os.path.getmtime(os.path.join(root, n)))
+                except OSError:
+                    pass
+        if wheels and os.path.getmtime(wheels[0]) >= newest_src:
+            return wheels[0]
+        proc = subprocess.run(
+            [sys.executable, "-m", "pip", "wheel", "--no-deps", "-w", out, src],
+            capture_output=True, text=True, timeout=180)
+        if proc.returncode != 0:
+            raise RuntimeError(f"could not build agent wheel: {(proc.stderr or proc.stdout)[-500:]}")
+        wheels = sorted(glob.glob(os.path.join(out, "llama_rpc_farm_agent-*.whl")),
+                        key=os.path.getmtime, reverse=True)
+        if not wheels:
+            raise RuntimeError("agent wheel build produced no wheel")
+        return wheels[0]
+
+
+def _agent_latest_version():
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "peer_agent", "pyproject.toml")
+    try:
+        text = open(path, encoding="utf-8").read()
+        m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def _agent_version_payload(machine):
+    latest = _agent_latest_version()
+    current = None
+    try:
+        current = agent_client.version(machine, timeout=4).get("agent_version")
+    except Exception:
+        current = None
+    return {"current": current, "latest": latest,
+            "on_latest": bool(current and latest and current == latest)}
+
+
+def _update_agent_remote(machine):
+    """Install/update the agent over SSH bootstrap and restart its service."""
+    from ssh_manager import SSHManager
+    name = machine.get("name") or machine.get("id") or "?"
+    wheel = _agent_wheel_path()
+    version = _agent_latest_version()
+    # Preferred path: the agent upgrades itself in place. The SSH path
+    # below is only bootstrap/recovery for agents that predate /agent/update.
+    if agent_client.should_use_agent(machine):
+        try:
+            with open(wheel, "rb") as f:
+                blob = f.read()
+            res = agent_client.agent_update(machine, blob, version or "")
+            if res.get("ok"):
+                for _ in range(15):
+                    import time as _t
+                    _t.sleep(1)
+                    try:
+                        h = agent_client.health(machine, timeout=3)
+                        if h.get("agent_version") == version:
+                            return {"ok": True, "machine": name,
+                                    "wheel": os.path.basename(wheel),
+                                    "agent_version": h.get("agent_version"),
+                                    "protocol_version": h.get("protocol_version"),
+                                    "method": "agent"}
+                    except Exception:
+                        continue
+                return {"ok": False, "machine": name,
+                        "wheel": os.path.basename(wheel),
+                        "method": "agent",
+                        "detail": "agent accepted update but did not come back healthy"}
+        except Exception as e:
+            print(f"[agent] {name}: self-update unavailable, using SSH bootstrap: {e}")
+    port = machine.get("ssh_update_port") or (machine.get("port")
+                                               if int(machine.get("port") or 22) > 1
+                                               else 22)
+    ssh = SSHManager(machine.get("ip", ""), machine.get("username", ""),
+                     machine.get("password", ""), port=port, timeout=20)
+    is_win = (machine.get("os", "linux") == "windows")
+    home = (ssh.run("echo %USERPROFILE%", timeout=10)[1].strip().splitlines()[-1]
+            if is_win else
+            ssh.run("echo $HOME", timeout=10)[1].strip().splitlines()[-1])
+    if not home:
+        raise RuntimeError("could not resolve remote home directory")
+    if is_win:
+        remote = f"{home}/AppData/Local/Temp/{os.path.basename(wheel)}"
+    else:
+        remote = f"{home}/.cache/{os.path.basename(wheel)}"
+    ssh.push_file(wheel, remote)
+    if is_win:
+        venv = rf"{home}\.llama-peer-agent\venv"
+        py = rf"{venv}\Scripts\python.exe"
+        ps = (
+            f"New-Item -ItemType Directory -Force -Path '{home}\.llama-peer-agent' | Out-Null; "
+            f"if (-not (Test-Path '{py}')) {{ & C:\Python312\python.exe -m venv '{venv}' }}; "
+            f"& '{py}' -m pip install --force-reinstall --no-deps '{remote}'; "
+            "schtasks /End /TN LlamaPeerAgent 2>$null | Out-Null; "
+            "Start-ScheduledTask -TaskName 'LlamaPeerAgent'")
+        code, out, err = ssh.run('powershell -NoProfile -Command "' +
+                                 ps.replace('"', '\\"') + '"', timeout=180)
+    else:
+        venv = f"{home}/.llama-peer-agent/venv"
+        py = f"{venv}/bin/python"
+        cmd = (
+            "test -x " + py + " || python3 -m venv " + venv + "; " +
+            py + " -m pip install --force-reinstall --no-deps " + remote + "; " +
+            "systemctl --user restart llama-peer-agent")
+        code, out, err = ssh.run(cmd, timeout=180)
+    try:
+        ssh.run(f"rm -f {remote}" if not is_win else f"del {remote}", timeout=20)
+    except Exception:
+        pass
+    if code != 0:
+        raise RuntimeError((err or out or f"exit {code}")[-800:])
+    import time as _t
+    _t.sleep(2)
+    try:
+        h = agent_client.health(machine, timeout=5)
+        return {"ok": True, "machine": name, "wheel": os.path.basename(wheel),
+                "agent_version": h.get("agent_version"),
+                "protocol_version": h.get("protocol_version")}
+    except Exception as e:
+        return {"ok": False, "machine": name, "wheel": os.path.basename(wheel),
+                "detail": f"installed but agent health failed: {e}"}
+
+
+@app.get("/api/machines/{name}/agent-version")
+async def agent_version_machine(name: str):
+    machine = cfg.machines.require(name)
+    return await run_in_threadpool(_agent_version_payload, machine)
+
+
+@app.post("/api/machines/{name}/update-agent")
+async def update_agent_machine(name: str):
+    """Build current agent, install it over SSH bootstrap, restart it."""
+    machine = cfg.machines.require(name)
+    try:
+        res = await run_in_threadpool(_update_agent_remote, machine)
+    except Exception as e:
+        raise HTTPException(status_code=502,
+                            detail=f"agent update failed: {e}")
+    if not res.get("ok"):
+        raise HTTPException(status_code=502, detail=res.get("detail") or "agent update failed")
+    return res
 
 
 @app.post("/api/machines/{name}/update-llama-cpp")
@@ -4578,6 +4874,11 @@ def _machine_env(machine):
         from installer.env import RealRunCmd as _RRC
         run = _RRC()
     else:
+        if agent_client.transport(machine) == "agent":
+            raise HTTPException(
+                status_code=400,
+                detail="installer system probe is not agent-backed; "
+                       "set transport=auto/ssh or add the missing agent probe")
         from ssh_manager import SSHManager
 
         class _SSHRunCmd:
@@ -5568,7 +5869,12 @@ async def machine_detail(name: str):
               "gpu_vendor": machine.get("gpu_vendor", "nvidia"),
               "rpc_port": machine.get("rpc_port", 50052),
               "llama_bin": machine.get("llama_bin", ""),
-              "mac": (machine.get("mac") or "")}
+              "mac": (machine.get("mac") or ""),
+              "transport": machine.get("transport") or "auto",
+              "agent_port": machine.get("agent_port") or 8198,
+              "connection": ("local" if is_local else
+                             "agent" if agent_client.should_use_agent(machine)
+                             else "ssh")}
 
     # ---- combine all detail queries into ONE round-trip per OS ----
     detail["net"] = {"ip": "", "speed": ""}
@@ -5584,6 +5890,10 @@ async def machine_detail(name: str):
         "gid": machine.get("rdma_gid", ""),
     }
     detail["disk"] = {"free": "", "mount": ""}
+    try:
+        detail.update(_machine_connection_caps(machine))
+    except Exception:
+        pass
     agent_detail = None
     if not is_local and agent_client.should_use_agent(machine):
         try:

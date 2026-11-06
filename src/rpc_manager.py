@@ -367,6 +367,10 @@ class _MacCapturingSSH(SSHManager):
 
 
 def _ssh_for(machine):
+    if agent_client.transport(machine) == "agent":
+        raise SSHError(
+            f"SSH is disabled for {machine.get('name') or machine.get('id') or machine.get('ip')}: "
+            "transport=agent")
     return _MacCapturingSSH(machine)
 
 
@@ -2231,6 +2235,16 @@ def _cmd_to_args(cmd, os_type="linux"):
     return out
 
 
+def _agent_base_url(machine):
+    ip = (machine.get("ip") or "").strip()
+    return f"http://{ip}:{agent_client.agent_port(machine)}"
+
+
+def _agent_token_var(machine_name):
+    return "AGENT_TOKEN_" + "".join(
+        c if c.isalnum() else "_" for c in str(machine_name or "").upper())
+
+
 def _agent_env_dict(machine):
     """Parse _rpc_env_exports() space-separated assignments into a dict."""
     import shlex
@@ -2716,6 +2730,35 @@ def _render_rpc(model_cfg, master, peers, cmd=None):
     label_pairs = [f'["{n["tag"]}"]="{n["label"]}"' for n in nodes]
     peer_labels_decl = ("declare -A PEER_LABELS\n" + "\n".join(
         f"PEER_LABELS{a}" for a in label_pairs))
+    # Agent-backed RPC peers: transport selection is per machine. These
+    # peers use the agent's typed /rpc/ensure, /rpc/stop, /port/open and
+    # /rpc/list endpoints instead of SSH. SSH peers keep the legacy path.
+    import json as _json
+    import shlex as _shlex
+    agent_nodes = [n for n in nodes if agent_client.should_use_agent(n["machine"])]
+    ssh_nodes = [n for n in nodes if not agent_client.should_use_agent(n["machine"])]
+    agent_nodes_decl = " ".join(f'"{n["tag"]}"' for n in agent_nodes)
+    ssh_nodes_decl = " ".join(f'"{n["tag"]}"' for n in ssh_nodes)
+    agent_base_pairs = [
+        f'["{n["tag"]}"]="{_agent_base_url(n["machine"])}"' for n in agent_nodes]
+    agent_token_pairs = [
+        f'["{n["tag"]}"]="${{{_agent_token_var(n["machine"].get("name"))}:-}}"'
+        for n in agent_nodes]
+    agent_payload_pairs = []
+    for n in agent_nodes:
+        body = _json.dumps({
+            "devices": list(n["devs"]),
+            "env": _agent_env_dict(n["machine"]),
+        }, separators=(",", ":"))
+        payload = '{"port":__PORT__,' + body[1:]
+        agent_payload_pairs.append(
+            f'["{n["tag"]}"]={_shlex.quote(payload)}')
+    agent_bases_decl = "declare -A AGENT_BASE\n" + "\n".join(
+        f"AGENT_BASE{a}" for a in agent_base_pairs)
+    agent_tokens_decl = "declare -A AGENT_TOKEN\n" + "\n".join(
+        f"AGENT_TOKEN{a}" for a in agent_token_pairs)
+    agent_payloads_decl = "declare -A AGENT_PAYLOAD\n" + "\n".join(
+        f"AGENT_PAYLOAD{a}" for a in agent_payload_pairs)
     rpc_legend = _rpc_legend(raw_order, master, peers)
     # the .ps1 executes ON Windows peers: its exe path must come from a
     # Windows machine's bin dir. Using master (usually Linux) baked a Linux
@@ -2734,7 +2777,6 @@ def _render_rpc(model_cfg, master, peers, cmd=None):
 set -uo pipefail
 LINUX_USER="{master['username']}"
 WIN_USER="{win_user}"
-: "${{SSH_PASS:?SSH_PASS is not set — run via scripts/farm-run.sh <machine> <script> (vault decrypts it at runtime, never baked into this file)}}"
 # NODES are per-SERVER entries (tag = IP, or IP#cpu for the separate
 # CPU/RAM server). SSH targets strip the #group suffix.
 LINUX_NODES=({linux_nodes})
@@ -2752,6 +2794,46 @@ DEVICE_ORDER="{device_order}"
 {peer_bins_decl}
 {peer_cm_decl}
 {peer_labels_decl}
+{agent_bases_decl}
+{agent_tokens_decl}
+{agent_payloads_decl}
+AGENT_NODES=({agent_nodes_decl})
+SSH_NODES=({ssh_nodes_decl})
+# SSH_PASS is required only when this plan still has SSH-backed peers.
+if [[ ${{#SSH_NODES[@]}} -gt 0 ]]; then
+  : "${{SSH_PASS:?SSH_PASS is not set — run via scripts/farm-run.sh <machine> <script> (vault decrypts it at runtime, never baked into this file)}}"
+fi
+agent_node() {{ [[ -n "${{AGENT_BASE[$1]:-}}" ]]; }}
+agent_ensure() {{
+  local node="$1"
+  local port="${{RPC_PORTS[$node]:-50052}}"
+  local payload="${{AGENT_PAYLOAD[$node]//__PORT__/$port}}"
+  local out
+  out="$(curl -fsS --max-time 90 -H "Authorization: Bearer ${{AGENT_TOKEN[$node]}}" \
+    -H "Content-Type: application/json" --data-binary "$payload" \
+    "${{AGENT_BASE[$node]}}/rpc/ensure")" || return 1
+  echo "$out"
+  [[ "$out" == *'"reused":true'* ]] || note_started "$node"
+}}
+agent_stop() {{
+  local node="$1"
+  local port="${{RPC_PORTS[$node]:-50052}}"
+  curl -fsS --max-time 60 -H "Authorization: Bearer ${{AGENT_TOKEN[$node]}}" \
+    -H "Content-Type: application/json" --data-binary '{{"port":'"$port"'}}' \
+    "${{AGENT_BASE[$node]}}/rpc/stop" >/dev/null 2>&1 || true
+}}
+agent_port_open() {{
+  local node="$1"
+  local port="${{RPC_PORTS[$node]:-50052}}"
+  curl -fsS --max-time 5 -H "Authorization: Bearer ${{AGENT_TOKEN[$node]}}" \
+    "${{AGENT_BASE[$node]}}/port/open?port=$port" 2>/dev/null | grep -q '"open":true'
+}}
+agent_rpc_listed() {{
+  local node="$1"
+  local port="${{RPC_PORTS[$node]:-50052}}"
+  curl -fsS --max-time 8 -H "Authorization: Bearer ${{AGENT_TOKEN[$node]}}" \
+    "${{AGENT_BASE[$node]}}/rpc/list" 2>/dev/null | grep -q "port.:$port"
+}}
 
     start_rpc_linux() {{
       local node="$1"
@@ -2812,6 +2894,7 @@ push_win_launcher() {{
 stop_node_rpc_linux() {{
   local node="$1"
   local port="${{RPC_PORTS[$node]:-50052}}"
+  if agent_node "$node"; then agent_stop "$node"; return; fi
   # ONLY the rpc daemon on this port: llama-server / llama-swap on this
   # box may belong to co-served models and must survive our exit.
   sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
@@ -2826,6 +2909,7 @@ stop_node_rpc_linux() {{
 stop_node_rpc_win() {{
   local node="$1"
   local port="${{RPC_PORTS[$node]:-50052}}"
+  if agent_node "$node"; then agent_stop "$node"; return; fi
   ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" \\
     "powershell -NoProfile -Command \\"\$c=0; foreach (\$x in (Get-CimInstance Win32_Process)) {{ if (\$x.Name -like 'ggml-rpc-server*' -and ((' ' + \$x.CommandLine + ' ') -like '*-p $port *')) {{ Stop-Process -Id \$x.ProcessId -Force; \$c++ }} }}; \$c\\"" >/dev/null 2>&1 || true
   ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" \\
@@ -2880,6 +2964,10 @@ set_rpc_state_win() {{
 port_open() {{
   local node="$1" port="${{2:-}}"
   [[ -z "$port" ]] && port="${{RPC_PORTS[$node]:-50052}}"
+  if agent_node "$node"; then
+    if [[ -n "${{RPC_CM[$node]:-}}" ]]; then agent_rpc_listed "$node"; else agent_port_open "$node"; fi
+    return $?
+  fi
   if [[ -n "${{RPC_CM[$node]:-}}" ]]; then
     # native-CM peer: no TCP listener exists — alive == process running
     sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
@@ -2951,6 +3039,7 @@ ensure_rpc_linux() {{
   # only on mismatch. Per-port: co-served models on other ports are never
   # touched, so they never need to "agree" on backends anymore.
   local node="$1" want have
+  if agent_node "$node"; then agent_ensure "$node"; return; fi
   want="${{PEER_DEVICES[$node]:-}}"
   [[ -z "$want" ]] && want="default"
   if port_open "$node"; then
@@ -2969,6 +3058,7 @@ ensure_rpc_linux() {{
 }}
 ensure_rpc_win() {{
   local node="$1" want have
+  if agent_node "$node"; then agent_ensure "$node"; return; fi
   want="${{PEER_DEVICES[$node]:-}}"
   [[ -z "$want" ]] && want="default"
   if port_open "$node"; then
@@ -2991,6 +3081,17 @@ wait_for_rpc() {{
   while :; do
   local port="${{RPC_PORTS[$node]:-50052}}"
   local log="${{RPC_LOGS[$node]:-rpc-server.log}}"
+  if agent_node "$node"; then
+    for i in $(seq 1 60); do
+      if agent_port_open "$node" || agent_rpc_listed "$node"; then
+        echo ">>> $node listening on $port (agent)"
+        return 0
+      fi
+      sleep 2
+    done
+    echo "!!! rpc-server never came up on $node:$port (agent)" >&2
+    return 1
+  fi
   if [[ -n "${{RPC_CM[$node]:-}}" ]]; then
     # native-CM peer: wait for the process + its "listening" line in the log
     for i in $(seq 1 60); do

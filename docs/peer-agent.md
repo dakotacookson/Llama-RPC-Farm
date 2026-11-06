@@ -1,10 +1,11 @@
 # Optional peer agent (design plan)
 
-Status: **partial SSH parity** in `peer_agent/` (agent 0.3.0). RPC and
-native llama-server lifecycle, process/status views, log tails, and
-stop-all are agent-backed. Discovery is implemented. The remaining
-control-plane and operations paths still use SSH. The long-term goal is
-to make the agent the primary transport, with SSH as bootstrap/fallback.
+Status: **agent-first** in `peer_agent/` (agent 0.3.4). RPC + native
+llama-server lifecycle, remote-local models, multi-host RPC scripts,
+vLLM/Ray workers, custom Windows runtimes, process/status views, logs,
+files, service control, installers, stats/tuner probes, discovery, and
+in-place agent updates are agent-backed. SSH remains only for first-time
+bootstrap, recovery, and explicit SSH discovery.
 Separate release artifacts are built by
 `.github/workflows/release-agent.yml` (tags `agent-v*`).
 
@@ -36,10 +37,10 @@ architecture for users who prefer SSH.
   with `/health`, `/version`, `/capabilities`, `/info`, `/status`,
   `/processes`, `/metrics`, `/system/detail`, `/system/rdma`, `/speedtest`,
   `/logs/tail`, `/logs/list`, `/files/*`, `/service/*`, `/ray/*`,
-  `/install/*`, `/build/*`,
-  `/rpc/list`, `/rpc/ensure`, `/rpc/stop`, `/llama/list`,
-  `/llama/status`, `/llama/start`, `/llama/stop`, and `/llama/stop-all`;
-  Bearer-token auth.
+  `/install/*`, `/build/*`, `/custom/start`, `/custom/stop`,
+  `/agent/update`, `/rpc/list`, `/rpc/ensure`, `/rpc/stop`,
+  `/llama/list`, `/llama/status`, `/llama/start`, `/llama/stop`, and
+  `/llama/stop-all`; Bearer-token auth.
 - UDP discovery: agents answer `LLAMA_FARM_DISCOVER_V1` on port `8199`
   with identity-only metadata; `src/agent_discovery.py` collects replies.
 - `src/agent_client.py` — master-side client + `transport` selection
@@ -64,7 +65,16 @@ architecture for users who prefer SSH.
   `stop_llama_server_port`) also use `/llama/start` / `/llama/stop` when
   the agent is selected.
 - `src/peer_transport.py` is the transport seam: agent first, SSH
-  fallback while the remaining slices are ported.
+  fallback only for bootstrap/recovery.
+- Generated RPC-cluster scripts branch per peer: agent peers use
+  `/rpc/ensure`, `/rpc/stop`, `/port/open`, and `/rpc/list`; SSH peers
+  keep the legacy path. RPC `cmdStop` is agent-aware.
+- Remote-local models and custom Windows `.bat` runtimes use typed agent
+  endpoints (`/llama/*`, `/custom/*`) when the peer is agent-backed.
+- In-place agent updates use `/agent/update`; the Machines page exposes
+  current→latest version state and an Agent update button.
+- Linux installs enable the systemd user unit with linger; Windows uses
+  a boot-triggered Scheduled Task (`LlamaPeerAgent`). Both survive reboot.
 - Stats/tuner use `/metrics`, `/system/detail`, and `/speedtest`;
   machine detail and the filesystem browser use `/system/detail` and
   `/files/*`; discovery merges UDP agent hits into scan results.
@@ -131,13 +141,14 @@ transport. Start scripts and llama-swap config stay transport-agnostic.
 | `POST /llama/start` | `{port, args, env, state_key}` → start/reuse `llama-server` |
 | `POST /llama/stop` | `{port, state_key}` → kill that port + recorded rolled ports |
 | `POST /llama/stop-all` | stop llama-swap, llama-server, and all RPC servers |
+| `POST /custom/start`, `/custom/stop` | typed custom Windows `.bat` runtime |
+| `POST /agent/update` | in-place upgrade from a verified wheel; restarts itself |
 | `GET /llama/list` | running native `llama-server` processes |
 | `GET /llama/status?port=N` | 200 while loading/running, 404 when gone |
 
-Still planned: bootstrap-only SSH-port probing for hosts that do not yet
-have an agent; all configured-machine lifecycle, control-plane, stats,
-tuner, installer, vLLM/Ray, RDMA, files, and discovery paths now have
-agent coverage.
+Remaining SSH exceptions: first-time agent bootstrap/recovery on a host
+with no agent, optional SSH discovery mode, and connection detection's
+SSH-port probe. All normal configured-machine operations are agent-backed.
 
 Mutating calls are validated and return the same shape as the master's
 step reports. Stop-all is explicit and restricted to the known llama
@@ -172,8 +183,11 @@ should go through `PeerTransport`, not a direct `_ssh_for(...)` call.
 ## Install / lifecycle
 
 - Install from the existing installer UI/CLI:
-  - Linux/macOS: systemd user unit `llama-peer-agent.service` (or launchd).
-  - Windows: scheduled task or service running the agent exe.
+  - Linux: systemd user unit `llama-peer-agent.service`, enabled with
+    linger so it starts at boot without a login.
+  - Windows: boot-triggered Scheduled Task `LlamaPeerAgent`, running the
+    venv entry point through a token-loading `.cmd` wrapper.
+  - macOS: launchd agent (planned; not packaged yet).
 - Agent reads a 0600 env file for the token; never writes secrets to logs.
 - `GET /health` returns the protocol version; the master warns on drift but
   keeps working when the contract is compatible.
@@ -197,17 +211,19 @@ should go through `PeerTransport`, not a direct `_ssh_for(...)` call.
 
 ## Parity roadmap
 
-1. **Lifecycle/status (done)**: RPC + native llama-server, process/status,
+1. **Lifecycle/status (done)**: RPC + native llama-server, remote-local,
+   RPC-cluster scripts/cmdStop, custom Windows runtimes, process/status,
    log tails, stop-all, `PeerTransport` seam.
-2. **Discovery (done)**: `/info`, UDP responder, master-side collector.
-3. **Metrics**: Prometheus endpoint and dashboard integration.
-4. **llama-swap control plane**: typed config/script writes, backups,
-   service start/stop/reload/status, log tail.
-5. **Operations parity**: installers, stats collector, tuner, discovery
-   enrollment, file/path operations, and vLLM.
-6. **Windows + macOS parity**: service/scheduled-task/launchd installers,
-   path rules, and platform-specific process/GPU queries.
-7. **Optional binary build**: PyInstaller/Nuitka single-file executable.
+2. **Discovery (done)**: `/info`, UDP responder, master-side collector,
+   Add Machine auto-fill and connection detection.
+3. **Agent operations (done)**: files, service control, installers,
+   build probe/update, vLLM/Ray, RDMA, stats/tuner probes, custom runtimes.
+4. **Agent lifecycle (done)**: Linux linger/systemd and Windows boot task,
+   in-place `/agent/update`, version display/update button.
+5. **Packaging**: signed/standalone agent and app installers for Linux,
+   Windows, and macOS.
+6. **Metrics**: Prometheus endpoint and dashboard integration.
+7. **macOS parity**: launchd installer and live validation.
 
 Each slice keeps SSH functional, so no user is forced to migrate early.
 

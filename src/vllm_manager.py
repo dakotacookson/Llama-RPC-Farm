@@ -778,8 +778,16 @@ def build_vllm_cluster_command(model_cfg, master, peers, vllm_cfg=None):
                 p, model_id, ray_bin, ids, num_gpus, ray_port,
                 f"ray-worker-{model_id}.log",
                 f"ray-worker-{model_id}.pid")
-            worker_starts.append(astart + ssh_start + "\n" + f"  fi")
-            worker_stops.append(astop + ssh_stop + "\n" + f"  fi")
+            if agent_client.transport(p) == "agent":
+                # Agent-only machines must never fall back to SSH.
+                worker_starts.append(
+                    astart + "    echo \"agent ray/start failed\" >&2\n"
+                    "    exit 1\n  fi")
+                worker_stops.append(
+                    astop + "    echo \"agent ray/stop failed\" >&2\n  fi")
+            else:
+                worker_starts.append(astart + ssh_start + "\n" + f"  fi")
+                worker_stops.append(astop + ssh_stop + "\n" + f"  fi")
         else:
             worker_starts.append(ssh_start)
             worker_stops.append(ssh_stop)

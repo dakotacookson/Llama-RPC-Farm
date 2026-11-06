@@ -76,3 +76,6 @@ qe-result.json
 # coverage
 .coverage
 htmlcov/
+
+# local agent wheel builds (release workflow rebuilds these)
+generated/agent-wheel/

@@ -15,6 +15,8 @@ Protocol v1 endpoints (see docs/peer-agent.md):
 All requests carry `Authorization: Bearer <agent token>`; the token comes
 from the Fernet vault (per-machine, then farm-wide), never from YAML.
 """
+import base64
+import hashlib
 import json
 import os
 import time
@@ -64,8 +66,9 @@ def _base(machine) -> str:
     return f"http://{ip}:{agent_port(machine)}"
 
 
-def _request(machine, method: str, path: str, body=None, timeout=6.0):
-    token = _token(machine)
+def _request(machine, method: str, path: str, body=None, timeout=6.0,
+             token=None):
+    token = token or _token(machine)
     if not token:
         raise AgentError("agent token is not configured for this machine")
     data = None
@@ -90,8 +93,8 @@ def _request(machine, method: str, path: str, body=None, timeout=6.0):
         raise AgentError(f"agent request failed: {e}") from e
 
 
-def health(machine, timeout=2.0) -> dict:
-    out = _request(machine, "GET", "/health", timeout=timeout)
+def health(machine, timeout=2.0, token=None) -> dict:
+    out = _request(machine, "GET", "/health", timeout=timeout, token=token)
     proto = out.get("protocol_version")
     if proto is not None:
         try:
@@ -291,6 +294,28 @@ def vllm_install(machine, python="python3", venv_root="~/vllm-env",
     return _request(machine, "POST", "/install/vllm", {
         "python": python, "venv_root": venv_root,
         "version": version, "rocm": bool(rocm),
+    }, timeout=timeout)
+
+
+def custom_start(machine, bat, port, log=None, workdir=None,
+                 timeout=60.0) -> dict:
+    return _request(machine, "POST", "/custom/start", {
+        "bat": bat, "port": int(port), "log": log, "workdir": workdir,
+    }, timeout=timeout)
+
+
+def custom_stop(machine, port, state_key=None, timeout=60.0) -> dict:
+    return _request(machine, "POST", "/custom/stop", {
+        "port": int(port), "state_key": state_key,
+    }, timeout=timeout)
+
+
+def agent_update(machine, wheel_bytes, version="", timeout=200.0) -> dict:
+    data = bytes(wheel_bytes)
+    return _request(machine, "POST", "/agent/update", {
+        "wheel_b64": base64.b64encode(data).decode("ascii"),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "version": version,
     }, timeout=timeout)
 
 

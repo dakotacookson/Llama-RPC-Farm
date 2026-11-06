@@ -8,6 +8,11 @@ import signal
 import threading
 import time
 import urllib.parse
+import base64
+import hashlib
+import subprocess
+import sys
+import tempfile
 
 from . import PROTOCOL_VERSION, __version__
 from .config import AgentConfig
@@ -19,6 +24,7 @@ from . import metrics
 from . import system
 from . import ray
 from . import install
+from . import custom
 from . import build
 
 _START_TS = time.time()
@@ -239,6 +245,19 @@ class AgentHandler(BaseHTTPRequestHandler):
                     config, body.get("ray_bin"), body.get("pid_file"))
             except ray.AgentRayError as e:
                 return 400, {"error": str(e)}
+        if path == "/custom/start":
+            try:
+                return 200, custom.start(
+                    config, body.get("bat"), body.get("port"),
+                    body.get("log"), body.get("workdir"))
+            except custom.AgentCustomError as e:
+                return 400, {"error": str(e)}
+        if path == "/custom/stop":
+            try:
+                return 200, custom.stop(
+                    config, body.get("port"), body.get("state_key"))
+            except custom.AgentCustomError as e:
+                return 400, {"error": str(e)}
         if path == "/install/artifact":
             try:
                 return 200, install.artifact(
@@ -254,6 +273,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                     config, body.get("path"), body.get("args"))
             except install.AgentInstallError as e:
                 return 400, {"error": str(e)}
+        if path == "/agent/update":
+            return self._agent_update(body)
         if path == "/install/vllm":
             try:
                 return 200, install.vllm(
@@ -314,6 +335,54 @@ class AgentHandler(BaseHTTPRequestHandler):
             except processes.AgentProcessError as e:
                 return 400, {"error": str(e)}
         return 404, {"error": "not found"}
+
+    def _restart_after_update(self, config):
+        import os
+        import time
+        time.sleep(1.5)
+        try:
+            os.execv(sys.executable, [
+                sys.executable, "-m", "llama_peer_agent",
+                "--host", config.host, "--port", str(config.port)])
+        except Exception as e:
+            log.error("agent self-restart failed: %s", e)
+
+    def _agent_update(self, body: dict):
+        config = self.server.config
+        raw = str(body.get("wheel_b64") or "")
+        digest = str(body.get("sha256") or "").strip().lower()
+        version = str(body.get("version") or "").strip()
+        if not raw or not digest:
+            return 400, {"error": "wheel_b64 and sha256 are required"}
+        try:
+            blob = base64.b64decode(raw, validate=True)
+        except Exception as e:
+            return 400, {"error": f"invalid wheel_b64: {e}"}
+        if len(blob) > 8 * 1024 * 1024:
+            return 400, {"error": "wheel too large"}
+        actual = hashlib.sha256(blob).hexdigest()
+        if actual != digest:
+            return 400, {"error": "sha256 mismatch"}
+        import os
+        from pathlib import Path
+        d = Path.home() / ".llama-peer-agent"
+        d.mkdir(parents=True, exist_ok=True)
+        name = f"llama_rpc_farm_agent-{version or 'update'}-py3-none-any.whl"
+        wheel = d / name
+        wheel.write_bytes(blob)
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "pip", "install",
+                 "--force-reinstall", "--no-deps", str(wheel)],
+                capture_output=True, text=True, timeout=180)
+        except (OSError, subprocess.SubprocessError) as e:
+            return 500, {"error": f"pip install failed: {e}"}
+        if proc.returncode != 0:
+            return 500, {"error": ((proc.stdout or "") + (proc.stderr or ""))[-500:]}
+        threading.Thread(target=self._restart_after_update,
+                         args=(config,), daemon=True).start()
+        return 200, {"ok": True, "installed": version or name,
+                     "restarting": True}
 
     def _send_speedtest(self):
         query = urllib.parse.parse_qs(

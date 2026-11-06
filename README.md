@@ -3,7 +3,8 @@
 **True llama.cpp, over your whole house.** One dashboard that spans real
 multi-machine llama.cpp RPC clusters — your desktops' GPUs pooled across
 boxes — and on-demand multi-model serving through llama-swap. Any mix of
-Linux and Windows machines (macOS peers supported in code but untested —
+Linux, Windows, and macOS machines (macOS agent packaging is still in
+progress; macOS peers are supported in code but not CI-tested —
 see the hardware table). Any client that speaks OpenAI.
 
 Real llama.cpp means real features: full CUDA, tensor-split across GPUs,
@@ -17,7 +18,8 @@ and hand-rolled startup scripts.
 ## What it does
 
 - **Pool machines into one cluster** — pick which GPUs (and RAM) each box
-  shares; peers run RPC servers started for you over SSH.
+  shares; peers run RPC servers started through the peer agent (SSH
+  remains the bootstrap/fallback path).
 
   ![Model editor: pick GPU/RAM chips across machines, device order at the bottom](docs/img/model-hardware.png)
 
@@ -177,7 +179,8 @@ It's a farm you shape, not a fixed topology.
 **This is a homelab tool for trusted networks.** llama.cpp's RPC server
 is unauthenticated by design; the farm assumes your LAN or a VPN
 (Tailscale-style) is the boundary. Don't port-forward the RPC ports or
-the UI to the public internet. What the app does touch: SSH to machines
+the UI to the public internet. What the app does touch: peer-agent HTTP
+and SSH for bootstrap/fallback to machines
 you add (credentials in the encrypted `.env` vault, never in configs or
 scripts), and Windows firewall allow rules for the two llama.cpp
 binaries so peers can reach each other. Everything else stays inside the

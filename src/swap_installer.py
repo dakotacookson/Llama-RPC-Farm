@@ -272,6 +272,23 @@ def detect_on(machine):
         if out and out != "MISSING":
             return True, out.splitlines()[0]
         return False, None
+    if not is_local and agent_client.should_use_agent(machine):
+        try:
+            found = agent_client.which(machine, "llama-swap").get("path")
+            if found:
+                return True, found
+            cands = (["~/llama-swap/llama-swap.exe", "~/llama-swap.exe"]
+                     if is_win else ["~/.local/bin/llama-swap"])
+            for cand in cands:
+                st = agent_client.file_stat(machine, cand)
+                if st.get("exists") and st.get("is_file"):
+                    return True, cand
+            return False, None
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                return False, None
+            print(f"[agent] {machine.get('name')}: swap probe failed, "
+                  f"falling back to SSH: {e}")
     try:
         from ssh_manager import SSHManager
         ssh = SSHManager(machine.get("ip"), machine.get("username"),
