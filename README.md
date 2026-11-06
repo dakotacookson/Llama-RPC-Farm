@@ -3,9 +3,8 @@
 **True llama.cpp, over your whole house.** One dashboard that spans real
 multi-machine llama.cpp RPC clusters — your desktops' GPUs pooled across
 boxes — and on-demand multi-model serving through llama-swap. Any mix of
-Linux, Windows, and macOS machines (macOS agent packaging is still in
-progress; macOS peers are supported in code but not CI-tested —
-see the hardware table). Any client that speaks OpenAI.
+Linux, Windows, and macOS machines — see the hardware table. Any client
+that speaks OpenAI.
 
 Real llama.cpp means real features: full CUDA, tensor-split across GPUs,
 spec decoding, KV-cache options, 128k+ contexts — the raw llama-server
@@ -138,7 +137,7 @@ scripts, same probe, same dashboard), it just needs real-world users**:
 | NVIDIA GPUs, Windows peers | ✅ Tested — RPC over OpenSSH, firewall rules auto-managed |
 | CPU + RAM sharing over RPC | 🧪 Code paths complete, needs contributors to test |
 | AMD GPUs (ROCm/HIP, `rocm-smi` stats) | 🧪 Code paths complete, needs contributors to test |
-| Apple Silicon (Metal backend) | 🧪 Code paths complete, needs contributors to test |
+| Apple Silicon (Metal backend) | ✅ Tested by @joshuamsalazar — Metal backend |
 | Intel XPU (SYCL) | 🧪 Vendor supported in detection/scripts, untested |
 
 Each backend speaks the same tokens (`CUDA0/1..`, `ROCm0/1..`, `Metal`,
