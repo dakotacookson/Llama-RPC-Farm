@@ -38,6 +38,7 @@ import model_parser
 import path_resolver
 import stats_collector
 import rpc_manager
+import agent_client
 import reaper
 import gguf_inspect
 
@@ -592,6 +593,9 @@ class MachineIn(pydantic.BaseModel):
     username: str
     password: str = ""
     port: int = 22
+    transport: str = "auto"     # auto | ssh | agent
+    agent_port: int = 8198
+    agent_token: str = ""       # write-only; stored in the vault, never YAML
     role: str = "peer"
     os: str = "linux"
     gpu_vendor: str = "nvidia"   # nvidia | amd | cpu
@@ -689,9 +693,54 @@ async def list_machines():
         m["vllm_capable"] = capable
         m["vllm_capability_reason"] = reason
         m["vllm_capability_info"] = info
+        try:
+            import secrets_vault as _vault
+            m["agent_token_set"] = bool(_vault.machine_agent_token_set(m))
+        except Exception:
+            m["agent_token_set"] = False
         m.pop("password", None)
         out.append(m)
     return out
+
+
+def _machine_connection_caps(machine):
+    """Detect usable transports for one machine: local, ssh, agent, both."""
+    name = machine.get("name") or machine.get("id") or "?"
+    try:
+        if local_node.is_local(machine):
+            return {"name": name, "mode": "local", "local": True,
+                    "ssh": True, "agent": False}
+    except Exception:
+        pass
+    agent_ok = False
+    try:
+        agent_client.health(machine, timeout=3.0)
+        agent_ok = True
+    except Exception:
+        agent_ok = False
+    ssh_ok = False
+    try:
+        from ssh_manager import SSHManager
+        ssh = SSHManager(machine.get("ip", ""), machine.get("username", ""),
+                         machine.get("password", ""),
+                         port=machine.get("port", 22), timeout=5)
+        if ssh.ssh_port_open(timeout=3):
+            ssh_ok = bool(ssh.is_reachable())
+    except Exception:
+        ssh_ok = False
+    mode = ("both" if ssh_ok and agent_ok else
+            "agent" if agent_ok else "ssh" if ssh_ok else "none")
+    return {"name": name, "mode": mode, "local": False,
+            "ssh": ssh_ok, "agent": agent_ok}
+
+
+@app.get("/api/machines/connections")
+async def machine_connections():
+    machines = cfg.machines.all()
+    def one(m):
+        return m.get("name"), _machine_connection_caps(m)
+    with ThreadPoolExecutor(max_workers=min(32, len(machines) or 1)) as pool:
+        return dict(pool.map(one, machines))
 
 
 def _ssh_port_guard(machine):
@@ -703,6 +752,13 @@ def _ssh_port_guard(machine):
             return None
     except Exception:
         pass
+    if agent_client.should_use_agent(machine):
+        try:
+            agent_client.health(machine, timeout=4)
+            return None
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                return f"agent unreachable: {e}"
     from ssh_manager import SSHManager
     ssh = SSHManager(
         machine.get("ip", ""), machine.get("username", ""),
@@ -716,6 +772,35 @@ class FingerprintIn(pydantic.BaseModel):
     port: int = 22
     username: str = "zazi"
     os: str = "linux"
+
+
+class AgentCheckIn(pydantic.BaseModel):
+    ip: str
+    agent_port: int = 8198
+    agent_token: str = ""
+    name: str = ""
+
+
+@app.post("/api/machines/agent-check")
+async def machine_agent_check(p: AgentCheckIn):
+    """Pre-save peer-agent reachability check for the add/edit form."""
+    try:
+        port = int(p.agent_port or 8198)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="agent port must be an integer")
+    if not 1 <= port <= 65535:
+        raise HTTPException(status_code=400, detail="agent port must be in 1..65535")
+    existing = cfg.machines.get(p.name) if p.name else None
+    machine = {"name": p.name or p.ip, "ip": p.ip, "agent_port": port,
+               "transport": "agent",
+               "id": (existing or {}).get("id")}
+    try:
+        out = await run_in_threadpool(
+            agent_client.health, machine, 4.0, p.agent_token or None)
+    except Exception as e:
+        raise HTTPException(status_code=502,
+                            detail=f"peer agent unreachable: {e}")
+    return {"ok": True, **out}
 
 
 @app.post("/api/machines/fingerprint")
@@ -744,19 +829,42 @@ def _validate_machine_swap_config(payload):
         cfg.machine_swap_config_override(payload, engine)
 
 
+def _validate_machine_connection(payload):
+    transport = str(payload.get("transport") or "auto").strip().lower()
+    if transport not in ("auto", "ssh", "agent"):
+        raise ValueError("transport must be auto, ssh, or agent")
+    try:
+        agent_port = int(payload.get("agent_port") or 8198)
+    except (TypeError, ValueError) as e:
+        raise ValueError("agent_port must be an integer") from e
+    if not 1 <= agent_port <= 65535:
+        raise ValueError("agent_port must be in 1..65535")
+    payload["transport"] = transport
+    payload["agent_port"] = agent_port
+
+
 @app.post("/api/machines")
 async def add_machine(m: MachineIn):
     try:
         payload = m.model_dump()
+        agent_token = payload.pop("agent_token", "")
+        if agent_token:
+            import uuid
+            payload.setdefault("id", uuid.uuid4().hex[:8])
+            import secrets_vault as _vault
+            _vault.set_machine_agent_token(payload["id"], agent_token)
         if not payload.get("password"):
             # fresh add with key-auth (no password): nothing to fill
             pass
         _validate_machine_swap_config(payload)
+        _validate_machine_connection(payload)
         detail = _ssh_port_guard(payload)
         if detail:
             raise HTTPException(status_code=400, detail=detail)
         saved = cfg.machines.add(payload)
         saved = dict(saved)
+        saved["agent_token_set"] = bool(agent_token) or bool(
+            __import__("secrets_vault").machine_agent_token_set(saved))
         saved.pop("password", None)
         return saved
     except ValueError as e:
@@ -767,6 +875,12 @@ async def add_machine(m: MachineIn):
 async def update_machine(name: str, m: MachineIn):
     try:
         payload = m.model_dump()
+        agent_token = payload.pop("agent_token", "")
+        if agent_token:
+            import secrets_vault as _vault
+            target = cfg.machines.get(name) or {}
+            _vault.set_machine_agent_token(target.get("id") or name,
+                                           agent_token)
         if not payload.get("password"):
             # blank = keep vault password: resolve it for the pre-save
             # SSH guard so edits don't falsely fail auth
@@ -777,12 +891,15 @@ async def update_machine(name: str, m: MachineIn):
             except Exception:
                 pass
         _validate_machine_swap_config(payload)
+        _validate_machine_connection(payload)
         detail = _ssh_port_guard(payload)
         if detail:
             raise HTTPException(status_code=400, detail=detail)
-        saved = cfg.machines.update(name, m.model_dump())
+        saved = cfg.machines.update(name, payload)
         saved = dict(saved)
         saved.pop("password", None)
+        saved["agent_token_set"] = bool(agent_token) or bool(
+            __import__("secrets_vault").machine_agent_token_set(saved))
         return saved
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -878,6 +995,21 @@ def _detect_rdma_nic(machine, is_local):
         except (OSError, subprocess.SubprocessError):
             # no bash on Windows (RDMA tooling is Linux-only anyway)
             return {}
+    elif agent_client.should_use_agent(machine):
+        try:
+            return agent_client.rdma(machine) or {}
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                return {}
+            print(f"[agent] {machine.get('name')}: rdma failed, falling back to SSH: {e}")
+            try:
+                from ssh_manager import SSHManager
+                ssh = SSHManager(machine["ip"], machine["username"],
+                                 machine.get("password", ""),
+                                 port=machine.get("port", 22))
+                code, out, _ = ssh.run(remote_script, timeout=20)
+            except Exception:
+                return {}
     else:
         try:
             from ssh_manager import SSHManager
@@ -953,6 +1085,7 @@ class DiscoverIn(pydantic.BaseModel):
     password: str = ""
     include_known: bool = False  # hide already-added machines by default
     ping: bool = True         # ICMP sweep: show live hosts without SSH too
+    agent_only: bool = False  # UDP peer-agent discovery only (no SSH scan)
 
 
 @app.get("/api/discover/subnets")
@@ -973,9 +1106,13 @@ async def discover_hosts(p: DiscoverIn):
     creds = [(p.username, p.password)] if p.username else None
 
     def run():
+        if p.agent_only:
+            return discovery.discover_agents(
+                include_known=p.include_known)
         return discovery.discover(
             subnet=p.subnet or None, port=p.port, credentials=creds,
-            include_known=p.include_known, ping=p.ping)
+            include_known=p.include_known, ping=p.ping,
+            agent_discovery_enabled=False)
 
     result = await run_in_threadpool(run)
     if "error" in result:
@@ -4024,6 +4161,17 @@ def _detect_bin_on_machine(machine):
         if c not in seen:
             seen.add(c)
             uniq.append(c)
+    if not is_local and agent_client.should_use_agent(machine):
+        for cand in uniq:
+            probe = cand.replace("%USERPROFILE%", "~")
+            try:
+                st = agent_client.file_stat(machine, probe)
+                if st.get("exists") and st.get("is_file"):
+                    return True, cand, f"found at {cand}"
+            except Exception as e:
+                if agent_client.transport(machine) == "agent":
+                    return False, None, f"agent bin probe failed: {e}"
+                print(f"[agent] {machine.get('name')}: bin probe failed, falling back to SSH: {e}")
     for cand in uniq:
         # expand for local check
         if is_local:
@@ -4185,6 +4333,23 @@ def _llama_version_on(machine):
     if not lb:
         return None
     is_win = machine.get("os", "linux") == "windows"
+    if (not local_node.is_local(machine)
+            and agent_client.should_use_agent(machine)):
+        try:
+            path = (f"{lb}\\llama-server.exe" if is_win
+                    else f"{lb}/llama-server")
+            res = agent_client.install_verify(
+                machine, path, ["--version"], timeout=35)
+            out = res.get("output") or ""
+            for line in out.splitlines():
+                if line.strip():
+                    return line.strip()
+            return None
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                return None
+            print(f"[agent] {machine.get('name')}: version probe failed, "
+                  f"falling back to SSH: {e}")
     try:
         from llamacpp_installer import _machine_run
         run, _ = _machine_run(machine)
@@ -4261,6 +4426,171 @@ async def llama_cpp_version_machine(name: str):
     machine grid can re-ask on every render without hammering anything."""
     machine = cfg.machines.require(name)
     return await run_in_threadpool(_llama_version_payload, machine)
+
+
+
+_AGENT_WHEEL_LOCK = threading.Lock()
+
+
+def _agent_wheel_path():
+    """Build/cache the current peer-agent wheel from this checkout."""
+    import glob
+    src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "peer_agent")
+    out = os.path.join(rpc_manager.GENERATED_DIR, "agent-wheel")
+    os.makedirs(out, exist_ok=True)
+    with _AGENT_WHEEL_LOCK:
+        wheels = sorted(glob.glob(os.path.join(out, "llama_rpc_farm_agent-*.whl")),
+                        key=os.path.getmtime, reverse=True)
+        newest_src = 0.0
+        for root, _dirs, names in os.walk(src):
+            if "build" in root.split(os.sep) or "__pycache__" in root:
+                continue
+            for n in names:
+                try:
+                    newest_src = max(newest_src, os.path.getmtime(os.path.join(root, n)))
+                except OSError:
+                    pass
+        if wheels and os.path.getmtime(wheels[0]) >= newest_src:
+            return wheels[0]
+        proc = subprocess.run(
+            [sys.executable, "-m", "pip", "wheel", "--no-deps", "-w", out, src],
+            capture_output=True, text=True, timeout=180)
+        if proc.returncode != 0:
+            raise RuntimeError(f"could not build agent wheel: {(proc.stderr or proc.stdout)[-500:]}")
+        wheels = sorted(glob.glob(os.path.join(out, "llama_rpc_farm_agent-*.whl")),
+                        key=os.path.getmtime, reverse=True)
+        if not wheels:
+            raise RuntimeError("agent wheel build produced no wheel")
+        return wheels[0]
+
+
+def _agent_latest_version():
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "peer_agent", "pyproject.toml")
+    try:
+        text = open(path, encoding="utf-8").read()
+        m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def _agent_version_payload(machine):
+    latest = _agent_latest_version()
+    current = None
+    try:
+        current = agent_client.version(machine, timeout=4).get("agent_version")
+    except Exception:
+        current = None
+    return {"current": current, "latest": latest,
+            "on_latest": bool(current and latest and current == latest)}
+
+
+def _update_agent_remote(machine):
+    """Install/update the agent over SSH bootstrap and restart its service."""
+    from ssh_manager import SSHManager
+    name = machine.get("name") or machine.get("id") or "?"
+    wheel = _agent_wheel_path()
+    version = _agent_latest_version()
+    # Preferred path: the agent upgrades itself in place. The SSH path
+    # below is only bootstrap/recovery for agents that predate /agent/update.
+    if agent_client.should_use_agent(machine):
+        try:
+            with open(wheel, "rb") as f:
+                blob = f.read()
+            res = agent_client.agent_update(machine, blob, version or "")
+            if res.get("ok"):
+                for _ in range(15):
+                    import time as _t
+                    _t.sleep(1)
+                    try:
+                        h = agent_client.health(machine, timeout=3)
+                        if h.get("agent_version") == version:
+                            return {"ok": True, "machine": name,
+                                    "wheel": os.path.basename(wheel),
+                                    "agent_version": h.get("agent_version"),
+                                    "protocol_version": h.get("protocol_version"),
+                                    "method": "agent"}
+                    except Exception:
+                        continue
+                return {"ok": False, "machine": name,
+                        "wheel": os.path.basename(wheel),
+                        "method": "agent",
+                        "detail": "agent accepted update but did not come back healthy"}
+        except Exception as e:
+            print(f"[agent] {name}: self-update unavailable, using SSH bootstrap: {e}")
+    port = machine.get("ssh_update_port") or (machine.get("port")
+                                               if int(machine.get("port") or 22) > 1
+                                               else 22)
+    ssh = SSHManager(machine.get("ip", ""), machine.get("username", ""),
+                     machine.get("password", ""), port=port, timeout=20)
+    is_win = (machine.get("os", "linux") == "windows")
+    home = (ssh.run("echo %USERPROFILE%", timeout=10)[1].strip().splitlines()[-1]
+            if is_win else
+            ssh.run("echo $HOME", timeout=10)[1].strip().splitlines()[-1])
+    if not home:
+        raise RuntimeError("could not resolve remote home directory")
+    if is_win:
+        remote = f"{home}/AppData/Local/Temp/{os.path.basename(wheel)}"
+    else:
+        remote = f"{home}/.cache/{os.path.basename(wheel)}"
+    ssh.push_file(wheel, remote)
+    if is_win:
+        venv = rf"{home}\.llama-peer-agent\venv"
+        py = rf"{venv}\Scripts\python.exe"
+        ps = (
+            f"New-Item -ItemType Directory -Force -Path '{home}\.llama-peer-agent' | Out-Null; "
+            f"if (-not (Test-Path '{py}')) {{ & C:\Python312\python.exe -m venv '{venv}' }}; "
+            f"& '{py}' -m pip install --force-reinstall --no-deps '{remote}'; "
+            "schtasks /End /TN LlamaPeerAgent 2>$null | Out-Null; "
+            "Start-ScheduledTask -TaskName 'LlamaPeerAgent'")
+        code, out, err = ssh.run('powershell -NoProfile -Command "' +
+                                 ps.replace('"', '\\"') + '"', timeout=180)
+    else:
+        venv = f"{home}/.llama-peer-agent/venv"
+        py = f"{venv}/bin/python"
+        cmd = (
+            "test -x " + py + " || python3 -m venv " + venv + "; " +
+            py + " -m pip install --force-reinstall --no-deps " + remote + "; " +
+            "systemctl --user restart llama-peer-agent")
+        code, out, err = ssh.run(cmd, timeout=180)
+    try:
+        ssh.run(f"rm -f {remote}" if not is_win else f"del {remote}", timeout=20)
+    except Exception:
+        pass
+    if code != 0:
+        raise RuntimeError((err or out or f"exit {code}")[-800:])
+    import time as _t
+    _t.sleep(2)
+    try:
+        h = agent_client.health(machine, timeout=5)
+        return {"ok": True, "machine": name, "wheel": os.path.basename(wheel),
+                "agent_version": h.get("agent_version"),
+                "protocol_version": h.get("protocol_version")}
+    except Exception as e:
+        return {"ok": False, "machine": name, "wheel": os.path.basename(wheel),
+                "detail": f"installed but agent health failed: {e}"}
+
+
+@app.get("/api/machines/{name}/agent-version")
+async def agent_version_machine(name: str):
+    machine = cfg.machines.require(name)
+    return await run_in_threadpool(_agent_version_payload, machine)
+
+
+@app.post("/api/machines/{name}/update-agent")
+async def update_agent_machine(name: str):
+    """Build current agent, install it over SSH bootstrap, restart it."""
+    machine = cfg.machines.require(name)
+    try:
+        res = await run_in_threadpool(_update_agent_remote, machine)
+    except Exception as e:
+        raise HTTPException(status_code=502,
+                            detail=f"agent update failed: {e}")
+    if not res.get("ok"):
+        raise HTTPException(status_code=502, detail=res.get("detail") or "agent update failed")
+    return res
 
 
 @app.post("/api/machines/{name}/update-llama-cpp")
@@ -4544,6 +4874,11 @@ def _machine_env(machine):
         from installer.env import RealRunCmd as _RRC
         run = _RRC()
     else:
+        if agent_client.transport(machine) == "agent":
+            raise HTTPException(
+                status_code=400,
+                detail="installer system probe is not agent-backed; "
+                       "set transport=auto/ssh or add the missing agent probe")
         from ssh_manager import SSHManager
 
         class _SSHRunCmd:
@@ -5060,7 +5395,55 @@ def _fs_list_local(raw_path, show_hidden=False):
     return {"path": raw_path, "alias": alias, "display_path": disp_path, "parent": parent, "exists": exists, "is_dir": is_dir, "os": "windows" if os.name == "nt" else "macos" if sys.platform == "darwin" else "linux", "entries": entries}
 
 
+def _fs_list_agent(machine, raw_path, show_hidden=False):
+    import ntpath
+    is_win = machine.get("os", "linux") == "windows"
+    join = ntpath.join if is_win else os.path.join
+    dirname = ntpath.dirname if is_win else os.path.dirname
+    if not raw_path or raw_path.strip() == "":
+        raw_path = "~"
+    if raw_path.startswith(path_resolver.PREFIX):
+        try:
+            raw_path = path_resolver.resolve_for(raw_path, machine.get("os", "linux"))
+        except Exception:
+            pass
+    stat = agent_client.file_stat(machine, raw_path)
+    if not stat.get("exists"):
+        raise HTTPException(status_code=404,
+                            detail=f"path not found or unreachable: {raw_path}")
+    real = stat["path"]
+    is_dir = bool(stat.get("is_dir"))
+    parent = dirname(real)
+    if not is_dir:
+        real = parent
+        is_dir = True
+    listing = agent_client.file_list(machine, real, show_hidden)
+    entries = [{"name": e["name"], "path": join(real, e["name"]),
+                "is_dir": bool(e.get("is_dir"))}
+               for e in listing.get("entries", [])]
+    entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
+    try:
+        alias = path_resolver.to_alias(real)
+    except Exception:
+        alias = real
+    return {"path": real, "alias": alias, "parent": parent,
+            "exists": True, "is_dir": is_dir,
+            "os": "windows" if is_win else
+                  "macos" if machine.get("os") == "macos" else "linux",
+            "entries": entries}
+
+
 def _fs_list_remote(machine, raw_path, show_hidden=False):
+    if agent_client.should_use_agent(machine):
+        try:
+            return _fs_list_agent(machine, raw_path, show_hidden)
+        except HTTPException:
+            raise
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                raise HTTPException(status_code=500,
+                                    detail=f"agent browse failed: {e}")
+            print(f"[agent] {machine['name']}: browse failed, falling back to SSH: {e}")
     from ssh_manager import SSHManager, SSHError
     is_win = machine.get("os", "linux") == "windows"
     if not raw_path or raw_path.strip() == "":
@@ -5435,6 +5818,13 @@ def _measure_ssh_speed(ssh, mb=50):
     return round(mb * 8 / elapsed)
 
 
+def _measure_agent_speed(machine, mb=50):
+    try:
+        return agent_client.speedtest(machine, mb=mb)
+    except Exception:
+        return None
+
+
 @app.get("/api/machines/{name}/detail")
 async def machine_detail(name: str):
     """Deep system info for one machine: OS/kernel, CPU model, disk, network,
@@ -5479,7 +5869,12 @@ async def machine_detail(name: str):
               "gpu_vendor": machine.get("gpu_vendor", "nvidia"),
               "rpc_port": machine.get("rpc_port", 50052),
               "llama_bin": machine.get("llama_bin", ""),
-              "mac": (machine.get("mac") or "")}
+              "mac": (machine.get("mac") or ""),
+              "transport": machine.get("transport") or "auto",
+              "agent_port": machine.get("agent_port") or 8198,
+              "connection": ("local" if is_local else
+                             "agent" if agent_client.should_use_agent(machine)
+                             else "ssh")}
 
     # ---- combine all detail queries into ONE round-trip per OS ----
     detail["net"] = {"ip": "", "speed": ""}
@@ -5495,86 +5890,105 @@ async def machine_detail(name: str):
         "gid": machine.get("rdma_gid", ""),
     }
     detail["disk"] = {"free": "", "mount": ""}
-    if machine_os == "windows":
-        blob = _run(
-            "powershell -NoProfile -Command \""
-            "$o=@{};"
-            "$o.kernel=(ver);"
-            "$o.cpu=(Get-CimInstance Win32_Processor).Name;"
-            "$o.uptime=((Get-Date)-(Get-CimInstance Win32_OperatingSystem).LastBootUpTime).ToString();"
-            "$o.ip=((Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*'} | Select-Object -First 1).IPAddress);"
-            "$o.speed=((Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object -First 1).LinkSpeed);"
-            "$o.disk=(Get-PSDrive -PSProvider FileSystem | Where-Object {$_.Free -gt 0} | Select-Object Name,Free,Used | ConvertTo-Json -Compress);"
-            "$o.cores=(Get-CimInstance Win32_Processor | Measure-Object -Sum NumberOfLogicalProcessors).Sum;"
-            "$o.coreload=(Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor | Where-Object {$_.Name -ne '_Total'} | Select-Object -ExpandProperty PercentProcessorTime | ForEach-Object {[math]::Round($_,1)} | ConvertTo-Json -Compress);"
-            "$o.llama=((& (Join-Path $env:USERPROFILE 'llama.cpp\\bin\\llama-server.exe') --version 2>&1 | Select-String 'version:' | Select-Object -First 1).ToString());"
-            "if (-not $o.llama) { $o.llama=((& (Join-Path $env:USERPROFILE 'llama.cpp\\llama-server.exe') --version 2>&1 | Select-String 'version:' | Select-Object -First 1).ToString()); }"
-            "$o | ConvertTo-Json -Compress\"", timeout=30)
+    try:
+        detail.update(_machine_connection_caps(machine))
+    except Exception:
+        pass
+    agent_detail = None
+    if not is_local and agent_client.should_use_agent(machine):
         try:
-            o = json.loads(blob)
-            detail["kernel"] = o.get("kernel", "")
-            detail["cpu_model"] = o.get("cpu", "")
-            detail["uptime"] = o.get("uptime", "")
-            detail["net"]["ip"] = o.get("ip", "")
-            detail["net"]["speed"] = o.get("speed", "")
-            detail["disk"]["free"], detail["disk"]["total"] = _parse_win_disk(o.get("disk", ""))
-            detail["llama_version"] = o.get("llama", "")
-            # coreload comes back as a JSON string; parse it into a list
-            cl = o.get("coreload")
-            if isinstance(cl, str):
-                try:
-                    detail["cpu_cores"] = json.loads(cl)
-                except Exception:
-                    detail["cpu_cores"] = []
+            agent_detail = agent_client.system_detail(machine)
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                agent_detail = {}
             else:
-                detail["cpu_cores"] = cl or []
-            detail["cores"] = o.get("cores", "")
-        except Exception:
-            pass
-    elif machine_os == "macos":
-        blob = _run(
-            "echo \"K:$(uname -a)\";"
-            "echo \"C:$(sysctl -n machdep.cpu.brand_string)\";"
-            "echo \"U:$(uptime)\";"
-            "echo \"I:$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)\";"
-            "echo \"S:$(networksetup -getmedia en0 2>/dev/null | grep -i 'current' | sed 's/.*: //')\";"
-            "echo \"D:$(df -k / | awk 'NR==2 {print $4}')\";"
-            "echo \"DT:$(df -k / | awk 'NR==2 {print $2}')\";"
-            "echo \"L:$(\\\"{bin}/llama-server\\\" --version 2>&1 || "
-            "\\\"{bin}/llama-cli\\\" --version 2>&1)\"".format(
-                bin=machine.get('llama_bin', '') or '.'), timeout=30)
-        _parse_posix_blob(detail, blob)
+                print(f"[agent] {machine['name']}: detail failed, falling back to SSH: {e}")
+    if agent_detail is not None:
+        detail.update(agent_detail)
     else:
-        _bin = machine.get('llama_bin', '')
-        blob = _run(
-            f"K=$(uname -a); "
-            f"C=$(lscpu | grep 'Model name' | cut -d: -f2 | sed 's/^ *//'); "
-            f"U=$(uptime -p); "
-            f"I=$(hostname -I 2>/dev/null | grep -oF '{machine['ip']}' | head -n1); "
-            f"S=$(for i in $(ls /sys/class/net | grep -v '^lo'); do "
-            f"d=$(readlink /sys/class/net/$i/device/driver 2>/dev/null); "
-            f"case \"$i\" in veth*|br-*|docker*|virbr*|tailscale*) continue;; esac; "
-            f"case \"$d\" in *bridge*|*veth|*tun|*tap) continue;; esac; "
-            f"s=$(cat /sys/class/net/$i/speed 2>/dev/null); "
-            f"if [ -n \"$s\" ] && [ \"$s\" != \"-1\" ] && [ \"$s\" -gt 0 ]; then "
-            f"if [ \"$s\" -ge 1000 ]; then echo \"$((s/1000)) Gb/s\"; "
-            f"else echo \"${{s}} Mb/s\"; fi; break; fi; "
-            f"e=$(ethtool $i 2>/dev/null | grep -i speed | sed 's/.*: *//;s/ *$//'); "
-            f"if [ -n \"$e\" ] && [ \"$e\" != \"Unknown!\" ]; then echo \"$e\"; break; fi; "
-            f"case \"$d\" in *virtio*) echo \"virtio (speed n/a)\"; break;; esac; done); "
-            f"D=$(df -k / | tail -n1 | awk '{{print $4}}'); "
-            f"DT=$(df -k / | tail -n1 | awk '{{print $2}}'); "
-            f"L=$(\"{_bin}/llama-server\" --version 2>&1 || \"{_bin}/llama-cli\" --version 2>&1); "
-            f"echo \"K:$K\"; echo \"C:$C\"; echo \"U:$U\"; echo \"I:$I\"; "
-            f"echo \"S:$S\"; echo \"D:$D\"; echo \"DT:$DT\"; echo \"L:$L\"", timeout=30)
-        _parse_posix_blob(detail, blob)
+        if machine_os == "windows":
+            blob = _run(
+                "powershell -NoProfile -Command \""
+                "$o=@{};"
+                "$o.kernel=(ver);"
+                "$o.cpu=(Get-CimInstance Win32_Processor).Name;"
+                "$o.uptime=((Get-Date)-(Get-CimInstance Win32_OperatingSystem).LastBootUpTime).ToString();"
+                "$o.ip=((Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*'} | Select-Object -First 1).IPAddress);"
+                "$o.speed=((Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object -First 1).LinkSpeed);"
+                "$o.disk=(Get-PSDrive -PSProvider FileSystem | Where-Object {$_.Free -gt 0} | Select-Object Name,Free,Used | ConvertTo-Json -Compress);"
+                "$o.cores=(Get-CimInstance Win32_Processor | Measure-Object -Sum NumberOfLogicalProcessors).Sum;"
+                "$o.coreload=(Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor | Where-Object {$_.Name -ne '_Total'} | Select-Object -ExpandProperty PercentProcessorTime | ForEach-Object {[math]::Round($_,1)} | ConvertTo-Json -Compress);"
+                "$o.llama=((& (Join-Path $env:USERPROFILE 'llama.cpp\\bin\\llama-server.exe') --version 2>&1 | Select-String 'version:' | Select-Object -First 1).ToString());"
+                "if (-not $o.llama) { $o.llama=((& (Join-Path $env:USERPROFILE 'llama.cpp\\llama-server.exe') --version 2>&1 | Select-String 'version:' | Select-Object -First 1).ToString()); }"
+                "$o | ConvertTo-Json -Compress\"", timeout=30)
+            try:
+                o = json.loads(blob)
+                detail["kernel"] = o.get("kernel", "")
+                detail["cpu_model"] = o.get("cpu", "")
+                detail["uptime"] = o.get("uptime", "")
+                detail["net"]["ip"] = o.get("ip", "")
+                detail["net"]["speed"] = o.get("speed", "")
+                detail["disk"]["free"], detail["disk"]["total"] = _parse_win_disk(o.get("disk", ""))
+                detail["llama_version"] = o.get("llama", "")
+                # coreload comes back as a JSON string; parse it into a list
+                cl = o.get("coreload")
+                if isinstance(cl, str):
+                    try:
+                        detail["cpu_cores"] = json.loads(cl)
+                    except Exception:
+                        detail["cpu_cores"] = []
+                else:
+                    detail["cpu_cores"] = cl or []
+                detail["cores"] = o.get("cores", "")
+            except Exception:
+                pass
+        elif machine_os == "macos":
+            blob = _run(
+                "echo \"K:$(uname -a)\";"
+                "echo \"C:$(sysctl -n machdep.cpu.brand_string)\";"
+                "echo \"U:$(uptime)\";"
+                "echo \"I:$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)\";"
+                "echo \"S:$(networksetup -getmedia en0 2>/dev/null | grep -i 'current' | sed 's/.*: //')\";"
+                "echo \"D:$(df -k / | awk 'NR==2 {print $4}')\";"
+                "echo \"DT:$(df -k / | awk 'NR==2 {print $2}')\";"
+                "echo \"L:$(\\\"{bin}/llama-server\\\" --version 2>&1 || "
+                "\\\"{bin}/llama-cli\\\" --version 2>&1)\"".format(
+                    bin=machine.get('llama_bin', '') or '.'), timeout=30)
+            _parse_posix_blob(detail, blob)
+        else:
+            _bin = machine.get('llama_bin', '')
+            blob = _run(
+                f"K=$(uname -a); "
+                f"C=$(lscpu | grep 'Model name' | cut -d: -f2 | sed 's/^ *//'); "
+                f"U=$(uptime -p); "
+                f"I=$(hostname -I 2>/dev/null | grep -oF '{machine['ip']}' | head -n1); "
+                f"S=$(for i in $(ls /sys/class/net | grep -v '^lo'); do "
+                f"d=$(readlink /sys/class/net/$i/device/driver 2>/dev/null); "
+                f"case \"$i\" in veth*|br-*|docker*|virbr*|tailscale*) continue;; esac; "
+                f"case \"$d\" in *bridge*|*veth|*tun|*tap) continue;; esac; "
+                f"s=$(cat /sys/class/net/$i/speed 2>/dev/null); "
+                f"if [ -n \"$s\" ] && [ \"$s\" != \"-1\" ] && [ \"$s\" -gt 0 ]; then "
+                f"if [ \"$s\" -ge 1000 ]; then echo \"$((s/1000)) Gb/s\"; "
+                f"else echo \"${{s}} Mb/s\"; fi; break; fi; "
+                f"e=$(ethtool $i 2>/dev/null | grep -i speed | sed 's/.*: *//;s/ *$//'); "
+                f"if [ -n \"$e\" ] && [ \"$e\" != \"Unknown!\" ]; then echo \"$e\"; break; fi; "
+                f"case \"$d\" in *virtio*) echo \"virtio (speed n/a)\"; break;; esac; done); "
+                f"D=$(df -k / | tail -n1 | awk '{{print $4}}'); "
+                f"DT=$(df -k / | tail -n1 | awk '{{print $2}}'); "
+                f"L=$(\"{_bin}/llama-server\" --version 2>&1 || \"{_bin}/llama-cli\" --version 2>&1); "
+                f"echo \"K:$K\"; echo \"C:$C\"; echo \"U:$U\"; echo \"I:$I\"; "
+                f"echo \"S:$S\"; echo \"D:$D\"; echo \"DT:$DT\"; echo \"L:$L\"", timeout=30)
+            _parse_posix_blob(detail, blob)
 
     # ---- real throughput over SSH (cached 1h) ----
     # virtio/virtual NICs don't report a link speed, so measure what the
     # machine can actually push to the cluster over its SSH link. For the
     # local machine, measure to the first reachable peer.
     speed_ssh = None
-    if not is_local and ssh is not None:
+    speed_agent = None
+    if not is_local and agent_client.should_use_agent(machine):
+        speed_agent = machine
+    elif not is_local and ssh is not None:
         speed_ssh = ssh
     elif is_local:
         for peer in cfg.machines.all():
@@ -5593,14 +6007,15 @@ async def machine_detail(name: str):
     reported = str(detail["net"].get("speed") or "").strip()
     need_measure = (not reported or "n/a" in reported.lower()
                     or "unknown" in reported.lower())
-    if need_measure and speed_ssh is not None:
+    if need_measure and (speed_agent is not None or speed_ssh is not None):
         cache = _load_speed_cache()
         ent = cache.get(name)
         now = time.time()
         if ent and now - ent.get("ts", 0) < _SPEED_CACHE_TTL:
             detail["net"]["speed"] = ent.get("mbps")
         else:
-            mbps = _measure_ssh_speed(speed_ssh)
+            mbps = (_measure_agent_speed(speed_agent) if speed_agent is not None
+                    else _measure_ssh_speed(speed_ssh))
             if mbps:
                 detail["net"]["speed"] = mbps
                 cache[name] = {"mbps": mbps, "ts": now}

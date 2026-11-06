@@ -173,10 +173,16 @@
           <fieldset>
             <legend>Scan the network <small class="hint">ping + SSH banner — OS detected without login; enrichment uses the username below (default zazi), editable in step 3</small></legend>
             <div class="row">
-              <label>Network
+              <label>Discovery
+                <select id="d-mode">
+                  <option value="peer" selected>Peer agents (auto discovery)</option>
+                  <option value="ssh">SSH network scan</option>
+                </select>
+              </label>
+              <label id="d-subnet-label">Network
                 <select id="d-subnet"></select>
               </label>
-              <label>SSH port <input id="d-port" type="number" value="22"></label>
+              <label id="d-port-label">SSH port <input id="d-port" type="number" value="22"></label>
               <button type="button" id="d-scan" style="align-self:end">Scan</button>
             </div>
             <p class="hint" id="wiz-scan-hint">Hit Scan to ping the network and fingerprint SSH hosts. Already know the IP? Just Continue — you can enter it manually in step 2.</p>
@@ -198,11 +204,21 @@
           <label>IP <input id="m-ip" required list="discovered-ips" placeholder="type to pick a discovered host">
             <datalist id="discovered-ips"></datalist>
           </label>
-          <label>Username <input id="m-username" required value="zazi"></label>
-          <label>Password <input id="m-password" type="password"><small id="m-password-hint" class="hint"></small></label>
+          <label id="m-username-label">Username <input id="m-username" required value="zazi"></label>
+          <label id="m-password-label">Password <input id="m-password" type="password"><small id="m-password-hint" class="hint"></small></label>
         </div>
         <div class="row">
-          <label>SSH port <input id="m-port" type="number" value="22"></label>
+          <label id="m-port-label">SSH port <input id="m-port" type="number" value="22"></label>
+          <label title="How the master talks to this peer">Connection
+            <select id="m-transport">
+              <option value="ssh">SSH only</option>
+              <option value="agent">Peer agent only</option>
+              <option value="auto">SSH + peer agent (agent preferred)</option>
+            </select>
+            <small class="hint">Agent discovery auto-selects this when available.</small>
+          </label>
+          <label id="m-agent-port-label">Agent port <input id="m-agent-port" type="number" value="8198" min="1" max="65535"></label>
+          <label id="m-agent-token-label">Agent token <input id="m-agent-token" type="password" autocomplete="new-password"><small id="m-agent-token-hint" class="hint"></small></label>
           <label>Role
             <select id="m-role">
               <option value="peer">peer</option>
@@ -259,27 +275,32 @@
         <fieldset>
           <legend>RDMA transport (llama.cpp RPC)</legend>
           <div class="row">
-            <label style="display:flex;gap:8px;align-items:center;white-space:nowrap">
-              <input type="checkbox" id="m-rdma" style="width:auto">
-              Use RDMA (RoCE) for RPC
-            </label>
-            <label class="wide">RDMA NIC IP (RoCE v2 address, must be in the NIC's GID table)
-              <input id="m-rdma-ip" placeholder="e.g. 10.0.0.105" disabled>
-            </label>
+            <input type="checkbox" id="m-rdma" hidden>
+            <button type="button" id="m-rdma-toggle" class="chip-switch" aria-pressed="false" title="Enable or disable RDMA transport">
+              <span class="chip-knob"><i class="fa-solid fa-bolt"></i></span>
+              <span class="chip-label" id="m-rdma-label">RDMA off</span>
+            </button>
           </div>
-          <div class="row">
-            <label>ibverbs device (pin; empty = auto-detect)
-              <input id="m-rdma-dev" placeholder="e.g. rocep4s0" disabled>
-            </label>
-            <label>GID index (pin; empty = auto-detect)
-              <input id="m-rdma-gid" placeholder="e.g. 4" disabled>
-            </label>
-            <label style="display:flex;gap:8px;align-items:center;white-space:nowrap">
-              <input type="checkbox" id="m-rdma-cm" style="width:auto" disabled>
-              Use rdma_cm QP setup (ConnectX-3/mlx4)
-            </label>
+          <div id="m-rdma-options" hidden>
+            <div class="row">
+              <label class="wide">RDMA NIC IP (RoCE v2 address, must be in the NIC's GID table)
+                <input id="m-rdma-ip" placeholder="e.g. 10.0.0.105" disabled>
+              </label>
+            </div>
+            <div class="row">
+              <label>ibverbs device (pin; empty = auto-detect)
+                <input id="m-rdma-dev" placeholder="e.g. rocep4s0" disabled>
+              </label>
+              <label>GID index (pin; empty = auto-detect)
+                <input id="m-rdma-gid" placeholder="e.g. 4" disabled>
+              </label>
+              <label style="display:flex;gap:8px;align-items:center;white-space:nowrap">
+                <input type="checkbox" id="m-rdma-cm" style="width:auto" disabled>
+                Use rdma_cm QP setup (ConnectX-3/mlx4)
+              </label>
+            </div>
+            <small class="hint">Off forces TCP RPC — stable under heavy load. On: RDMA inference (~3.5µs latency, 9+ Gb/s) with automatic pacing + flow control. "rdma_cm" is required for ConnectX-3/mlx4 cards; leave off for mlx5/E810+.</small>
           </div>
-          <small class="hint">Off (default) forces TCP RPC — stable under heavy load. On: RDMA inference (~3.5µs latency, 9+ Gb/s) with automatic pacing + flow control. "rdma_cm" is required for ConnectX-3/mlx4 cards; leave off for mlx5/E810+.</small>
         </fieldset>
         </div><!-- /wiz-step-3 -->
         <div class="actions" id="wiz-nav">
@@ -296,6 +317,7 @@
       </form>
       <div class="row">
         <button type="button" id="detect-all-btn">Detect Hardware (all machines)</button>
+        <button type="button" id="detect-connections-btn">Detect Connections</button>
       </div>
       <div id="machines-list"></div>
     </section>

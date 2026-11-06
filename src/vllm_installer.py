@@ -29,6 +29,7 @@ The experimental vllm-gguf-plugin is NOT auto-installed (opt-in only).
 import shlex
 
 import gpu_vendor
+import agent_client
 import local_node
 from steps import run_steps
 # NOTE: vllm_uninstaller imports helpers back from this module, so it is
@@ -450,6 +451,34 @@ def install(machine, log=None, settings_path=None, pin=VLLM_VERSION_PIN):
         return _finish(report)
     if log:
         log(f"vLLM install on {report['machine']} (delivery={delivery})")
+    if (delivery == "venv" and not local_node.is_local(machine)
+            and agent_client.should_use_agent(machine)):
+        gate = _gate_os(machine)
+        if gate.get("failed"):
+            report["steps"] = [{"step": "gate:os", "failed": True,
+                                "detail": gate.get("detail", "")}]
+            return _finish(report)
+        venv_bin = vllm_cfg.get("venv_bin") or DEFAULT_VENV_ROOT + "/bin/vllm"
+        root = _venv_root(venv_bin)
+        python = vllm_cfg.get("python") or "python3"
+        res = agent_client.vllm_install(
+            machine, python=python, venv_root=root, version=pin,
+            rocm=(gpu_vendor.normalize_vendor(
+                machine.get("gpu_vendor")) == "amd"))
+        report["target"] = res.get("venv_bin") or f"{root}/bin/vllm"
+        report["steps"] = [{
+            "step": "agent:vllm-install",
+            "failed": not res.get("ok"),
+            "detail": res.get("backend") or res.get("error") or "",
+            "output": res.get("output", "")[-500:],
+        }]
+        if res.get("ok"):
+            try:
+                _update_settings(settings_path, report["target"])
+            except Exception as e:
+                report["steps"].append({"step": "settings:update",
+                                        "error": str(e)})
+        return _finish(report)
     run = _make_runner(machine)
     vendor = gpu_vendor.normalize_vendor(machine.get("gpu_vendor"))
 

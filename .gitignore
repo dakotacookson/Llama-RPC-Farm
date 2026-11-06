@@ -21,8 +21,11 @@ generated/*.py
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
 .venv/
 venv/
+peer_agent/build/
+peer_agent/dist/
 
 # node
 node_modules/
@@ -69,3 +72,10 @@ config/usage/*.enc
 # internal QA agent state — private working notes, never public
 .qe/
 qe-result.json
+
+# coverage
+.coverage
+htmlcov/
+
+# local agent wheel builds (release workflow rebuilds these)
+generated/agent-wheel/

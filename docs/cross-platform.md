@@ -136,6 +136,9 @@ for it.
 
 Performance rules learned the hard way:
 
+- **Peer-agent paths:** prefer the typed agent endpoints for RPC/native/
+  custom lifecycle on Windows; SSH remains bootstrap/recovery. Windows
+  agents auto-start through the `LlamaPeerAgent` boot Scheduled Task.
 - **Fast-fail offline hosts:** a closed SSH port must be detected with a
   0.5s socket probe before any paramiko connect (a full connect timeout
   is ~6s of dead time per offline machine per cycle).

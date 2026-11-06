@@ -70,8 +70,10 @@ def test_render_kill_targets_port_not_blanket(stub_cfg):
     assert 'pkill -u $LINUX_USER -f \\"ggml-[r]pc-server.*-p $port \\"' in script
     # never the old blanket pkill of all ggml-rpc-server
     assert "pkill -u $LINUX_USER -f ggml-[r]pc-server\" >/dev/null" not in script
-    # windows: CIM filter by -p $port (anchored), not taskkill /F /IM
-    assert "-like '* -p $port *'" in script
+    # windows: pipe-free CIM loop filtering by -p $port (anchored),
+    # not taskkill /F /IM and not the cmd.exe-mangled pipe pipeline
+    assert "-like '*-p $port *'" in script
+    assert "foreach (\$x in (Get-CimInstance Win32_Process))" in script
     assert "taskkill /F /IM ggml-rpc-server.exe" not in script
 
 
@@ -124,8 +126,10 @@ def test_render_no_unbound_var_under_set_u(stub_cfg):
     # win stop/state functions specifically.
     for line in script.splitlines():
         if "powershell -NoProfile -Command" in line and "Get-CimInstance" in line:
-            # $_. must be escaped so bash leaves it for PowerShell
-            assert "\\$_" in line, line
+            # PowerShell vars must be escaped so bash leaves them for
+            # PowerShell under `set -u`
+            assert "\\$x" in line, line
+            assert "\\$c" in line, line
         if "powershell -NoProfile -Command" in line and "Remove-Item" in line:
             assert "\\$env:USERPROFILE" in line, line
         if "powershell -NoProfile -Command" in line and "Test-Path" in line and "rpc.state" in line:

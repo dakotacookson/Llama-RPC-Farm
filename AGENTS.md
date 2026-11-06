@@ -39,8 +39,10 @@ test-stub keys (`sk-dad-test-…`).
 ## What this is
 
 FastAPI web UI (`src/app.py`, port **8199**) that manages a llama.cpp RPC
-cluster over SSH: a Linux master runs llama-swap + llama-server, Windows/Linux
-peers run `ggml-rpc-server`. Vanilla-JS frontend (`ui/`), YAML configs
+cluster. The optional peer agent is the preferred transport for configured
+machines; SSH remains the bootstrap/recovery fallback. A Linux master runs
+llama-swap + llama-server, peers run `ggml-rpc-server` or native
+`llama-server` via the agent. Vanilla-JS frontend (`ui/`), YAML configs
 (`config/`). Nothing outside this folder is ever modified.
 
 ## AI agent quick playbook: install & manage
@@ -63,8 +65,16 @@ fuser -k 8199/tcp     # stop the UI (Linux) — then ./run.sh to restart
   templates, and icons is git-ignored per-install user data; the app
   creates defaults for missing files (`src/settings_persister.py` and
   `config_loader.py` tolerate empty/missing YAML).
+- Peer agent: per-machine `transport: auto|ssh|agent`, `agent_port`
+  (default 8198), and a vault-only agent token. Use the Machines page to
+  install/update agents; the Agent button shows current→latest and runs
+  `/agent/update` for existing agents. Linux installs must enable linger
+  (`scripts/install-peer-agent.sh` does); Windows uses a boot Scheduled
+  Task (`LlamaPeerAgent`). Agent-only mode means SSH must not be used for
+  normal operations.
 - Secrets NEVER go in YAML or generated scripts: machine SSH passwords +
-  HF token live in the Fernet vault (`.env`, keys `FARM_SECRET_KEY`,
+  HF token + agent tokens live in the Fernet vault (`.env`, keys
+  `FARM_SECRET_KEY`,
   `FARM_SALT`, `HF_TOKEN_ENC`, `MACHINE_<ID>_PASSWORD_ENC`). Agents set
   passwords via the Machines UI/API (`password_set` flags only; no
   plaintext in responses) or `scripts/migrate_secrets_to_env.py`.

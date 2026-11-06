@@ -1,0 +1,47 @@
+name: Release agent
+
+on:
+  push:
+    tags: ["agent-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify tag matches package version
+        run: |
+          python - <<'PY'
+          import os, pathlib, re, tomllib
+          tag = os.environ["GITHUB_REF_NAME"]
+          want = tag.removeprefix("agent-v")
+          py = tomllib.loads(pathlib.Path("peer_agent/pyproject.toml").read_text())
+          got = py["project"]["version"]
+          assert got == want, f"tag {tag} != package version {got}"
+          init = pathlib.Path("peer_agent/llama_peer_agent/__init__.py").read_text()
+          m = re.search(r'__version__\\s*=\\s*"([^"]+)"', init)
+          assert m and m.group(1) == got, f"__version__ {m.group(1) if m else None} != {got}"
+          print(f"agent {got} OK")
+          PY
+      - name: Build wheel + sdist
+        run: |
+          python -m pip install --upgrade build
+          python -m build --sdist --wheel peer_agent
+      - name: Checksums
+        run: |
+          cd peer_agent/dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" peer_agent/dist/* \
+            --title "Peer agent ${GITHUB_REF_NAME#agent-v}" \
+            --generate-notes

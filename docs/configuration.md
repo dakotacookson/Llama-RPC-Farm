@@ -33,6 +33,10 @@ Per machine:
   gpu_vendor: nvidia    # nvidia | amd | intel | apple | cpu
   rdma: false           # RDMA/RoCE transport (opt-in; TCP default)
   rdma_ip: / rdma_dev: / rdma_gid: / rdma_cm: false
+  transport: agent      # auto | ssh | agent
+  agent_port: 8198      # agent HTTP port
+  # agent_token is write-only in the Add/Edit form; it is stored in the
+  # Fernet vault, never in machines.yaml.
 ```
 
 **Warning:** `id` and `name` can diverge (historical rename: id `aibox2`,

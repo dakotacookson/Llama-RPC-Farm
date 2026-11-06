@@ -928,10 +928,10 @@ function statCardHTML(m) {
           <i class="fa-solid fa-server card-label-icon"></i>
           ${m.name}
           ${m.is_master ? '<span class="badge badge-master">master</span>' : ""}
-          ${m.is_local ? '<span class="badge badge-local">this machine</span>' : ""}
         </span>
         <div class="card-actions">
           <span class="os-badge">${osLabel}</span>
+          ${connectionBadge(m)}
         </div>
       </div>
       <div class="card-sub">${cardSub}</div>
@@ -1074,6 +1074,12 @@ function renderMachineDetail(body, d) {
         ${kv("CPU", d.cpu_model)}
         ${kv("Cores", s.cores)}
         ${kv("Uptime", d.uptime)}
+        ${kv("Connection", (() => {
+          const caps = connCaps(d);
+          const extra = (caps.mode === "agent" || caps.mode === "both")
+            ? ` · agent :${d.agent_port || 8198}` : "";
+          return connectionLabel(d) + extra;
+        })())}
         ${kv("llama.cpp", d.llama_version)}
         ${kv("llama bin", d.llama_bin)}
         <div class="md-row"><span class="md-key">update</span>
@@ -1416,6 +1422,7 @@ function _streamedCards() {
 async function _loadStatusInner() {
   // hidden tab: skip the whole poll — DOM churn with nothing watching
   if (document.hidden) return;
+  await refreshConnectionCaps();
   const grid = $("#status-grid");
   // cold start with a cache: paint the last-good cards IMMEDIATELY, then
   // refresh in place when the fetch returns (no dead spinner, no flicker)
@@ -1657,11 +1664,41 @@ on("#start-all", "click", async (e) => {
 });
 
 /* ---------------- machines ---------------- */
-const EMPTY_MACHINE = { name: "", ip: "", username: "zazi", password: "", port: 22, role: "peer", os: "linux", rpc_port: 50052, gpu: "", llama_bin: "", rdma: false, rdma_ip: "", rdma_dev: "", rdma_gid: "", rdma_cm: false };
+const EMPTY_MACHINE = { name: "", ip: "", username: "zazi", password: "", port: 22, transport: "auto", agent_port: 8198, agent_token: "", role: "peer", os: "linux", rpc_port: 50052, gpu: "", llama_bin: "", rdma: false, rdma_ip: "", rdma_dev: "", rdma_gid: "", rdma_cm: false };
 
 async function defaultLlamaBin() {
   const s = await getAppSettings();
   return s.llama_bin || "~/llama.cpp/build/bin";
+}
+
+function syncTransportFields() {
+  const t = $("#m-transport")?.value || "auto";
+  const ssh = t === "ssh" || t === "auto";
+  const agent = t === "agent" || t === "auto";
+  for (const id of ["m-username-label", "m-password-label", "m-port-label"]) {
+    const el = $("#" + id);
+    if (el) el.style.display = ssh ? "" : "none";
+  }
+  for (const id of ["m-agent-port-label", "m-agent-token-label"]) {
+    const el = $("#" + id);
+    if (el) el.style.display = agent ? "" : "none";
+  }
+  const user = $("#m-username");
+  if (user) user.required = ssh;
+}
+
+function syncRdmaFields() {
+  const on = Boolean($("#m-rdma")?.checked);
+  const box = $("#m-rdma-options");
+  if (box) box.hidden = !on;
+  const toggle = $("#m-rdma-toggle");
+  if (toggle) toggle.setAttribute("aria-pressed", on ? "true" : "false");
+  const label = $("#m-rdma-label");
+  if (label) label.textContent = on ? "RDMA on" : "RDMA off";
+  for (const id of ["m-rdma-ip", "m-rdma-dev", "m-rdma-gid", "m-rdma-cm"]) {
+    const el = $("#" + id);
+    if (el) el.disabled = !on;
+  }
 }
 
 function machineFormLoad(m, isEdit) {
@@ -1676,11 +1713,19 @@ function machineFormLoad(m, isEdit) {
   $("#m-ip").value = m.ip || "";
   $("#m-username").value = m.username || "zazi";
   $("#m-password").value = ""; // never fill the real password — hint shows state
+  $("#m-agent-token").value = ""; // write-only: stored in the vault
+  const atHint = $("#m-agent-token-hint");
+  if (atHint) atHint.textContent = (editing && m.agent_token_set)
+    ? "Token saved in vault — leave blank to keep, type to replace."
+    : (editing ? "No agent token saved — type one to set it." : "Stored encrypted in the vault, never YAML.");
   const pwHint = $("#m-password-hint");
   if (pwHint) pwHint.textContent = (editing && m.password_set)
     ? "Password saved in vault — leave blank to keep, type to replace."
     : (editing ? "No password saved — type one to set it." : "Stored encrypted in the vault (.env).");
   $("#m-port").value = m.port ?? 22;
+  $("#m-transport").value = m.transport || "auto";
+  $("#m-agent-port").value = m.agent_port ?? 8198;
+  syncTransportFields();
   $("#m-role").value = m.role || "peer";
   $("#m-os").value = m.os || "linux";
   $("#m-gpu-vendor").value = m.gpu_vendor || "nvidia";
@@ -1702,13 +1747,10 @@ function machineFormLoad(m, isEdit) {
   $("#m-expose-gpus").placeholder = avail.length ? `available: ${avail.join(",")}` : "all (not detected)";
   $("#m-rdma").checked = Boolean(m.rdma);
   $("#m-rdma-ip").value = m.rdma_ip || "";
-  $("#m-rdma-ip").disabled = !$("#m-rdma").checked;
   $("#m-rdma-dev").value = m.rdma_dev || "";
   $("#m-rdma-gid").value = m.rdma_gid || "";
   $("#m-rdma-cm").checked = Boolean(m.rdma_cm);
-  $("#m-rdma-dev").disabled = !$("#m-rdma").checked;
-  $("#m-rdma-gid").disabled = !$("#m-rdma").checked;
-  $("#m-rdma-cm").disabled = !$("#m-rdma").checked;
+  syncRdmaFields();
   $("#machine-cancel").hidden = !editing;
   // add mode = 3-step wizard (Scan → Select → Configure), one step at a
   // time; edit mode skips the wizard and shows Configure directly
@@ -1793,6 +1835,21 @@ async function showHostFingerprint() {
   if (!box) return;
   const ip = $("#m-ip").value.trim();
   if (!ip) { box.textContent = ""; return; }
+  if (($("#m-transport")?.value || "auto") === "agent") {
+    box.innerHTML = '<span class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Checking peer agent…</span>';
+    try {
+      const a = await api("POST", "/api/machines/agent-check", {
+        ip,
+        agent_port: parseInt($("#m-agent-port").value, 10) || 8198,
+        agent_token: $("#m-agent-token").value,
+        name: $("#machine-original-name").value || $("#m-name").value.trim(),
+      });
+      box.innerHTML = `<span class="status-ok"><i class="fa-solid fa-plug"></i> Peer agent connected — v${escHtml(a.agent_version || "?")} (protocol ${escHtml(String(a.protocol_version ?? "?"))})</span>`;
+    } catch (e) {
+      box.innerHTML = `<span class="status-bad"><i class="fa-solid fa-plug"></i> Peer agent check failed: ${escHtml(e.message)}</span>`;
+    }
+    return;
+  }
   const port = parseInt($("#m-port").value, 10) || 22;
   box.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> checking host key…';
   try {
@@ -1816,6 +1873,9 @@ function machineFormRead() {
     username: $("#m-username").value.trim(),
     password: $("#m-password").value,
     port: parseInt($("#m-port").value, 10),
+    transport: $("#m-transport").value,
+    agent_port: parseInt($("#m-agent-port").value, 10) || 8198,
+    agent_token: $("#m-agent-token").value,
     role: $("#m-role").value,
     os: $("#m-os").value,
     gpu_vendor: $("#m-gpu-vendor").value,
@@ -1835,8 +1895,9 @@ function machineFormRead() {
   };
 }
 
-async function loadMachines() {
+async function loadMachines(skipCaps = false) {
   const body = $("#machines-list");
+  if (!skipCaps) await refreshConnectionCaps();
   if (body && !body.querySelector(".arch-section") && !body.querySelector(".scan-model"))
     body.innerHTML = loadingSpinner("Loading machines…");
   const machines = await api("GET", "/api/machines");
@@ -1882,13 +1943,14 @@ async function loadMachines() {
       const tr = document.createElement("div");
       tr.innerHTML = `
       <div class="scan-main${vllmBlind ? " vllm-unavailable" : ""}"><div class="scan-title">${osIcon(m.os)}${m.name}${m.role === "master" ? ' <span class="badge badge-master">master</span>' : ""}</div>
-        <small>${m.ip} · ${m.role} (${m.os}) · GPUs: ${m.gpu || "-"} · ${exposeHTML(m)}</small>
+        <small>${m.ip} · ${m.role} (${m.os}) · GPUs: ${m.gpu || "-"} · ${exposeHTML(m)} · ${connectionBadge(m)}</small>
         ${detectedHTML(m)}
         ${vllmBlind ? `<span class="vllm-unavailable-tag"><i class="fa-solid fa-ban"></i> not available under vLLM — ${escHtml(vllmReason)}</span>` : ""}</div>
       <div class="scan-model-actions">
         <button class="small" data-act="edit">Edit</button>
         <button class="small" data-act="detect">Detect</button>
         <button class="small" data-act="update">Update</button>
+        <button class="small" data-act="agent-update" title="Install or update the peer agent on this machine">Agent ⟳</button>
         <button class="small danger" data-act="delete">Delete</button>
       </div>`;
       tr.classList.add("scan-model");
@@ -1913,6 +1975,22 @@ async function loadMachines() {
         } catch (err) {
           btn.textContent = "Update"; btn.disabled = false;
           toast(err.message, "bad");
+        }
+      };
+      tr.querySelector('[data-act="agent-update"]').onclick = async (e) => {
+        const btn = e.currentTarget;
+        if (!window.confirm(`Install/update the peer agent on ${m.name}?\n\nThe agent will be restarted.`)) return;
+        btn.disabled = true;
+        const old = btn.textContent;
+        btn.textContent = "Updating agent…";
+        try {
+          const r = await api("POST", `/api/machines/${encodeURIComponent(m.name)}/update-agent`);
+          toast(`${m.name}: peer agent ${r.agent_version || "updated"}`, "ok");
+          loadMachines(true);
+        } catch (err) {
+          toast(`Agent update failed on ${m.name}: ${err.message}`, "bad");
+          btn.disabled = false;
+          btn.textContent = old;
         }
       };
       tr.querySelector('[data-act="detect"]').onclick = async (e) => {
@@ -1945,6 +2023,7 @@ async function loadMachines() {
       };
       secBody.appendChild(tr);
       fillInlineUpdateState(tr, m.name);
+      fillAgentUpdateState(tr, m.name);
     }
     body.appendChild(sec);
   }
@@ -1955,6 +2034,28 @@ async function loadMachines() {
    update job would short-circuit anyway); behind latest it shows the
    current→latest build jump it will perform. Falls back to a plain
    Update button when the version can't be probed (offline machine). */
+function fillAgentUpdateState(tr, name) {
+  const btn = tr.querySelector('[data-act="agent-update"]');
+  if (!btn) return;
+  api("GET", `/api/machines/${encodeURIComponent(name)}/agent-version`)
+    .then(v => {
+      if (!btn.isConnected) return;
+      if (v.on_latest) {
+        btn.disabled = true;
+        btn.textContent = `Agent on latest (${v.latest})`;
+        btn.title = "peer agent is already on the current version";
+      } else if (v.current && v.latest) {
+        btn.disabled = false;
+        btn.textContent = `Agent ${v.current}→${v.latest}`;
+        btn.title = `peer agent ${v.current} → ${v.latest}`;
+      } else if (v.latest) {
+        btn.disabled = false;
+        btn.textContent = `Install agent ${v.latest}`;
+        btn.title = "peer agent is not installed or unreachable";
+      }
+    }).catch(() => { /* keep the plain Agent button */ });
+}
+
 function fillInlineUpdateState(tr, name) {
   const btn = tr.querySelector('[data-act="update"]');
   if (!btn) return;
@@ -1990,6 +2091,16 @@ function exposeHTML(m) {
   return `${mode}${gpuNote}`;
 }
 
+on("#detect-connections-btn", "click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true; btn.textContent = "Detecting connections…";
+  try {
+    await refreshConnectionCaps(true);
+    await loadMachines(true);
+    toast("Connection types refreshed", "ok");
+  } catch (err) { toast(err.message, "bad"); }
+  btn.disabled = false; btn.textContent = "Detect Connections";
+});
 on("#detect-all-btn", "click", async (e) => {
   const btn = e.target;
   btn.disabled = true; btn.textContent = "Detecting...";
@@ -2015,11 +2126,63 @@ async function discoverInit() {
         `<option value="${escHtml(s)}"${s === r.default ? " selected" : ""}>${escHtml(s)}${s === r.default ? " (this network)" : ""}</option>`
       ).join("");
   } catch (_) { /* dropdown stays empty; scan will error visibly */ }
+  syncDiscoveryMode();
 }
+
+function syncDiscoveryMode() {
+  const peer = ($("#d-mode")?.value || "peer") === "peer";
+  const subnet = $("#d-subnet-label");
+  const port = $("#d-port-label");
+  if (subnet) subnet.style.display = peer ? "none" : "";
+  if (port) port.style.display = peer ? "none" : "";
+  const hint = $("#wiz-scan-hint");
+  if (hint) hint.textContent = peer
+    ? "Hit Scan to discover peers advertising the Llama RPC Farm agent (UDP 8199). No SSH credentials are used."
+    : "Hit Scan to ping the network and fingerprint SSH hosts. Already know the IP? Just Continue — you can enter it manually in step 2.";
+}
+on("#d-mode", "change", syncDiscoveryMode);
 
 function gpuPrefix(vendor) {
   const v = (vendor || "").toLowerCase();
   return v === "amd" ? "ROCm" : v === "apple" ? "Metal" : v === "intel" ? "SYCL" : "CUDA";
+}
+const CONN_CAPS = {};
+let _connCapsAt = 0;
+async function refreshConnectionCaps(force = false) {
+  if (!force && Date.now() - _connCapsAt < 30000) return CONN_CAPS;
+  try {
+    const r = await api("GET", "/api/machines/connections");
+    for (const k of Object.keys(CONN_CAPS)) delete CONN_CAPS[k];
+    Object.assign(CONN_CAPS, r || {});
+    _connCapsAt = Date.now();
+  } catch (_) { /* keep last known caps */ }
+  return CONN_CAPS;
+}
+function connCaps(m) {
+  return (m && m.name && CONN_CAPS[m.name]) || (m && m.mode ? m : {});
+}
+function connectionLabel(m) {
+  if (m && m.is_local) return "local";
+  const caps = connCaps(m);
+  const c = caps.mode || (m && (m.connection || m.transport)) || "ssh";
+  return c === "both" ? "SSH + agent"
+    : c === "agent" ? "agent only"
+    : c === "ssh" ? "SSH only"
+    : c === "local" ? "local"
+    : c === "none" ? "unreachable"
+    : "SSH + agent";
+}
+function connectionBadge(m) {
+  const caps = connCaps(m);
+  const c = (m && m.is_local) ? "local"
+    : caps.mode || (m && (m.connection || m.transport)) || "ssh";
+  const icon = c === "local" ? "fa-house"
+    : c === "both" ? "fa-link"
+    : c === "agent" ? "fa-plug"
+    : c === "none" ? "fa-triangle-exclamation"
+    : "fa-terminal";
+  const cls = c === "none" ? " status-bad" : "";
+  return `<span class="badge badge-conn${cls}" title="Detected connection: ${connectionLabel(m)}"><i class="fa-solid ${icon}"></i> ${connectionLabel(m)}</span>`;
 }
 function osIcon(os) {
   const o = (os || "").toLowerCase();
@@ -2110,6 +2273,8 @@ function discoveredFill(h) {
     username: h.username || $("#m-username").value.trim() || "zazi",
     password: $("#m-password").value,
     port: h.port || 22,
+    transport: h.agent ? (h.ssh_ok ? "auto" : "agent") : "ssh",
+    agent_port: h.agent_port || 8198,
     os: h.os || "linux",
     gpu_vendor: h.gpu_vendor || "nvidia",
     gpu: (h.gpus || []).length ? h.gpus.map((g, i) => `${pref}${i}`).join(",") : "",
@@ -2121,17 +2286,31 @@ function discoveredFill(h) {
   toast("Review the details, then Save (Save verifies SSH before storing)", "ok");
 }
 // IP / SSH port edits change which host we fingerprint — re-check live
+on("#m-rdma", "change", syncRdmaFields);
+on("#m-rdma-toggle", "click", () => {
+  const cb = $("#m-rdma");
+  if (!cb) return;
+  cb.checked = !cb.checked;
+  syncRdmaFields();
+});
 on("#m-ip", "input", () => {
   const box = $("#m-fingerprint");
   if (box) box.textContent = "";
 });
 on("#m-port", "change", () => { if (wizStep === 3) showHostFingerprint(); });
+on("#m-transport", "change", () => {
+  syncTransportFields();
+  if (wizStep === 3) showHostFingerprint();
+});
 
 on("#d-scan", "click", async (e) => {
   const btn = e.currentTarget;
   const res = $("#d-results");
-  btn.disabled = true; btn.textContent = "scanning… (~1 min)";
-  res.innerHTML = '<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Pinging subnet, sweeping for SSH port, grabbing banners…</p>';
+  const peerMode = ($("#d-mode")?.value || "peer") === "peer";
+  btn.disabled = true; btn.textContent = peerMode ? "discovering agents…" : "scanning… (~1 min)";
+  res.innerHTML = peerMode
+    ? '<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Listening for peer agents on UDP 8199…</p>'
+    : '<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Pinging subnet, sweeping for SSH port, grabbing banners…</p>';
   let scanned = false;
   try {
     const r = await api("POST", "/api/discover", {
@@ -2140,15 +2319,24 @@ on("#d-scan", "click", async (e) => {
       username: $("#m-username").value.trim(),
       password: $("#m-password").value,
       ping: true,
+      agent_only: peerMode,
+      include_known: peerMode ? true : false,
     });
     r.results.forEach(h => DISCOVERED[h.ip] = h);
     $("#discovered-ips").innerHTML = r.results.map(h => `<option value="${escHtml(h.ip)}">`).join("");
     scanned = true;
     if (!r.results.length) {
-      res.innerHTML = `<p class="hint">Nothing identifiable on ${escHtml(r.subnet)} — ${r.alive || 0} alive, ${r.ssh_hosts || 0} with SSH port ${r.port}${r.unknown ? `, ${r.unknown} without a recognizable banner (hidden)` : ""}.</p>`;
+      res.innerHTML = peerMode
+        ? '<p class="hint">No peer agents answered on UDP 8199. Make sure the agent service is running and discovery is enabled.</p>'
+        : `<p class="hint">Nothing identifiable on ${escHtml(r.subnet)} — ${r.alive || 0} alive, ${r.ssh_hosts || 0} with SSH port ${r.port}${r.unknown ? `, ${r.unknown} without a recognizable banner (hidden)` : ""}.</p>`;
     } else {
-      res.innerHTML = `<p class="hint">${escHtml(r.subnet)}: ${r.alive} alive, ${r.ssh_hosts} with SSH port ${r.port} — ${r.results.length} candidate(s)${r.unknown ? `, ${r.unknown} unknown hidden` : ""}. Click a row to select it, then Continue — or Select → to jump straight to Configure.</p>` +
-        '<table><thead><tr><th>IP</th><th>Ping</th><th>SSH</th><th>OS (banner)</th><th>Hostname</th><th>GPUs</th><th></th></tr></thead><tbody></tbody></table>';
+      if (peerMode) {
+        res.innerHTML = `<p class="hint">${r.results.length} peer agent(s) found. Click a row to select it, then Continue — or Select → to jump straight to Configure.</p>` +
+          '<table><thead><tr><th>IP</th><th>Hostname</th><th>OS</th><th>Agent</th><th></th></tr></thead><tbody></tbody></table>';
+      } else {
+        res.innerHTML = `<p class="hint">${escHtml(r.subnet)}: ${r.alive} alive, ${r.ssh_hosts} with SSH port ${r.port} — ${r.results.length} candidate(s)${r.unknown ? `, ${r.unknown} unknown hidden` : ""}. Click a row to select it, then Continue — or Select → to jump straight to Configure.</p>` +
+          '<table><thead><tr><th>IP</th><th>Ping</th><th>SSH</th><th>OS (banner)</th><th>Hostname</th><th>GPUs</th><th></th></tr></thead><tbody></tbody></table>';
+      }
       const tbody = res.querySelector("tbody");
       for (const h of r.results) {
         const tr = document.createElement("tr");
@@ -2160,16 +2348,15 @@ on("#d-scan", "click", async (e) => {
         const osTxt = h.os
           ? `${osIcon(h.os)}${escHtml(h.os)}${h.banner ? ` <small class="hint" title="${escHtml(h.banner)}">${escHtml(h.banner.split("$").pop() || "")}</small>` : ""}`
           : '<span class="status-warn">unknown</span>';
-        tr.innerHTML = `
-          <td>${escHtml(h.ip)}</td>
-          <td>${pingTxt}</td>
-          <td>${sshTxt}</td>
-          <td>${osTxt}</td>
-          <td>${escHtml(h.hostname || "-")}</td>
-          <td>${escHtml((h.gpus || []).join(", ") || "-")}</td>
-          <td>${h.already_added
-            ? '<small class="hint">already added</small>'
-            : (h.os ? `<button type="button" class="small" data-act="add">Select →</button>` : "")}</td>`;
+        const addCell = h.already_added
+          ? '<small class="hint">already added</small>'
+          : (h.os ? `<button type="button" class="small" data-act="add">Select →</button>` : "");
+        const agentTxt = h.agent
+          ? `<span class="status-ok"><i class="fa-solid fa-plug"></i> ${escHtml(h.agent_version || "agent")}:${h.agent_port || 8198}</span>`
+          : "—";
+        tr.innerHTML = peerMode
+          ? `<td>${escHtml(h.ip)}</td><td>${escHtml(h.hostname || "-")}</td><td>${osTxt}</td><td>${agentTxt}</td><td>${addCell}</td>`
+          : `<td>${escHtml(h.ip)}</td><td>${pingTxt}</td><td>${sshTxt}</td><td>${osTxt}</td><td>${escHtml(h.hostname || "-")}</td><td>${escHtml((h.gpus || []).join(", ") || "-")}</td><td>${addCell}</td>`;
         const addBtn = tr.querySelector('[data-act="add"]');
         if (addBtn) addBtn.onclick = () => { wizSelection = h.ip; discoveredFill(h); };
         // clicking the row selects it (Continue uses the selection)
@@ -2214,6 +2401,10 @@ on("#m-ip", "change", () => {
   if (h.os) $("#m-os").value = h.os;
   if (h.gpu_vendor) $("#m-gpu-vendor").value = h.gpu_vendor;
   $("#m-port").value = h.port || 22;
+  if (h.agent) {
+    $("#m-transport").value = h.ssh_ok ? "auto" : "agent";
+    $("#m-agent-port").value = h.agent_port || 8198;
+  }
   if ((h.gpus || []).length && !$("#m-gpu").value.trim())
     $("#m-gpu").value = h.gpus.map((g, i) => `${gpuPrefix(h.gpu_vendor)}${i}`).join(",");
 });

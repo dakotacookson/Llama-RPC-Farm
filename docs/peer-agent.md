@@ -1,7 +1,13 @@
 # Optional peer agent (design plan)
 
-Status: **plan only — not implemented.** SSH remains the default and the
-fallback. The agent is an optional reliability upgrade, not a replacement.
+Status: **agent-first** in `peer_agent/` (agent 0.3.4). RPC + native
+llama-server lifecycle, remote-local models, multi-host RPC scripts,
+vLLM/Ray workers, custom Windows runtimes, process/status views, logs,
+files, service control, installers, stats/tuner probes, discovery, and
+in-place agent updates are agent-backed. SSH remains only for first-time
+bootstrap, recovery, and explicit SSH discovery.
+Separate release artifacts are built by
+`.github/workflows/release-agent.yml` (tags `agent-v*`).
 
 ## Why
 
@@ -18,10 +24,60 @@ architecture for users who prefer SSH.
 
 ## Non-goals
 
+- No arbitrary remote shell. Parity comes from typed, validated
+  operations (processes, files, services, logs, metrics), not shell.
 - No model-file transfer/streaming (models stay on the shared store).
-- No remote shell. Only whitelisted lifecycle/metrics operations.
 - No change to llama.cpp, llama-swap, or generated start/stop semantics.
-- No requirement to install it. A farm can remain SSH-only forever.
+- No requirement to install it during the transition. A farm can remain
+  SSH-only until the relevant parity slice is complete.
+
+## Implemented (current)
+
+- `peer_agent/` — dependency-free wheel + sdist (`llama-rpc-farm-agent`)
+  with `/health`, `/version`, `/capabilities`, `/info`, `/status`,
+  `/processes`, `/metrics`, `/system/detail`, `/system/rdma`, `/speedtest`,
+  `/logs/tail`, `/logs/list`, `/files/*`, `/service/*`, `/ray/*`,
+  `/install/*`, `/build/*`, `/custom/start`, `/custom/stop`,
+  `/agent/update`, `/rpc/list`, `/rpc/ensure`, `/rpc/stop`,
+  `/llama/list`, `/llama/status`, `/llama/start`, `/llama/stop`, and
+  `/llama/stop-all`; Bearer-token auth.
+- UDP discovery: agents answer `LLAMA_FARM_DISCOVER_V1` on port `8199`
+  with identity-only metadata; `src/agent_discovery.py` collects replies.
+- `src/agent_client.py` — master-side client + `transport` selection
+  (`auto` probes `/health` and falls back to SSH; `ssh` never uses the
+  agent; `agent` requires it).
+- `rpc_manager.start_rpc` / `stop_rpc(port)` / `list_rpc_servers` use the
+  agent when selected, so the orphan reaper automatically gets the same
+  process list on Linux and Windows.
+- Native remote-local models use the agent too: the generated
+  `start-<model>.sh` calls `/llama/start` (payload JSON pushed next to the
+  scripts), holds until the port closes, and `cmdStop` calls
+  `/llama/stop`. The same state file (`swap.port.<key>`) records rolled
+  ports for cmdStop.
+- `scripts/set-agent-token.py` — stores per-machine (or `--farm`) tokens
+  in the vault; the token is never written to YAML.
+- Machine config fields: `transport` and `agent_port` (defaults
+  `auto` / `8198`).
+- `machine_status` uses `/status`, RPC log tails use `/logs/tail`, and
+  full stop-everything (`stop_rpc(port=None)`) uses `/llama/stop-all`
+  when the agent is selected.
+- Live Launch-page remote-local runs (`_start_llama_server` /
+  `stop_llama_server_port`) also use `/llama/start` / `/llama/stop` when
+  the agent is selected.
+- `src/peer_transport.py` is the transport seam: agent first, SSH
+  fallback only for bootstrap/recovery.
+- Generated RPC-cluster scripts branch per peer: agent peers use
+  `/rpc/ensure`, `/rpc/stop`, `/port/open`, and `/rpc/list`; SSH peers
+  keep the legacy path. RPC `cmdStop` is agent-aware.
+- Remote-local models and custom Windows `.bat` runtimes use typed agent
+  endpoints (`/llama/*`, `/custom/*`) when the peer is agent-backed.
+- In-place agent updates use `/agent/update`; the Machines page exposes
+  current→latest version state and an Agent update button.
+- Linux installs enable the systemd user unit with linger; Windows uses
+  a boot-triggered Scheduled Task (`LlamaPeerAgent`). Both survive reboot.
+- Stats/tuner use `/metrics`, `/system/detail`, and `/speedtest`;
+  machine detail and the filesystem browser use `/system/detail` and
+  `/files/*`; discovery merges UDP agent hits into scan results.
 
 ## Coexistence model
 
@@ -57,49 +113,90 @@ transport. Start scripts and llama-swap config stay transport-agnostic.
 
 | Method + path | Purpose |
 |---|---|
-| `GET /health` | version, os/arch, uptime, swap/llama presence |
-| `GET /capabilities` | GPU vendor/indices, visible model store paths, binaries, RPC support |
-| `POST /rpc/ensure` | `{port, devices, env}` → start or reuse; returns `{running, pid, reused}` |
+| `GET /health` | version, os/arch, uptime |
+| `GET /version` | protocol version + agent version |
+| `GET /capabilities` | binaries, model roots, RPC/llama availability |
+| `GET /info` | hostname, machine id/MAC, addresses, agent port, OS/arch |
+| `GET /status` | RPC/llama/swap processes, counts, GPU rows |
+| `GET /processes` | typed process summary |
+| `GET /metrics` | CPU/RAM/GPU metrics |
+| `GET /system/detail` | kernel/CPU/uptime/network/disk/llama version |
+| `GET /speedtest?mb=N` | bounded throughput stream (1..256 MB) |
+| `GET /system/rdma` | RoCE device/port/GID/IP discovery |
+| `POST /ray/start`, `/ray/stop` | multi-host vLLM Ray workers |
+| `POST /install/artifact`, `/install/verify`, `/install/vllm` | typed installs |
+| `GET /build/probe`, `POST /build/update` | llama.cpp source probe/update |
+| `GET /logs/tail?name=&lines=` | bounded tail of known log files only |
+| `GET /logs/list` | known log filenames |
+| `POST /files/write` | bounded atomic write under allowed roots |
+| `POST /files/mkdir`, `/files/chmod`, `/files/backup` | bounded file ops |
+| `GET /files/stat`, `/files/list` | bounded path inspection |
+| `POST /service/start`, `/service/stop`, `/service/validate` | llama-swap control plane |
+| `GET /service/status` | daemon status |
+| `GET /which?name=` | allowlisted binary lookup |
+| `GET /port/open?port=N` | TCP port probe |
+| `POST /rpc/ensure` | `{port, devices, env}` → start or reuse |
 | `POST /rpc/stop` | `{port}` → kill only that `ggml-rpc-server` |
 | `GET /rpc/list` | `[{pid, port, age_s, cmd}]` (feeds the orphan reaper) |
-| `POST /llama/start` | start a remote-local `llama-server` (cmd/flags/port/state key) |
-| `POST /llama/stop` | kill by port + clear roll state |
-| `GET /processes` | llama-server / llama-swap / rpc-server summary |
-| `GET /logs/tail?name=&lines=` | bounded tail of known log files only |
-| `GET /metrics` | Prometheus text (GPU/VRAM/temp, process counts) |
-| `GET /version` | protocol version + build hash |
+| `POST /llama/start` | `{port, args, env, state_key}` → start/reuse `llama-server` |
+| `POST /llama/stop` | `{port, state_key}` → kill that port + recorded rolled ports |
+| `POST /llama/stop-all` | stop llama-swap, llama-server, and all RPC servers |
+| `POST /custom/start`, `/custom/stop` | typed custom Windows `.bat` runtime |
+| `POST /agent/update` | in-place upgrade from a verified wheel; restarts itself |
+| `GET /llama/list` | running native `llama-server` processes |
+| `GET /llama/status?port=N` | 200 while loading/running, 404 when gone |
 
-All mutating calls take an idempotency key and return the same shape the
-master's step reports already use.
+Remaining SSH exceptions: first-time agent bootstrap/recovery on a host
+with no agent, optional SSH discovery mode, and connection detection's
+SSH-port probe. All normal configured-machine operations are agent-backed.
+
+Mutating calls are validated and return the same shape as the master's
+step reports. Stop-all is explicit and restricted to the known llama
+process names; per-port operations remain the preferred path.
 
 ## Master integration
 
-Add a transport seam analogous to `engine_registry`, e.g.:
+`src/peer_transport.py` provides the seam. `AgentTransport` calls
+`src/agent_client.py`; `SSHTransport` keeps the legacy behavior for
+operations that are not ported yet.
 
 ```python
-class PeerTransport(Protocol):
-    def rpc_ensure(machine, port, devices, env) -> dict: ...
-    def rpc_stop(machine, port) -> dict: ...
-    def rpc_list(machine) -> list: ...
-    def llama_start(machine, spec) -> dict: ...
-    def llama_stop(machine, port, state_key) -> dict: ...
+class PeerTransport:
+    def status(machine) -> dict: ...
+    def stop_all(machine) -> dict: ...
+    def logs_tail(machine, name, lines) -> dict: ...
     def processes(machine) -> dict: ...
 ```
 
-- `SshTransport` = today's `rpc_manager` / `ssh_manager` calls.
-- `AgentTransport` = HTTP calls.
-- `AutoTransport` = health probe, then delegate; log the chosen transport.
+Current call sites using the seam or agent branches:
 
-The orphan reaper uses `rpc_list` + `rpc_stop`, so it benefits automatically.
+- lifecycle: `start_rpc`, `stop_rpc`, `stop_llama_server_port`,
+  `list_rpc_servers`, `_start_llama_server`
+- status: `machine_status`
+- logs: `_tail_log`
+- generated remote-local start/stop scripts
+- orphan reaper (`rpc_list` + `rpc_stop`)
+
+The remaining SSH call sites are the parity backlog. New operations
+should go through `PeerTransport`, not a direct `_ssh_for(...)` call.
 
 ## Install / lifecycle
 
 - Install from the existing installer UI/CLI:
-  - Linux/macOS: systemd user unit `llama-peer-agent.service` (or launchd).
-  - Windows: scheduled task or service running the agent exe.
+  - Linux: systemd user unit `llama-peer-agent.service`, enabled with
+    linger so it starts at boot without a login.
+  - Windows: boot-triggered Scheduled Task `LlamaPeerAgent`, running the
+    venv entry point through a token-loading `.cmd` wrapper.
+  - macOS: launchd agent (planned; not packaged yet).
 - Agent reads a 0600 env file for the token; never writes secrets to logs.
 - `GET /health` returns the protocol version; the master warns on drift but
   keeps working when the contract is compatible.
+- Discovery binds UDP `8199` (configurable with `PEER_AGENT_DISCOVERY_PORT`
+  or `--discovery-port`). The probe/reply contains identity only; enrollment
+  still uses the vault token. A firewall must allow the LAN/VPN UDP port.
+- File/service endpoints are limited to `$HOME`, `PEER_AGENT_MODEL_ROOTS`,
+  and `PEER_AGENT_FILE_ROOTS` (colon-separated on POSIX). Add the swap
+  config/script roots there if they live outside home.
 - Uninstall removes the unit, token file, and firewall rule only.
 
 ## Security
@@ -112,18 +209,38 @@ The orphan reaper uses `rpc_list` + `rpc_stop`, so it benefits automatically.
 - Audit log for mutating calls (timestamp, caller IP, action, result).
 - HTTPS optional; recommend a Tailscale/VPN boundary first.
 
-## Rollout phases
+## Parity roadmap
 
-1. **Skeleton**: health/capabilities/version + installer + token vault wiring.
-2. **RPC lifecycle**: ensure/stop/list + `SshTransport`/`AgentTransport` seam;
-   reaper consumes agent list.
-3. **Remote-local llama-server**: start/stop/log tail; fixes the Windows SMB
-   limitation for remote-local deployments.
-4. **Metrics + process view**: Prometheus endpoint and dashboard integration.
-5. **Windows + macOS parity**: service/scheduled-task installers, path rules.
-6. **Optional binary build**: PyInstaller/Nuitka single-file executable.
+1. **Lifecycle/status (done)**: RPC + native llama-server, remote-local,
+   RPC-cluster scripts/cmdStop, custom Windows runtimes, process/status,
+   log tails, stop-all, `PeerTransport` seam.
+2. **Discovery (done)**: `/info`, UDP responder, master-side collector,
+   Add Machine auto-fill and connection detection.
+3. **Agent operations (done)**: files, service control, installers,
+   build probe/update, vLLM/Ray, RDMA, stats/tuner probes, custom runtimes.
+4. **Agent lifecycle (done)**: Linux linger/systemd and Windows boot task,
+   in-place `/agent/update`, version display/update button.
+5. **Packaging**: signed/standalone agent and app installers for Linux,
+   Windows, and macOS.
+6. **Metrics**: Prometheus endpoint and dashboard integration.
+7. **macOS parity**: launchd installer and live validation.
 
-Each phase keeps SSH fully functional, so no user is forced to migrate.
+Each slice keeps SSH functional, so no user is forced to migrate early.
+
+## Release packaging
+
+Source stays in this monorepo; releases are separate artifacts:
+
+- agent: `llama_rpc_farm_agent-<ver>-py3-none-any.whl` + sdist +
+  `SHA256SUMS` (`.github/workflows/release-agent.yml`, tag `agent-v*`)
+- app: source archive + `SHA256SUMS`
+  (`.github/workflows/release-app.yml`, tag `app-v*`)
+
+The agent package is dependency-free (stdlib only). Bump
+`peer_agent/pyproject.toml` and `llama_peer_agent.__version__` before
+tagging. Protocol compatibility is reported by `/version`; the master
+accepts protocol 1 only and falls back to SSH on incompatible/missing
+agents.
 
 ## Testing
 
@@ -132,6 +249,7 @@ Each phase keeps SSH fully functional, so no user is forced to migrate.
 - Fallback tests: agent healthy/down/version-mismatch → correct transport.
 - Reaper safety tests: loaded model, loading model, active `--rpc` endpoint,
   young orphan, real orphan.
+- Discovery contract test with a loopback UDP responder.
 - No live-host tests in the default suite.
 
 ## Risks / mitigations
@@ -140,6 +258,6 @@ Each phase keeps SSH fully functional, so no user is forced to migrate.
 |---|---|
 | Extra network service | LAN/VPN bind, token auth, firewall, optional HTTPS |
 | Agent drift | version in `/health`, compatibility check, SSH fallback |
-| Split-brain actions | idempotency keys + per-port operations, never blanket kill |
+| Split-brain actions | per-port operations preferred; explicit typed stop-all only |
 | Windows service complexity | scheduled task fallback first, service later |
 | Security regression | no shell endpoint; whitelist args; audit log |
