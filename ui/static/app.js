@@ -113,6 +113,24 @@ function _toastHost() {
 
 /* Toast: replaces native alert()/confirm(), which browsers block or
    suppress (that silently killed the delete/status buttons). */
+function loadedNotice(key, label) {
+  const el = stickyNotice(
+    `✓ ${label} loaded — serving via the farm API (:8090)`,
+    "ok", `loaded:${key}`,
+    "Model is loaded on the swap host and available to API clients.");
+  el.classList.add("toast-loaded");
+  // long enough to notice from any tab, still self-clears
+  setTimeout(() => { if (el && el.isConnected) el.remove(); }, 20000);
+  return el;
+}
+
+function clearLoadedNotice(key) {
+  const host = _toastHost();
+  [...host.children].forEach(c => {
+    if (c.dataset && c.dataset.noticeKey === `loaded:${key}`) c.remove();
+  });
+}
+
 function toast(msg, kind = "info", ms = 6000) {
   const host = _toastHost();
   const el = document.createElement("div");
@@ -5952,7 +5970,7 @@ async function loadLaunch() {
           } catch (_) { /* keep polling */ }
         }
         if (!loaded && !r.ok) throw new Error(detail);
-        toast(`Loaded ${key} via the farm API (:8090)`, "ok", 8000);
+        loadedNotice(key, key);
         loadLaunch();
       } catch (err) {
         const hint = card.querySelector(".launch-ready-hint");
@@ -5971,6 +5989,7 @@ async function loadLaunch() {
       btn.disabled = true; btn.textContent = "evicting…";
       try {
         await api("POST", `/api/swap/evict/${encodeURIComponent(key)}`);
+        clearLoadedNotice(key);
         toast(`Evicted ${key} from llama-swap`, "ok");
         loadLaunch();
       } catch (err) { toast(err.message, "bad"); }

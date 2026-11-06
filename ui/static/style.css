@@ -1454,6 +1454,8 @@ tr.row-selected td:first-child {
 }
 .toast-ok  { border-left-color: var(--ok); }
 .toast-bad { border-left-color: var(--bad); }
+.toast-persistent.toast-ok { border-left-color: var(--ok); }
+.toast-loaded { box-shadow: 0 0 0 1px var(--ok) inset, var(--shadow); }
 .toast-persistent {
   display: flex;
   align-items: flex-start;
