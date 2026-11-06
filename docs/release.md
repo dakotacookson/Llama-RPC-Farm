@@ -1,8 +1,10 @@
 # Release pipelines
 
-Releases are rolling **`main-latest`** prereleases built automatically on
-every push to `main` (and manually via `workflow_dispatch`). There are no
-tag-driven release workflows.
+Every push to `main` (and manual `workflow_dispatch`) builds rolling
+prereleases: an **immutable versioned release per build** plus a moving
+**`main-latest`** pointer to the newest one. Historical builds are retained,
+so any past build remains downloadable. There are no tag-driven release
+workflows.
 
 ## Versioning
 
@@ -43,12 +45,17 @@ Each platform also emits a SHA-256 checksum file.
 
 The publish job runs once, after all builds pass:
 
-1. Deletes any previous `main-latest` release (so stale artifacts from old
-   commits never accumulate).
-2. Moves the `main-latest` tag to the current `main` commit.
-3. Creates a fresh `main-latest` prerelease with all platform assets and a
-   generated body: version, commit link, changelog since the previous roll,
-   download names per platform, checksum note, and quick-start instructions.
+1. Creates an **immutable per-build prerelease** tagged with the computed
+   version (e.g. `0.1.0-main.100de53`) and uploads every platform asset to
+   it, with a generated body: version, commit link, changelog since the
+   previous roll, download names per platform, checksum note, and
+   quick-start instructions. Older versioned releases are never deleted, so
+   every historical build stays downloadable. Re-running the same commit
+   replaces only that commit's own versioned release.
+2. Recreates `main-latest` as a **moving pointer** to the newest build. It
+   carries no assets; its body links to the newest versioned release. This
+   keeps `https://github.com/<repo>/releases/tag/main-latest` stable without
+   duplicating artifacts on the pointer.
 
 Because the publish step is gated on `needs: [linux, macos, windows]` and
 the workflow serializes on the `rolling-main` concurrency group, a failed
