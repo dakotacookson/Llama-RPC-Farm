@@ -40,7 +40,7 @@ test-stub keys (`sk-dad-test-…`).
 
 FastAPI web UI (`src/app.py`, port **8199**) that manages a llama.cpp RPC
 cluster. Peers are reached **only** through the peer agent; agents ship as
-their own `.deb`/`.dmg`/`.exe` packages (no SSH, no sshpass). A Linux master
+their own `.deb`/`.pkg`/`setup.exe` packages (no SSH, no sshpass). A Linux master
 runs llama-swap + llama-server, peers run `ggml-rpc-server` or native
 `llama-server` via the agent. Vanilla-JS frontend (`ui/`), YAML configs
 (`config/`). Nothing outside this folder is ever modified.

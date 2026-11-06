@@ -5,7 +5,7 @@ llama-server lifecycle, remote-local models, multi-host RPC scripts,
 vLLM/Ray workers, custom Windows runtimes, process/status views, logs,
 files, service control, installers, stats/tuner probes, discovery, and
 in-place agent updates are agent-backed. SSH/sshpass/paramiko have been
-removed; agents are installed from their own `.deb`/`.dmg`/`.exe`.
+removed; agents are installed from their own `.deb`/`.pkg`/`setup.exe`.
 Separate release artifacts are built automatically on every `main` push by
 `.github/workflows/rolling-main.yml`; the agent is published in the rolling
 `main-latest` prerelease.
@@ -233,11 +233,9 @@ Each slice keeps SSH functional, so no user is forced to migrate early.
 Source stays in this monorepo; releases are rolling artifacts built on
 every `main` push:
 
-- agent: standalone `llama-peer-agent` binaries (`.deb`/`.tar.gz` on
-  Linux, `.zip` on Windows, `.dmg`/`.tar.gz` on macOS) plus SHA-256
-  checksums in the `main-latest` prerelease
-- app: standalone `llama-rpc-farm` binaries with the same per-platform
-  packaging in the same `main-latest` prerelease
+- agent: Linux `.deb`, macOS `.pkg`, Windows Inno Setup `setup.exe`
+  plus SHA-256 checksums in the `main-latest` prerelease
+- app: the same three installer formats in the same prerelease
 
 See `docs/release.md` for the platform workflows. Bump
 `peer_agent/pyproject.toml` and `llama_peer_agent.__version__` when the

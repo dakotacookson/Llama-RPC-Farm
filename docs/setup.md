@@ -9,7 +9,7 @@ Nothing outside the project folder is ever modified.
 | Where you need it | Requirement |
 |---|---|
 | Master (this app's box) | Python 3.11+, a terminal, network reach to every peer (Tailscale or LAN) |
-| Peers | The peer agent package (`.deb` / `.dmg` / `.exe`) — no SSH server needed |
+| Peers | The peer agent package (`.deb` / `.pkg` / `setup.exe`) — no SSH server needed |
 | Models | llama.cpp `llama-server` built (or installed later via the UI) + GGUF files on a shared path |
 | Serving clients | Any OpenAI-compatible client (opencode, SillyTavern, curl, …) |
 | Optional | `curl` (used by run.sh / run.bat health checks) |
@@ -153,7 +153,7 @@ agent tokens come from the pushed `swap-secrets.env` sidecar.
 
 The view/access-key reverse proxy is **embedded in the main app** and
 starts automatically on `:8090` with the UI. No separate service is
-needed, and packaged `.deb`/`.dmg`/`.exe` builds include it. Clients point
+needed, and packaged `.deb`/`.pkg`/`setup.exe` builds include it. Clients point
 at the gateway instead of `:8080`.
 
 Environment overrides: `GATEWAY_PORT` (default `8090`), `GATEWAY_HOST`

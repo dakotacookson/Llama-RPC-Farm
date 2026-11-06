@@ -182,40 +182,60 @@ jobs:
             --name llama-peer-agent \
             --hidden-import llama_peer_agent.selfservice \
             --paths peer_agent packaging/agent_entry.py
-      - name: Package macOS
+      - name: Package macOS (pkg installers)
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
-          mkdir -p dmg-app/LlamaRPCFarm dmg-agent/LlamaPeerAgent
-          # app
-          cp dist/llama-rpc-farm dmg-app/LlamaRPCFarm/llama-rpc-farm
-          chmod 755 dmg-app/LlamaRPCFarm/llama-rpc-farm
-          cat > dmg-app/LlamaRPCFarm/README.txt <<EOF
-          Llama RPC Farm ${VERSION}
-          Run: ./llama-rpc-farm
-          Open http://127.0.0.1:8199
-          Runtime data: ~/Library/Application Support/LlamaRPCFarm
-          EOF
-          hdiutil create -volname "Llama RPC Farm" -srcfolder dmg-app \
-            -ov -format UDZO "llama-rpc-farm_${VERSION}_macos-arm64.dmg"
-          # agent
-          cp dist/llama-peer-agent dmg-agent/LlamaPeerAgent/llama-peer-agent
-          chmod 755 dmg-agent/LlamaPeerAgent/llama-peer-agent
-          cat > dmg-agent/LlamaPeerAgent/README.txt <<EOF
-          Llama Peer Agent ${VERSION}
-          Run: ./llama-peer-agent --host 0.0.0.0 --port 8198
-          Configure PEER_AGENT_TOKEN in the environment.
-          EOF
-          hdiutil create -volname "Llama Peer Agent" -srcfolder dmg-agent \
-            -ov -format UDZO "llama-peer-agent_${VERSION}_macos-arm64.dmg"
-          shasum -a 256 *.dmg > "llama-rpc-farm_${VERSION}_macos-arm64.sha256"
+          # app .pkg
+          mkdir -p pkgroot-app/usr/local/bin scripts-app
+          cp dist/llama-rpc-farm pkgroot-app/usr/local/bin/llama-rpc-farm
+          chmod 755 pkgroot-app/usr/local/bin/llama-rpc-farm
+          cat > scripts-app/postinstall <<'POST'
+          #!/bin/bash
+          set -e
+          BIN=/usr/local/bin/llama-rpc-farm
+          LABEL=com.llamarpc.farm.app
+          USER_NAME=$(stat -f%Su /dev/console)
+          if [ -z "$USER_NAME" ] || [ "$USER_NAME" = "root" ] || [ "$USER_NAME" = "loginwindow" ]; then exit 0; fi
+          USER_ID=$(id -u "$USER_NAME")
+          USER_HOME=$(dscl . -read /Users/"$USER_NAME" NFSHomeDirectory | awk '{print $2}')
+          sudo -u "$USER_NAME" "$BIN" --install-service || true
+          launchctl asuser "$USER_ID" launchctl bootstrap "gui/$USER_ID" "$USER_HOME/Library/LaunchAgents/$LABEL.plist" 2>/dev/null || true
+          exit 0
+          POST
+          chmod 755 scripts-app/postinstall
+          pkgbuild --root pkgroot-app --identifier com.llamarpc.farm.app \
+            --version "${VERSION%%-*}" --scripts scripts-app \
+            "llama-rpc-farm_${VERSION}_macos-arm64.pkg"
+          # agent .pkg
+          mkdir -p pkgroot-agent/usr/local/bin scripts-agent
+          cp dist/llama-peer-agent pkgroot-agent/usr/local/bin/llama-peer-agent
+          chmod 755 pkgroot-agent/usr/local/bin/llama-peer-agent
+          cat > scripts-agent/postinstall <<'POST'
+          #!/bin/bash
+          set -e
+          BIN=/usr/local/bin/llama-peer-agent
+          LABEL=com.llamarpc.farm.agent
+          USER_NAME=$(stat -f%Su /dev/console)
+          if [ -z "$USER_NAME" ] || [ "$USER_NAME" = "root" ] || [ "$USER_NAME" = "loginwindow" ]; then exit 0; fi
+          USER_ID=$(id -u "$USER_NAME")
+          USER_HOME=$(dscl . -read /Users/"$USER_NAME" NFSHomeDirectory | awk '{print $2}')
+          sudo -u "$USER_NAME" "$BIN" --install-service || true
+          launchctl asuser "$USER_ID" launchctl bootstrap "gui/$USER_ID" "$USER_HOME/Library/LaunchAgents/$LABEL.plist" 2>/dev/null || true
+          exit 0
+          POST
+          chmod 755 scripts-agent/postinstall
+          pkgbuild --root pkgroot-agent --identifier com.llamarpc.farm.agent \
+            --version "${VERSION%%-*}" --scripts scripts-agent \
+            "llama-peer-agent_${VERSION}_macos-arm64.pkg"
+          shasum -a 256 *.pkg > "llama-rpc-farm_${VERSION}_macos-arm64.sha256"
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: macos-arm64
           path: |
-            *.dmg
+            *.pkg
             *.sha256
 
   windows:
@@ -244,28 +264,30 @@ jobs:
             --name llama-peer-agent \
             --hidden-import llama_peer_agent.selfservice \
             --paths peer_agent packaging/agent_entry.py
-      - name: Package Windows
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Package Windows (setup installers)
         shell: pwsh
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          $version = $env:VERSION
-          Copy-Item dist\llama-rpc-farm.exe "llama-rpc-farm_${version}_windows-x64.exe" -Force
-          Copy-Item dist\llama-peer-agent.exe "llama-peer-agent_${version}_windows-x64.exe" -Force
-          $files = @(
-            "llama-rpc-farm_${version}_windows-x64.exe",
-            "llama-peer-agent_${version}_windows-x64.exe"
-          )
+          $env:APP_VERSION = $env:VERSION
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          & $iscc packaging\app.iss
+          if ($LASTEXITCODE -ne 0) { throw "app installer build failed" }
+          & $iscc packaging\agent.iss
+          if ($LASTEXITCODE -ne 0) { throw "agent installer build failed" }
+          $files = Get-ChildItem dist\*setup.exe
           $lines = foreach ($f in $files) {
-            (Get-FileHash $f -Algorithm SHA256).Hash.ToLower() + "  " + $f
+            (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower() + "  " + $f.Name
           }
-          $lines | Set-Content "llama-rpc-farm_${version}_windows-x64.sha256"
+          $lines | Set-Content "llama-rpc-farm_${env:VERSION}_windows-x64.sha256"
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-x64
           path: |
-            *.exe
+            dist/*setup.exe
             *.sha256
 
   publish:
@@ -326,14 +348,14 @@ jobs:
           ### App — `llama-rpc-farm`
 
           - **Linux:** `llama-rpc-farm_{version}_amd64.deb`
-          - **macOS (Apple Silicon):** `llama-rpc-farm_{version}_macos-arm64.dmg`
-          - **Windows:** `llama-rpc-farm_{version}_windows-x64.exe`
+          - **macOS (Apple Silicon):** `llama-rpc-farm_{version}_macos-arm64.pkg`
+          - **Windows:** `llama-rpc-farm_{version}_windows-x64-setup.exe`
 
           ### Peer agent — `llama-peer-agent`
 
           - **Linux:** `llama-rpc-farm-agent_{version}_amd64.deb`
-          - **macOS (Apple Silicon):** `llama-peer-agent_{version}_macos-arm64.dmg`
-          - **Windows:** `llama-peer-agent_{version}_windows-x64.exe`
+          - **macOS (Apple Silicon):** `llama-peer-agent_{version}_macos-arm64.pkg`
+          - **Windows:** `llama-peer-agent_{version}_windows-x64-setup.exe`
 
           Each platform uploads a matching `.sha256` checksum file.
 

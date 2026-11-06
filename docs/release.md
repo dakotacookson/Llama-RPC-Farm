@@ -34,8 +34,8 @@ Each build job produces both the app and the peer agent:
 | Platform | App artifacts | Agent artifacts |
 |---|---|---|
 | Linux | `.deb` | `.deb` |
-| macOS | `.dmg` | `.dmg` |
-| Windows | `.exe` | `.exe` |
+| macOS | `.pkg` | `.pkg` |
+| Windows | `setup.exe` | `setup.exe` |
 
 Each platform also emits a SHA-256 checksum file.
 

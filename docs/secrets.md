@@ -39,7 +39,7 @@ stored (encrypted in `.env`).
 3. **Tuner trials** — use the same agent endpoints for remote work.
 
 There is no SSH password path: `sshpass`, `paramiko`, and `$SSH_PASS` were
-removed. Agents are installed from their own `.deb`/`.dmg`/`.exe`.
+removed. Agents are installed from their own `.deb`/`.pkg`/`setup.exe`.
 
 ## Injection defenses (enforced by tests)
 
