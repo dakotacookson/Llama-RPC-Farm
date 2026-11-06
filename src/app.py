@@ -262,6 +262,35 @@ app.add_middleware(IpGateMiddleware)
 # HttpOnly, SameSite=Lax; the API key never needs to be pasted into a
 # browser — logging in IS the key adoption.
 
+def _access_filter_models(models):
+    """Apply the caller's exact-token allowlist to a model list.
+
+    gate_open (trusted console / unrestricted admin) sees everything.
+    A restricted caller with no grants sees NOTHING; a scoped caller sees
+    only granted base ids and granted variants.
+    """
+    if access.gate_open():
+        return models
+    allow = access.view_allow()
+    if not allow:
+        return []
+    from swap_gateway import _mid_allowed
+    out = []
+    for m in models:
+        if not isinstance(m, dict):
+            continue
+        mid = str(m.get("model_id") or m.get("id") or "")
+        variants = m.get("variants") or []
+        keep_vars = [v for v in variants
+                     if _mid_allowed(f"{mid}--{v.get('label')}", allow)]
+        if _mid_allowed(mid, allow) or keep_vars:
+            mm = dict(m)
+            if variants:
+                mm["variants"] = keep_vars
+            out.append(mm)
+    return out
+
+
 LOGIN_COOKIE = "farm_session"
 
 
@@ -1759,7 +1788,7 @@ async def list_saved_models(full: bool = False):
         engine = engine_registry.get_engine()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
-    return engine.filter_models(cfg.list_models())
+    return _access_filter_models(engine.filter_models(cfg.list_models()))
 
 
 @app.get("/api/rpc-map")
@@ -2439,7 +2468,7 @@ class ChatIn(pydantic.BaseModel):
 
 
 @app.get("/api/chat/models")
-async def chat_models():
+async def chat_models(request: Request):
     """Models the Chat tab can test: swap-known ids with loaded flags,
     merged with configured (not-yet-pushed) ids — loaded vs will-load,
     same split the old picker showed. Embeddings excluded (they use
@@ -2452,9 +2481,10 @@ async def chat_models():
             def _fetch():
                 import urllib.request
                 import json as _json
-                with urllib.request.urlopen(
-                        f"http://127.0.0.1:{st['port']}/models",
-                        timeout=10) as r:
+                req = urllib.request.Request(
+                    "http://127.0.0.1:8090/models",
+                    headers=_gateway_headers(request))
+                with urllib.request.urlopen(req, timeout=10) as r:
                     return _json.loads(r.read().decode()).get("data", [])
             data = await run_in_threadpool(_fetch)
             for m in data:
@@ -2468,28 +2498,24 @@ async def chat_models():
             print(f"[chat] swap model list failed: {e}")
     try:
         engine = engine_registry.get_engine()
-        configured = engine.filter_models(cfg.list_models())
+        configured = _access_filter_models(
+            engine.filter_models(cfg.list_models()))
     except ValueError:
-        configured = cfg.list_models()
+        configured = _access_filter_models(cfg.list_models())
     for m in configured:
         mid = m.get("model_id") or ""
         if not mid or "embed" in mid.lower() or mid in out:
             continue
         out.append(mid)
-    # access.py: a `private: true` model is not chattable for restricted
-    # viewers — drop it from the picker AND refuse a direct POST (same
-    # "never existed" semantics as the launch path). The swap-running
-    # list above may still carry the id when the daemon serves it for a
-    # trusted user — the gate below re-checks before streaming. View-
-    # scoped users are ALSO limited to their allowlist tokens (mid or
-    # mid--variant), same filter the models table renders by.
+    # access.py: private + key-allowlist filtering. The gateway list is
+    # already key-filtered; the configured fallback was filtered above.
+    # Re-apply the private gate for the daemon list (defense in depth).
     if not access.gate_open():
         allow = access.view_allow()
         out = [mid for mid in out
                if not _raw_is_private(mid.split("--")[0])]
-        if allow is not None:
-            # EXACT token match — variants are separate grants
-            out = [mid for mid in out if mid in allow]
+        if not allow:
+            out = []
     return {"running": running,
             "models": [{"id": mid, "loaded": mid in loaded} for mid in out]}
 
@@ -6688,7 +6714,8 @@ async def list_embedding_models():
     # with the known embedding families (bge/nomic/gte/…) + config.json
     # architectures. Same shape both ways.
     engine = engine_registry.get_engine()
-    return engine.filter_embedding_models(cfg.list_models())
+    return _access_filter_models(
+        engine.filter_embedding_models(cfg.list_models()))
 
 
 class EmbedIn(pydantic.BaseModel):
@@ -6736,7 +6763,8 @@ async def create_embeddings(e: EmbedIn, request: Request):
 async def list_audio_models():
     # capability detection is the engine adapter's vocabulary (G-8)
     engine = engine_registry.get_engine()
-    return engine.filter_audio_models(cfg.list_models())
+    return _access_filter_models(
+        engine.filter_audio_models(cfg.list_models()))
 
 
 @app.get("/api/decision/models")
@@ -6746,7 +6774,8 @@ async def list_decision_models():
     via the engine adapter, so a future engine just filters its own
     vocabulary."""
     engine = engine_registry.get_engine()
-    return engine.filter_decision_models(cfg.list_models())
+    return _access_filter_models(
+        engine.filter_decision_models(cfg.list_models()))
 
 
 class AudioIn(pydantic.BaseModel):
@@ -6821,7 +6850,8 @@ async def list_vision_models():
     # are HF-format (no mmproj) and are detected from config.json
     # vision_config / architectures + known vision families.
     engine = engine_registry.get_engine()
-    return engine.filter_vision_models(cfg.list_models())
+    return _access_filter_models(
+        engine.filter_vision_models(cfg.list_models()))
 
 
 class VisionIn(pydantic.BaseModel):
