@@ -1664,7 +1664,7 @@ on("#start-all", "click", async (e) => {
 });
 
 /* ---------------- machines ---------------- */
-const EMPTY_MACHINE = { name: "", ip: "", username: "zazi", password: "", port: 22, transport: "auto", agent_port: 8198, agent_token: "", role: "peer", os: "linux", rpc_port: 50052, gpu: "", llama_bin: "", rdma: false, rdma_ip: "", rdma_dev: "", rdma_gid: "", rdma_cm: false };
+const EMPTY_MACHINE = { name: "", ip: "", username: "", password: "", port: 1, transport: "agent", agent_port: 8198, agent_token: "", role: "peer", os: "linux", rpc_port: 50052, gpu: "", llama_bin: "", rdma: false, rdma_ip: "", rdma_dev: "", rdma_gid: "", rdma_cm: false };
 
 async function defaultLlamaBin() {
   const s = await getAppSettings();
@@ -1672,19 +1672,20 @@ async function defaultLlamaBin() {
 }
 
 function syncTransportFields() {
-  const t = $("#m-transport")?.value || "auto";
-  const ssh = t === "ssh" || t === "auto";
-  const agent = t === "agent" || t === "auto";
+  // Agent-only: SSH fields are retired. Keep the hidden inputs for payload
+  // compatibility but never show or require them.
   for (const id of ["m-username-label", "m-password-label", "m-port-label"]) {
     const el = $("#" + id);
-    if (el) el.style.display = ssh ? "" : "none";
+    if (el) el.style.display = "none";
   }
   for (const id of ["m-agent-port-label", "m-agent-token-label"]) {
     const el = $("#" + id);
-    if (el) el.style.display = agent ? "" : "none";
+    if (el) el.style.display = "";
   }
   const user = $("#m-username");
-  if (user) user.required = ssh;
+  if (user) user.required = false;
+  const tr = $("#m-transport");
+  if (tr) tr.value = "agent";
 }
 
 function syncRdmaFields() {
@@ -1711,8 +1712,8 @@ function machineFormLoad(m, isEdit) {
   $("#machine-original-name").value = editing ? (m.name || "") : "";
   $("#m-name").value = m.name || "";
   $("#m-ip").value = m.ip || "";
-  $("#m-username").value = m.username || "zazi";
-  $("#m-password").value = ""; // never fill the real password — hint shows state
+  $("#m-username").value = "";
+  $("#m-password").value = "";
   $("#m-agent-token").value = ""; // write-only: stored in the vault
   const atHint = $("#m-agent-token-hint");
   if (atHint) atHint.textContent = (editing && m.agent_token_set)
@@ -1722,8 +1723,8 @@ function machineFormLoad(m, isEdit) {
   if (pwHint) pwHint.textContent = (editing && m.password_set)
     ? "Password saved in vault — leave blank to keep, type to replace."
     : (editing ? "No password saved — type one to set it." : "Stored encrypted in the vault (.env).");
-  $("#m-port").value = m.port ?? 22;
-  $("#m-transport").value = m.transport || "auto";
+  $("#m-port").value = 1;
+  $("#m-transport").value = "agent";
   $("#m-agent-port").value = m.agent_port ?? 8198;
   syncTransportFields();
   $("#m-role").value = m.role || "peer";
@@ -1835,34 +1836,17 @@ async function showHostFingerprint() {
   if (!box) return;
   const ip = $("#m-ip").value.trim();
   if (!ip) { box.textContent = ""; return; }
-  if (($("#m-transport")?.value || "auto") === "agent") {
-    box.innerHTML = '<span class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Checking peer agent…</span>';
-    try {
-      const a = await api("POST", "/api/machines/agent-check", {
-        ip,
-        agent_port: parseInt($("#m-agent-port").value, 10) || 8198,
-        agent_token: $("#m-agent-token").value,
-        name: $("#machine-original-name").value || $("#m-name").value.trim(),
-      });
-      box.innerHTML = `<span class="status-ok"><i class="fa-solid fa-plug"></i> Peer agent connected — v${escHtml(a.agent_version || "?")} (protocol ${escHtml(String(a.protocol_version ?? "?"))})</span>`;
-    } catch (e) {
-      box.innerHTML = `<span class="status-bad"><i class="fa-solid fa-plug"></i> Peer agent check failed: ${escHtml(e.message)}</span>`;
-    }
-    return;
-  }
-  const port = parseInt($("#m-port").value, 10) || 22;
-  box.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> checking host key…';
+  box.innerHTML = '<span class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Checking peer agent…</span>';
   try {
-    const r = await api("POST", "/api/machines/fingerprint",
-      { ip, port, username: $("#m-username").value.trim() });
-    const mismatch = r.known && r.stored_fingerprint && r.stored_fingerprint !== r.fingerprint;
-    box.innerHTML = mismatch
-      ? `<span class="status-bad"><i class="fa-solid fa-triangle-exclamation"></i> Host key CHANGED for ${escHtml(ip)}! stored: <code>${escHtml(r.stored_fingerprint)}</code> · now: <code>${escHtml(r.fingerprint)}</code> — verify before trusting</span>`
-      : r.known
-        ? `<i class="fa-solid fa-fingerprint"></i> Host key (trusted): <code>${escHtml(r.fingerprint)}</code> <small class="hint">(${escHtml(r.type)}, saved on first login)</small>`
-        : `<i class="fa-solid fa-fingerprint"></i> First login — host key <code>${escHtml(r.fingerprint)}</code> <small class="hint">(${escHtml(r.type)}) will be trusted on save and pinned for future logins</small>`;
+    const a = await api("POST", "/api/machines/agent-check", {
+      ip,
+      agent_port: parseInt($("#m-agent-port").value, 10) || 8198,
+      agent_token: $("#m-agent-token").value,
+      name: $("#machine-original-name").value || $("#m-name").value.trim(),
+    });
+    box.innerHTML = `<span class="status-ok"><i class="fa-solid fa-plug"></i> Peer agent connected — v${escHtml(a.agent_version || "?")} (protocol ${escHtml(String(a.protocol_version ?? "?"))})</span>`;
   } catch (e) {
-    box.innerHTML = `<span class="status-warn"><i class="fa-solid fa-triangle-exclamation"></i> Host key check failed: ${escHtml(e.message)}</span>`;
+    box.innerHTML = `<span class="status-bad"><i class="fa-solid fa-plug"></i> Peer agent check failed: ${escHtml(e.message)}</span>`;
   }
 }
 
@@ -1870,10 +1854,10 @@ function machineFormRead() {
   return {
     name: $("#m-name").value.trim(),
     ip: $("#m-ip").value.trim(),
-    username: $("#m-username").value.trim(),
-    password: $("#m-password").value,
-    port: parseInt($("#m-port").value, 10),
-    transport: $("#m-transport").value,
+    username: "",
+    password: "",
+    port: 1,
+    transport: "agent",
     agent_port: parseInt($("#m-agent-port").value, 10) || 8198,
     agent_token: $("#m-agent-token").value,
     role: $("#m-role").value,
@@ -2130,15 +2114,15 @@ async function discoverInit() {
 }
 
 function syncDiscoveryMode() {
-  const peer = ($("#d-mode")?.value || "peer") === "peer";
+  // Agent-only discovery: UDP peer-agent responder, never an SSH scan.
   const subnet = $("#d-subnet-label");
   const port = $("#d-port-label");
-  if (subnet) subnet.style.display = peer ? "none" : "";
-  if (port) port.style.display = peer ? "none" : "";
+  if (subnet) subnet.style.display = "none";
+  if (port) port.style.display = "none";
+  const mode = $("#d-mode");
+  if (mode) mode.value = "peer";
   const hint = $("#wiz-scan-hint");
-  if (hint) hint.textContent = peer
-    ? "Hit Scan to discover peers advertising the Llama RPC Farm agent (UDP 8199). No SSH credentials are used."
-    : "Hit Scan to ping the network and fingerprint SSH hosts. Already know the IP? Just Continue — you can enter it manually in step 2.";
+  if (hint) hint.textContent = "Hit Scan to discover peers advertising the Llama RPC Farm agent (UDP 8199). Peer agents are installed from their own platform package.";
 }
 on("#d-mode", "change", syncDiscoveryMode);
 
@@ -2270,10 +2254,10 @@ function discoveredFill(h) {
   machineFormLoad({
     name: h.hostname || h.ip.replace(/\./g, "-"),
     ip: h.ip,
-    username: h.username || $("#m-username").value.trim() || "zazi",
-    password: $("#m-password").value,
-    port: h.port || 22,
-    transport: h.agent ? (h.ssh_ok ? "auto" : "agent") : "ssh",
+    username: "",
+    password: "",
+    port: 1,
+    transport: "agent",
     agent_port: h.agent_port || 8198,
     os: h.os || "linux",
     gpu_vendor: h.gpu_vendor || "nvidia",
@@ -2283,7 +2267,7 @@ function discoveredFill(h) {
   wizForceWizard = fw;
   wizClearPick();
   wizShow(3);
-  toast("Review the details, then Save (Save verifies SSH before storing)", "ok");
+  toast("Review the details, then Save (Save verifies the peer agent before storing)", "ok");
 }
 // IP / SSH port edits change which host we fingerprint — re-check live
 on("#m-rdma", "change", syncRdmaFields);
@@ -2306,7 +2290,7 @@ on("#m-transport", "change", () => {
 on("#d-scan", "click", async (e) => {
   const btn = e.currentTarget;
   const res = $("#d-results");
-  const peerMode = ($("#d-mode")?.value || "peer") === "peer";
+  const peerMode = true;
   btn.disabled = true; btn.textContent = peerMode ? "discovering agents…" : "scanning… (~1 min)";
   res.innerHTML = peerMode
     ? '<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Listening for peer agents on UDP 8199…</p>'
@@ -2314,13 +2298,8 @@ on("#d-scan", "click", async (e) => {
   let scanned = false;
   try {
     const r = await api("POST", "/api/discover", {
-      subnet: $("#d-subnet").value,
-      port: parseInt($("#d-port").value, 10) || 22,
-      username: $("#m-username").value.trim(),
-      password: $("#m-password").value,
-      ping: true,
-      agent_only: peerMode,
-      include_known: peerMode ? true : false,
+      agent_only: true,
+      include_known: true,
     });
     r.results.forEach(h => DISCOVERED[h.ip] = h);
     $("#discovered-ips").innerHTML = r.results.map(h => `<option value="${escHtml(h.ip)}">`).join("");
@@ -2400,11 +2379,9 @@ on("#m-ip", "change", () => {
   if (!$("#m-name").value.trim()) $("#m-name").value = h.hostname || h.ip.replace(/\./g, "-");
   if (h.os) $("#m-os").value = h.os;
   if (h.gpu_vendor) $("#m-gpu-vendor").value = h.gpu_vendor;
-  $("#m-port").value = h.port || 22;
-  if (h.agent) {
-    $("#m-transport").value = h.ssh_ok ? "auto" : "agent";
-    $("#m-agent-port").value = h.agent_port || 8198;
-  }
+  $("#m-port").value = 1;
+  $("#m-transport").value = "agent";
+  if (h.agent_port) $("#m-agent-port").value = h.agent_port;
   if ((h.gpus || []).length && !$("#m-gpu").value.trim())
     $("#m-gpu").value = h.gpus.map((g, i) => `${gpuPrefix(h.gpu_vendor)}${i}`).join(",");
 });
@@ -2417,11 +2394,12 @@ on("#m-detect-form", "click", async (e) => {
   try {
     const m = await api("POST", "/api/machines/probe", {
       ip,
-      username: $("#m-username").value.trim() || "zazi",
-      password: $("#m-password").value,
-      port: parseInt($("#m-port").value, 10) || 22,
       os: $("#m-os").value,
+      gpu_vendor: $("#m-gpu-vendor").value,
       rpc_port: parseInt($("#m-rpc-port").value, 10) || 50052,
+      agent_port: parseInt($("#m-agent-port").value, 10) || 8198,
+      agent_token: $("#m-agent-token").value,
+      name: $("#m-name").value.trim(),
     });
     $("#m-gpu").value = m.gpu || "";
     $("#m-ram").value = m.ram_total_gb || "";

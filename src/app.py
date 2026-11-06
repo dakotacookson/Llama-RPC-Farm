@@ -667,10 +667,10 @@ class ExposeIn(pydantic.BaseModel):
 class MachineIn(pydantic.BaseModel):
     name: str
     ip: str
-    username: str
+    username: str = ""
     password: str = ""
     port: int = 22
-    transport: str = "auto"     # auto | ssh | agent
+    transport: str = "agent"    # agent-only (kept for config compatibility)
     agent_port: int = 8198
     agent_token: str = ""       # write-only; stored in the vault, never YAML
     role: str = "peer"
@@ -781,35 +781,21 @@ async def list_machines():
 
 
 def _machine_connection_caps(machine):
-    """Detect usable transports for one machine: local, ssh, agent, both."""
+    """Detect usable transport for one machine: local or peer agent."""
     name = machine.get("name") or machine.get("id") or "?"
     try:
         if local_node.is_local(machine):
             return {"name": name, "mode": "local", "local": True,
-                    "ssh": True, "agent": False}
+                    "ssh": False, "agent": False}
     except Exception:
         pass
-    agent_ok = False
     try:
         agent_client.health(machine, timeout=3.0)
-        agent_ok = True
+        return {"name": name, "mode": "agent", "local": False,
+                "ssh": False, "agent": True}
     except Exception:
-        agent_ok = False
-    ssh_ok = False
-    try:
-        from ssh_manager import SSHManager
-        ssh = SSHManager(machine.get("ip", ""), machine.get("username", ""),
-                         machine.get("password", ""),
-                         port=machine.get("port", 22), timeout=5)
-        if ssh.ssh_port_open(timeout=3):
-            ssh_ok = bool(ssh.is_reachable())
-    except Exception:
-        ssh_ok = False
-    mode = ("both" if ssh_ok and agent_ok else
-            "agent" if agent_ok else "ssh" if ssh_ok else "none")
-    return {"name": name, "mode": mode, "local": False,
-            "ssh": ssh_ok, "agent": agent_ok}
-
+        return {"name": name, "mode": "none", "local": False,
+                "ssh": False, "agent": False}
 
 @app.get("/api/machines/connections")
 async def machine_connections():
@@ -821,81 +807,19 @@ async def machine_connections():
 
 
 def _ssh_port_guard(machine):
-    """Fail fast with an actionable error when a new (non-local) machine
-    refuses SSH — typically a fresh host with the SSH port closed.
-    Returns None when fine or when the check doesn't apply (local node)."""
+    """Fail fast with an actionable error when a new (non-local) machine's
+    peer agent is unreachable. Agent-only: there is no SSH preflight."""
     try:
         if local_node.is_local(machine):
             return None
     except Exception:
         pass
-    if agent_client.should_use_agent(machine):
-        try:
-            agent_client.health(machine, timeout=4)
-            return None
-        except Exception as e:
-            if agent_client.transport(machine) == "agent":
-                return f"agent unreachable: {e}"
-    from ssh_manager import SSHManager
-    ssh = SSHManager(
-        machine.get("ip", ""), machine.get("username", ""),
-        machine.get("password", ""), port=machine.get("port", 22),
-    )
-    return ssh.ssh_port_error(timeout=4)
-
-
-class FingerprintIn(pydantic.BaseModel):
-    ip: str
-    port: int = 22
-    username: str = "zazi"
-    os: str = "linux"
-
-
-class AgentCheckIn(pydantic.BaseModel):
-    ip: str
-    agent_port: int = 8198
-    agent_token: str = ""
-    name: str = ""
-
-
-@app.post("/api/machines/agent-check")
-async def machine_agent_check(p: AgentCheckIn):
-    """Pre-save peer-agent reachability check for the add/edit form."""
     try:
-        port = int(p.agent_port or 8198)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="agent port must be an integer")
-    if not 1 <= port <= 65535:
-        raise HTTPException(status_code=400, detail="agent port must be in 1..65535")
-    existing = cfg.machines.get(p.name) if p.name else None
-    machine = {"name": p.name or p.ip, "ip": p.ip, "agent_port": port,
-               "transport": "agent",
-               "id": (existing or {}).get("id")}
-    try:
-        out = await run_in_threadpool(
-            agent_client.health, machine, 4.0, p.agent_token or None)
+        agent_client.health(machine, timeout=4)
+        return None
     except Exception as e:
-        raise HTTPException(status_code=502,
-                            detail=f"peer agent unreachable: {e}")
-    return {"ok": True, **out}
+        return f"peer agent unreachable: {e}"
 
-
-@app.post("/api/machines/fingerprint")
-async def machine_fingerprint(p: FingerprintIn):
-    """SSH host-key fingerprint WITHOUT login (key exchange is pre-auth).
-    Used by the add-machine wizard so first-time hosts are shown + trusted
-    on first use; returns whether we already know this host."""
-    import ssh_manager
-    try:
-        fp = await run_in_threadpool(
-            ssh_manager.host_fingerprint, p.ip, p.port)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    known = ssh_manager.load_known_hosts().get(
-        ssh_manager._host_id(p.ip, p.port))
-    return {**fp, "ip": p.ip, "port": p.port,
-            "known": bool(known),
-            "stored_fingerprint": (known or {}).get("fingerprint")}
 
 
 # DEC-03 (AUDIT-T6 §1.6): validated per-machine swap-config overrides —
@@ -907,18 +831,17 @@ def _validate_machine_swap_config(payload):
 
 
 def _validate_machine_connection(payload):
-    transport = str(payload.get("transport") or "auto").strip().lower()
-    if transport not in ("auto", "ssh", "agent"):
-        raise ValueError("transport must be auto, ssh, or agent")
+    """Agent-only machines: normalize the agent port and drop legacy SSH
+    transport/password fields so they never land in machines.yaml."""
     try:
         agent_port = int(payload.get("agent_port") or 8198)
     except (TypeError, ValueError) as e:
         raise ValueError("agent_port must be an integer") from e
     if not 1 <= agent_port <= 65535:
         raise ValueError("agent_port must be in 1..65535")
-    payload["transport"] = transport
+    payload["transport"] = "agent"
     payload["agent_port"] = agent_port
-
+    payload["password"] = ""
 
 @app.post("/api/machines")
 async def add_machine(m: MachineIn):
@@ -1106,22 +1029,23 @@ def _detect_rdma_nic(machine, is_local):
 
 class ProbeIn(pydantic.BaseModel):
     ip: str
-    username: str = "zazi"
-    password: str = ""
-    port: int = 22
     os: str = "linux"
     gpu_vendor: str = "nvidia"
     rpc_port: int = 50052
-
+    agent_port: int = 8198
+    agent_token: str = ""
+    name: str = ""
 
 @app.post("/api/machines/probe")
 async def probe_hardware(p: ProbeIn):
     """Detect hardware from raw form inputs -- works for machines that
     aren't saved yet. Returns gpu list + RAM + detected block; persists
     nothing."""
-    machine = {"name": p.ip, **p.model_dump()}
-    # Explicit SSH-port check first so a fresh host with port 22 closed
-    # gets "SSH rejected: port 22 not open ..." instead of "unreachable".
+    machine = {"name": p.name or p.ip, "ip": p.ip, "os": p.os,
+               "gpu_vendor": p.gpu_vendor, "rpc_port": p.rpc_port,
+               "agent_port": p.agent_port, "transport": "agent"}
+    if p.agent_token:
+        machine["_agent_token"] = p.agent_token
     detail = _ssh_port_guard(machine)
     if detail:
         raise HTTPException(status_code=503, detail=detail)
@@ -1148,21 +1072,21 @@ async def probe_hardware(p: ProbeIn):
     if not result["online"]:
         raise HTTPException(
             status_code=503,
-            detail=f"{p.ip} is unreachable over SSH (port {p.port} open but "
-                   f"login/command failed) — check username/password and that "
-                   f"'echo ok' works via plain ssh")
+            detail=f"{p.ip} is unreachable over the peer agent "
+                   f"(port {p.agent_port}) — install/start the agent there "
+                   f"and check the token")
     result["detected"] = result.get("detected") or {}
     return result
 
 
 class DiscoverIn(pydantic.BaseModel):
-    subnet: str = ""          # empty = local /24
-    port: int = 22
-    username: str = ""        # empty = try creds from saved machines
-    password: str = ""
     include_known: bool = False  # hide already-added machines by default
-    ping: bool = True         # ICMP sweep: show live hosts without SSH too
-    agent_only: bool = False  # UDP peer-agent discovery only (no SSH scan)
+    subnet: str = ""             # accepted for UI compatibility; ignored
+    port: int = 0
+    username: str = ""
+    password: str = ""
+    ping: bool = False
+    agent_only: bool = True
 
 
 @app.get("/api/discover/subnets")
@@ -1175,27 +1099,17 @@ async def discover_subnets():
 
 @app.post("/api/discover")
 async def discover_hosts(p: DiscoverIn):
-    """Scan a subnet: ICMP ping for live hosts, TCP sweep for open SSH
-    port, banner-grab the OS pre-auth (no login needed). SSH login is
-    only optional enrichment (hostname/GPUs). Persists nothing."""
+    """Scan the LAN for peer agents (UDP discovery). No SSH scan: peers
+    are agent-installed machines, identified by MAC/hostname."""
     import discovery
 
-    creds = [(p.username, p.password)] if p.username else None
-
     def run():
-        if p.agent_only:
-            return discovery.discover_agents(
-                include_known=p.include_known)
-        return discovery.discover(
-            subnet=p.subnet or None, port=p.port, credentials=creds,
-            include_known=p.include_known, ping=p.ping,
-            agent_discovery_enabled=False)
+        return discovery.discover_agents(include_known=p.include_known)
 
     result = await run_in_threadpool(run)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
-
 
 @app.post("/api/machines/detect-all")
 async def detect_all():
@@ -4201,17 +4115,14 @@ async def install_llama_cpp():
 
 def _detect_bin_on_machine(machine):
     """Check if llama.cpp bin already exists on a machine. Returns
-    (found:bool, bin_path:str|None, detail:str). Never installs — just
-    probes, so existing working systems are untouched."""
-    import subprocess as _sp
+    (found:bool, bin_path:str|None, detail:str). Never installs.
+    Remote machines are probed through the peer agent's /files/stat."""
     from pathlib import Path as _Path
     is_win = (machine.get("os", "linux") == "windows")
     is_local = local_node.is_local(machine)
-    # candidate bin paths to probe — configured + defaults
     candidates = []
     configured = (machine.get("llama_bin") or "").strip()
     if configured:
-        # configured may be a dir or full bin path
         if configured.endswith("llama-server") or configured.endswith("llama-server.exe"):
             candidates.append(configured)
         else:
@@ -4220,8 +4131,6 @@ def _detect_bin_on_machine(machine):
         candidates += [
             "%USERPROFILE%\\llama.cpp\\build\\bin\\llama-server.exe",
             "%USERPROFILE%\\llama.cpp\\llama-server.exe",
-            "%USERPROFILE%/llama.cpp/build/bin/llama-server.exe",
-            "%USERPROFILE%/llama.cpp/llama-server.exe",
             "~/llama.cpp/build/bin/llama-server.exe",
             "~/llama.cpp/llama-server.exe",
         ]
@@ -4231,57 +4140,30 @@ def _detect_bin_on_machine(machine):
             "/usr/local/bin/llama-server",
             "/usr/bin/llama-server",
         ]
-    # dedupe preserving order
-    seen = set()
-    uniq = []
+    seen, uniq = set(), []
     for c in candidates:
         if c not in seen:
             seen.add(c)
             uniq.append(c)
-    if not is_local and agent_client.should_use_agent(machine):
+    if is_local:
         for cand in uniq:
-            probe = cand.replace("%USERPROFILE%", "~")
             try:
-                st = agent_client.file_stat(machine, probe)
-                if st.get("exists") and st.get("is_file"):
+                expanded = (os.path.expandvars(os.path.expanduser(cand))
+                            if is_win else os.path.expanduser(cand))
+                if _Path(expanded).exists():
                     return True, cand, f"found at {cand}"
-            except Exception as e:
-                if agent_client.transport(machine) == "agent":
-                    return False, None, f"agent bin probe failed: {e}"
-                print(f"[agent] {machine.get('name')}: bin probe failed, falling back to SSH: {e}")
-    for cand in uniq:
-        # expand for local check
-        if is_local:
-            try:
-                if is_win:
-                    expanded = os.path.expandvars(os.path.expanduser(cand))
-                    if _Path(expanded).exists():
-                        return True, cand, f"found at {cand}"
-                else:
-                    expanded = os.path.expanduser(cand)
-                    if _Path(expanded).exists():
-                        return True, cand, f"found at {cand}"
             except Exception:
                 continue
-        else:
-            # remote probe via SSH
-            try:
-                from ssh_manager import SSHManager
-                ssh = SSHManager(machine["ip"], machine["username"], machine["password"], port=machine.get("port", 22))
-                if is_win:
-                    # PowerShell Test-Path, handles %USERPROFILE% and ~
-                    ps = f'powershell -NoProfile -Command "if (Test-Path \\"{cand}\\") {{ echo FOUND }} else {{ echo MISSING }}"'
-                    code, out, _ = ssh.run(ps, timeout=15)
-                else:
-                    # expand ~ on remote side
-                    code, out, _ = ssh.run(f'test -f {cand} && echo FOUND || echo MISSING', timeout=15)
-                if "FOUND" in (out or ""):
-                    return True, cand, f"found at {cand}"
-            except Exception as e:
-                # treat SSH failure as not found but surface in detail
-                continue
+        return False, None, "no bin found (checked: " + ", ".join(uniq) + ")"
+    for cand in uniq:
+        probe = cand.replace("%USERPROFILE%", "~")
+        try:
+            st = agent_client.file_stat(machine, probe)
+            if st.get("exists") and st.get("is_file"):
+                return True, cand, f"found at {cand}"
+        except Exception as e:
+            return False, None, f"agent bin probe failed: {e}"
     return False, None, "no bin found (checked: " + ", ".join(uniq) + ")"
-
 
 class InstallAllIn(pydantic.BaseModel):
     install_missing: bool = False  # actually install on missing nodes
@@ -4312,9 +4194,8 @@ async def install_llama_cpp_all(p: InstallAllIn | None = None):
         # quick reachability for remote
         if not is_local:
             try:
-                from ssh_manager import SSHManager
-                ssh = SSHManager(m["ip"], m["username"], m["password"], port=m.get("port", 22))
-                reachable = ssh.is_reachable()
+                agent_client.health(m, timeout=4)
+                reachable = True
             except Exception:
                 reachable = False
             if not reachable:

@@ -9,7 +9,6 @@ csv rows either way.
 """
 import subprocess
 
-from ssh_manager import SSHManager
 import local_node
 import gpu_vendor
 import agent_client
@@ -358,125 +357,69 @@ def collect_macos(ssh, machine=None):
 
 
 def _agent_stats(machine):
-    """Full stats via the peer agent, or None when it is unavailable."""
-    if not agent_client.should_use_agent(machine):
-        return None
+    """Full stats via the peer agent (the only remote transport)."""
     try:
         s = agent_client.metrics(machine)
-    except Exception as e:
-        if agent_client.transport(machine) == "agent":
-            return _empty(machine.get("os", "linux"))
-        print(f"[agent] {machine['name']}: metrics failed, falling back to SSH: {e}")
-        return None
+    except Exception:
+        return _empty(machine.get("os", "linux"))
     if not isinstance(s, dict) or s.get("status") != "online":
         return _empty(machine.get("os", "linux"))
     return s
 
-
 def machine_stats_light(machine):
-    """Fast reachability-only stats for the overview (no SSH collection).
-    Returns identity + online/offline + rpc state, with empty gpus/cpu/ram.
-    The detail modal calls machine_stats() for the full picture on demand."""
+    """Fast reachability-only stats for the overview (no metrics collect).
+    Remote machines are asked over the peer agent; local uses process probes."""
     machine_os = machine.get("os", "linux")
     is_local = local_node.is_local(machine)
-    if not is_local and agent_client.should_use_agent(machine):
-        try:
-            st = agent_client.status(machine)
-            s = _empty(machine_os)
-            s["status"] = "online" if st.get("rpc_running") or st.get(
-                "llama_running") or st.get("swap_running") else "online"
-            return {**s, "name": machine["name"], "ip": machine["ip"],
-                    "os": machine_os, "is_local": False,
-                    "is_master": machine.get("role") == "master",
-                    "rpc_running": bool(st.get("rpc_running")),
-                    "rdma": bool(machine.get("rdma")),
-                    "rdma_cm": bool(machine.get("rdma_cm")),
-                    "transport": machine.get("transport") or "auto",
-                    "connection": "agent"}
-        except Exception:
-            pass
-    # rpc_running = any ggml-rpc-server process (per-model ports mean the
-    # base port alone is no longer a reliable signal)
-    import rpc_manager
+    s = _empty(machine_os)
     rpc = False
+    online = False
     if is_local:
+        import rpc_manager
         rpc = rpc_manager._any_rpc_running_local(machine)
+        online = True
     else:
         try:
-            ssh = SSHManager(
-                machine["ip"], machine["username"], machine["password"],
-                port=machine.get("port", 22),
-            )
-            reachable = ssh.is_reachable()
-            rpc = rpc_manager._any_rpc_running_remote(machine, ssh) if reachable else False
+            st = agent_client.status(machine)
+            online = True
+            rpc = bool(st.get("rpc_running"))
         except Exception:
-            reachable = False
-            rpc = False
-    s = _empty(machine_os)
-    s["status"] = "online" if (is_local or rpc) else "offline"
+            online = False
+    s["status"] = "online" if online else "offline"
     return {**s, "name": machine["name"], "ip": machine["ip"],
             "os": machine_os, "is_local": is_local,
             "is_master": machine.get("role") == "master",
             "rpc_running": rpc,
             "rdma": bool(machine.get("rdma")),
             "rdma_cm": bool(machine.get("rdma_cm")),
-            "transport": machine.get("transport") or "auto",
-            "connection": ("local" if is_local else
-                           "agent" if agent_client.should_use_agent(machine)
-                           else "ssh")}
-
+            "transport": "agent",
+            "connection": "local" if is_local else "agent"}
 
 def machine_stats(machine):
-    """Collect full stats for one machine config dict, ready for the
-    dashboard: health + gpus + cpu/ram + identity (local/master/rpc)."""
+    """Collect full stats for one machine, ready for the dashboard."""
     machine_os = machine.get("os", "linux")
     is_local = local_node.is_local(machine)
-    s = None
-    if not is_local:
+    if is_local:
+        try:
+            s = collect_local(machine_os, machine)
+        except Exception:
+            s = _empty(machine_os)
+    else:
         s = _agent_stats(machine)
-    try:
-        if s is None:
-            if is_local:
-                s = collect_local(machine_os, machine)
-            else:
-                ssh = SSHManager(
-                    machine["ip"], machine["username"], machine["password"],
-                    port=machine.get("port", 22),
-                )
-                if machine_os == "windows":
-                    s = collect_windows(ssh, machine)
-                elif machine_os == "macos":
-                    s = collect_macos(ssh, machine)
-                else:
-                    s = collect_linux(ssh, machine)
-    except Exception:
-        s = _empty(machine_os)
     import rpc_manager
     if is_local:
         rpc = rpc_manager._any_rpc_running_local(machine)
-    elif agent_client.should_use_agent(machine):
-        try:
-            rpc = bool(agent_client.status(machine).get("rpc_running"))
-        except Exception:
-            rpc = False
     else:
         try:
-            ssh = SSHManager(
-                machine["ip"], machine["username"], machine["password"],
-                port=machine.get("port", 22),
-            )
-            rpc = rpc_manager._any_rpc_running_remote(machine, ssh)
+            rpc = bool(agent_client.status(machine).get("rpc_running"))
         except Exception:
             rpc = False
     return {**s, "name": machine["name"], "ip": machine["ip"],
             "os": machine_os, "is_local": is_local,
             "is_master": machine.get("role") == "master",
             "rpc_running": rpc,
-            "transport": machine.get("transport") or "auto",
-            "connection": ("local" if is_local else
-                           "agent" if agent_client.should_use_agent(machine)
-                           else "ssh")}
-
+            "transport": "agent",
+            "connection": "local" if is_local else "agent"}
 
 def cluster_totals(stats_list):
     """Aggregate totals across machines, like ssh-watch's compute_totals."""
