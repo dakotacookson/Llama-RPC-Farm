@@ -816,6 +816,7 @@ def test_install_more_paths(monkeypatch, tmp_path):
 
 def test_service_more_paths(monkeypatch, tmp_path):
     from llama_peer_agent import service as sv
+    monkeypatch.setattr(sv.Path, "home", lambda: tmp_path)
     c = AgentConfig(token="t", file_roots=[str(tmp_path)])
     monkeypatch.setattr(sv.shutil, "which", lambda n: "")
     with pytest.raises(sv.AgentServiceError):

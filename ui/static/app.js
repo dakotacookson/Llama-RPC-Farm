@@ -5838,7 +5838,7 @@ async function loadLaunch() {
           </label>`;}).join("") || '<span class="hint">no servers configured — set them in the Models tab</span>'}
       </div>
       <div class="launch-ready-hint"></div>
-      <label class="auto-refresh">Port <input type="number" value="8080" class="port-input" data-model="${escHtml(m.model_id)}"></label>
+      <label class="auto-refresh">Port <input type="number" value="8081" class="port-input" data-model="${escHtml(m.model_id)}"></label>
       <label class="auto-refresh">Run on <select class="run-on-select" data-model="${escHtml(m.model_id)}">
         ${cardServers.map(s => `<option value="${escHtml(s)}">${escHtml(s)}${(machines.find(x => x.name===s)||{}).role === "master" ? " (master)" : ""}</option>`).join("")}
       </select></label>
@@ -5908,7 +5908,7 @@ async function loadLaunch() {
         loadLaunch();
         return;
       }
-      const port = parseInt(card.querySelector(".port-input").value, 10) || 8080;
+      const port = parseInt(card.querySelector(".port-input").value, 10) || 8081;
       const runOn = card.querySelector(".run-on-select");
       const modeSel = card.querySelector(".launch-mode-select");
       const mode = modeSel ? modeSel.value : "auto";
@@ -5927,9 +5927,10 @@ async function loadLaunch() {
         const r = await api("POST", "/api/launch", body);
         const ok = !r.failed;
         const livePort = r.port || port;
+        const liveHost = r.master || masterName || servers[0] || "?";
         const steps = r.steps.map(s => `${s.step}: ${s.error ? "ERR " + s.error : (s.running !== undefined ? (s.running ? "up" : "DOWN") : (s.killed !== undefined ? (s.killed ? "cleared" : "STUCK") : "?"))}`).join("\n");
         const rolledNote = r.port_rolled ? ` (port ${port} busy — moved to ${livePort})` : "";
-        toast(ok ? `Launched ${mid}${variant?` (${variant})`:``} on :${livePort}${rolledNote}: ${steps}` : `Launch failed: ${steps}`, ok ? "ok" : "bad", 10000);
+        toast(ok ? `Launched ${mid}${variant?` (${variant})`:``} on ${liveHost}:${livePort}${rolledNote}: ${steps}` : `Launch failed: ${steps}`, ok ? "ok" : "bad", 10000);
         const portInput = card.querySelector(".port-input");
         if (r.port_rolled && portInput) portInput.value = livePort;
         loadLaunch();
@@ -5948,7 +5949,7 @@ async function loadLaunch() {
       const card = btn.closest(".launch-card");
       const mid = card.dataset.model;
       const servers = [...card.querySelectorAll("input[type=checkbox]:checked")].map(cb => cb.value);
-      const port = parseInt(card.querySelector(".port-input").value, 10) || 8080;
+      const port = parseInt(card.querySelector(".port-input").value, 10) || 8081;
       const runOn = card.querySelector(".run-on-select");
       btn.disabled = true; btn.textContent = "stopping...";
       try {

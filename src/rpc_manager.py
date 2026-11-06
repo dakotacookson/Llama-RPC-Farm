@@ -458,8 +458,7 @@ def stop_rpc(machine_name, port=None, use_agent=True):
     else:
         # stop+disable the systemd unit FIRST: it has Restart=always, so a
         # bare pkill just gets resurrected. Then pkill the stragglers.
-        run("systemctl --user stop llama-swap 2>/dev/null; "
-            "systemctl --user disable llama-swap 2>/dev/null; true")
+        run("systemctl --user stop llama-swap 2>/dev/null; true")
         # one pkill pass over all three, ordered; 1 = nothing matched is fine
         user = (machine.get("username") or "").strip()
         uspec = f"-u {user} " if user else ""  # local master: no -u
@@ -2942,8 +2941,14 @@ def launch_model(model_id, servers, port=8080, variant=None, master_name=None,
             model["tensor_split_mode"] = "auto"
             model["tensor_split"] = ""
         peers = []
-    report = {"model_id": model_id, "steps": [], "port": port}
-    steps = [(f"stop:{master['name']}", stop_rpc, master["name"])]
+    report = {"model_id": model_id, "steps": [], "port": port,
+              "master": master["name"]}
+    # Clear only THIS model's previous llama-server on the requested live
+    # port. Never call stop_rpc() with no port here: that is the legacy
+    # stop-everything path and kills/disables llama-swap (which then frees
+    # :8080 for llama-server and breaks serving/reboot).
+    steps = [(f"stop:{master['name']}", stop_llama_server_port,
+              master["name"], port)]
     # Per-(model,peer,GROUP) ports — each co-served model gets its own
     # single-client rpc-server per backend GROUP: one server for all
     # selected accelerators, a separate server for the CPU/RAM backend
