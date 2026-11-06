@@ -5759,11 +5759,14 @@ async function loadSwap() {
 
 async function loadLaunch() {
   loadSwap();
-  const [models, machines, swapLoaded] = await Promise.all([
+  const [models, machines, swapLoaded, embModels] = await Promise.all([
     api("GET", "/api/models"), api("GET", "/api/machines"),
     api("GET", "/api/swap/loaded").catch(() => ({ loaded: [] })),
+    api("GET", "/api/embeddings/models").catch(() => []),
   ]);
   const loadedSet = new Set((swapLoaded && swapLoaded.loaded) || []);
+  const embSet = new Set((embModels || []).map(m => m.model_id));
+  const decSet = new Set(models.filter(m => m.decision_type).map(m => m.model_id));
   // vLLM mode: per-model launch cards (configured options + Load/Evict)
   // live in #vllm-launch-view — the llama.cpp RPC grid below stays hidden
   // via the rpc_launch panel gate. Same card idiom, vLLM vocabulary.
@@ -5904,16 +5907,52 @@ async function loadLaunch() {
       const mid = card.dataset.model;
       const variant = card.dataset.variant || "";
       const key = variant ? `${mid}--${variant}` : mid;
+      const base = `http://${window.location.hostname}:8090`;
+      const headers = {"Content-Type": "application/json"};
+      if (_accessKey) headers["Authorization"] = `Bearer ${_accessKey}`;
       btn.disabled = true; btn.textContent = "loading…";
       try {
-        // Same method as the client API: refresh llama-swap's config from
-        // the model configs, then load through llama-swap (:8080/:8090).
+        // Ensure llama-swap has the current model config, then call the
+        // REAL API exactly like a client would (same endpoints the Chat /
+        // Tests tabs use) — no server-side warmup imitation.
         await api("POST", "/api/swap/push");
-        // llama-swap --watch-config polls every 2s; give it a beat so the
-        // freshly pushed entry exists before the warmup request.
-        await new Promise(res => setTimeout(res, 2300));
-        const r = await api("POST", `/api/swap/load/${encodeURIComponent(key)}`);
-        toast(`Serving ${key} via llama-swap: ${r.ok ? "loaded" : "started"}`, "ok", 8000);
+        await new Promise(res => setTimeout(res, 2300)); // watch-config poll
+        let path, payload;
+        if (decSet.has(mid)) {
+          path = "/v1/systemone";
+          payload = { model: key, state: "warmup",
+                      questions: { route: { type: "choice",
+                        instructions: "Pick one",
+                        criteria: { yes: 1, no: 2 } } } };
+        } else if (embSet.has(mid)) {
+          path = "/v1/embeddings";
+          payload = { model: key, input: "hi" };
+        } else {
+          path = "/v1/chat/completions";
+          payload = { model: key, max_tokens: 1,
+                      messages: [{ role: "user", content: "hi" }] };
+        }
+        const r = await fetch(base + path, {
+          method: "POST", credentials: "include", headers,
+          body: JSON.stringify(payload),
+        });
+        let detail = "";
+        if (!r.ok) {
+          try { detail = (await r.json())?.error?.message || `HTTP ${r.status}`; }
+          catch (_) { detail = `HTTP ${r.status}`; }
+        }
+        // A decision/embedding warmup may return a non-2xx while still
+        // loading the model; confirm against swap's loaded list.
+        let loaded = false;
+        for (let i = 0; i < 40; i++) {
+          await new Promise(res => setTimeout(res, 500));
+          try {
+            const l = await api("GET", "/api/swap/loaded");
+            if ((l.loaded || []).includes(key)) { loaded = true; break; }
+          } catch (_) { /* keep polling */ }
+        }
+        if (!loaded && !r.ok) throw new Error(detail);
+        toast(`Loaded ${key} via the farm API (:8090)`, "ok", 8000);
         loadLaunch();
       } catch (err) {
         const hint = card.querySelector(".launch-ready-hint");
