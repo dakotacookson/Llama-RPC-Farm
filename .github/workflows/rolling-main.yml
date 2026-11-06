@@ -239,6 +239,8 @@ jobs:
           fi
           [ -s changes.md ] || echo "- No new commits since the previous rolling build." > changes.md
 
+          export REPO SHA COMPARE
+
           python3 - <<'PY'
           import datetime, os, pathlib
           version = os.environ["VERSION"]
