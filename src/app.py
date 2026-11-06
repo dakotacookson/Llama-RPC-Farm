@@ -1230,6 +1230,16 @@ def hw_watch_once():
 def _hw_watcher_loop():
     while _hw_watcher_state["running"]:
         try:
+            # MAC-based IP healing: the agent's UDP responder reports its
+            # current addresses, so DHCP re-leases fix themselves.
+            import discovery
+            healed = discovery.reconcile_machine_ips()
+            if healed:
+                print("[ip-sync] updated: " + ", ".join(
+                    f"{n} {o}->{i}" for n, o, i in healed))
+        except Exception as e:
+            print(f"[ip-sync] reconcile failed: {e}")
+        try:
             res = hw_watch_once()
             if res["changed"]:
                 print(f"[hw-watcher] hardware changed on: {res['changed']}"
@@ -3676,8 +3686,10 @@ async def get_settings():
     try:
         import secrets_vault as _vault
         defaults["hf_token_set"] = _vault.hf_token_set() or bool(token.strip())
+        defaults["farm_agent_token_set"] = _vault.farm_agent_token_set()
     except Exception:
         defaults["hf_token_set"] = bool(token.strip())
+        defaults["farm_agent_token_set"] = False
     # UI field manifest (AUDIT-T6 §1.5, DEC-02) — the complete
     # engine-owned inventory the frontend renders from. The legacy
     # ui_hints view rides along DEPRECATED (its last JS consumer is the
@@ -3698,6 +3710,8 @@ class AppSettingsIn(pydantic.BaseModel):
     theme_mode: str = "dark"
     hf_token: str | None = None  # only a non-empty value updates the stored token
     clear_hf_token: bool = False
+    farm_agent_token: str | None = None  # shared by all agents when set
+    clear_farm_agent_token: bool = False
     engine: str | None = None  # llama_cpp | vllm — None leaves the stored value
     vllm: dict | None = None  # partial block; merged over the stored one
 
@@ -3794,7 +3808,9 @@ async def save_settings(s: AppSettingsIn, r: Request):
         or access.is_admin(None)
     _key_name_for_ui = access.key_display_name()
     if not _control_identity and (s.engine is not None or s.vllm is not None
-                                  or s.hf_token or s.clear_hf_token):
+                                  or s.hf_token or s.clear_hf_token
+                                  or s.farm_agent_token
+                                  or s.clear_farm_agent_token):
         raise HTTPException(404, "not found")
     # merge over the CURRENT FILE so unknown/future keys survive the write;
     # loaded via the comment-preserving persister (B9c) — a plain
@@ -3804,6 +3820,8 @@ async def save_settings(s: AppSettingsIn, r: Request):
     update = s.model_dump()
     tok = (update.pop("hf_token", None) or "").strip()
     clear_tok = update.pop("clear_hf_token", False)
+    farm_tok = (update.pop("farm_agent_token", None) or "").strip()
+    clear_farm_tok = update.pop("clear_farm_agent_token", False)
     engine = update.pop("engine", None)
     vllm_in = update.pop("vllm", None)
     # per-key UI state: scoped identities write theme_family/theme_mode
@@ -3869,6 +3887,10 @@ async def save_settings(s: AppSettingsIn, r: Request):
         _vault.set_hf_token("")
     elif tok:
         _vault.set_hf_token(tok)
+    if clear_farm_tok:
+        _vault.set_farm_agent_token("")
+    elif farm_tok:
+        _vault.set_farm_agent_token(farm_tok)
     # don't echo the raw token back; write via the comment-preserving
     # persister (B9c) so unrelated keys, key order, and all comments
     # survive — never a wholesale rewrite from the request dict
@@ -3883,6 +3905,7 @@ async def save_settings(s: AppSettingsIn, r: Request):
     out = dict(current)
     out.pop("hf_token", None)  # response-only: never echoed
     out["hf_token_set"] = _vault.hf_token_set()
+    out["farm_agent_token_set"] = _vault.farm_agent_token_set()
     if engine_changed:
         # Engine flip: the running daemons still serve the OLD engine's
         # configs/scripts. Full restart (same as /api/restart) — but the

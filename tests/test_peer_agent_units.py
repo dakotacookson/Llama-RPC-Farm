@@ -1157,3 +1157,23 @@ def test_processes_stop_and_log_errors(monkeypatch, tmp_path):
     # port open invalid
     with pytest.raises(p.AgentProcessError):
         p.port_open("x")
+
+
+def test_discovery_payload_includes_hardware(monkeypatch):
+    """UDP discovery carries hardware so a discovered agent prefills the form."""
+    from llama_peer_agent import discovery, processes
+
+    monkeypatch.setattr(processes, "info",
+                        lambda c: {"mac": "de:ad:be:ef:12:34",
+                                   "agent_port": 8198})
+    monkeypatch.setattr(metrics, "collect", lambda: {
+        "gpus": [{"name": "NVIDIA GeForce RTX 4090", "mem_total_gb": 24}],
+        "ram_total_gb": 64, "cores": 16})
+    discovery._hw_cache.update({"ts": 0.0, "data": {}})
+    body = discovery.payload(None)
+    hw = body["hardware"]
+    assert hw["gpu_vendor"] == "nvidia"
+    assert hw["gpu_names"] == ["NVIDIA GeForce RTX 4090"]
+    assert hw["vram_total_gb"] == 24
+    assert hw["ram_total_gb"] == 64
+    assert body["mac"] == "de:ad:be:ef:12:34"

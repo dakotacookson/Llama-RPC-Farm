@@ -2270,6 +2270,7 @@ function discoveredFill(h) {
     os: h.os || "linux",
     gpu_vendor: h.gpu_vendor || "nvidia",
     gpu: (h.gpus || []).length ? h.gpus.map((g, i) => `${pref}${i}`).join(",") : "",
+    ram_total_gb: h.ram_total_gb || null,
   }, false);  // suggested name, but still a NEW machine — keep wizard visible
   if (orig) $("#machine-original-name").value = orig;
   wizForceWizard = fw;
@@ -7050,6 +7051,14 @@ async function loadSettings() {
         ? "Token saved — gated models will use it. Paste a new one to replace."
         : "Not set — gated downloads will 401.";
     }
+    const ftok = $("#set-farm-agent-token");
+    if (ftok) ftok.value = "";
+    const fhint = $("#set-farm-agent-token-hint");
+    if (fhint) {
+      fhint.textContent = s.farm_agent_token_set
+        ? "Farm token saved — discovered agents using it verify automatically."
+        : "Not set — per-machine tokens are used.";
+    }
     appSettings = s;
     applyEngineHints(s);
     if (s.theme_family && !localStorage.getItem("ui-theme-family")) {
@@ -7074,6 +7083,8 @@ on("#set-save", "click", async (e) => {
     // only send the token when the user typed one — empty keeps the saved one
     const tok = $("#set-hf-token")?.value.trim();
     if (tok) payload.hf_token = tok;
+    const ftok = $("#set-farm-agent-token")?.value.trim();
+    if (ftok) payload.farm_agent_token = ftok;
     // engine + vllm block; the backend merges the partial vllm dict over
     // the stored one, so only keys the UI owns are sent
     const engSel = $("#set-engine");
@@ -7128,7 +7139,15 @@ on("#set-save", "click", async (e) => {
     }
     const tokInput = $("#set-hf-token");
     if (tokInput) tokInput.value = "";
-    box.innerHTML = `<p class="status-ok">Defaults saved${tok ? " (HF token updated)." : "."}</p>`;
+    const fHint = $("#set-farm-agent-token-hint");
+    if (fHint) {
+      fHint.textContent = saved.farm_agent_token_set
+        ? "Farm token saved — discovered agents using it verify automatically."
+        : "Not set — per-machine tokens are used.";
+    }
+    const fInput = $("#set-farm-agent-token");
+    if (fInput) fInput.value = "";
+    box.innerHTML = `<p class="status-ok">Defaults saved${tok ? " (HF token updated)." : "."}${ftok ? " (farm agent token updated)." : ""}</p>`;
     toast("Defaults saved", "ok");
   } catch (err) {
     box.innerHTML = `<p class="status-bad">${escHtml(err.message)}</p>`;
@@ -7137,6 +7156,22 @@ on("#set-save", "click", async (e) => {
   btn.disabled = false; btn.textContent = "Save defaults";
 });
 
+on("#set-farm-agent-token-toggle", "click", () => {
+  const inp = $("#set-farm-agent-token");
+  if (inp) inp.type = inp.type === "password" ? "text" : "password";
+});
+on("#set-farm-agent-token-clear", "click", async (e) => {
+  e.currentTarget.disabled = true;
+  try {
+    const saved = await api("POST", "/api/settings", { clear_farm_agent_token: true });
+    const hint = $("#set-farm-agent-token-hint");
+    if (hint) hint.textContent = saved.farm_agent_token_set
+      ? "Farm token saved."
+      : "Not set — per-machine tokens are used.";
+    toast(saved.farm_agent_token_set ? "Farm token cleared" : "No farm token was saved", saved.farm_agent_token_set ? "warn" : "ok");
+  } catch (err) { toast(err.message, "bad"); }
+  e.currentTarget.disabled = false;
+});
 on("#set-hf-token-toggle", "click", () => {
   const inp = $("#set-hf-token");
   if (!inp) return;

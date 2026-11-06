@@ -119,12 +119,18 @@ def discover_agents(port=8199, timeout=2.0, include_known=True):
         ip = a.get("ip")
         if not ip or (not include_known and ip in known):
             continue
+        hw = a.get("hardware") or {}
         results.append({
             "ip": ip, "port": 0, "ssh_port_open": False,
             "ping_alive": None, "banner": None, "os": a.get("os"),
             "ssh_ok": False, "auth_failed": False,
-            "hostname": a.get("hostname"), "gpus": [],
-            "gpu_vendor": None, "username": None,
+            "hostname": a.get("hostname"),
+            "gpus": hw.get("gpu_names") or [],
+            "gpu_vendor": hw.get("gpu_vendor") or None,
+            "ram_total_gb": hw.get("ram_total_gb"),
+            "cores": hw.get("cores"),
+            "vram_total_gb": hw.get("vram_total_gb"),
+            "username": None,
             "mac": a.get("mac", ""), "mac_ip": ip,
             "already_added": ip in known,
             "agent": True, "agent_port": a.get("agent_port"),
@@ -141,3 +147,46 @@ def discover_agents(port=8199, timeout=2.0, include_known=True):
 def discover(subnet=None, include_known=True, **_kwargs):
     """Compatibility shim: discovery is agent-only."""
     return discover_agents(include_known=include_known)
+
+
+def reconcile_machine_ips():
+    """Agent UDP discovery -> config IP healing.
+
+    The MAC is the stable identity; the agent's UDP responder reports its
+    current addresses. When a configured machine's stored MAC shows up at
+    a different IP, update machines.yaml in place and return the changes.
+    Only machines with a stored MAC are touched (same safety rule as the
+    legacy ARP path); the local master is never rewritten.
+    """
+    import config_loader as cfg
+    import local_node
+    try:
+        found = discover_agents(include_known=True).get("results") or []
+    except Exception:
+        return []
+    by_mac = {}
+    for a in found:
+        mac = _normalize_mac(a.get("mac"))
+        ip = (a.get("ip") or "").strip()
+        if mac and ip:
+            by_mac[mac] = ip
+    changed = []
+    for m in cfg.machines.all():
+        try:
+            if local_node.is_local(m):
+                continue
+        except Exception:
+            pass
+        mac = _normalize_mac(m.get("mac"))
+        new_ip = by_mac.get(mac)
+        old_ip = (m.get("ip") or "").strip()
+        if not new_ip or new_ip == old_ip:
+            continue
+        try:
+            cfg.machines.update(m.get("name") or m.get("id"), {"ip": new_ip})
+            changed.append((m.get("name"), old_ip, new_ip))
+            print(f"[ip-sync] {m.get('name')}: {old_ip} -> {new_ip} "
+                  f"(agent MAC {mac})")
+        except Exception:
+            pass
+    return changed

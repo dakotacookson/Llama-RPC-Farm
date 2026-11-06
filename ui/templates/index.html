@@ -1250,7 +1250,17 @@ technical | bugs, errors, login problems</textarea></label>
               <small class="hint" id="set-hf-token-hint">Not set — gated downloads will 401.</small>
             </label>
           </div>
-          <p class="hint" style="margin:-8px 0 10px">Saved to <code>config/settings.yaml</code> as <code>hf_token</code> (or set <code>HF_TOKEN</code> env). Needed only after you've clicked “Agree and access repository” on the gated HF page.</p>
+          <p class="hint" style="margin:-8px 0 10px">Saved to <code>config/settings.yaml</code> as <code>hf_token</code> (or set <code>HF_TOKEN</code> env). Needed only after you've clicked “Agree and access repository” on the gated HF page.</p>          <div class="row">
+            <label class="wide">Farm agent token (shared by all peers)
+              <div style="display:flex;gap:6px;align-items:center">
+                <input id="set-farm-agent-token" type="password" placeholder="one token for every agent" autocomplete="off">
+                <button type="button" class="small" id="set-farm-agent-token-toggle" title="Show/hide token"><i class="fa-solid fa-eye"></i></button>
+                <button type="button" class="small danger" id="set-farm-agent-token-clear" title="Remove the saved farm token">Clear</button>
+              </div>
+              <small class="hint" id="set-farm-agent-token-hint">Not set — per-machine tokens are used.</small>
+            </label>
+          </div>
+          <p class="hint" style="margin:-8px 0 10px">When set, every discovered/new agent verifies automatically if it uses the same token. Stored encrypted in the vault, never in YAML.</p>
         <div data-engine="llama_cpp">
         <div class="row" style="margin-top:12px">
           <button id="install-open-modal" class="small" style="width:100%;background:var(--accent-dim);color:var(--accent);border:2px solid var(--accent);padding:8px;font-size:13px;font-weight:550;border-radius:var(--r-md);"><i class="fa-solid fa-download" style="margin-right:6px"></i>Run installer…</button>
