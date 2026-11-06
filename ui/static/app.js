@@ -7191,7 +7191,7 @@ async function loadToolStatus() {
   panel.innerHTML = '<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> probing…</p>';
   try {
     const v = await api("GET", "/api/tools/verify");
-    const order = [["llama.cpp", "llama.cpp"], ["llama-swap", "llama-swap"], ["vllm", "vLLM"]];
+    const order = [["llama.cpp", "llama.cpp"], ["llama-swap", "llama-swap"], ["vllm", "vLLM"], ["sshpass", "sshpass (SSH transport)"]];
     panel.innerHTML = order.map(([key, label]) => {
       const e = v[key] || {};
       const ok = e.found;

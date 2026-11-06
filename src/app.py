@@ -5327,6 +5327,10 @@ async def tools_verify():
         p, ver = venv_bin, (installer_probe._version_from_output(
             r.stdout + " " + r.stderr) if r.ok else None)
     out["vllm"] = _entry(p, p, ver, "0.30.0", venv_bin)
+    # sshpass — system binary, master-only, used by generated scripts in
+    # SSH transport. Agent transport works without it.
+    sp = shutil.which("sshpass")
+    out["sshpass"] = _entry(sp, sp, None, "optional (SSH transport)", None)
     return out
 
 

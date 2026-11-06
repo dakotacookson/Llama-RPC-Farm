@@ -410,11 +410,15 @@ def test_tools_verify_shape_and_not_found(client, settings_file, monkeypatch):
     r = client.get("/api/tools/verify")
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body) == {"llama.cpp", "llama-swap", "vllm"}
+    assert set(body) == {"llama.cpp", "llama-swap", "vllm", "sshpass"}
     for tool, entry in body.items():
         assert set(entry) == {"found", "path", "version", "expected",
                               "configured"}, (tool, entry)
-        assert entry["found"] is False, (tool, entry)
+    # tool probes are pinned to the empty tmp HOME; sshpass comes from PATH
+    # (optional system binary) so only the three engines are asserted absent.
+    for tool in ("llama.cpp", "llama-swap", "vllm"):
+        assert body[tool]["found"] is False, (tool, body[tool])
+    assert body["sshpass"]["expected"] == "optional (SSH transport)"
     assert body["llama.cpp"]["configured"] is None
     assert body["vllm"]["expected"] == "0.30.0"
     assert body["llama-swap"]["expected"] == "255+"

@@ -9,7 +9,8 @@ Nothing outside the project folder is ever modified.
 | Where you need it | Requirement |
 |---|---|
 | Master (this app's box) | Python 3.11+, a terminal, network reach to every peer (Tailscale or LAN) |
-| Master (Linux) | `sshpass` only for SSH bootstrap/fallback and the SSH speed probe (`sudo apt install -y sshpass`) |
+| Master (Linux) | `sshpass` only for SSH transport (bootstrap/fallback + generated scripts that SSH to peers). The `.deb` declares it as a dependency; source installs: `sudo apt install -y sshpass` |
+| Master (Windows/macOS) | Prefer the peer-agent transport; it needs no `sshpass`. macOS SSH transport: `brew install hudochenkov/sshpass/sshpass` |
 | Peers | Either the peer agent (recommended) or an OpenSSH server/account for SSH mode |
 | Models | llama.cpp `llama-server` built (or installed later via the UI) + GGUF files on a shared path |
 | Serving clients | Any OpenAI-compatible client (opencode, SillyTavern, curl, …) |

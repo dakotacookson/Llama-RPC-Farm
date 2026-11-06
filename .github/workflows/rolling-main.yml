@@ -73,6 +73,7 @@ jobs:
           Section: utils
           Priority: optional
           Architecture: amd64
+          Depends: sshpass
           Maintainer: Llama RPC Farm contributors
           Description: Web UI and cluster manager for llama.cpp RPC farms
           EOF
