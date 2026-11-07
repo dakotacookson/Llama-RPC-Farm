@@ -54,9 +54,8 @@ def client(settings_file):
 
 # ---------------- GET /api/tools/verify ------------------------------------
 # NOTE (UX-3 merge): the per-machine verify shape ({machines: {...}}) was
-# superseded by the per-tool local probe ({llama.cpp, llama-swap, vllm})
-# — the shape the Settings-tab tool panel consumes. Covered in
-# test_engine_endpoints.py (shape + settings-record tests).
+# superseded by the per-tool local probe ({llama.cpp, llama-swap})
+# — the shape the Settings-tab tool panel consumes.
 
 
 # ---------------- POST /api/tools/install/sync -----------------------------

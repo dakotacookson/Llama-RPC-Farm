@@ -1,6 +1,6 @@
 """llama.cpp uninstaller: removes ONLY what llamacpp_installer created.
 
-Mirrors the B12 uninstaller contract (vllm_uninstaller.py) — run on ONE
+Mirrors the installer's uninstall contract — run on ONE
 machine (local or over SSH), produce a steps.run_steps report, and never
 damage the node (card t_df5839d3's core safety property: "a failed
 install must never brick the machine" — and a cleanup must never damage
@@ -40,7 +40,44 @@ import local_node
 from steps import run_steps
 
 from llamacpp_installer import DEST_POSIX, DEST_WIN, _win_fw_remove_ps
-from vllm_installer import _finish, _make_runner
+
+
+def _make_runner(machine):
+    """run(cmd, timeout) -> (exit_code, combined output): local bash or
+    SSH. Remote machines are agent-only (use the peer agent)."""
+    is_local = local_node.is_local(machine)
+
+    def run(cmd, timeout=60):
+        if is_local:
+            import subprocess
+            proc = subprocess.run(["bash", "-c", cmd], capture_output=True,
+                                  text=True, timeout=timeout)
+            return proc.returncode, proc.stdout + proc.stderr
+        raise RuntimeError("remote uninstall is agent-only; use the peer agent")
+
+    return run
+
+
+def _finish(report):
+    """Roll the step report up into ok/failed/detail (run_steps semantics:
+    an 'error' key, a truthy 'failed' key, or a falsy killed/running/valid
+    flag marks the failing step)."""
+    failed_step = next((s for s in report.get("steps", [])
+                        if s.get("error") or s.get("failed")
+                        or any(s.get(k) is False
+                               for k in ("killed", "running", "valid"))),
+                       None)
+    report["failed"] = bool(report.get("failed")) or failed_step is not None
+    report["ok"] = not report["failed"]
+    if failed_step and not report.get("detail"):
+        report["detail"] = (failed_step.get("error")
+                            or failed_step.get("detail")
+                            or f"step {failed_step.get('step')} failed")
+    if not report.get("detail"):
+        report["detail"] = ("skipped (already present)"
+                            if report.get("skipped")
+                            else "install complete")
+    return report
 
 GUARD_TOKEN = "llama.cpp"   # the installer's directory name
 
@@ -116,7 +153,7 @@ def _dq(p):
 
 def _shellpath(p):
     """Settings path safe for a bash -c script: a leading ~ becomes $HOME
-    (verbatim from vllm_uninstaller so both sides expand identically)."""
+    (kept identical to the installer so both sides expand the same)."""
     p = (p or "").strip()
     if p == "~":
         return "$HOME"
@@ -209,7 +246,7 @@ def _fw_rules_remove(run, is_posix):
     if is_posix:
         return {"detail": "no firewall rules on this OS "
                           "(installer creates them on Windows only)"}
-    # run comes from vllm_installer._make_runner (raw SSH): Windows
+    # run comes from _make_runner (raw SSH): Windows
     # peers' OpenSSH default shell is cmd.exe, so the PowerShell body
     # needs the explicit wrapper — same convention as rpc_manager.
     cmd = 'powershell -NoProfile -Command "' \
@@ -242,7 +279,7 @@ def uninstall(machine, log=None):
     """Uninstall llama.cpp from ONE machine — the inverse of install_on.
 
     Returns a steps report {machine, target, steps[], ok, failed,
-    detail}, same shape as the vLLM uninstaller's. The install dir is
+    detail}. The install dir is
     deleted ONLY when the path guard says it is farm-managed; a foreign
     llama_bin fails the run with the guard message and never deletes.
     """
@@ -289,5 +326,5 @@ def _finish_uninstall(report):
     return out
 
 
-# vllm_uninstaller contract name, for call-site symmetry.
+# uninstaller contract name, for call-site symmetry.
 uninstall_on = uninstall

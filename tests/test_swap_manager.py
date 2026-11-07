@@ -1,16 +1,12 @@
-"""Tests for swap_manager.generate() — the B3 vLLM branch (ARD
-t_76f3d1c0 §3.5) and the llama.cpp parity it must preserve.
+"""Tests for swap_manager.generate() and its llama.cpp behaviour.
 
-vllm mode emits thin per-model start scripts hosting the vllm serve /
-docker run command (cmdStop + /health probe on the entry, empty
-rpc_map, no RPC fan-out) instead of RPC wrapper scripts. Everything
-downstream of generate() is engine-agnostic. All IO (machines, model
-configs, engine settings) is faked — no network, no real config files,
-matching the approach of test_build_vllm_command.py.
+All IO (machines, model configs, engine settings) is faked — no
+network, no real config files.
 """
 import os
 import types
 
+import pytest
 import yaml
 
 import conftest
@@ -18,12 +14,6 @@ import config_loader as cfg
 import engine_registry
 import rpc_manager
 import swap_manager
-
-VENV_BLOCK = {"delivery": "venv", "venv_bin": "~/vllm-env/bin/vllm",
-              "docker_image": "vllm/vllm-openai:latest",
-              "default_gpu_memory_utilization": 0.9}
-DOCKER_BLOCK = dict(VENV_BLOCK, delivery="docker")
-
 
 def _machine(name, ip, **kw):
     m = {"name": name, "ip": ip, "username": "u", "password": "p",
@@ -41,10 +31,6 @@ def _model(mid="qwen3-8b", servers=None, **kw):
          # in launch_plan skips HF-format models in llama.cpp mode.
          "base_path": "/mnt/store/" + mid + ".gguf",
          "servers": servers if servers is not None else ["aibox1"]}
-    # DEC-08: launch reads only the native vllm: section; give every model
-    # a minimal non-empty one (cpu_offload_gb 0 emits no flag) unless a
-    # test overrides it via kw.
-    m.setdefault("vllm", {"cpu_offload_gb": 0})
     m.update(kw)
     return m
 
@@ -78,124 +64,7 @@ def _generate(monkeypatch, tmp_path, models, engine_settings,
     return swap_manager.generate(str(tmp_path / "config.yaml"), "aibox1")
 
 
-# ---------------- vllm mode: thin script entries (B3 checkpoint) ----------
-
-
-
-
-
-
-
-
-
-
-# ---------------- llama.cpp parity: branch adds nothing --------------------
-
-def test_llama_cpp_mode_keeps_rpc_wrapper(monkeypatch, tmp_path):
-    peer = _machine("aibox2", "10.0.0.2")
-    plan = _generate(monkeypatch, tmp_path,
-                     [_model(servers=["aibox1", "aibox2"],
-                             launch_mode="rpc")],
-                     {"engine": "llama_cpp"}, extra_machines=[peer])
-    entry = plan["entries"][0]
-    assert entry["mode"] == "script"
-    assert entry["rpc_map"]  # RPC ids exist in llama.cpp mode
-    emitted = yaml.safe_load(plan["yaml"])["models"]["qwen3-8b"]
-    # script-mode RPC deployments carry an explicit cmdStop so peer
-    # rpc-servers die even when the start-script EXIT trap is bypassed.
-    # It must be a pushed bash script (sources the sidecar) — a raw curl
-    # with ${AGENT_TOKEN_*} would be parsed by llama-swap as a macro.
-    assert emitted["cmdStop"].startswith('/bin/bash "')
-    stop_name = emitted["cmdStop"].split("/")[-1].strip('"')
-    stop_script = plan["_scripts"][stop_name]
-    assert "/rpc/stop" in stop_script and "swap-secrets.env" in stop_script
-    assert "AGENT_TOKEN_" in stop_script
-    script = plan["_scripts"]["start-qwen3-8b.sh"]
-    assert "--rpc" in script
-    assert "/rpc/ensure" in script
-    assert "sshpass" not in script
-    assert "vllm" not in script
-
-
-def test_missing_engine_key_defaults_to_llama_cpp(monkeypatch, tmp_path):
-    plan = _generate(monkeypatch, tmp_path, [_model()], {})
-    emitted = yaml.safe_load(plan["yaml"])["models"]["qwen3-8b"]
-    assert "cmdStop" not in emitted
-    assert "vllm" not in plan["_scripts"]["start-qwen3-8b.sh"]
-
-
-# ---------------- toggle never deletes/rewrites (ARD §8 risk 4) ------------
-
-def test_engine_toggle_never_touches_old_scripts_or_rpc_state(
-        monkeypatch, tmp_path):
-    """Toggling to vllm must not delete or rewrite existing generated
-    start-*.sh scripts or RPC state files: push_scripts writes only the
-    files the current plan contains."""
-    _wire(monkeypatch, tmp_path, [_model("new-model")],
-          {"engine": "vllm", "vllm": VENV_BLOCK})
-    with open(tmp_path / "swap-settings.yaml", "w", encoding="utf-8") as f:
-        yaml.safe_dump({"config_path": str(tmp_path / "config.yaml")}, f)
-    old_script = tmp_path / "start-old-model.sh"
-    old_script.write_text("#!/bin/bash\necho SENTINEL\n", encoding="utf-8")
-    rpc_state = tmp_path / "rpc.state.50052"
-    rpc_state.write_text("state\n", encoding="utf-8")
-
-    out = swap_manager.push_scripts()
-
-    written_names = {p.rsplit("/", 1)[-1] for p in out["written"]}
-    # DEC-03: engine-qualified FILE — vllm mode pushes config.vllm.yaml
-    # (sibling of llama.cpp's config.yaml, same dir) and never touches
-    # the other engine's file.
-    assert written_names == {"config.vllm.yaml", "start-new-model.sh"}
-    assert old_script.read_text(encoding="utf-8") == \
-        "#!/bin/bash\necho SENTINEL\n"
-    assert rpc_state.read_text(encoding="utf-8") == "state\n"
-
-
-# ---------------- DEC-13: swap push hardening (T2-G4/G8) ------------------
-
-def test_scripts_dir_is_per_engine_subdir(monkeypatch, tmp_path):
-    """T2-G8: generated scripts + sidecar land in swap/<engine>/ under the
-    config dir — the two engines' script files never collide, and cmd
-    paths inside the emitted yaml point at the subdir."""
-    plan = _generate(monkeypatch, tmp_path, [_model()],
-                     {"engine": "vllm", "vllm": VENV_BLOCK})
-    assert plan["scripts_dir"] == f"{plan['swap_dir']}/swap/vllm"
-    emitted = yaml.safe_load(plan["yaml"])["models"]["qwen3-8b"]
-    assert plan["scripts_dir"] in emitted["cmd"]
-    # llama_cpp mode gets its own subdir of the same dir
-    plan2 = _generate(monkeypatch, tmp_path, [_model()],
-                      {"engine": "llama_cpp"})
-    assert plan2["scripts_dir"] == f"{plan2['swap_dir']}/swap/llama_cpp"
-
-
-def test_push_scripts_aborts_on_unparseable_plan(monkeypatch, tmp_path):
-    """T2-G4: a plan whose yaml does not parse aborts the push with an
-    error BEFORE any file is written — the daemon never gets a dead
-    config."""
-    _wire(monkeypatch, tmp_path, [_model()],
-          {"engine": "llama_cpp"})
-    with open(tmp_path / "swap-settings.yaml", "w", encoding="utf-8") as f:
-        yaml.safe_dump({"config_path": str(tmp_path / "config.yaml")}, f)
-    old = tmp_path / "config.yaml"
-    old.write_text("models: {old: {cmd: old}}\n", encoding="utf-8")
-
-    def broken_plan(*a, **k):
-        return {"host": "aibox1", "swap_dir": str(tmp_path),
-                "abs_config": str(old), "yaml": "\t{ not yaml ][",
-                "_scripts": {}, "warnings": []}
-
-    monkeypatch.setattr(swap_manager, "launch_plan", broken_plan)
-    monkeypatch.setattr(swap_manager, "generate", broken_plan)
-
-    out = swap_manager.push_scripts()
-
-    assert "error" in out and "nothing written" in out["error"]
-    assert out.get("validated") is False
-    # original file untouched
-    with open(old, encoding="utf-8") as f:
-        assert f.read() == "models: {old: {cmd: old}}\n"
-
+# ================== DEC-03 (AUDIT-T6 §1.6): per-engine swap files =========
 
 def test_model_ttl_wired_into_swap_entry(monkeypatch, tmp_path):
     """T2-G4: deploy_model['ttl'] reaches the emitted swap entry (was
@@ -204,7 +73,7 @@ def test_model_ttl_wired_into_swap_entry(monkeypatch, tmp_path):
                      [_model("qwen3-8b", ttl=600),
                       _model("plain-model"),
                       _model("neg-model", ttl=-5)],
-                     {"engine": "vllm", "vllm": VENV_BLOCK})
+                     {"engine": "llama_cpp"})
     emitted = yaml.safe_load(plan["yaml"])["models"]
     assert emitted["qwen3-8b"]["ttl"] == 600
     assert emitted["plain-model"]["ttl"] == 0
@@ -213,8 +82,6 @@ def test_model_ttl_wired_into_swap_entry(monkeypatch, tmp_path):
     assert by_id["qwen3-8b"]["ttl"] == 600
     assert by_id["neg-model"]["ttl"] == 0
 
-
-# ================== DEC-03 (AUDIT-T6 §1.6): per-engine swap files =========
 
 
 def test_llama_cpp_generate_keeps_config_yaml(monkeypatch, tmp_path):
@@ -229,21 +96,6 @@ def test_llama_cpp_generate_keeps_config_yaml(monkeypatch, tmp_path):
     assert plan["abs_config"] == os.path.expanduser(
         "~/.config/llama-swap/config.yaml")
 
-
-
-def test_machine_swap_config_override_beats_global(monkeypatch, tmp_path):
-    """machines.yaml swap_config_path_vllm on the host machine wins over
-    the swap.yaml global (same shape as vllm_delivery) and stays verbatim."""
-    host = _machine("aibox1", "127.0.0.1", role="master",
-                    swap_config_path_vllm="~/mach/override.yaml")
-    _wire(monkeypatch, tmp_path, [_model()],
-          {"engine": "vllm", "vllm": VENV_BLOCK}, extra_machines=[host])
-    with open(tmp_path / "swap-settings.yaml", "w", encoding="utf-8") as f:
-        yaml.safe_dump({"config_path": "~/.config/llama-swap/config.yaml",
-                        "host_name": "aibox1"}, f)
-    plan = swap_manager.generate(None, "aibox1")
-    assert plan["abs_config"] == os.path.expanduser(
-        "~/mach/override.yaml")
 
 
 def test_machine_swap_config_override_llama_cpp(monkeypatch, tmp_path):
@@ -261,89 +113,10 @@ def test_machine_swap_config_override_llama_cpp(monkeypatch, tmp_path):
         "~/mach/lcpp.yaml")
 
 
-def test_machine_swap_config_override_bad_type_raises(monkeypatch, tmp_path):
-    """A non-string machine override raises on generate (never a silent
-    inherit pointing the daemon at the wrong file)."""
-    host = _machine("aibox1", "127.0.0.1", role="master",
-                    swap_config_path_vllm=5)
-    _wire(monkeypatch, tmp_path, [_model()],
-          {"engine": "vllm", "vllm": VENV_BLOCK}, extra_machines=[host])
-    with open(tmp_path / "swap-settings.yaml", "w", encoding="utf-8") as f:
-        yaml.safe_dump({"config_path": "~/.config/llama-swap/config.yaml",
-                        "host_name": "aibox1"}, f)
-    with pytest.raises(ValueError, match="swap_config_path_vllm"):
-        swap_manager.generate(None, "aibox1")
-
-
 def test_engine_swap_config_path_unknown_engine_raises():
     with pytest.raises(ValueError, match="unknown engine"):
         swap_manager.engine_swap_config_path("mlx")
 
-
-def test_engine_swap_config_path_resolution_matrix(monkeypatch, tmp_path):
-    """Full resolution order: machine override > explicit param > global
-    per-engine key (config_path_vllm) > derived engine-qualified default;
-    llama.cpp always verbatim; vllm derive is idempotent."""
-    host = _machine("aibox1", "127.0.0.1", role="master",
-                    swap_config_path_vllm="~/mach/v-from-machine.yaml")
-    _wire(monkeypatch, tmp_path, [], {}, extra_machines=[host])
-    with open(tmp_path / "swap-settings.yaml", "w", encoding="utf-8") as f:
-        yaml.safe_dump({"config_path": "~/.config/llama-swap/config.yaml",
-                        "config_path_vllm": "~/settings/v.yaml",
-                        "host_name": "aibox1"}, f)
-    p, fb = swap_manager.engine_swap_config_path("vllm", None, "aibox1")
-    assert p == "~/mach/v-from-machine.yaml" and fb is False
-    # machine override beats even an explicit param (preview/launch)
-    p, _ = swap_manager.engine_swap_config_path(
-        "vllm", "~/preview/x.yaml", "aibox1")
-    assert p == "~/mach/v-from-machine.yaml"
-    # drop the machine override: explicit param now wins verbatim
-    host.pop("swap_config_path_vllm")
-    p, _ = swap_manager.engine_swap_config_path(
-        "vllm", "~/preview/x.yaml", "aibox1")
-    assert p == "~/preview/x.yaml"
-    # drop the param: the settings key wins verbatim
-    p, _ = swap_manager.engine_swap_config_path("vllm", None, "aibox1")
-    assert p == "~/settings/v.yaml"
-    # drop the settings key: derive from llama.cpp's path (sibling file)
-    with open(tmp_path / "swap-settings.yaml", "w", encoding="utf-8") as f:
-        yaml.safe_dump({"config_path": "~/.config/llama-swap/config.yaml",
-                        "host_name": "aibox1"}, f)
-    p, _ = swap_manager.engine_swap_config_path("vllm", None, "aibox1")
-    assert p == "~/.config/llama-swap/config.vllm.yaml"
-    # llama.cpp: always the saved path verbatim
-    p, _ = swap_manager.engine_swap_config_path("llama_cpp", None, "aibox1")
-    assert p == "~/.config/llama-swap/config.yaml"
-
-
-def test_engine_qualify_path_idempotent_and_bare():
-    q = "~/.config/llama-swap/config.vllm.yaml"
-    assert swap_manager._engine_qualify_path(q, "vllm") == q
-    assert swap_manager._engine_qualify_path("config.yaml", "vllm") == \
-        "config.vllm.yaml"
-    assert swap_manager._engine_qualify_path("", "vllm") == ""
-    assert swap_manager._engine_qualify_path(
-        "%USERPROFILE%\\.config\\llama-swap\\config.yaml", "vllm") == (
-        "%USERPROFILE%\\.config\\llama-swap\\config.vllm.yaml")
-
-
-# ======================================================================
-# qe-validation-test branch: secrets-vault / installer regression tests
-# (helper names prefixed _qe_ to avoid collision with the vllm-branch helpers above)
-# ======================================================================
-
-import types
-
-import pytest
-
-
-import rpc_manager
-import swap_manager
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _qe__machine(name, ip, os="linux", role="peer", **kw):
     m = {
@@ -490,7 +263,7 @@ def test_duplicate_swap_claims_ignores_non_swap_and_cross_engine():
          "members": ["qwen3-8b"]},
         {"name": "g2", "swap": False, "engine": "llama_cpp",
          "members": ["qwen3-8b"]},
-        {"name": "g3", "swap": True, "engine": "vllm",
+        {"name": "g3", "swap": True, "engine": "other",
          "members": ["qwen3-8b"]},
     ]
     assert swap_manager.duplicate_swap_claims(groups) == []

@@ -23,7 +23,6 @@ from . import files
 from . import service
 from . import metrics
 from . import system
-from . import ray
 from . import install
 from . import custom
 from . import build
@@ -266,21 +265,6 @@ class AgentHandler(BaseHTTPRequestHandler):
                     config, body.get("binary"), body.get("config_path"))
             except service.AgentServiceError as e:
                 return 400, {"error": str(e)}
-        if path == "/ray/start":
-            try:
-                return 200, ray.start(
-                    config, body.get("ray_bin"), body.get("address"),
-                    body.get("num_gpus") or 0, body.get("env") or {},
-                    body.get("master_ip") or "", body.get("log"),
-                    body.get("pid_file"), body.get("workdir"))
-            except ray.AgentRayError as e:
-                return 400, {"error": str(e)}
-        if path == "/ray/stop":
-            try:
-                return 200, ray.stop(
-                    config, body.get("ray_bin"), body.get("pid_file"))
-            except ray.AgentRayError as e:
-                return 400, {"error": str(e)}
         if path == "/custom/start":
             try:
                 return 200, custom.start(
@@ -311,15 +295,6 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return 400, {"error": str(e)}
         if path == "/agent/update":
             return self._agent_update(body)
-        if path == "/install/vllm":
-            try:
-                return 200, install.vllm(
-                    config, body.get("python") or "python3",
-                    body.get("venv_root") or "~/vllm-env",
-                    body.get("version") or "0.30.0",
-                    bool(body.get("rocm")))
-            except install.AgentInstallError as e:
-                return 400, {"error": str(e)}
         if path == "/build/update":
             try:
                 return 200, build.update(

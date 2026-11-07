@@ -18,7 +18,7 @@ Design constraints carried from the spec:
   flag_presets} view, derived from the manifest so the two can never
   drift. The key retires in Card 15 (dead-key sweep).
 * `ui_manifest()` must be self-contained — importing only typing here,
-  so neither engine_registry nor vllm_manager gains an import edge.
+  so engine_registry gains no import edge.
 """
 from typing import Protocol, runtime_checkable
 
@@ -34,7 +34,7 @@ class EngineUxProtocol(Protocol):
         pages render from. Structure (§1.5):
 
             labels:         {server, peers, parallelism, probe}
-            hidden_panels:  [str]   llama.cpp-only panels (vllm lists them)
+            hidden_panels:  [str]   engine-exclusive panels
             hidden_tabs:    [str]   engine-exclusive test tabs
             model_editor:   {sections: [{id, flag_keys?, fields?}], ...}
             flag_presets:   {name: {flag, placeholder?, choices?, note?}}
@@ -52,9 +52,8 @@ class EngineUxProtocol(Protocol):
 
 class UiHintsMixin:
     """Shared adapter defaults: the manifest's legacy projection + the
-    llama.cpp-shaped empty manifest. Engines with their own vocabulary
-    override ui_manifest() (VllmAdapter does); UiHintsMixin.ui_hints()
-    keeps projecting it."""
+    llama.cpp-shaped empty manifest. An engine with its own vocabulary
+    overrides ui_manifest(); UiHintsMixin.ui_hints() keeps projecting it."""
 
     def ui_manifest(self) -> dict:
         """Default (llama.cpp-shaped) manifest: every section the editor

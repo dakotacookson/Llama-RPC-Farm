@@ -1,114 +1,20 @@
-"""Shell-injection tests for the vLLM cmd/cmdStop strings (ARD
-t_76f3d1c0 §7 B3).
+"""Shell-injection tests for llama.cpp command rendering.
 
-model_id is interpolated into --served-model-name, the docker container
-name and the cmdStop pkill pattern — all injection surfaces. Per
-src/vllm_manager.py:49 the defense is a strict allowlist
-(_SAFE_ID: ^[A-Za-z0-9][A-Za-z0-9._-]*$) instead of escaping. These
-tests pin that behavior: safe ids pass through verbatim; every shell
-metacharacter is rejected BEFORE any command string is produced.
+The qe-validation section below pins that attacker-controlled IPs and
+flag values cannot break out of the generated RPC/launch shell commands.
 """
+import re
+import shlex
+
 import pytest
-from vllm_manager import (_SAFE_ID, _require_safe_id, build_cmd_stop,
-                          build_vllm_command, swap_entry_parts)
 
-VENV_CFG = {"delivery": "venv", "venv_bin": "~/vllm-env/bin/vllm",
-            "docker_image": "vllm/vllm-openai:latest",
-            "default_gpu_memory_utilization": 0.9}
-DOCKER_CFG = dict(VENV_CFG, delivery="docker")
-MASTER = {"name": "aibox1", "ip": "10.0.0.98", "os": "linux"}
+import rpc_manager
+from rpc_manager import build_llama_command, _render_rpc
 
-
-def _model(mid):
-    # DEC-08: launch requires a native vllm: section; safe-id tests only
-    # exercise id interpolation, so any non-empty section works.
-    return {"model_id": mid, "flags": {}, "base_path": "/mnt/store/m",
-            "vllm": {"cpu_offload_gb": 0}}
-
-
-SAFE_IDS = ["qwen3-8b", "Llama-3.2-1B-Instruct", "a", "Z9",
-            "model.v2_final-RC1"]
-
-HOSTILE_IDS = [
-    "x;id", ";id", "x&id", "&id", "x|id", "|id", "x>y", "x<y", "x$(id)",
-    "$(id)", "x`id`", "x${HOME}", "$HOME", "a b", "a\tb", "a\nb", "a\rb",
-    "a'b", 'a"b', "a\\b", "a*b", "a?b", "a[b", "a!b", "a#b", "a~b",
-    "a=b", "a,b", "a:b", "a@b", "a%b", "a^b", "a/b", ".x", "-x", "_x",
-    "", "   ", "x -o ProxyCommand=evil",
-]
-
-
-@pytest.mark.parametrize("mid", SAFE_IDS)
-def test_safe_ids_accepted_and_embedded_verbatim(mid):
-    assert _require_safe_id(_model(mid)) == mid
-    assert build_cmd_stop(_model(mid), VENV_CFG) == (
-        f'pkill -f "vllm serve.*{mid}"')
-    cmd = build_vllm_command(_model(mid), MASTER, VENV_CFG)
-    assert f'--served-model-name "{mid}"' in cmd
-
-
-def test_cmdstop_venv_exact():
-    assert build_cmd_stop(_model("qwen3-8b"), VENV_CFG) == (
-        'pkill -f "vllm serve.*qwen3-8b"')
-
-
-def test_cmdstop_docker_exact():
-    assert build_cmd_stop(_model("qwen3-8b"), DOCKER_CFG) == (
-        "docker stop farm-qwen3-8b")
-
-
-def test_swap_entry_parts_shape():
-    parts = swap_entry_parts(_model("qwen3-8b"), MASTER, VENV_CFG)
-    assert parts["cmdStop"] == 'pkill -f "vllm serve.*qwen3-8b"'
-    assert parts["checkEndpoint"] == "/health"
-    assert parts["env"] == {}
-    assert '--port "$PORT"' in parts["cmd"]
-
-
-@pytest.mark.parametrize("mid", HOSTILE_IDS)
-def test_hostile_ids_rejected_for_both_deliveries(mid):
-    """Every injection vector is rejected at the allowlist gate for cmd
-    AND cmdStop, venv AND docker — nothing hostile reaches a shell."""
-    for vllm_cfg in (VENV_CFG, DOCKER_CFG):
-        with pytest.raises(ValueError):
-            _require_safe_id(_model(mid))
-        with pytest.raises(ValueError):
-            build_cmd_stop(_model(mid), vllm_cfg)
-        with pytest.raises(ValueError):
-            build_vllm_command(_model(mid), MASTER, vllm_cfg)
-        with pytest.raises(ValueError):
-            swap_entry_parts(_model(mid), MASTER, vllm_cfg)
-
-
-def test_no_partial_output_on_rejection():
-    """The allowlist gate runs before any string assembly: a rejected id
-    yields an exception, never a partially-built command."""
-    with pytest.raises(ValueError):
-        build_cmd_stop(_model("x;id"), VENV_CFG)
-    with pytest.raises(ValueError):
-        build_cmd_stop(_model("x;id"), DOCKER_CFG)
-
-
-def test_allowlist_excludes_shell_metacharacters():
-    """The allowlist itself is the defense (no escaping): none of the
-    characters that matter for shell/quote/flag escape attempts may
-    match, at any position."""
-    dangerous = list(";|&`$(){}[]<>") + [
-        "\\", "'", '"', "\n", "\t", "\r", " ", "*", "?", "!", "#", "~",
-        "=", "@", "+", ",", ":", "%", "^", "/"]
-    for ch in dangerous:
-        assert _SAFE_ID.fullmatch(f"a{ch}b") is None, f"allowed: {ch!r}"
-        assert _SAFE_ID.fullmatch(f"{ch}ab") is None, f"lead: {ch!r}"
-    # the allowed set is exactly the documented one
-    assert _SAFE_ID.fullmatch("A-z_0.9-") is not None
-    # metachars are not allowed in leading position either (a leading
-    # dash would turn the id into a flag, a leading dot hides the file)
-    for ch in ".-_":
-        assert _SAFE_ID.fullmatch(f"{ch}x") is None
 
 # ======================================================================
 # qe-validation-test branch: secrets-vault / installer regression tests
-# (helper names prefixed _qe_ to avoid collision with the vllm-branch helpers above)
+# (helper names prefixed _qe_)
 # ======================================================================
 
 import re

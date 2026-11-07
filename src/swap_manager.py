@@ -67,90 +67,34 @@ def default_config_path(host):
 
 
 # DEC-03 (AUDIT-T6 §1.6): per-engine swap-config files. The swap DIR is
-# shared (one llama-swap daemon, one binary/port); the FILE is
-# engine-qualified so each engine's entries/scripts/cmdStop shapes never
-# collide — llama.cpp keeps the historical config.yaml, vllm gets
-# config.vllm.yaml (same dir, sibling file).
-VLLM_CONFIG_SUFFIX = "config.vllm.yaml"
-
-
-def _engine_qualify_path(config_path, engine):
-    """Engine-qualify ONE config path: llama.cpp keeps the path verbatim
-    (backward compat — existing installs and machines.yaml overrides keep
-    working); vllm replaces the basename with config.vllm.yaml in the
-    same directory (~/x/config.yaml -> ~/x/config.vllm.yaml). Idempotent
-    when the basename is already config.vllm.yaml. A bare filename (no
-    directory) stays bare; empty stays empty."""
-    if not config_path:
-        return config_path
-    if engine == "vllm":
-        # split at the LAST separator of either kind: a
-        # %USERPROFILE%\...\config.yaml string must qualify correctly even
-        # when the app runs on POSIX (os.path.split alone only understands
-        # the platform separator) — slice the ORIGINAL string so the
-        # directory's separators stay exactly as the operator wrote them
-        stripped = config_path.rstrip("/\\") or config_path
-        cut = max(stripped.rfind("/"), stripped.rfind("\\"))
-        base = stripped[cut + 1:] if cut >= 0 else stripped
-        if base == VLLM_CONFIG_SUFFIX:
-            return config_path
-        return stripped[:cut + 1] + VLLM_CONFIG_SUFFIX if cut >= 0 \
-            else VLLM_CONFIG_SUFFIX  # bare filename stays bare
-    return config_path
-
-
-# DEC-03: paths set EXPLICITLY for an engine (swap.yaml config_path_vllm /
-# machines.yaml swap_config_path / swap_config_path_vllm) are taken
-# verbatim — the operator pinned a file, the daemon must use exactly that
-# file. Engine-qualification (deriving config.vllm.yaml from llama.cpp's
-# path) applies only when vllm has no explicit path of its own.
-def _engine_select_path(raw, explicit, engine):
-    if explicit and raw:
-        return raw
-    return _engine_qualify_path(raw, engine)
-
-
+# shared (one llama-swap daemon, one binary/port); llama.cpp keeps the
+# historical config.yaml.
 def engine_swap_config_path(engine, config_path=None, host_name=None):
     """The ACTIVE engine's swap-config file for the current host (DEC-03,
     AUDIT-T6 §1.6). Returns (eff_path, fell_back).
 
-    Resolution order: the host machine's `swap_config_path` /
-    `swap_config_path_vllm` override (config_loader.machine_swap_config_
-    override) wins when set; else the explicit config_path param; else the
-    global per-engine path (swap.yaml `config_path` for llama.cpp /
-    `config_path_vllm` for vllm, falling back to engine-qualifying
-    llama.cpp's path when vllm's is unset — same dir, sibling file); else
-    the host-OS default. Paths set explicitly for their engine
-    (config_path_vllm, machine overrides) are
-    taken verbatim; the DERIVED default (llama.cpp's path in vllm mode
-    with no config_path_vllm) is engine-qualified — basename becomes
-    config.vllm.yaml in the same dir, idempotent when already qualified.
-    llama.cpp's path is always verbatim. Raises on unknown engine — never
-    a silent fallback (the daemon would point at the wrong file).
+    Resolution order: the host machine's `swap_config_path` override
+    (config_loader.machine_swap_config_override) wins when set; else the
+    explicit config_path param; else the global path (swap.yaml
+    `config_path`); else the host-OS default. Raises on unknown engine —
+    never a silent fallback (the daemon would point at the wrong file).
     """
-    if engine not in ("llama_cpp", "vllm"):
+    if engine != "llama_cpp":
         raise ValueError(
-            f"unknown engine '{engine}' — must be llama_cpp or vllm")
+            f"unknown engine '{engine}' — must be llama_cpp")
     settings = load_settings()
     host = get_host(host_name or settings["host_name"])
-    explicit = bool(settings.get("config_path_vllm"))
-    if config_path:
-        raw = config_path
-    elif engine == "vllm":
-        raw = settings.get("config_path_vllm") or settings["config_path"]
-    else:
-        raw = settings["config_path"]
+    raw = config_path or settings["config_path"]
     eff, fell_back = _effective_config_path(host, raw)
-    # per-machine override (same shape as vllm_delivery): a machine may
-    # pin its own file, winning over the global per-engine path
+    # per-machine override: a machine may pin its own file, winning over
+    # the global per-engine path
     try:
         override = cfg.machine_swap_config_override(host, engine)
     except ValueError as e:
         raise ValueError(f"{host.get('name') or 'host'}: {e}") from e
     if override:
-        explicit = True
         eff, fell_back = _effective_config_path(host, override)
-    return _engine_select_path(eff, explicit, engine), fell_back
+    return eff, fell_back
 
 
 def load_settings():
@@ -171,16 +115,12 @@ def load_settings():
         "binary": data.get("binary") or "llama-swap",
         "listen_port": data.get("listen_port") or 8080,
         "config_path": data.get("config_path") or default_config_path(host),
-        # DEC-03: vllm's swap-config path (None = derive by engine-qualifying
-        # config_path at generate time — engine_swap_config_path handles it)
-        "config_path_vllm": data.get("config_path_vllm"),
         "launch_config": data.get("launch_config"),  # persisted launch settings
     }
 
 
 def save_settings(binary=None, listen_port=None, config_path=None,
-                  host_name=None, launch_config=None,
-                  config_path_vllm=None):
+                  host_name=None, launch_config=None):
     data = {}
     if os.path.exists(SWAP_SETTINGS_FILE):
         with open(SWAP_SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -191,9 +131,6 @@ def save_settings(binary=None, listen_port=None, config_path=None,
         data["listen_port"] = int(listen_port)
     if config_path is not None:
         data["config_path"] = config_path
-    if config_path_vllm is not None:
-        # "" clears back to derive-from-config_path
-        data["config_path_vllm"] = config_path_vllm or None
     if host_name is not None:
         data["host_name"] = host_name or None  # "" clears back to auto
     if launch_config is not None:
@@ -397,8 +334,8 @@ def duplicate_swap_claims(groups=None):
     """Deployments claimed by more than one swap:true group of the same
     engine — the generator enforces one-group-per-model (first group
     wins), so the losers silently lose their mutual-exclusion. Returns
-    [message] (empty = clean). Same-engine only: a llama.cpp group and a
-    vLLM group never share a daemon config, so cross-engine overlap is
+    [message] (empty = clean). Same-engine only: groups of different
+    engines never share a daemon config, so cross-engine overlap is
     harmless."""
     groups = groups if groups is not None else cfg.swap_groups.all()
     seen = {}   # (engine, member) -> group name
@@ -803,11 +740,6 @@ def launch_plan(config_path=None, host_name=None):
     Returns a plan dict: host info, yaml text, per-model entries, the
     script files to push, and all resolved paths. launch() consumes
     this; it never re-derives anything.
-
-    engine=vllm (ARD §3.5): the single branch below swaps the RPC
-    wrapper-script emit for thin per-model vLLM scripts built from
-    vllm_manager.swap_entry_parts (cmd/cmdStop/health); everything
-    downstream (backup, write, push, launch, health) is engine-agnostic.
     """
     settings = load_settings()
     # Engine toggle (ARD §2): one read per generate() call. A bad engine
@@ -819,17 +751,14 @@ def launch_plan(config_path=None, host_name=None):
     except ImportError:
         engine_settings = {}
     engine = engine_settings.get("engine") or "llama_cpp"
-    vllm_cfg = engine_settings.get("vllm") or {}
     host = get_host(host_name or settings["host_name"])
     host_name = host["name"]
     host_os = host.get("os", "linux")
     # DEC-03 (AUDIT-T6 §1.6): the daemon's config FILE is engine-qualified.
     # Resolution order (engine_swap_config_path): explicit config_path
-    # param -> global per-engine path (swap.yaml config_path /
-    # config_path_vllm) -> default; per-machine override
-    # (machines.yaml swap_config_path / swap_config_path_vllm) wins over
-    # the global; then the FILENAME is engine-qualified (vllm: basename
-    # becomes config.vllm.yaml in the same dir; llama.cpp verbatim).
+    # param -> global path (swap.yaml config_path) -> default; per-machine
+    # override (machines.yaml swap_config_path) wins over the global;
+    # llama.cpp's filename is kept verbatim.
     eff_path, fell_back = engine_swap_config_path(
         engine, config_path, host_name)
     swap_dir = _swap_dir(host, eff_path)
@@ -940,7 +869,7 @@ def launch_plan(config_path=None, host_name=None):
         # CUSTOM runtime (e.g. winbox-iq3_s): no GGUF served by the farm —
         # a remote box runs its own server; the farm only starts it over
         # SSH and proxies the OpenAI API to it. Handled before the
-        # llama.cpp/vLLM branches (and the GGUF gate below) so a missing
+        # llama.cpp branches (and the GGUF gate below) so a missing
         # base_path never reads as HF-format.
         if (deploy_model.get("runtime") or "") == "custom":
             try:
@@ -965,17 +894,14 @@ def launch_plan(config_path=None, host_name=None):
         # base_path not ending .gguf) has no llama.cpp presence —
         # llama-server cannot serve it, and the RPC wrapper the
         # llama.cpp branch would emit is garbage pointing at an HF dir.
-        # vLLM mode already skips no-`vllm:`-section models at
-        # swap_entry_parts; this is the mirror for llama.cpp mode.
         fmt = (deploy_model.get("format") or
                ("gguf" if str(deploy_model.get("base_path") or "")
                 .lower().endswith(".gguf") else "hf"))
-        if engine != "vllm" and fmt not in ("gguf", None, ""):
+        if fmt not in ("gguf", None, ""):
             skipped.append(mid_for_key)
             warnings.append(
                 f"{mid_for_key}: HF-format checkpoint has no llama.cpp "
-                "presence (no GGUF to serve) — skipped; serve it under "
-                "the vLLM engine")
+                "presence (no GGUF to serve) — skipped")
             return
         # key handling: primary uses original _swap_key on model, variants use deployment_key
         if is_variant:
@@ -987,13 +913,8 @@ def launch_plan(config_path=None, host_name=None):
         try:
             master, peer_objs = rpc_manager._split_servers(
                 [host_name] + peers, host_name)
-            # vLLM entries build their own cmd below; the llama-server
-            # command is only needed on the llama.cpp path.
-            if engine == "vllm":
-                cmd = None
-            else:
-                cmd = rpc_manager.build_llama_command(
-                    deploy_model, [host_name] + peers, master_name=host_name)
+            cmd = rpc_manager.build_llama_command(
+                deploy_model, [host_name] + peers, master_name=host_name)
         except (ValueError, KeyError) as e:
             skipped.append(mid_for_key)
             warnings.append(f"{mid_for_key}: {e}, skipped")
@@ -1006,7 +927,7 @@ def launch_plan(config_path=None, host_name=None):
         # checkEndpoint=/health makes llama-swap poll until 200 (bounded
         # by healthCheckTimeout 7200) — the client's first request WAITS
         # for the load instead of surfacing a 502/503.
-        if engine != "vllm" and local_mode == "local" and peer_objs:
+        if local_mode == "local" and peer_objs:
             peer_m = peer_objs[0]
             # The remote llama-server's port: launch_mode_local_port when
             # pinned; else DETERMINISTIC AUTO-ASSIGN from the same hash
@@ -1079,63 +1000,7 @@ def launch_plan(config_path=None, host_name=None):
                 f"{mid_for_key}: MLX runtime ignores RPC peers "
                 f"(single machine only)")
             peer_objs = []
-        if engine == "vllm":
-            # ARD §3.5 — the ONE vLLM branch: entry-emit time only. The
-            # llama-swap entry carries the vllm command (thin script on
-            # linux; no RPC fan-out, no sshpass block, no device env
-            # exports — pinning travels inside cmd via
-            # CUDA_VISIBLE_DEVICES or docker -e). Multi-host: peer_objs
-            # pass through to swap_entry_parts, which turns the cmd into
-            # the Ray cluster script (multi-host TP/PP).
-            import vllm_manager
-            try:
-                parts = vllm_manager.swap_entry_parts(
-                    deploy_model, master, vllm_cfg, peers=peer_objs)
-            except (ValueError, KeyError) as e:
-                skipped.append(mid_for_key)
-                warnings.append(f"{mid_for_key}: {e}, skipped")
-                return
-            # DEC-08: the launch path reads only the per-model `vllm:`
-            # section; the t_90def951 flags bridge and its warnings
-            # fan-out are retired (legacy configs fail loudly in
-            # build_vllm_command instead).
-            if host_os == "linux":
-                script_name = f"start-{mid_for_key}.sh"
-                # DEC-15: venv root comes from the generate()-time
-                # vllm_cfg (engine_registry settings read) — the script
-                # renderer no longer re-reads swap.yaml's unrelated
-                # settings file for the vllm: block it doesn't contain
-                # (that dead read fell back to the hardcoded default for
-                # every non-default venv_bin).
-                scripts[script_name] = _vllm_script(parts["cmd"], vllm_cfg)
-                script_mids.add(mid_for_key)
-                if peer_objs:
-                    # multi-host (Ray cluster): worker nodes need sshpass
-                    # via $SSH_PASS — same swap-secrets.env sidecar wrap
-                    # the llama.cpp branch uses (single-node vLLM scripts
-                    # need no SSH and skip the wrap, keeping the thin cmd).
-                    models[key] = {
-                        "cmd": f"/bin/bash -c 'source \"{scripts_dir}/swap-secrets.env\" 2>/dev/null; exec /bin/bash \"{scripts_dir}/{script_name}\" \"${{PORT}}\"'"}
-                else:
-                    models[key] = {
-                        "cmd": f"/bin/bash {scripts_dir}/{script_name} ${{PORT}}"}
-            else:
-                vcmd = parts["cmd"].replace('"$PORT"', "${PORT}")
-                if host_os == "windows":
-                    models[key] = {"cmd": vcmd.replace(" \\\n  ", " ")}
-                else:
-                    models[key] = {"cmd": _LiteralStr(vcmd)}
-            models[key]["cmdStop"] = parts["cmdStop"]
-            models[key]["checkEndpoint"] = parts["checkEndpoint"]
-            # llama-swap's per-model env is a LIST of "K=V" strings — a dict
-            # here makes the whole config fail to load (`cannot unmarshal
-            # !!map into []string`, daemon crash-loops). Convert; omit when
-            # empty (vLLM entries carry env inside cmd by design).
-            _entry_env = parts.get("env") or {}
-            if _entry_env:
-                models[key]["env"] = [
-                    f"{k}={v}" for k, v in _entry_env.items()]
-        elif host_os in ("linux", "macos"):
+        if host_os in ("linux", "macos"):
             script_name = f"start-{mid_for_key}.sh"
             if peer_objs:
                 scripts[script_name] = rpc_manager._render_rpc(
@@ -1350,14 +1215,6 @@ def launch_plan(config_path=None, host_name=None):
                 base_flags = dict(merged.get("flags") or {})
                 base_flags.update(var["flags"])
                 merged["flags"] = base_flags
-            # vllm (A2): same partial-override semantics as flags — shallow
-            # dict merge over the primary's section, so a "weak-GPU variant"
-            # (own servers/device_order + gmu/cpu_offload overrides) falls
-            # out of existing machinery. Absent/empty inherits wholesale.
-            if var.get("vllm") is not None and isinstance(var["vllm"], dict) and var["vllm"]:
-                base_vllm = dict(merged.get("vllm") or {})
-                base_vllm.update(var["vllm"])
-                merged["vllm"] = base_vllm
             # ensure base fields remain
             merged["model_id"] = mid
             merged["base_path"] = model.get("base_path")
@@ -1420,9 +1277,9 @@ def launch_plan(config_path=None, host_name=None):
         for sg in cfg.swap_groups.all():
             # DEC-17: only the ACTIVE engine's serve groups participate —
             # the engine read at the top of generate() is the same value
-            # /api/swap-groups filters on, so a llama.cpp RPC group
-            # never lands in a vllm swap config (and vice versa). A
-            # missing `engine` (legacy YAML) reads as llama_cpp.
+            # /api/swap-groups filters on, so a group never lands in
+            # another engine's swap config. A missing `engine` (legacy
+            # YAML) reads as llama_cpp.
             if (sg.get("engine") or "llama_cpp") != engine:
                 continue
             keys = []
@@ -1465,76 +1322,6 @@ def launch_plan(config_path=None, host_name=None):
         "scripts": sorted(scripts), "script_mids": sorted(script_mids),
         "skipped": skipped, "warnings": warnings, "_scripts": scripts,
     }
-
-
-def _vllm_script(cmd, vllm_cfg=None):
-    """Thin vLLM start script (ARD §3.5): shebang + PORT + exec of the
-    vllm command — no RPC fan-out, no sshpass block, no device env
-    exports (pinning travels inside cmd). cmd's $PORT / ${PORT}
-    placeholders resolve from the script's PORT (arg 1, default 8080),
-    mirroring rpc_manager._render_single_node.
-
-    DEC-15: vllm_cfg is the generate()-time engine settings block
-    (same object swap_entry_parts/build_vllm_command use) — never
-    re-read from disk here.
-
-    LD_LIBRARY_PATH: pip-installed torch needs the wheel's own
-    nvjitlink lib to win over a system CUDA install (cusparse 12.9
-    requires the 12_9 symbols only the wheel's copy exports); without
-    it `vllm serve` dies at import (libcusparse undefined symbol) and
-    llama-swap reports "upstream command exited prematurely". Sourced
-    from the vllm_bin location so it stays correct for any venv root.
-    """
-    venv_bin = (vllm_cfg or {}).get("venv_bin") \
-        or "~/vllm-env/bin/vllm"
-    venv_root = os.path.dirname(os.path.dirname(os.path.expanduser(
-        venv_bin)))
-    nvjitlink = os.path.join(venv_root, "lib")
-    nvjitlink_glob = os.path.join(
-        nvjitlink, "python*/site-packages/nvidia/nvjitlink/lib")
-    import glob as _glob
-    matches = sorted(_glob.glob(nvjitlink_glob))
-    ld_line = ""
-    if matches:
-        ld_line = ("export LD_LIBRARY_PATH=\"%s"
-                   "${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"\n" % matches[-1])
-    # Multi-host cluster cmds are already complete bash programs
-    # (shebang + Ray head/worker setup + exec vllm serve): wrapping them
-    # in the thin `exec ...` header corrupts them (`exec #!/bin/bash`,
-    # exit 127 path). Pass through, injecting only the nvjitlink
-    # LD_LIBRARY_PATH line after the shebang/PORT header so the final
-    # `vllm serve` still imports torch. Single-node plain cmds keep the
-    # thin-wrap path below — same entry point, per-engine script body,
-    # which is what keeps the llama-RPC <-> vLLM switch seamless.
-    if cmd.lstrip().startswith("#!"):
-        lines = cmd.splitlines(keepends=True)
-        insert_at = 1
-        if len(lines) > 1 and lines[1].startswith("PORT="):
-            insert_at = 2
-        if ld_line:
-            lines.insert(insert_at, ld_line)
-        return "".join(lines)
-    # Hoist any env-prefix assignments (e.g. CUDA_VISIBLE_DEVICES=0,12)
-    # out of the exec line: `exec VAR=x cmd` is not valid bash ("exec:
-    # VAR=x: not found", exit 127). The vllm cmd carries the device
-    # prefix inside build_vllm_command; it must become a separate
-    # export statement so `exec` receives a real command name.
-    exec_cmd = cmd
-    exports = []
-    while True:
-        head, sep, rest = exec_cmd.partition(" ")
-        if sep and "=" in head and not head.startswith(("/", "~", '"', "'")) \
-                and all(c.isalnum() or c == "_" for c in
-                        head.split("=", 1)[0]):
-            exports.append(f"export {head}\n")
-            exec_cmd = rest
-        else:
-            break
-    body = "".join(exports) + f"exec {exec_cmd}"
-    return f"""#!/bin/bash
-PORT="${{1:-8080}}"
-{ld_line}{body}
-"""
 
 
 def _swap_env(host_name):

@@ -37,12 +37,10 @@ version, backend, dest, extra)` · `RepairTool(InstallTool)` (§5 broken
 `ManifestUpdate(tool, entry)` · `PlanNote(kind, tool, message)` (refusals,
 manual actions, capability statements — never silence).
 
-## Backend parity (operator clarification)
+## Backend parity
 
-Both engines are planned on every viable backend: `VLLM_BACKEND` /
-`LLCPP_BACKEND` matrices in probe.py encode CUDA/ROCm/Metal(MLX)/Vulkan/CPU
-per OS. Native-Windows vLLM emits an explicit `PlanNote(refused)` citing the
-WSL2 path; vLLM-Metal is opt-in (`--with-vllm-metal`). `ENGINE_DEFAULTS` +
+llama.cpp is planned on every viable backend: the `LLCPP_BACKEND` matrix in
+probe.py encodes CUDA/ROCm/Metal(MLX)/Vulkan/CPU per OS. `ENGINE_DEFAULTS` +
 `tool_defaults()` carry per-backend device-env (`CUDA_VISIBLE_DEVICES` /
 `HIP_VISIBLE_DEVICES` / none on Metal) and CUDA-only flag lists.
 

@@ -65,22 +65,12 @@ dir; machine `llama_bin` overrides), `theme_family`/`theme_mode`.
 ### engine selection (schema in `src/engine_registry.py` / `config_loader.py`)
 
 ```yaml
-engine: llama_cpp        # llama_cpp | vllm
-
-vllm:                    # only used when engine: vllm
-  delivery: venv         # venv | docker
-  venv_bin: ~/vllm-env/bin/vllm            # binary for delivery: venv
-  docker_image: vllm/vllm-openai:latest    # image for delivery: docker
-  default_gpu_memory_utilization: 0.9      # number in (0, 1]
+engine: llama_cpp        # llama_cpp
 ```
 
 - A missing `engine` key means `llama_cpp` (backward compatible); a
   typo is a **startup error** listing the valid values — never a
   silent fallback.
-- The `vllm:` block is normalized on load: missing → defaults injected;
-  unknown keys, a bad `delivery`, or a non-numeric
-  `default_gpu_memory_utilization` outside (0, 1] raise. Consumers
-  never None-check the block.
 - Writes from POST /api/settings merge over the current file through
   the comment-preserving persister (B9c) — comments and unknown keys
   survive.
@@ -107,40 +97,11 @@ vllm:                    # only used when engine: vllm
     aibox1: {mode: vram, gpus: [CUDA0, CUDA1, CUDA2]}
   pinned: false
   ttl: 0                    # llama-swap auto-unload after idle
-  vllm:                     # optional per-model vLLM section (used when engine: vllm)
-    max_model_len: 32768    # --max-model-len (int >= 1)
-    max_num_seqs: 256       # --max-num-seqs (int >= 1)
-    tensor_parallel_size: 2 # --tensor-parallel-size (int >= 1; needs that many visible GPUs)
-    pipeline_parallel_size: 1 # --pipeline-parallel-size (int >= 1; world size is TP×PP visible GPUs)
-    kv_cache_dtype: fp8     # auto | fp8 — fp8 only (llama.cpp q4/q8 caches unsupported)
-    cpu_offload_gb: 20      # --cpu-offload-gb (int >= 0; 0 omitted = default)
-    quantization: fp8       # --quantization (string, e.g. fp8, awq, gptq)
-    tokenizer: /path/to/base-hf-dir   # required for GGUF on vLLM (experimental)
-    extra_args: ['--enable-prefix-caching']  # list of non-empty strings, appended verbatim
   variants: [...]           # additional configs, see models-and-variants.md
 ```
 
 Flags are stored verbatim and rendered as CLI flags; string values are
 `shlex.quote`d at command-build time (injection tests enforce this).
-
-Per-model `vllm:` round-trip (`config_loader.apply_vllm_section`): the
-schema vocabulary is `max_model_len`, `max_num_seqs`,
-`tensor_parallel_size`, `pipeline_parallel_size`, `kv_cache_dtype`,
-`cpu_offload_gb`, `quantization`, `tokenizer`, `extra_args` — unknown
-keys are rejected
-on save, numeric fields coerced to int, defaults are NOT injected (a
-model that sets nothing stores nothing). An empty/absent section is
-removed so pre-vLLM configs never gain the key; `flags` and every other
-llama.cpp key pass through untouched (additive, non-destructive toggle).
-
-Parallelism is validated statically: the fit check requires
-`CUDA_VISIBLE_DEVICES` to select at least `tensor_parallel_size ×
-pipeline_parallel_size` GPUs (vLLM's world size counts pipeline stages
-too — TP=2 + PP=2 needs 4 GPUs on the one allowed host). Anything the
-schema doesn't model — Ray or other distributed-executor backends,
-`--distributed-executor-backend ray`, multi-node `--ray-*` setup — is
-the sanctioned job of `extra_args` (appended verbatim, shlex-quoted);
-`extra_args` is the escape hatch, not a schema gap.
 
 ## groups.yaml — machine groups (deployment affinity)
 

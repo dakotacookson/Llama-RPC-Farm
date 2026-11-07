@@ -1,24 +1,11 @@
-"""B16: engine gates on the remaining RPC/tune/test endpoints.
+"""B16: llama.cpp regression coverage for the remaining RPC/tune/test
+endpoints.
 
-The CTO route audit (2026-09-24) found 6 route families that still do
-llama.cpp-RPC things under engine=vllm. G-3 already gated rpc/start and
-start-all; this file covers the REST:
-
-- POST /api/rpc/stop-all -> 409 in vllm mode, rpc_manager.stop_rpc NEVER
-  called (both rpc-server start paths are G-3 gated, so no peers exist
-  under vLLM; swap_manager.stop does NOT cover peer cleanup — it kills
-  only the swap daemon — so a flat 409 is correct everywhere).
-- GET /api/rpc-map -> 409 in vllm mode, rpc_manager._split_servers /
-  compute_rpc_map NEVER called (no RPC<N> numbering exists).
-- POST /api/models/{id}/test -> ROUTED in vllm mode: the REAL
-  vllm_manager.validate_model_config validates the stored config
-  (errors -> 400 with messages, warns ride along under ok:true,
-  unknown model -> 404); rpc_manager.validate_model NEVER called.
-  llama.cpp mode keeps the disk-based path byte-identical.
-- tune/* family (8 endpoints) -> 409 in vllm mode via the shared
-  _refuse_tuner_in_vllm guard (ui_hints.hidden_panels already hides
-  the tuner panels; the API refuses too); tuner.* NEVER called.
-  llama.cpp mode keeps every endpoint unchanged.
+- POST /api/rpc/stop-all keeps stopping a peer on every machine.
+- GET /api/rpc-map keeps building through the rpc_manager math path.
+- POST /api/models/{id}/test keeps the disk-based validate_model path.
+- The tune/* family (8 endpoints) keeps reaching its tuner.* call.
+- A bad engine setting is a clean 400, never a 500.
 
 Heavy externals are monkeypatched; the REAL config_loader owns
 machines.yaml / model YAMLs against tmp files.
@@ -33,7 +20,6 @@ sys.path.insert(0, os.path.join(
 
 import app as app_module  # noqa: E402
 import config_loader  # noqa: E402
-import vllm_manager  # noqa: E402
 
 
 # ---------------- fixtures ------------------------------------------------
@@ -87,10 +73,10 @@ class _LcppEngine:
 
     # DEC-04: save_model dispatches the per-model section round-trip
     # through the owning adapter; stub doubles carry the protocol members.
-    def apply_model_section(self, data, where="vllm"):
+    def apply_model_section(self, data, where="model"):
         return data
 
-    def sanitize_model_section(self, raw, where="vllm"):
+    def sanitize_model_section(self, raw, where="model"):
         if raw is None:
             return None
         return dict(raw)
@@ -115,11 +101,6 @@ def _save_model(model_id="qwen-test", **over):
     payload.update(over)
     config_loader.save_model(model_id, payload)
     return payload
-
-
-TUNE_409 = "Tuner is llama.cpp-specific (VRAM/KV math); hidden in vLLM mode"
-RPC_409 = ("vLLM mode does not use RPC clustering — serve models "
-           "through llama-swap (Launch All / /api/swap/*)")
 
 
 # ---------------- Part A: POST /api/rpc/stop-all ---------------------------
@@ -200,17 +181,12 @@ TUNE_ROUTES = [
 
 
 def _stub_tuner(monkeypatch, log, payload=None):
-    """Every tuner.* entry point records its call. In vllm tests
-    (payload=None) it raises — the gate must fire BEFORE any of them is
-    reachable, and an AssertionError surfacing as a 500 would still be a
-    reached-caller. In llama.cpp tests it returns a stub payload so the
-    endpoint completes 200."""
+    """Every tuner.* entry point records its call and returns a stub
+    payload so the endpoint completes 200."""
     import tuner
     def _mk(name):
         def _fn(*a, **k):
             log.append(name)
-            if payload is None:
-                raise AssertionError(f"tuner.{name} called in vllm mode")
             return payload.get(name, {"stub": name})
         return _fn
     for fn in ("estimate", "safe_defaults", "start_tune", "job_status",
@@ -263,17 +239,12 @@ def test_tune_estimate_form_llama_cpp_real_math(client, settings_file,
 
 def test_tune_and_rpc_routes_bad_engine_400(client, settings_file,
                                             monkeypatch):
-    """Unreadable settings -> 400 carrying the ValueError text — the same
-    shape /api/launch uses (ValueError -> 400 verbatim), never a 500,
-    never a llama.cpp action."""
-    def _boom(s=None):
-        raise ValueError("disk on fire")
-
-    monkeypatch.setattr(app_module.engine_registry, "get_engine", _boom)
-    for method, path, body in [("post", "/api/rpc/stop-all", None),
-                               ("get", "/api/rpc-map", None),
-                               ("post", "/api/models/m/test", None),
-                               ("get", "/api/models/m/tune/status", None)]:
-        r = client.request(method, path, json=body)
+    """An invalid engine setting -> 400 carrying a clear ValueError, never
+    a silent fallback or a 500."""
+    with open(settings_file, "w", encoding="utf-8") as f:
+        f.write("engine: bogus\n")
+    for method, path in [("get", "/api/models"),
+                         ("get", "/api/settings")]:
+        r = client.request(method, path)
         assert r.status_code == 400, f"{method} {path}: {r.text}"
-        assert "disk on fire" in r.json()["detail"]
+        assert "invalid engine 'bogus'" in r.json()["detail"]
