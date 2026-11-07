@@ -68,28 +68,21 @@ blocks GPU tensors behind a single client connection.
 
 ## Generated scripts (`_render_rpc`, `generate_script`)
 
-Written to `generated/`, chmod 0700, LF endings. Structure:
+Written to `generated/`, chmod 0700, LF endings. Agent-only structure:
 
 ```
-stop_node_rpc_linux / stop_node_rpc_win   # per-port targeted kills only
-start_node_rpc_linux   # sshpass + setsid||nohup ggml-rpc-server -p $port --device ...
-start_node_rpc_win     # scp a per-peer .ps1, run via powershell
-main: start RPC peers, wait /dev/tcp, then llama-server with --rpc/--device
-trap → teardown on exit; peers may belong to co-served models (kills are
-per-port, never blanket pkill)
+agent_ensure(node)   # curl POST /rpc/ensure (port + devices + env)
+agent_stop(node)     # curl POST /rpc/stop
+main: start each peer through its agent, wait for port/open (or /rpc/list),
+      then run llama-server with --rpc/--device
+trap → stop only the peers this run started (per-port, co-serve safe)
 ```
 
-Rendered from an f-string: literal `{`/`}` in the bash output must be
-written `{{`/`}}` in the source — the same string also embeds PowerShell
-`{ }` blocks, which is the #1 source of escaping bugs here.
-
-Env baked into scripts: `GGML_SCHED_DEBUG=3` + `GGML_RPC_DEBUG=3`
-(visualizer + log tails ground truth), `CUDA_DEVICE_ORDER=PCI_BUS_ID`,
-`GGML_CUDA_P2P=1`, and RDMA gating (`GGML_RPC_NO_RDMA=1` default;
-`GGML_RDMA_DEV/GGML_RDMA_GID/USE_CM` when enabled).
-
-`$SSH_PASS` must be in the environment (see secrets.md) — the script
-fails fast with a clear message otherwise.
+No SSH/sshpass is emitted. Env baked into scripts: `GGML_SCHED_DEBUG=3` +
+`GGML_RPC_DEBUG=3` (visualizer + log tails ground truth),
+`CUDA_DEVICE_ORDER=PCI_BUS_ID`, `GGML_CUDA_P2P=1`, and RDMA gating
+(`GGML_RPC_NO_RDMA=1` default; `GGML_RDMA_DEV/GGML_RDMA_GID/USE_CM` when
+enabled). Agent tokens come from `swap-secrets.env` at runtime, never baked.
 
 ## llama-server command (`build_llama_command`)
 
@@ -105,6 +98,23 @@ fails fast with a clear message otherwise.
   comment in `build_llama_command`).
 - `--tensor-split`/`--n-gpu-layers` are skipped in fit mode (the fitter
   owns them; user-set ngl makes it abort).
+
+## Cleanup: scripts, cmdStop, and the orphan reaper
+
+Three layers, all per-port and co-serve safe:
+
+1. **Start-script EXIT trap** — stops only the peers that run actually
+   started (reused peers belong to whoever started them).
+2. **Explicit `cmdStop`** — script-mode RPC entries now get a generated
+   `stop-<model>.sh` that sources `swap-secrets.env` and kills exactly that
+   model's per-(peer, group) RPC ports. This no longer depends on the shell
+   trap surviving a hard kill or daemon shutdown.
+3. **Orphan reaper** (`src/reaper.py`) — periodic safety net. It compares
+   llama-swap's loaded/loading model list and local `llama-server --rpc`
+   endpoints against `ggml-rpc-server` processes on every machine. It never
+   touches a protected endpoint, a process younger than the grace period
+   (`FARM_REAPER_GRACE`, default 1800s), or a machine it cannot inspect.
+   Disable with `FARM_REAPER=0`; log-only with `FARM_REAPER_DRY_RUN=1`.
 
 ## Where things can silently disagree
 

@@ -16,11 +16,14 @@ machine as master. Chat testing is a native tab in the same UI (no extra service
 
 ## Running / restarting
 
-- The app does **not** hot-reload Python. After editing `src/*.py`,
-  restart: `./restart-llama-swap.sh` (kills llama processes + the old
-  app, restarts with the venv python, verifies the UI answers and the
-  served `app.js` is current). `./run.sh` (POSIX) / `run.bat` (Windows)
-  start it without killing llama processes.
+- The app does **not** hot-reload Python. After editing `src/*.py`:
+  - `./restart.sh` (or `--full`) — full restart: stops llama-swap and every
+    farm-managed llama/RPC process on all machines, restarts daemon + UI.
+  - `./restart.sh --ui` — web app only; leaves llama-swap, loaded models,
+    and their VRAM untouched.
+  - `./run.sh` (POSIX) / `run.bat` (Windows) — start the UI only if it is
+    not already running.
+  `restart-llama-swap.sh` is a backwards-compatible alias for `--full`.
 - Frontend `app.js` is cache-busted automatically: `index.html` links
   `app.js?v={{asset_v}}` where `asset_v` = file mtime + daemon boot id.
   A hard reload after restart is still wise during development.
@@ -52,7 +55,7 @@ machine as master. Chat testing is a native tab in the same UI (no extra service
 ```bash
 python3 -m py_compile src/*.py          # or each edited file
 node --check ui/static/app.js
-bash -n restart-llama-swap.sh run.sh    # if touched
+bash -n restart.sh restart-llama-swap.sh run.sh    # if touched
 ```
 
 ## Verification checklist for changes

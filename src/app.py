@@ -29,7 +29,6 @@ from fastapi.concurrency import run_in_threadpool
 import config_loader as cfg
 import engine_registry
 import settings_persister
-import vllm_manager
 import gpu_vendor
 import hf_downloader
 import local_node
@@ -38,21 +37,108 @@ import model_parser
 import path_resolver
 import stats_collector
 import rpc_manager
+import agent_client
+import reaper
 import gguf_inspect
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "ui", "templates"))
+from runtime_paths import asset_dir, data_dir, ensure_runtime_layout
+BASE_DIR = data_dir()
+ASSET_DIR = asset_dir()
+templates = Jinja2Templates(directory=os.path.join(ASSET_DIR, "ui", "templates"))
 templates.env.auto_reload = True  # pick up index.html edits without a restart
 
 app = FastAPI(title="Llama RPC Farm")
 
 
+_GATEWAY_SERVER = None
+
+
+def _port_open(port):
+    try:
+        import socket
+        s = socket.socket()
+        s.settimeout(0.3)
+        try:
+            return s.connect_ex(("127.0.0.1", int(port))) == 0
+        finally:
+            s.close()
+    except Exception:
+        return False
+
+
+def start_swap_gateway():
+    """Run the view/access-key gateway in-process on :8090.
+
+    Packaged builds have no source checkout to launch src/swap_gateway.py
+    as a separate service, and every client-facing path (README examples,
+    UI Chat/Tests) expects :8090. Embedding it keeps one binary and makes
+    the gateway lifecycle follow the app. If something already answers on
+    the port (legacy systemd gateway), leave it alone.
+    """
+    global _GATEWAY_SERVER
+    if _GATEWAY_SERVER is not None:
+        return
+    if (os.environ.get("FARM_GATEWAY_DISABLE") or "").lower() in (
+            "1", "true", "yes", "on"):
+        return
+    # pytest spins the app up repeatedly; never bind a real port there.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    try:
+        port = int(os.environ.get("GATEWAY_PORT") or 8090)
+    except ValueError:
+        port = 8090
+    if _port_open(port):
+        print(f"[gateway] :{port} already answering — using external gateway")
+        return
+    try:
+        import threading
+        import uvicorn
+        import swap_gateway
+        cfg = uvicorn.Config(
+            swap_gateway.app,
+            host=(os.environ.get("GATEWAY_HOST") or "0.0.0.0"),
+            port=port,
+            log_level="warning",
+            access_log=False,
+        )
+        server = uvicorn.Server(cfg)
+        thread = threading.Thread(target=server.run, daemon=True,
+                                  name="swap-gateway")
+        thread.start()
+        _GATEWAY_SERVER = server
+        print(f"[gateway] embedded swap gateway listening on "
+              f"{cfg.host}:{cfg.port}")
+    except Exception as e:
+        # A gateway failure must never take down the farm UI; clients can
+        # still target llama-swap :8080 directly.
+        print(f"[gateway] failed to start embedded gateway: {e}")
+
+
+@app.on_event("shutdown")
+def stop_swap_gateway():
+    global _GATEWAY_SERVER
+    if _GATEWAY_SERVER is not None:
+        _GATEWAY_SERVER.should_exit = True
+        _GATEWAY_SERVER = None
 
 
 @app.on_event("startup")
 def seed_local_master():
     """The machine running this app is the default master node."""
+    # Frozen/portable builds start with an empty data dir: create config/,
+    # generated/, model/usage dirs and minimal defaults before anything
+    # reads them. Best-effort, never blocks boot.
+    ensure_runtime_layout()
     local_node.ensure_local_master()
+    try:
+        import secrets as _secrets
+        import secrets_vault as _vault
+        if not _vault.farm_agent_token_set():
+            _vault.set_farm_agent_token(_secrets.token_urlsafe(32))
+    except Exception:
+        pass
+    start_swap_gateway()
     # DEC-17: one-time stamp of `engine` on legacy group entries (both
     # collections) so existing groups keep rendering under their engine.
     # Best-effort: a locked/read-only config dir never blocks boot.
@@ -63,9 +149,8 @@ def seed_local_master():
     # Engine reconcile at boot: whatever engine settings.yaml names is the
     # source of truth, so the swap host's config file (per-engine, DEC-03)
     # must be regenerated from the CURRENT model configs before anyone
-    # points a client at :8080 — otherwise a daemon left over from the
-    # previous engine (e.g. config.vllm.yaml after switching back to
-    # llama.cpp) keeps serving its stale entries until a manual Launch
+    # points a client at :8080 — otherwise a daemon left over from a
+    # previous run keeps serving its stale entries until a manual Launch
     # All. Best-effort + backgrounded: SSH/config trouble must never
     # block boot (same policy as migrate_group_engines above).
     import threading as _thr
@@ -79,6 +164,7 @@ def seed_local_master():
         import access as _access
         with _access.trust_current_thread():
             try:
+                _sm.sync_service_unit()
                 report = _sm.push_scripts()
                 if report.get("error"):
                     print(f"[boot-reconcile] push failed: {report['error']}")
@@ -99,6 +185,32 @@ def seed_local_master():
     _thr.Thread(target=_reconcile_swap, daemon=True,
                 name="boot-swap-reconcile").start()
 
+    def _cleanup_hf_cache():
+        try:
+            res = hf_downloader.cleanup_stale_cache()
+            if (res.get("removed_incomplete")
+                    or res.get("removed_locks")):
+                print(
+                    "[cache-cleanup] removed "
+                    f"{res['removed_incomplete']} incomplete, "
+                    f"{res['removed_locks']} lock file(s), "
+                    f"{res['removed_bytes'] / 1e9:.1f} GB; "
+                    f"skipped {res.get('skipped_active', 0)} active")
+            for err in (res.get("errors") or [])[:5]:
+                print(f"[cache-cleanup] {err}")
+        except Exception as e:
+            print(f"[cache-cleanup] skipped: {e}")
+
+    _thr.Thread(target=_cleanup_hf_cache, daemon=True,
+                name="boot-cache-cleanup").start()
+
+    # Conservative orphan RPC-server reaper (per-port kills only, protects
+    # loaded/loading models + active --rpc endpoints + young processes).
+    try:
+        reaper.start()
+    except Exception as e:
+        print(f"[reaper] start skipped: {e}")
+
 
 class NoCacheStaticFiles(StaticFiles):
     """Static assets must always revalidate — a stale cached app.js made
@@ -108,7 +220,7 @@ class NoCacheStaticFiles(StaticFiles):
         resp.headers["Cache-Control"] = "no-cache, must-revalidate"
         return resp
 
-app.mount("/static", NoCacheStaticFiles(directory=os.path.join(BASE_DIR, "ui", "static")), name="static")
+app.mount("/static", NoCacheStaticFiles(directory=os.path.join(ASSET_DIR, "ui", "static")), name="static")
 
 
 # ---------------- client-IP view gate ----------------
@@ -148,7 +260,65 @@ app.add_middleware(IpGateMiddleware)
 # HttpOnly, SameSite=Lax; the API key never needs to be pasted into a
 # browser — logging in IS the key adoption.
 
+def _access_filter_models(models):
+    """Apply the caller's exact-token allowlist to a model list.
+
+    gate_open (trusted console / unrestricted admin) sees everything.
+    A restricted caller with no grants sees NOTHING; a scoped caller sees
+    only granted base ids and granted variants.
+    """
+    if access.gate_open():
+        return models
+    allow = access.view_allow()
+    if not allow:
+        return []
+    from swap_gateway import _mid_allowed
+    out = []
+    for m in models:
+        if not isinstance(m, dict):
+            continue
+        mid = str(m.get("model_id") or m.get("id") or "")
+        variants = m.get("variants") or []
+        keep_vars = [v for v in variants
+                     if _mid_allowed(f"{mid}--{v.get('label')}", allow)]
+        if _mid_allowed(mid, allow) or keep_vars:
+            mm = dict(m)
+            if variants:
+                mm["variants"] = keep_vars
+            out.append(mm)
+    return out
+
+
 LOGIN_COOKIE = "farm_session"
+
+
+def _gateway_url(path=""):
+    """Local :8090 gateway URL; GATEWAY_PORT overrides for isolated tests."""
+    port = (os.environ.get("GATEWAY_PORT") or "8090").strip()
+    return f"http://127.0.0.1:{port}{path}"
+
+
+def _gateway_headers(request=None):
+    """Identity headers for a server-side call to the :8090 gateway.
+
+    The browser's farm session cookie resolves (inside the gateway) to the
+    logged-in user's access key, so usage/grants attribute to them without
+    ever exposing the key to JS. An explicit Bearer key also rides along.
+    """
+    h = {"Content-Type": "application/json", "Accept": "application/json"}
+    try:
+        sid = request.cookies.get(LOGIN_COOKIE) if request is not None else ""
+    except Exception:
+        sid = ""
+    if sid:
+        h["Cookie"] = f"{LOGIN_COOKIE}={sid}"
+    try:
+        tok = access.request_key(request) if request is not None else ""
+    except Exception:
+        tok = ""
+    if tok:
+        h["Authorization"] = f"Bearer {tok}"
+    return h
 
 
 @app.get("/api/auth/me")
@@ -534,7 +704,7 @@ def _asset_version():
     guarantees a fresh URL after every daemon restart, so Firefox can
     never serve a stale cached app.js against a new index.html."""
     try:
-        paths = [os.path.join(BASE_DIR, "ui", "static", f)
+        paths = [os.path.join(ASSET_DIR, "ui", "static", f)
                  for f in ("app.js", "style.css")]
         mt = str(int(max(os.path.getmtime(p) for p in paths)))
     except OSError:
@@ -562,9 +732,12 @@ class ExposeIn(pydantic.BaseModel):
 class MachineIn(pydantic.BaseModel):
     name: str
     ip: str
-    username: str
+    username: str = ""
     password: str = ""
     port: int = 22
+    transport: str = "agent"    # agent-only (kept for config compatibility)
+    agent_port: int = 8198
+    agent_token: str = ""       # write-only; stored in the vault, never YAML
     role: str = "peer"
     os: str = "linux"
     gpu_vendor: str = "nvidia"   # nvidia | amd | cpu
@@ -588,148 +761,154 @@ class MachineIn(pydantic.BaseModel):
     # rdma_cm: use rdma_cm QP path resolution (ConnectX-3/mlx4). Unset = upstream
     # raw ibv_modify_qp path. TCP always available via rdma=False.
     rdma_cm: bool = False
-    # DEC-03 (AUDIT-T6 §1.6): per-machine swap-config overrides, same shape
-    # as vllm_delivery — empty = inherit the global per-engine path
-    # (swap.yaml config_path / config_path_vllm), non-empty = pin THIS
-    # machine's llama-swap config file for that engine.
+    # DEC-03 (AUDIT-T6 §1.6): per-machine swap-config overrides — empty =
+    # inherit the global per-engine path (swap.yaml config_path), non-empty
+    # = pin THIS machine's llama-swap config file.
     swap_config_path: str = ""
-    swap_config_path_vllm: str = ""
-
-
-def _vllm_capability(machine):
-    """HW-PARITY audit (t_a80c72a6 §3b) — full hardware capability gate for
-    one machine record, shared by /api/machines status and list.
-
-    Returns (capable, reason, info):
-      capable  bool  — may select/use this host with the vLLM engine
-      reason   str   — why not, verbatim for the UI tooltip ("" when capable)
-      info     str   — caveat for CAPABLE hosts ("" mostly): shown as an
-                       info note, never a grey-out.
-
-    incapable (audit Section 3b): windows (vLLM needs WSL2), macOS (the farm
-    never installs vLLM-Metal), intel/CPU vendors (llama.cpp SYCL/CPU only).
-    capable: linux + nvidia. capable WITH caveat: linux + amd (ROCm wheels:
-    py3.12 only, wheels.vllm.ai/rocm, glibc>=2.39 x86_64, HIP verified
-    post-install) and linux with gpu_vendor unset (install gates at runtime
-    on nvidia-smi/rocm-smi presence — not pre-greyed, just annotated).
-    Vendor is normalized via gpu_vendor.normalize_vendor ('rocm'/'hip' ->
-    'amd', 'sycl'/'xpu' -> 'intel', ...) so YAML spelling cannot dodge the
-    gate. Derived response-only; never persisted to the machine store."""
-    os_type = (machine.get("os") or "linux").strip().lower()
-    vendor = gpu_vendor.normalize_vendor(machine.get("gpu_vendor"))
-    if os_type == "windows":
-        return False, "vLLM requires Linux (WSL2 for Windows hosts)", ""
-    if os_type == "macos":
-        return False, ("vLLM does not support macOS in the farm — vLLM-Metal "
-                       "is a separate package the farm does not install; use "
-                       "llama.cpp (Metal) or the MLX runtime"), ""
-    if vendor == "intel":
-        return False, ("vLLM does not support this host via the farm "
-                       "installer — llama.cpp (SYCL) required"), ""
-    if vendor == "cpu":
-        return False, ("vLLM does not support CPU-only hosts — llama.cpp "
-                       "(CPU build) required"), ""
-    if os_type == "linux" and vendor in ("nvidia", "amd", ""):
-        if vendor == "amd":
-            return True, "", ("ROCm wheels: Python 3.12 only, from "
-                              "wheels.vllm.ai/rocm (0.30.0 ships rocm723, "
-                              "glibc >= 2.39, x86_64). Installer verifies "
-                              "the HIP backend after install.")
-        if vendor == "":
-            return True, "", ("gpu_vendor unknown — vLLM install requires "
-                              "nvidia-smi or rocm-smi on the host; install "
-                              "will gate at runtime.")
-        return True, "", ""
-    # unreachable per the branches above; conservative default
-    return False, "vLLM requires Linux with an nvidia or amd GPU", ""
 
 
 @app.get("/api/machines")
 async def list_machines():
-    """Return machine list with full hardware vllm capability on each
-    entry (HW-PARITY audit §3b): vllm_capable + vllm_capability_reason +
-    vllm_capability_info. Incapable hosts (windows/macos/intel/cpu) get
-    false + the reason string the UI shows in its info tooltip; ROCm and
-    unknown-vendor linux hosts stay capable but carry an info caveat.
-    (ARD §5 — research pitfall.) Derived from the stored os + gpu_vendor
-    fields only; records are copied so neither the flags nor resolved
-    secrets leak into the machine store/YAML."""
+    """Return the machine list. Records are copied so neither the flags nor
+    resolved secrets leak into the machine store/YAML."""
     # never leak resolved passwords to the browser — in-memory only
     out = []
     for m in cfg.machines.all():
         m = dict(m)  # copy: the flags are response-only
-        capable, reason, info = _vllm_capability(m)
-        m["vllm_capable"] = capable
-        m["vllm_capability_reason"] = reason
-        m["vllm_capability_info"] = info
+        try:
+            import secrets_vault as _vault
+            m["agent_token_set"] = bool(_vault.machine_agent_token_set(m))
+        except Exception:
+            m["agent_token_set"] = False
         m.pop("password", None)
         out.append(m)
     return out
 
 
+def _machine_connection_caps(machine):
+    """Detect usable transport for one machine: local or peer agent."""
+    name = machine.get("name") or machine.get("id") or "?"
+    try:
+        if local_node.is_local(machine):
+            return {"name": name, "mode": "local", "local": True,
+                    "ssh": False, "agent": False}
+    except Exception:
+        pass
+    try:
+        agent_client.health(machine, timeout=3.0)
+        return {"name": name, "mode": "agent", "local": False,
+                "ssh": False, "agent": True}
+    except Exception:
+        return {"name": name, "mode": "none", "local": False,
+                "ssh": False, "agent": False}
+
+@app.get("/api/machines/connections")
+async def machine_connections():
+    machines = cfg.machines.all()
+    def one(m):
+        return m.get("name"), _machine_connection_caps(m)
+    with ThreadPoolExecutor(max_workers=min(32, len(machines) or 1)) as pool:
+        return dict(pool.map(one, machines))
+
+
+class AgentCheckIn(pydantic.BaseModel):
+    ip: str
+    agent_port: int = 8198
+    agent_token: str = ""
+    name: str = ""
+
+
+@app.post("/api/machines/agent-check")
+async def machine_agent_check(p: AgentCheckIn):
+    """Pre-save peer-agent reachability check for the add/edit form."""
+    try:
+        port = int(p.agent_port or 8198)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="agent port must be an integer")
+    if not 1 <= port <= 65535:
+        raise HTTPException(status_code=400, detail="agent port must be in 1..65535")
+    existing = cfg.machines.get(p.name) if p.name else None
+    machine = {"name": p.name or p.ip, "ip": p.ip, "agent_port": port,
+               "transport": "agent",
+               "id": (existing or {}).get("id")}
+    try:
+        out = await run_in_threadpool(
+            agent_client.health, machine, 4.0, p.agent_token or None)
+    except Exception:
+        # Unpaired agent + farm token: enroll automatically, then retry.
+        try:
+            import secrets_vault as _vault
+            farm = _vault.get_farm_agent_token()
+            if farm and not p.agent_token:
+                await run_in_threadpool(agent_client.pair, machine, farm)
+                out = await run_in_threadpool(
+                    agent_client.health, machine, 4.0, farm)
+            else:
+                raise
+        except Exception as e:
+            raise HTTPException(status_code=502,
+                                detail=f"peer agent unreachable: {e}")
+    return {"ok": True, **out}
+
+
 def _ssh_port_guard(machine):
-    """Fail fast with an actionable error when a new (non-local) machine
-    refuses SSH — typically a fresh host with the SSH port closed.
-    Returns None when fine or when the check doesn't apply (local node)."""
+    """Fail fast with an actionable error when a new (non-local) machine's
+    peer agent is unreachable. Agent-only: there is no SSH preflight."""
     try:
         if local_node.is_local(machine):
             return None
     except Exception:
         pass
-    from ssh_manager import SSHManager
-    ssh = SSHManager(
-        machine.get("ip", ""), machine.get("username", ""),
-        machine.get("password", ""), port=machine.get("port", 22),
-    )
-    return ssh.ssh_port_error(timeout=4)
-
-
-class FingerprintIn(pydantic.BaseModel):
-    ip: str
-    port: int = 22
-    username: str = "zazi"
-    os: str = "linux"
-
-
-@app.post("/api/machines/fingerprint")
-async def machine_fingerprint(p: FingerprintIn):
-    """SSH host-key fingerprint WITHOUT login (key exchange is pre-auth).
-    Used by the add-machine wizard so first-time hosts are shown + trusted
-    on first use; returns whether we already know this host."""
-    import ssh_manager
     try:
-        fp = await run_in_threadpool(
-            ssh_manager.host_fingerprint, p.ip, p.port)
+        agent_client.health(machine, timeout=4)
+        return None
     except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    known = ssh_manager.load_known_hosts().get(
-        ssh_manager._host_id(p.ip, p.port))
-    return {**fp, "ip": p.ip, "port": p.port,
-            "known": bool(known),
-            "stored_fingerprint": (known or {}).get("fingerprint")}
+        return f"peer agent unreachable: {e}"
+
 
 
 # DEC-03 (AUDIT-T6 §1.6): validated per-machine swap-config overrides —
 # runs on the machine save path (add/update) so a bad value never lands
-# in machines.yaml (same strictness as vllm_delivery).
+# in machines.yaml.
 def _validate_machine_swap_config(payload):
-    for engine in ("llama_cpp", "vllm"):
-        cfg.machine_swap_config_override(payload, engine)
+    cfg.machine_swap_config_override(payload, cfg.ENGINE_LLAMA_CPP)
 
+
+def _validate_machine_connection(payload):
+    """Agent-only machines: normalize the agent port and drop legacy SSH
+    transport/password fields so they never land in machines.yaml."""
+    try:
+        agent_port = int(payload.get("agent_port") or 8198)
+    except (TypeError, ValueError) as e:
+        raise ValueError("agent_port must be an integer") from e
+    if not 1 <= agent_port <= 65535:
+        raise ValueError("agent_port must be in 1..65535")
+    payload["transport"] = "agent"
+    payload["agent_port"] = agent_port
+    payload["password"] = ""
 
 @app.post("/api/machines")
 async def add_machine(m: MachineIn):
     try:
         payload = m.model_dump()
+        agent_token = payload.pop("agent_token", "")
+        if agent_token:
+            import uuid
+            payload.setdefault("id", uuid.uuid4().hex[:8])
+            import secrets_vault as _vault
+            _vault.set_machine_agent_token(payload["id"], agent_token)
         if not payload.get("password"):
             # fresh add with key-auth (no password): nothing to fill
             pass
         _validate_machine_swap_config(payload)
+        _validate_machine_connection(payload)
         detail = _ssh_port_guard(payload)
         if detail:
             raise HTTPException(status_code=400, detail=detail)
         saved = cfg.machines.add(payload)
         saved = dict(saved)
+        saved["agent_token_set"] = bool(agent_token) or bool(
+            __import__("secrets_vault").machine_agent_token_set(saved))
         saved.pop("password", None)
         return saved
     except ValueError as e:
@@ -740,6 +919,12 @@ async def add_machine(m: MachineIn):
 async def update_machine(name: str, m: MachineIn):
     try:
         payload = m.model_dump()
+        agent_token = payload.pop("agent_token", "")
+        if agent_token:
+            import secrets_vault as _vault
+            target = cfg.machines.get(name) or {}
+            _vault.set_machine_agent_token(target.get("id") or name,
+                                           agent_token)
         if not payload.get("password"):
             # blank = keep vault password: resolve it for the pre-save
             # SSH guard so edits don't falsely fail auth
@@ -750,12 +935,15 @@ async def update_machine(name: str, m: MachineIn):
             except Exception:
                 pass
         _validate_machine_swap_config(payload)
+        _validate_machine_connection(payload)
         detail = _ssh_port_guard(payload)
         if detail:
             raise HTTPException(status_code=400, detail=detail)
-        saved = cfg.machines.update(name, m.model_dump())
+        saved = cfg.machines.update(name, payload)
         saved = dict(saved)
         saved.pop("password", None)
+        saved["agent_token_set"] = bool(agent_token) or bool(
+            __import__("secrets_vault").machine_agent_token_set(saved))
         return saved
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -853,9 +1041,7 @@ def _detect_rdma_nic(machine, is_local):
             return {}
     else:
         try:
-            from ssh_manager import SSHManager
-            ssh = SSHManager(machine["ip"], machine["username"], machine.get("password", ""), port=machine.get("port", 22))
-            code, out, _ = ssh.run(remote_script, timeout=20)
+            return agent_client.rdma(machine) or {}
         except Exception:
             return {}
     for line in (out or "").splitlines():
@@ -870,32 +1056,52 @@ def _detect_rdma_nic(machine, is_local):
 
 class ProbeIn(pydantic.BaseModel):
     ip: str
-    username: str = "zazi"
-    password: str = ""
-    port: int = 22
     os: str = "linux"
     gpu_vendor: str = "nvidia"
     rpc_port: int = 50052
-
+    agent_port: int = 8198
+    agent_token: str = ""
+    name: str = ""
 
 @app.post("/api/machines/probe")
 async def probe_hardware(p: ProbeIn):
     """Detect hardware from raw form inputs -- works for machines that
     aren't saved yet. Returns gpu list + RAM + detected block; persists
     nothing."""
-    machine = {"name": p.ip, **p.model_dump()}
-    # Explicit SSH-port check first so a fresh host with port 22 closed
-    # gets "SSH rejected: port 22 not open ..." instead of "unreachable".
+    existing = cfg.machines.get(p.name) if p.name else None
+    machine = {"name": p.name or p.ip, "ip": p.ip, "os": p.os,
+               "gpu_vendor": p.gpu_vendor, "rpc_port": p.rpc_port,
+               "agent_port": p.agent_port, "transport": "agent",
+               "id": (existing or {}).get("id")}
+    if local_node.is_local(machine):
+        machine["gpu_vendor"] = ""  # detect the real local vendor
+    if p.agent_token:
+        machine["_agent_token"] = p.agent_token
     detail = _ssh_port_guard(machine)
     if detail:
         raise HTTPException(status_code=503, detail=detail)
 
     def run():
+        if not local_node.is_local(machine):
+            try:
+                agent_client.health(machine, timeout=4)
+            except Exception:
+                try:
+                    import secrets_vault as _vault
+                    farm = _vault.get_farm_agent_token()
+                    if farm:
+                        agent_client.pair(machine, farm)
+                except Exception:
+                    pass
         s = stats_collector.machine_stats(machine)
         if s["status"] != "online":
             return {"online": False}
+        vendor = (s.get("gpu_vendor")
+                  or machine.get("gpu_vendor") or "nvidia")
+        machine["gpu_vendor"] = vendor
         return {
             "online": True,
+            "gpu_vendor": vendor,
             "gpu": ",".join(gpu_vendor.gpu_token(machine, g["index"]) for g in s["gpus"]),
             "ram_total_gb": float(math.floor(s["ram_total_gb"])) if s["ram_total_gb"] else None,
             "cores": s["cores"],
@@ -912,20 +1118,21 @@ async def probe_hardware(p: ProbeIn):
     if not result["online"]:
         raise HTTPException(
             status_code=503,
-            detail=f"{p.ip} is unreachable over SSH (port {p.port} open but "
-                   f"login/command failed) — check username/password and that "
-                   f"'echo ok' works via plain ssh")
+            detail=f"{p.ip} is unreachable over the peer agent "
+                   f"(port {p.agent_port}) — install/start the agent there "
+                   f"and check the token")
     result["detected"] = result.get("detected") or {}
     return result
 
 
 class DiscoverIn(pydantic.BaseModel):
-    subnet: str = ""          # empty = local /24
-    port: int = 22
-    username: str = ""        # empty = try creds from saved machines
-    password: str = ""
     include_known: bool = False  # hide already-added machines by default
-    ping: bool = True         # ICMP sweep: show live hosts without SSH too
+    subnet: str = ""             # accepted for UI compatibility; ignored
+    port: int = 0
+    username: str = ""
+    password: str = ""
+    ping: bool = False
+    agent_only: bool = True
 
 
 @app.get("/api/discover/subnets")
@@ -938,23 +1145,18 @@ async def discover_subnets():
 
 @app.post("/api/discover")
 async def discover_hosts(p: DiscoverIn):
-    """Scan a subnet: ICMP ping for live hosts, TCP sweep for open SSH
-    port, banner-grab the OS pre-auth (no login needed). SSH login is
-    only optional enrichment (hostname/GPUs). Persists nothing."""
+    """Scan the LAN for peer agents (UDP discovery). No SSH scan: peers
+    are agent-installed machines, identified by MAC/hostname."""
     import discovery
 
-    creds = [(p.username, p.password)] if p.username else None
-
     def run():
-        return discovery.discover(
-            subnet=p.subnet or None, port=p.port, credentials=creds,
-            include_known=p.include_known, ping=p.ping)
+        discovery.pair_agents(include_known=True)
+        return discovery.discover_agents(include_known=p.include_known)
 
     result = await run_in_threadpool(run)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
-
 
 @app.post("/api/machines/detect-all")
 async def detect_all():
@@ -968,8 +1170,12 @@ async def detect_all():
             return None
         if stats["status"] != "online":
             return None
-        gpus = [gpu_vendor.gpu_token(m, g["index"]) for g in stats["gpus"]]
+        vendor = (stats.get("gpu_vendor")
+                  or m.get("gpu_vendor") or "nvidia")
+        m2 = dict(m, gpu_vendor=vendor)
+        gpus = [gpu_vendor.gpu_token(m2, g["index"]) for g in stats["gpus"]]
         upd = {
+            "gpu_vendor": vendor,
             "gpu": ",".join(gpus),
             "detected": {
                 "gpu_names": [g["name"] for g in stats["gpus"]],
@@ -1063,6 +1269,17 @@ def hw_watch_once():
 def _hw_watcher_loop():
     while _hw_watcher_state["running"]:
         try:
+            # MAC-based IP healing: the agent's UDP responder reports its
+            # current addresses, so DHCP re-leases fix themselves.
+            import discovery
+            discovery.pair_agents(include_known=True)
+            healed = discovery.reconcile_machine_ips()
+            if healed:
+                print("[ip-sync] updated: " + ", ".join(
+                    f"{n} {o}->{i}" for n, o, i in healed))
+        except Exception as e:
+            print(f"[ip-sync] reconcile failed: {e}")
+        try:
             res = hw_watch_once()
             if res["changed"]:
                 print(f"[hw-watcher] hardware changed on: {res['changed']}"
@@ -1095,43 +1312,11 @@ async def machine_status(name: str):
         st = await run_in_threadpool(rpc_manager.machine_status, name)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    # B5a2 + DEC-06: the serving signal is engine-owned. In swap-only
-    # modes (vLLM) the adapter probes /health on the llama-swap listen
-    # port and the payload is tagged so the UI renders it engine-aware.
-    # llama.cpp mode returns the machine_status dict exactly as before.
-    try:
-        engine = engine_registry.get_engine()
-    except ValueError:
-        return st  # unreadable settings: keep the llama.cpp payload
-    if not engine.capable("rpc_cluster"):
-        try:
-            machine = cfg.machines.require(name)
-            port = swap_manager.load_settings().get("listen_port") or 8080
-            st[engine.engine_id] = engine.probe(machine, port,
-                                                local_node.is_local(machine))
-        except Exception as e:
-            st[engine.engine_id] = {"running": False,
-                                    "detail": f"probe failed: {e}"}
-        st["engine"] = engine.engine_id
     return st
 
 
 @app.post("/api/machines/{name}/rpc/start")
 async def start_rpc(name: str):
-    # G-3 + DEC-06: starting ggml-rpc-server processes is an
-    # rpc_cluster-capability concept — vLLM serves over HTTP from one
-    # host, there is nothing to start. Explicit 409 (same shape as the
-    # /api/launch vLLM refusal), never a silent no-op; the stop endpoints
-    # stay reachable for cleanup.
-    try:
-        engine = engine_registry.get_engine()
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from None
-    if not engine.capable("rpc_cluster"):
-        raise HTTPException(
-            status_code=409,
-            detail="vLLM mode does not use RPC servers — start the model "
-                   "through llama-swap instead (Launch All / /api/swap/*)")
     try:
         return await run_in_threadpool(rpc_manager.start_rpc, name)
     except Exception as e:
@@ -1149,22 +1334,6 @@ async def stop_rpc(name: str):
 @app.post("/api/rpc/stop-all")
 async def stop_all_rpc():
     """Kill leftover rpc-servers on every machine (both OS types)."""
-    # B16 + DEC-06: rpc-server cleanup is rpc_cluster-capability only,
-    # and both rpc-server START paths are already G-3 gated — under a
-    # swap-only engine no peers ever spawn, so the only cleanup that
-    # exists is the swap daemon itself (swap_manager.stop,
-    # POST /api/swap/stop). Explicit 409 (same shape as /api/launch),
-    # never a silent no-op; stale peers from a pre-vLLM llama.cpp session
-    # are cleared by switching the engine back and running this once.
-    try:
-        engine = engine_registry.get_engine()
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from None
-    if not engine.capable("rpc_cluster"):
-        raise HTTPException(
-            status_code=409,
-            detail="vLLM mode does not use RPC clustering — serve models "
-                   "through llama-swap (Launch All / /api/swap/*)")
     names = [m["name"] for m in cfg.machines.all()]
     with ThreadPoolExecutor(max_workers=len(names) or 1) as pool:
         results = list(pool.map(rpc_manager.stop_rpc, names))
@@ -1175,22 +1344,11 @@ async def stop_all_rpc():
 async def start_all():
     """Start everything: RPC servers on every machine, then the
     llama-swap daemon with saved settings. Always 200 — per-part
-    failures live inside the payload so the UI can show details.
-    G-3: under vLLM the RPC phase is skipped (llama.cpp-only concept —
-    vLLM serves over HTTP from the swap host); the payload reports
-    rpc: {skipped: true} so the UI shows an honest summary."""
+    failures live inside the payload so the UI can show details."""
     def run():
-        try:
-            engine = engine_registry.get_engine()
-        except ValueError as e:
-            raise ValueError(f"engine settings unreadable: {e}") from None
-        if not engine.capable("rpc_cluster"):
-            rpc_results = [{"skipped": True,
-                            "reason": "vLLM mode: no RPC servers to start"}]
-        else:
-            names = [m["name"] for m in cfg.machines.all()]
-            with ThreadPoolExecutor(max_workers=len(names) or 1) as pool:
-                rpc_results = list(pool.map(rpc_manager.start_rpc, names))
+        names = [m["name"] for m in cfg.machines.all()]
+        with ThreadPoolExecutor(max_workers=len(names) or 1) as pool:
+            rpc_results = list(pool.map(rpc_manager.start_rpc, names))
         try:
             swap_report = swap_manager.launch(None, None, None, None)
         except ValueError as e:
@@ -1284,8 +1442,8 @@ def _engine_groups(collection):
     """DEC-17: only the ACTIVE engine's group entries. Missing `engine`
     (legacy YAML) reads as llama_cpp — same default the collection
     stamps on write, so un-migrated files keep rendering under
-    llama_cpp and never appear under vllm. access.py: groups holding a
-    private member additionally vanish in a restricted view."""
+    llama_cpp. access.py: groups holding a private member additionally
+    vanish in a restricted view."""
     engine = _active_engine_name()
     out = []
     for g in [g for g in collection.all()
@@ -1299,9 +1457,7 @@ def _engine_groups(collection):
 def _stamp_group_engine(item: dict) -> dict:
     """Migration (DEC-17): stamp the ACTIVE engine on a group being
     created/updated. New groups are born engine-qualified; an update
-    re-stamps only when the stored engine is missing (legacy entry
-    touched under vllm stays llama_cpp — hidden, never migrated away
-    from its birth engine)."""
+    re-stamps only when the stored engine is missing."""
     item.setdefault("engine", _active_engine_name())
     return item
 
@@ -1385,8 +1541,7 @@ async def list_swap_groups():
 
 @app.post("/api/swap-groups")
 async def add_swap_group(g: SwapGroupIn):
-    # DEC-17: new serve groups are stamped with the active engine (the
-    # user's vllm groups born under vllm show up under vllm only).
+    # DEC-17: new serve groups are stamped with the active engine.
     data = _stamp_group_engine(g.model_dump())
     _swap_group_write_guard(data, new_group=True)
     try:
@@ -1443,10 +1598,6 @@ class VariantIn(pydantic.BaseModel):
     llama_bin: str | None = None
     expose: dict | None = None
     flags: dict | None = None
-    # A2: per-variant vllm: overrides — shallow dict merge over the
-    # primary's section (same partial-override semantics as flags), so a
-    # variant on a weak-GPU machine can carry its own gmu/cpu-offload.
-    vllm: dict | None = None
     pinned: bool | None = None
     ttl: int | None = None
 
@@ -1469,7 +1620,6 @@ class ModelConfigIn(pydantic.BaseModel):
     device_order_policy: str = "as-selected"  # as-selected | vram-first
     expose: dict = {}
     flags: dict = {}
-    vllm: dict | None = None  # per-model vllm: section (additive; None = absent)
     # custom runtime (external server, e.g. winbox .bat passthrough):
     # round-trips verbatim so custom models are editable/deletable saved
     # configs like any other model; validated below on save.
@@ -1482,8 +1632,8 @@ class ModelConfigIn(pydantic.BaseModel):
 @app.get("/api/models")
 async def list_saved_models(full: bool = False):
     # DEC-11 (T4-G6): the Models table lists only models the ACTIVE
-    # engine serves — adapter filter (llama.cpp: GGUF; vLLM: HF dirs),
-    # the same downloads.vocabulary gate /api/scan applies to sources.
+    # engine serves — adapter filter (llama.cpp: GGUF), the same
+    # downloads.vocabulary gate /api/scan applies to sources.
     # full=1: the ACCESS-TAB grant grid needs the WHOLE catalog (base +
     # every variant) so the operator can grant anything — allowed only
     # for control identities (trusted console / admin key). Scoped
@@ -1514,7 +1664,7 @@ async def list_saved_models(full: bool = False):
         engine = engine_registry.get_engine()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
-    return engine.filter_models(cfg.list_models())
+    return _access_filter_models(engine.filter_models(cfg.list_models()))
 
 
 @app.get("/api/rpc-map")
@@ -1523,19 +1673,6 @@ async def rpc_map_all():
     generated scripts count devices (peer order = --rpc order; per peer:
     selected GPUs by index, then CPU iff RAM selected). The visualizer
     resolves sched-log RPC tokens through this instead of guessing."""
-    # B16 + DEC-06: RPC numbering is an rpc_cluster concept — there is no
-    # RPC<N> map under a swap-only engine (no sched-log RPC tokens exist
-    # to resolve). Explicit 409 (same shape as /api/launch), never an
-    # empty misleading map.
-    try:
-        engine = engine_registry.get_engine()
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from None
-    if not engine.capable("rpc_cluster"):
-        raise HTTPException(
-            status_code=409,
-            detail="vLLM mode does not use RPC clustering — serve models "
-                   "through llama-swap (Launch All / /api/swap/*)")
     out = {}
     host = swap_manager.get_host()
     for m in cfg.list_models():
@@ -1687,10 +1824,8 @@ async def save_model(m: ModelConfigIn, request: Request):
                     unknown = [s for s in v.servers if s not in allowed]
                     if unknown:
                         raise HTTPException(status_code=400, detail=f"variant '{lab}': servers {unknown} not in group '{v.group}' (group has {sorted(allowed)})")
-            # servers must exist (if any). DEC-10: the vllm variant modal
-            # saves variants with NO servers selection (single-host engine
-            # — the hardware step carries no machines), so v.servers may
-            # be None; treat it as empty instead of crashing the save.
+            # servers must exist (if any). v.servers may be None from
+            # clients that skip the hardware step; treat it as empty.
             valid_machines = {mm["name"] for mm in cfg.machines.all()}
             unknown_v = [s for s in (v.servers or []) if s not in valid_machines]
             if unknown_v:
@@ -1733,53 +1868,12 @@ async def save_model(m: ModelConfigIn, request: Request):
         if not data.get("runtime") or data.get("runtime") == "llama":
             data.pop("runtime", None)  # default stays unfiled (legacy files)
         orig = (data.pop("original_model_id", "") or "").strip()
-        # engine-adapter validation (B5a2, ARD §4): in vllm mode the
-        # adapter checks the PAYLOAD before any file write — errors
-        # reject the save (400), warnings ride along in the response.
-        # llama.cpp mode keeps the byte-identical save path: its
+        # llama.cpp keeps the byte-identical save path: its
         # validate_model_config is disk-based (POST /api/models/{id}/test
         # validates the stored config against real hardware), so calling
         # it here would 400 every brand-new model ("not found" on disk)
         # and validate stale data on edits.
-        try:
-            engine = engine_registry.get_engine()
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from None
-        # DEC-09: the B11c save-path auto-translation is retired per the
-        # user directive (zero cross-engine warnings — separation, not
-        # better warnings). Each engine saves its own vocabulary verbatim;
-        # a NEW vllm model missing its `vllm:` section gets the
-        # live-validated farm defaults (see vllm_new_model_defaults)
-        # filled in here — the editor shows the same prefill, so the
-        # user never starts from an empty card. An EDIT that clears the
-        # section still fails loudly at launch, unchanged.
         validation_warnings = []
-        if engine.name == "vllm":
-            if not data.get("vllm") and not cfg.get_model(mid):
-                data["vllm"] = vllm_manager.vllm_new_model_defaults()
-            # G-10: the Engine×OS gate — vLLM refuses Windows/macOS hosts
-            # (and ROCm hosts below Python 3.12). The model's deployment
-            # targets explicit `servers`, else its group's machines, else
-            # every machine; adapter errors reject the save (400) so a
-            # model can never be filed with hosts the engine can't serve.
-            hosts = (m.servers
-                     or (cfg.groups.get(m.group) or {}).get("machines")
-                     or [mm["name"] for mm in cfg.machines.all()])
-            by_name = {mm["name"]: mm for mm in cfg.machines.all()}
-            host_errors = engine.validate_hosts(
-                [by_name[n] for n in hosts if n in by_name])
-            if host_errors:
-                raise HTTPException(
-                    status_code=400,
-                    detail="model config invalid: " + "; ".join(host_errors))
-            issues = engine.validate_model_config(data)
-            errors = [i["msg"] for i in issues if i.get("level") == "error"]
-            validation_warnings = [i["msg"] for i in issues
-                                   if i.get("level") == "warn"]
-            if errors:
-                raise HTTPException(
-                    status_code=400,
-                    detail="model config invalid: " + "; ".join(errors))
         saved = cfg.save_model(mid, data)
         if orig and orig != mid:
             # rename: remove the orphaned old file (plus its seed, if any)
@@ -1937,54 +2031,12 @@ async def delete_model(model_id: str):
 async def test_model(model_id: str):
     """Instant static config check (no side effects). Live verification
     is covered by Tune, which loads and benches the real artifact."""
-    # B16 + DEC-06: engine-routed validation. llama.cpp mode keeps the
-    # disk-based rpc_manager.validate_model; vllm mode routes to the
-    # engine adapter's config validator (vllm_manager.validate_model_config
-    # — pure function of the stored model config, same issues shape).
-    # Semantics match the B5a2 pre-save gate: errors -> 400 with the issue
-    # messages, warnings ride along under ok:true. rpc_manager is NEVER
-    # touched in vllm mode.
-    try:
-        engine = engine_registry.get_engine()
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from None
-    if not engine.capable("rpc_cluster"):
-        model = cfg.get_model(model_id)
-        if model is None:
-            raise HTTPException(status_code=404,
-                                detail=f"model '{model_id}' not found")
-        issues = engine.validate_model_config(model)
-        errors = [i["msg"] for i in issues if i.get("level") == "error"]
-        if errors:
-            raise HTTPException(status_code=400,
-                                detail="model config invalid: "
-                                       + "; ".join(errors))
-        return JSONResponse(
-            {"model_id": model_id, "ok": True,
-             "issues": [i for i in issues if i.get("level") == "warn"]})
     report = await run_in_threadpool(rpc_manager.validate_model, model_id)
     status = 200 if report.get("ok") else 500
     return JSONResponse(report, status_code=status)
 
 
 # ---------------- auto-tune (math first, live-verify after) ----------------
-def _refuse_tuner_in_vllm():
-    """B16: the tuner is llama.cpp-only (VRAM/KV math over RPC device
-    maps; its live-verify loads llama-server). ui_hints.hidden_panels
-    already hides every tuner panel under vLLM — the API must refuse too,
-    so a stale/hidden UI or a direct call can't run llama.cpp math.
-    Explicit 409 (same shape as /api/launch), never a silent no-op."""
-    try:
-        engine = engine_registry.get_engine()
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from None
-    if engine.name == "vllm":
-        raise HTTPException(
-            status_code=409,
-            detail="Tuner is llama.cpp-specific (VRAM/KV math); "
-                   "hidden in vLLM mode")
-
-
 class TuneEstimateIn(pydantic.BaseModel):
     base_path: str = ""
     servers: list[str] = []
@@ -1997,7 +2049,6 @@ class TuneEstimateIn(pydantic.BaseModel):
 async def tune_estimate_form(t: TuneEstimateIn):
     """Math-only estimate for the model form (unsaved): hardware MUST be
     selected in the form (servers + device_order chips). 0 loads."""
-    _refuse_tuner_in_vllm()
     import tuner
     try:
         master = None
@@ -2017,7 +2068,6 @@ async def tune_estimate_form(t: TuneEstimateIn):
 
 @app.get("/api/models/{model_id}/tune/estimate")
 async def tune_estimate_saved(model_id: str):
-    _refuse_tuner_in_vllm()
     import tuner
     m = cfg.get_model(model_id)
     if m is None:
@@ -2041,7 +2091,6 @@ async def tune_estimate_saved(model_id: str):
 async def tune_apply_defaults(model_id: str):
     """Apply safe defaults (q8 KV, MTP on iff file has draft tensors,
     vram-first fit) to a saved model. No loads."""
-    _refuse_tuner_in_vllm()
     import tuner
     m = cfg.get_model(model_id)
     if m is None:
@@ -2085,7 +2134,6 @@ async def tune_start(model_id: str, t: TuneStartIn):
                    f"first (it auto-saves under the proper model id) then tune")
     if cfg.get_model(model_id) is None:
         raise HTTPException(status_code=404, detail=f"model '{model_id}' not found (did you delete it? re-save the form first)")
-    _refuse_tuner_in_vllm()
     try:
         return await run_in_threadpool(
             tuner.start_tune, model_id, t.target_tps, t.port, t.try_mtp_off)
@@ -2095,14 +2143,12 @@ async def tune_start(model_id: str, t: TuneStartIn):
 
 @app.get("/api/models/{model_id}/tune/status")
 async def tune_status(model_id: str):
-    _refuse_tuner_in_vllm()
     import tuner
     return tuner.job_status(model_id)
 
 
 @app.post("/api/models/{model_id}/tune/cancel")
 async def tune_cancel(model_id: str):
-    _refuse_tuner_in_vllm()
     import tuner
     return await run_in_threadpool(tuner.cancel_tune, model_id)
 
@@ -2110,7 +2156,6 @@ async def tune_cancel(model_id: str):
 @app.get("/api/models/{model_id}/tune/drift")
 async def tune_drift(model_id: str):
     """Seed-vs-live config drift (the 5→24 incident class). No loads."""
-    _refuse_tuner_in_vllm()
     import tuner
     return await run_in_threadpool(tuner.drift_check, model_id)
 
@@ -2119,7 +2164,6 @@ async def tune_drift(model_id: str):
 async def tune_seed(model_id: str):
     """Freeze the current saved config as the known-good seed.
     Future tunes measure it first and must beat it to replace it."""
-    _refuse_tuner_in_vllm()
     import tuner
     try:
         return await run_in_threadpool(tuner.snapshot_seed, model_id)
@@ -2194,7 +2238,7 @@ class ChatIn(pydantic.BaseModel):
 
 
 @app.get("/api/chat/models")
-async def chat_models():
+async def chat_models(request: Request):
     """Models the Chat tab can test: swap-known ids with loaded flags,
     merged with configured (not-yet-pushed) ids — loaded vs will-load,
     same split the old picker showed. Embeddings excluded (they use
@@ -2207,9 +2251,10 @@ async def chat_models():
             def _fetch():
                 import urllib.request
                 import json as _json
-                with urllib.request.urlopen(
-                        f"http://127.0.0.1:{st['port']}/models",
-                        timeout=10) as r:
+                req = urllib.request.Request(
+                    _gateway_url("/models"),
+                    headers=_gateway_headers(request))
+                with urllib.request.urlopen(req, timeout=10) as r:
                     return _json.loads(r.read().decode()).get("data", [])
             data = await run_in_threadpool(_fetch)
             for m in data:
@@ -2223,28 +2268,24 @@ async def chat_models():
             print(f"[chat] swap model list failed: {e}")
     try:
         engine = engine_registry.get_engine()
-        configured = engine.filter_models(cfg.list_models())
+        configured = _access_filter_models(
+            engine.filter_models(cfg.list_models()))
     except ValueError:
-        configured = cfg.list_models()
+        configured = _access_filter_models(cfg.list_models())
     for m in configured:
         mid = m.get("model_id") or ""
         if not mid or "embed" in mid.lower() or mid in out:
             continue
         out.append(mid)
-    # access.py: a `private: true` model is not chattable for restricted
-    # viewers — drop it from the picker AND refuse a direct POST (same
-    # "never existed" semantics as the launch path). The swap-running
-    # list above may still carry the id when the daemon serves it for a
-    # trusted user — the gate below re-checks before streaming. View-
-    # scoped users are ALSO limited to their allowlist tokens (mid or
-    # mid--variant), same filter the models table renders by.
+    # access.py: private + key-allowlist filtering. The gateway list is
+    # already key-filtered; the configured fallback was filtered above.
+    # Re-apply the private gate for the daemon list (defense in depth).
     if not access.gate_open():
         allow = access.view_allow()
         out = [mid for mid in out
                if not _raw_is_private(mid.split("--")[0])]
-        if allow is not None:
-            # EXACT token match — variants are separate grants
-            out = [mid for mid in out if mid in allow]
+        if not allow:
+            out = []
     return {"running": running,
             "models": [{"id": mid, "loaded": mid in loaded} for mid in out]}
 
@@ -2277,7 +2318,7 @@ async def chat_complete(c: ChatIn, request: Request = None):
     # upstream = THE FARM GATEWAY (:8090): every chat crosses key-auth
     # + usage tracking; the caller's identity (cookie/Bearer) forwards
     # so the usage row attributes to THEM, not "console"
-    base = "http://127.0.0.1:8090"
+    base = _gateway_url("")
     import httpx as _httpx
     msgs = ([{"role": "system", "content": c.system_prompt}]
             if (c.system_prompt or "").strip() else []) + (c.messages or [])
@@ -2361,23 +2402,6 @@ _SCHED_NODE_RE = _re.compile(
 # a src tensor in the tail: " name (size) [backend cause]"
 _SCHED_SRC_RE = _re.compile(r'\s+([^ ]+)\s*\([^)]*\)\s*\[([^ ]+)\s*([^ ]*)\]')
 
-# vLLM engine stats line (every VLLM_LOG_STATS_INTERVAL=10s, upstream log
-# stream carries it because vLLM runs INSIDE llama-swap):
-# "(APIServer pid=..) INFO .. [loggers.py:259] Engine 000: Avg prompt
-# throughput: 2.3 tokens/s, Avg generation throughput: 0.8 tokens/s,
-# Running: 0 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.0%, Prefix cache
-# hit rate: 50.0%" — the visualizer's vLLM serving-activity signal (the
-# llama.cpp "http: streamed chunk" token stream has no vLLM equivalent).
-_VLLM_STATS_RE = _re.compile(
-    r'Engine\s+\d+:\s+Avg prompt throughput:\s*([\d.]+) tokens/s,'
-    r'\s*Avg generation throughput:\s*([\d.]+) tokens/s,'
-    r'\s*Running:\s*(\d+) reqs,\s*Waiting:\s*(\d+) reqs,'
-    r'\s*GPU KV cache usage:\s*([\d.]+)%,\s*Prefix cache hit rate:\s*([\d.]+)%'
-)
-# llama-swap tags model context in the same stream:
-# "[INFO] <model-id> Health check passed ..." — binds the engine pid to a
-# served model so stats pulses can attribute to the right node.
-_VLLM_MODEL_TAG_RE = _re.compile(r'\[INFO\]\s*<([^>]+)>')
 
 
 def _parse_sched_line(line):
@@ -2393,51 +2417,283 @@ def _parse_sched_line(line):
             "cause": cause, "srcs": srcs}
 
 
+# Common model-load failures seen in llama.cpp / llama-swap upstream logs.
+# Order matters: the most specific cause wins (OOM before the MTP-context
+# error it caused, missing file before the generic loader error).
+_LOAD_FAULT_RULES = (
+    ("oom", re.compile(
+        r"cudaMalloc failed|CUDA error: out of memory|out of memory|"
+        r"failed to allocate .*buffer|failed to allocate .*buffers|"
+        r"compute buffer allocation failed|failed to allocate CUDA",
+        re.IGNORECASE),
+     "CUDA out of memory. Lower ubatch/context, disable MTP, or free VRAM and retry."),
+    ("port", re.compile(
+        r"address already in use|failed to bind|couldn't bind|"
+        r"port .* is held by another process",
+        re.IGNORECASE),
+     "Port already in use. Stop the stale server or let the farm roll the port."),
+    ("missing_model", re.compile(
+        r"failed to open GGUF file|No such file or directory|"
+        r"failed to load model from|model file not found|"
+        r"failed to load model .*not found",
+        re.IGNORECASE),
+     "Model file is missing or unreadable at the configured store path."),
+    ("mtp", re.compile(
+        r"failed to (?:create|load) (?:the )?MTP(?: context)?|"
+        r"doesn't contain MTP layers|"
+        r"\bMTP\b[^\n]{0,80}\b(?:fail(?:ed|ure)?|error)\b|"
+        r"\b(?:fail(?:ed|ure)?|error)\b[^\n]{0,80}\bMTP\b",
+        re.IGNORECASE),
+     "MTP/speculative context failed. Disable MTP or use a model with MTP layers."),
+    ("mmproj", re.compile(
+        r"failed to (?:load|open) (?:the )?"
+        r"(?:mmproj|clip(?:[ _-]?model)?|projector)(?: model)?|"
+        r"(?:couldn't|could not|unable to) (?:load|open) (?:the )?"
+        r"(?:mmproj|clip(?:[ _-]?model)?|projector)|"
+        r"\b(?:mmproj|clip_model_load|projector)\b[^\n]{0,80}"
+        r"\b(?:fail(?:ed|ure)?|error)\b|"
+        r"\b(?:fail(?:ed|ure)?|error)\b[^\n]{0,80}"
+        r"\b(?:mmproj|clip_model_load|projector)\b",
+        re.IGNORECASE),
+     "Vision projector (mmproj) failed to load or does not match the model."),
+    ("load_error", re.compile(
+        r"failed to load model|error loading model|"
+        r"exiting due to model loading error",
+        re.IGNORECASE),
+     "Model failed to load. See Logs for the exact upstream error."),
+)
+
+_WRAPPER_GEN_RE = re.compile(r">>> wrapper-gen:\s*(\S+)")
+_LOAD_MODEL_RE = re.compile(r"load_model: loading model '([^']+)'")
+_START_FAIL_RE = re.compile(r"starting\s+(.+?)\s+failed:\s*(.*)")
+# Load finished cleanly: stop watching this model's output for startup
+# faults (streamed request/response bodies can otherwise look like errors).
+_MODEL_READY_RE = re.compile(
+    r"model loaded|listening on https?://|server is listening", re.IGNORECASE)
+# Request/response chatter (not startup diagnostics). Never treat these as
+# model-load failures — model output is arbitrary text.
+_TRAFFIC_RE = re.compile(
+    r"streamed chunk|\"choices\"|\"object\"\s*:\s*\"(?:chat|list)|"
+    r"^\s*(?:POST|GET) /|\]\s*Request ", re.IGNORECASE)
+
+
+def _parse_load_fault(line):
+    """Return (code, human_reason) for a recognizable load failure, else None."""
+    for code, rx, reason in _LOAD_FAULT_RULES:
+        if rx.search(line or ""):
+            return code, reason
+    return None
+
+
+def _load_model_map():
+    """Cheap basename -> model_id map (YAML only; no GGUF header reads)."""
+    import yaml as _yaml
+    out = {}
+    try:
+        names = os.listdir(cfg.MODELS_DIR)
+    except Exception:
+        return out
+    for fn in names:
+        if not fn.endswith(".yaml") or "__tune_tmp" in fn or "__ab_single" in fn:
+            continue
+        try:
+            with open(os.path.join(cfg.MODELS_DIR, fn), "r",
+                      encoding="utf-8") as f:
+                d = _yaml.safe_load(f) or {}
+        except Exception:
+            continue
+        bp = os.path.basename(str(d.get("base_path") or ""))
+        if bp:
+            out[bp] = d.get("model_id") or fn[:-5]
+    return out
+
+
+def _resolve_fault_model(raw, mmap):
+    raw = str(raw or "").strip().strip("'\"")
+    if not raw:
+        return ""
+    return mmap.get(os.path.basename(raw), raw)
+
+
+@app.websocket("/ws/swap/faults")
+async def swap_faults_ws(websocket: WebSocket):
+    """Persistent top-right load-failure notices.
+
+    Tails llama-swap's proxy+upstream log streams, recognizes the common
+    llama.cpp/llama-swap startup failures (OOM, port, missing model, MTP,
+    mmproj, generic load errors), and emits ONE structured event per model
+    per short cooldown. The browser renders it as a sticky notice until the
+    user dismisses it. History replay is primed away (~1.5 s)."""
+    import httpx, asyncio
+    await websocket.accept()
+    st = swap_manager.status()
+    if not st.get("running"):
+        await websocket.close()
+        return
+    gate_open = access.gate_open()
+    allow = access.view_allow()
+    if not gate_open and allow is None:
+        await websocket.close(code=1008)
+        return
+    host = st.get("host_ip") or "127.0.0.1"
+    port = st.get("port") or 8080
+    urls = {
+        "proxy": f"http://{host}:{port}/logs/stream/proxy",
+        "upstream": f"http://{host}:{port}/logs/stream/upstream",
+    }
+    mmap = _load_model_map()
+    priming_until = time.time() + 1.5
+    state = {"model": "", "loading": False, "loading_model": "",
+             "hint_ts": 0.0, "last_emit": {}, "specific": {},
+             "last_code": {}}
+    dead = asyncio.Event()
+
+    def _allowed(model):
+        if gate_open or allow is None:
+            return True
+        if not model:
+            return False
+        from swap_gateway import _mid_allowed
+        return (_mid_allowed(model, allow)
+                or _mid_allowed(model.split("--")[0], allow))
+
+    async def _emit(model, code, reason, detail):
+        if not _allowed(model):
+            return
+        now = time.time()
+        key = model or "?"
+        prev_code = state["last_code"].get(key)
+        # a specific cause always overrides a generic "exited prematurely"
+        override = (code != "generic" and prev_code == "generic")
+        if not override and now - state["last_emit"].get(key, 0) < 6:
+            return
+        state["last_emit"][key] = now
+        state["last_code"][key] = code
+        if code != "generic":
+            state["specific"][key] = now
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "load_failure",
+                "model": model,
+                "code": code,
+                "reason": reason,
+                "detail": (detail or "").strip()[:600],
+                "ts": now,
+            }))
+        except Exception:
+            dead.set()
+
+    async def tail(kind, url):
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream("GET", url) as resp:
+                    async for line in resp.aiter_lines():
+                        if dead.is_set():
+                            return
+                        if not line:
+                            continue
+                        # model attribution hints
+                        m = (_WRAPPER_GEN_RE.search(line)
+                             or _LOAD_MODEL_RE.search(line))
+                        if m:
+                            state["model"] = _resolve_fault_model(
+                                m.group(1), mmap)
+                            state["loading"] = True
+                            state["loading_model"] = state["model"]
+                            state["hint_ts"] = time.time()
+                        if time.time() < priming_until:
+                            continue
+                        # Startup finished — everything after this is normal
+                        # serving output (including arbitrary model text).
+                        if _MODEL_READY_RE.search(line):
+                            state["loading"] = False
+                            continue
+                        # llama-swap's own "starting <model> failed" line
+                        sm = _START_FAIL_RE.search(line)
+                        if sm:
+                            model = _resolve_fault_model(sm.group(1), mmap)
+                            key = model or "?"
+                            now = time.time()
+                            if now - state["specific"].get(key, 0) >= 120:
+                                await _emit(
+                                    model, "generic",
+                                    "Model failed to load (upstream exited prematurely).",
+                                    sm.group(2) or line)
+                            continue
+                        # Only interpret startup-log lines as load faults, and
+                        # only while the model we saw start is still loading.
+                        # This stops unrelated logs / streamed responses from
+                        # being blamed on whichever model was mentioned last.
+                        if not state["loading"]:
+                            continue
+                        if _TRAFFIC_RE.search(line):
+                            continue
+                        if time.time() - state["hint_ts"] > 900:
+                            state["loading"] = False
+                            continue
+                        fault = _parse_load_fault(line)
+                        if fault:
+                            code, reason = fault
+                            await _emit(state["loading_model"], code, reason,
+                                        line)
+                            if dead.is_set():
+                                return
+        except Exception:
+            pass
+
+    async def watch_client():
+        while not dead.is_set():
+            try:
+                msg = await asyncio.wait_for(websocket.receive(), timeout=10)
+                if msg.get("type") == "websocket.disconnect":
+                    dead.set()
+                    return
+            except asyncio.TimeoutError:
+                continue
+            except Exception:
+                dead.set()
+                return
+
+    tasks = [asyncio.create_task(tail("proxy", urls["proxy"])),
+             asyncio.create_task(tail("upstream", urls["upstream"])),
+             asyncio.create_task(watch_client())]
+    try:
+        _done, pending = await asyncio.wait(
+            tasks, return_when=asyncio.FIRST_COMPLETED)
+        for t in pending:
+            t.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+    except Exception:
+        for t in tasks:
+            t.cancel()
+    try:
+        await websocket.close()
+    except Exception:
+        pass
+
+
 def _parse_upstream_line(line):
     """Extract a flow event from one upstream log line.
 
     llama.cpp: the verbose "http: streamed chunk" line carries the model
-    path per token chunk. vLLM: the 10s engine-stats line (throughput,
-    KV usage, prefix-cache hit) — vLLM never logs per-chunk lines, so the
-    stats line is its serving-activity signal. Both return {"model": id}
-    shaped events; vLLM adds {"type":"vllm_stats", ...} so the frontend
-    can label the source and drive the animation from real throughput.
+    path per token chunk. Returns {"model": id} shaped events.
     """
     m = _UPSTREAM_CHUNK_RE.search(line)
     if m:
         return {"model": m.group(1)}
-    m = _VLLM_STATS_RE.search(line)
-    if m:
-        return {"type": "vllm_stats", "model": None,
-                "prompt_tps": float(m.group(1)),
-                "gen_tps": float(m.group(2)),
-                "running": int(m.group(3)),
-                "waiting": int(m.group(4)),
-                "kv_pct": float(m.group(5)),
-                "cache_hit_pct": float(m.group(6))}
-    m = _VLLM_MODEL_TAG_RE.search(line)
-    if m:
-        # model context line (llama-swap "<id> ..." tag) — remember which
-        # model the next stats line belongs to
-        return {"type": "vllm_model_tag", "model": m.group(1)}
     return None
 
 
 @app.websocket("/ws/flow/upstream")
 async def flow_upstream_ws(websocket: WebSocket):
     """Tail llama-swap's upstream log stream and push real-time flow events
-    to the browser: llama.cpp token-chunk events (model path) and vLLM
-    10s engine-stats events (throughput / KV / cache). vLLM stats carry
-    no model id — the "<id>" tag lines live on the PROXY stream, so a
-    side tail of /logs/stream/proxy supplies the attribution (the
-    frontend also falls back to the single loaded model)."""
+    to the browser: llama.cpp token-chunk events (model path)."""
     import httpx, asyncio
     await websocket.accept()
     st = swap_manager.status()
     host = st.get("host_ip") or "127.0.0.1"
     port = st.get("port") or 8080
     url = f"http://{host}:{port}/logs/stream/upstream"
-    proxy_url = f"http://{host}:{port}/logs/stream/proxy"
     # Identity gate (access.py — the middleware resolved this ws scope's
     # Bearer key / session cookie exactly like a page request). A scoped
     # viewer must not watch token streams of models outside their grants:
@@ -2466,24 +2722,6 @@ async def flow_upstream_ws(websocket: WebSocket):
     # llama-swap replays buffered history on connect — prime silently so a
     # page reload doesn't flare up "serving" state from old token chunks
     priming = True
-    last_tag = None  # most recent "<model-id>" tag (from the proxy stream)
-    async def tail_proxy_tags():
-        """vLLM attribution: llama-swap logs "[INFO] <model-id> ..." on the
-        proxy stream whenever a model starts/stops/health-checks. Stats
-        lines on the upstream stream have no model id, so this task keeps
-        `last_tag` fresh; the latest tag is overwhelmingly the serving
-        model (swaps are exclusive in the vllm group)."""
-        nonlocal last_tag
-        try:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream("GET", proxy_url) as resp:
-                    async for line in resp.aiter_lines():
-                        m = _VLLM_MODEL_TAG_RE.search(line)
-                        if m:
-                            last_tag = m.group(1)
-        except Exception:
-            pass
-    tag_task = asyncio.create_task(tail_proxy_tags())
     try:
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream("GET", url) as resp:
@@ -2497,13 +2735,6 @@ async def flow_upstream_ws(websocket: WebSocket):
                         ev = _parse_upstream_line(line)
                         if not ev:
                             continue
-                        if ev.get("type") == "vllm_model_tag":
-                            last_tag = ev.get("model")
-                            continue
-                        if ev.get("type") == "vllm_stats":
-                            # stats carry no model id — bind them to the
-                            # most recent <id> tag (proxy stream watcher)
-                            ev["model"] = last_tag
                         if ev and not priming and _event_allowed(ev):
                             try:
                                 await websocket.send_text(json.dumps(ev))
@@ -2514,7 +2745,6 @@ async def flow_upstream_ws(websocket: WebSocket):
                     primer.cancel()
     except Exception:
         pass
-    tag_task.cancel()
     try:
         await websocket.close()
     except Exception:
@@ -2654,11 +2884,9 @@ async def logs_stream_ws(websocket: WebSocket):
     the visualizer parses structured events from the same feeds; this tab
     shows them verbatim for real-time debugging."""
     # B15 verified: the source here is llama-swap's own /logs/stream/* on the
-    # swap host:port (swap_manager.status) — vLLM runs INSIDE llama-swap, so
-    # its proxy/upstream log lines ride the same streams. Engine-agnostic;
-    # no change. (Per-model parse layers: flow's token-chunk regex keys on
-    # "model":"<id>" which vLLM's OpenAI API also emits; sched events are
-    # GGML_SCHED_DEBUG llama.cpp-only and simply never match under vLLM.)
+    # swap host:port (swap_manager.status). (Per-model parse layers: flow's
+    # token-chunk regex keys on "model":"<id>"; sched events are
+    # GGML_SCHED_DEBUG llama.cpp-only.)
     import httpx, asyncio
     await websocket.accept()
     st = swap_manager.status()
@@ -2729,7 +2957,7 @@ class DownloadIn(pydantic.BaseModel):
     link: str
     store: str = "llm-models"
     all_shards: bool = True  # split model (-00001-of-00002): fetch every shard
-    repo: bool = False  # whole safetensors repo (vLLM format): link is hf://owner/name
+    repo: bool = False  # whole repository: link is hf://owner/name
 
 
 @app.get("/api/downloads")
@@ -2747,7 +2975,7 @@ async def start_download(d: DownloadIn):
     # Engine-gate (DEC-07, T3 F4): refuse out-of-vocabulary formats
     # BEFORE dispatch. The UI's manifest downloads.formats already keeps
     # the right pane visible, so this 409 is a safety net for direct API
-    # calls — same refusal pattern as /api/launch in vLLM mode.
+    # calls.
     # Format inference: repo=True (hf://owner/name) or a non-.gguf
     # filename is the HF-hub "hf" vocabulary; *.gguf is "gguf".
     engine = engine_registry.get_engine()
@@ -2785,36 +3013,12 @@ async def hf_search(
     pipeline_tag: str = "",
     author: str = "",
     recommended: bool = False,
-    fmt: str = "gguf",
 ):
-    # Engine-gate (DEC-07): the format chips are a UI convenience; the
-    # server refuses searches for a format the ACTIVE engine cannot
-    # download/serve (manifest downloads.formats) so the panes never
-    # offer models that would 409 at POST /api/downloads.
     try:
-        engine = engine_registry.get_engine()
-    except Exception:
-        engine = None
-    if engine is not None:
-        allowed = engine.ui_manifest().get("downloads", {}).get("formats", [])
-        # UI chip vocabulary ("safetensors") vs manifest format key ("hf")
-        want = {"safetensors": "hf"}.get((fmt or "gguf").lower(),
-                                         (fmt or "gguf").lower())
-        if want not in allowed:
-            raise HTTPException(
-                status_code=409,
-                detail=f"the {engine.name} engine does not browse "
-                       f"'{want}' models (allowed: {', '.join(allowed) or 'none'})")
-    try:
-        if (fmt or "gguf").lower() == "safetensors":
-            return await hf_browse.search_safetensors(
-                query=query, sort=sort, limit=limit, page=page,
-                pipeline_tag=pipeline_tag, author=author,
-                recommended=recommended
-            )
         return await hf_browse.search_gguf(
             query=query, sort=sort, limit=limit, page=page,
-            quant=quant, pipeline_tag=pipeline_tag, author=author, recommended=recommended
+            quant=quant, pipeline_tag=pipeline_tag, author=author,
+            recommended=recommended
         )
     except Exception as e:
         # surface HF errors as 502 so UI can show hint
@@ -2824,14 +3028,6 @@ async def hf_search(
 async def hf_gguf_files(author: str, name: str):
     try:
         return await hf_browse.get_gguf_files(author, name)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-
-@app.get("/api/hf/models/{author}/{name}/safetensors")
-async def hf_safetensors_files(author: str, name: str):
-    """Detail for a source/safetensors repo: safetensors siblings + sizes."""
-    try:
-        return await hf_browse.get_safetensors_files(author, name)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -3223,9 +3419,9 @@ async def set_accordion_state(a: AccordionIn):
 
 
 # ---------------- settings.yaml persister (comment-preserving) --------------
-# B9c (DEC-14): the round-trip pair now lives in settings_persister.py so
-# vllm_installer / vllm_uninstaller can write settings.yaml through the
-# SAME comment-preserving persister instead of plain yaml.safe_dump.
+# B9c (DEC-14): the round-trip pair lives in settings_persister.py so
+# writers can persist settings.yaml through the SAME comment-preserving
+# persister instead of plain yaml.safe_dump.
 
 def _view_name_for_ip(ip: str):
     """Reverse lookup: which configured view (settings.yaml views:) an IP
@@ -3263,16 +3459,15 @@ async def get_settings():
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         defaults.update(data)
-    # engine schema (ARD §2): inject engine default + full vllm: block so
-    # the frontend never None-checks. A typo in settings.yaml (bad engine,
-    # unknown vllm key) must NOT fall back silently — ValueError -> 400
-    # with the valid values in the detail.
+    # engine schema (ARD §2): inject engine defaults so the frontend never
+    # None-checks. A typo in settings.yaml (bad engine) must NOT fall back
+    # silently — ValueError -> 400 with the valid values in the detail.
     try:
         engine_registry.cfg.inject_engine_defaults(defaults)
     except ValueError as e:
         raise HTTPException(400, str(e)) from None
     # Identity-scoped settings: theme state is PER-KEY (access_keys ui:
-    # block); engine/vllm/model_dir stay farm-wide and are admin-console
+    # block); engine/model_dir stay farm-wide and are admin-console
     # material. Scoped (non-admin) callers get their ui overlay + no
     # topology write surface (POST refuses engine from them).
     _key_ui = {}
@@ -3291,8 +3486,10 @@ async def get_settings():
     try:
         import secrets_vault as _vault
         defaults["hf_token_set"] = _vault.hf_token_set() or bool(token.strip())
+        defaults["farm_agent_token_set"] = _vault.farm_agent_token_set()
     except Exception:
         defaults["hf_token_set"] = bool(token.strip())
+        defaults["farm_agent_token_set"] = False
     # UI field manifest (AUDIT-T6 §1.5, DEC-02) — the complete
     # engine-owned inventory the frontend renders from. The legacy
     # ui_hints view rides along DEPRECATED (its last JS consumer is the
@@ -3313,8 +3510,9 @@ class AppSettingsIn(pydantic.BaseModel):
     theme_mode: str = "dark"
     hf_token: str | None = None  # only a non-empty value updates the stored token
     clear_hf_token: bool = False
-    engine: str | None = None  # llama_cpp | vllm — None leaves the stored value
-    vllm: dict | None = None  # partial block; merged over the stored one
+    farm_agent_token: str | None = None  # shared by all agents when set
+    clear_farm_agent_token: bool = False
+    engine: str | None = None  # llama_cpp — None leaves the stored value
 
 
 async def _restart_everything_for_engine(new_engine: str):
@@ -3334,7 +3532,7 @@ async def _restart_everything_for_engine(new_engine: str):
     sw_port = s.get("listen_port") or 8080
     raw_cfg = s.get("config_path") or "~/.config/llama-swap/config.yaml"
     raw_cfg = os.path.expanduser(raw_cfg)
-    cfg_engine = "llama_cpp" if new_engine == "llama_cpp" else "vllm"
+    cfg_engine = new_engine
     try:
         eff, _ = swap_manager.engine_swap_config_path(cfg_engine, raw_cfg)
     except Exception:
@@ -3355,9 +3553,9 @@ async def _restart_everything_for_engine(new_engine: str):
     else:
         q = _shlex.quote
         # 1) Re-provision the daemon the SAME way the app does it: swap_manager
-        #    .launch() regenerates the engine-qualified config (config.yaml vs
-        #    config.vllm.yaml), rewrites the systemd unit's ExecStart, and
-        #    restarts it — beating the unit's Restart=always properly instead
+        #    .launch() regenerates the engine-qualified config, rewrites the
+        #    systemd unit's ExecStart, and restarts it — beating the unit's
+        #    Restart=always properly instead
         #    of racing it with pkill+setsid (which lost the race: systemd
         #    resurrected the OLD-config daemon within 5s).
         # stop FIRST so the old daemon frees the configured port (the
@@ -3385,7 +3583,6 @@ async def _restart_everything_for_engine(new_engine: str):
         cmd = (
             "sleep 1; "
             "pkill llama-server 2>/dev/null || true; "
-            "pkill -f 'vllm serve' 2>/dev/null || true; "
             "(fuser -k 8199/tcp > /dev/null 2>&1 || true); "
             "sleep 1; "
             f"setsid -f {q(py)} {q(app_path)} > {q(log)} 2>&1 "
@@ -3402,14 +3599,16 @@ async def _restart_everything_for_engine(new_engine: str):
 @app.post("/api/settings")
 async def save_settings(s: AppSettingsIn, r: Request):
     # Identity split: THEMES are per-key (any identity sets their own
-    # ui); ENGINE/model_dir/llama_bin/vllm/hf_token are farm-wide state —
-    # only trusted console or an ADMIN key may write those. A scoped
-    # non-admin POST carrying engine/vllm/etc. is refused 404-shaped.
+    # ui); ENGINE/model_dir/llama_bin/hf_token are farm-wide state — only
+    # trusted console or an ADMIN key may write those. A scoped non-admin
+    # POST carrying engine/etc. is refused 404-shaped.
     _control_identity = (access.gate_open() and access.view_allow() is None) \
         or access.is_admin(None)
     _key_name_for_ui = access.key_display_name()
-    if not _control_identity and (s.engine is not None or s.vllm is not None
-                                  or s.hf_token or s.clear_hf_token):
+    if not _control_identity and (s.engine is not None
+                                  or s.hf_token or s.clear_hf_token
+                                  or s.farm_agent_token
+                                  or s.clear_farm_agent_token):
         raise HTTPException(404, "not found")
     # merge over the CURRENT FILE so unknown/future keys survive the write;
     # loaded via the comment-preserving persister (B9c) — a plain
@@ -3419,8 +3618,9 @@ async def save_settings(s: AppSettingsIn, r: Request):
     update = s.model_dump()
     tok = (update.pop("hf_token", None) or "").strip()
     clear_tok = update.pop("clear_hf_token", False)
+    farm_tok = (update.pop("farm_agent_token", None) or "").strip()
+    clear_farm_tok = update.pop("clear_farm_agent_token", False)
     engine = update.pop("engine", None)
-    vllm_in = update.pop("vllm", None)
     # per-key UI state: scoped identities write theme_family/theme_mode
     # into THEIR access_keys ui: block instead of the shared file —
     # farm-wide state untouched.
@@ -3450,25 +3650,6 @@ async def save_settings(s: AppSettingsIn, r: Request):
             raise HTTPException(400, str(e)) from None
         engine_changed = engine != (current.get("engine") or cfg.DEFAULT_ENGINE)
         current["engine"] = engine
-        # DEC-08: the t_90def951 engine-save flag-mapping report (which
-        # llama.cpp flags would bridge into vllm: keys) is retired along
-        # with the launch-path bridge — vLLM reads only the per-model
-        # `vllm:` section now, so there is nothing to preview. A model
-        # without a `vllm:` section fails loudly at launch time with
-        # "no vllm config for this model". DEC-09 retires the reverse
-        # (B11c save-path translation) too — no cross-engine mapping
-        # or warning groups remain anywhere.
-    if vllm_in is not None:
-        if not isinstance(vllm_in, dict):
-            raise HTTPException(400, "vllm must be an object")
-        merged = dict(current.get("vllm") or {})
-        merged.update(vllm_in)
-        probe = {"engine": current.get("engine", cfg.DEFAULT_ENGINE), "vllm": merged}
-        try:
-            cfg.inject_engine_defaults(probe)  # unknown keys / bad delivery -> ValueError
-        except ValueError as e:
-            raise HTTPException(400, str(e)) from None
-        current["vllm"] = probe["vllm"]
     # normalize the merged settings (injects defaults for missing keys) so
     # the file on disk always round-trips through the same schema the
     # loader enforces; failure -> 400, file left untouched
@@ -3484,6 +3665,10 @@ async def save_settings(s: AppSettingsIn, r: Request):
         _vault.set_hf_token("")
     elif tok:
         _vault.set_hf_token(tok)
+    if clear_farm_tok:
+        _vault.set_farm_agent_token("")
+    elif farm_tok:
+        _vault.set_farm_agent_token(farm_tok)
     # don't echo the raw token back; write via the comment-preserving
     # persister (B9c) so unrelated keys, key order, and all comments
     # survive — never a wholesale rewrite from the request dict
@@ -3498,13 +3683,14 @@ async def save_settings(s: AppSettingsIn, r: Request):
     out = dict(current)
     out.pop("hf_token", None)  # response-only: never echoed
     out["hf_token_set"] = _vault.hf_token_set()
+    out["farm_agent_token_set"] = _vault.farm_agent_token_set()
     if engine_changed:
         # Engine flip: the running daemons still serve the OLD engine's
         # configs/scripts. Full restart (same as /api/restart) — but the
         # app process restarting itself re-reads settings.yaml on boot,
         # so the new engine takes effect everywhere in one shot.
         resp = await _restart_everything_for_engine(engine)
-        # keep the settings echo (engine/vllm block/hf_token_set) in the
+        # keep the settings echo (engine/hf_token_set) in the
         # same response — the client renders the saved state AND the
         # restart notice; a bare {"status": "restarting"} lost the
         # normalized settings the caller just saved.
@@ -3742,17 +3928,14 @@ async def install_llama_cpp():
 
 def _detect_bin_on_machine(machine):
     """Check if llama.cpp bin already exists on a machine. Returns
-    (found:bool, bin_path:str|None, detail:str). Never installs — just
-    probes, so existing working systems are untouched."""
-    import subprocess as _sp
+    (found:bool, bin_path:str|None, detail:str). Never installs.
+    Remote machines are probed through the peer agent's /files/stat."""
     from pathlib import Path as _Path
     is_win = (machine.get("os", "linux") == "windows")
     is_local = local_node.is_local(machine)
-    # candidate bin paths to probe — configured + defaults
     candidates = []
     configured = (machine.get("llama_bin") or "").strip()
     if configured:
-        # configured may be a dir or full bin path
         if configured.endswith("llama-server") or configured.endswith("llama-server.exe"):
             candidates.append(configured)
         else:
@@ -3761,8 +3944,6 @@ def _detect_bin_on_machine(machine):
         candidates += [
             "%USERPROFILE%\\llama.cpp\\build\\bin\\llama-server.exe",
             "%USERPROFILE%\\llama.cpp\\llama-server.exe",
-            "%USERPROFILE%/llama.cpp/build/bin/llama-server.exe",
-            "%USERPROFILE%/llama.cpp/llama-server.exe",
             "~/llama.cpp/build/bin/llama-server.exe",
             "~/llama.cpp/llama-server.exe",
         ]
@@ -3772,46 +3953,30 @@ def _detect_bin_on_machine(machine):
             "/usr/local/bin/llama-server",
             "/usr/bin/llama-server",
         ]
-    # dedupe preserving order
-    seen = set()
-    uniq = []
+    seen, uniq = set(), []
     for c in candidates:
         if c not in seen:
             seen.add(c)
             uniq.append(c)
-    for cand in uniq:
-        # expand for local check
-        if is_local:
+    if is_local:
+        for cand in uniq:
             try:
-                if is_win:
-                    expanded = os.path.expandvars(os.path.expanduser(cand))
-                    if _Path(expanded).exists():
-                        return True, cand, f"found at {cand}"
-                else:
-                    expanded = os.path.expanduser(cand)
-                    if _Path(expanded).exists():
-                        return True, cand, f"found at {cand}"
+                expanded = (os.path.expandvars(os.path.expanduser(cand))
+                            if is_win else os.path.expanduser(cand))
+                if _Path(expanded).exists():
+                    return True, cand, f"found at {cand}"
             except Exception:
                 continue
-        else:
-            # remote probe via SSH
-            try:
-                from ssh_manager import SSHManager
-                ssh = SSHManager(machine["ip"], machine["username"], machine["password"], port=machine.get("port", 22))
-                if is_win:
-                    # PowerShell Test-Path, handles %USERPROFILE% and ~
-                    ps = f'powershell -NoProfile -Command "if (Test-Path \\"{cand}\\") {{ echo FOUND }} else {{ echo MISSING }}"'
-                    code, out, _ = ssh.run(ps, timeout=15)
-                else:
-                    # expand ~ on remote side
-                    code, out, _ = ssh.run(f'test -f {cand} && echo FOUND || echo MISSING', timeout=15)
-                if "FOUND" in (out or ""):
-                    return True, cand, f"found at {cand}"
-            except Exception as e:
-                # treat SSH failure as not found but surface in detail
-                continue
+        return False, None, "no bin found (checked: " + ", ".join(uniq) + ")"
+    for cand in uniq:
+        probe = cand.replace("%USERPROFILE%", "~")
+        try:
+            st = agent_client.file_stat(machine, probe)
+            if st.get("exists") and st.get("is_file"):
+                return True, cand, f"found at {cand}"
+        except Exception as e:
+            return False, None, f"agent bin probe failed: {e}"
     return False, None, "no bin found (checked: " + ", ".join(uniq) + ")"
-
 
 class InstallAllIn(pydantic.BaseModel):
     install_missing: bool = False  # actually install on missing nodes
@@ -3842,9 +4007,8 @@ async def install_llama_cpp_all(p: InstallAllIn | None = None):
         # quick reachability for remote
         if not is_local:
             try:
-                from ssh_manager import SSHManager
-                ssh = SSHManager(m["ip"], m["username"], m["password"], port=m.get("port", 22))
-                reachable = ssh.is_reachable()
+                agent_client.health(m, timeout=4)
+                reachable = True
             except Exception:
                 reachable = False
             if not reachable:
@@ -3940,6 +4104,23 @@ def _llama_version_on(machine):
     if not lb:
         return None
     is_win = machine.get("os", "linux") == "windows"
+    if (not local_node.is_local(machine)
+            and agent_client.should_use_agent(machine)):
+        try:
+            path = (f"{lb}\\llama-server.exe" if is_win
+                    else f"{lb}/llama-server")
+            res = agent_client.install_verify(
+                machine, path, ["--version"], timeout=35)
+            out = res.get("output") or ""
+            for line in out.splitlines():
+                if line.strip():
+                    return line.strip()
+            return None
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                return None
+            print(f"[agent] {machine.get('name')}: version probe failed, "
+                  f"falling back to SSH: {e}")
     try:
         from llamacpp_installer import _machine_run
         run, _ = _machine_run(machine)
@@ -4016,6 +4197,141 @@ async def llama_cpp_version_machine(name: str):
     machine grid can re-ask on every render without hammering anything."""
     machine = cfg.machines.require(name)
     return await run_in_threadpool(_llama_version_payload, machine)
+
+
+
+_AGENT_WHEEL_LOCK = threading.Lock()
+
+
+def _agent_wheel_path():
+    """Build/cache the current peer-agent wheel from this checkout."""
+    import glob
+    if getattr(sys, "frozen", False):
+        wheels = sorted(glob.glob(os.path.join(
+            ASSET_DIR, "agent-wheel", "llama_rpc_farm_agent-*.whl")),
+            key=os.path.getmtime, reverse=True)
+        if wheels:
+            return wheels[0]
+        raise RuntimeError("bundled agent wheel is missing from this build")
+    src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "peer_agent")
+    out = os.path.join(rpc_manager.GENERATED_DIR, "agent-wheel")
+    os.makedirs(out, exist_ok=True)
+    with _AGENT_WHEEL_LOCK:
+        wheels = sorted(glob.glob(os.path.join(out, "llama_rpc_farm_agent-*.whl")),
+                        key=os.path.getmtime, reverse=True)
+        newest_src = 0.0
+        for root, _dirs, names in os.walk(src):
+            if "build" in root.split(os.sep) or "__pycache__" in root:
+                continue
+            for n in names:
+                try:
+                    newest_src = max(newest_src, os.path.getmtime(os.path.join(root, n)))
+                except OSError:
+                    pass
+        if wheels and os.path.getmtime(wheels[0]) >= newest_src:
+            return wheels[0]
+        proc = subprocess.run(
+            [sys.executable, "-m", "pip", "wheel", "--no-deps", "-w", out, src],
+            capture_output=True, text=True, timeout=180)
+        if proc.returncode != 0:
+            raise RuntimeError(f"could not build agent wheel: {(proc.stderr or proc.stdout)[-500:]}")
+        wheels = sorted(glob.glob(os.path.join(out, "llama_rpc_farm_agent-*.whl")),
+                        key=os.path.getmtime, reverse=True)
+        if not wheels:
+            raise RuntimeError("agent wheel build produced no wheel")
+        return wheels[0]
+
+
+def _agent_latest_version():
+    if getattr(sys, "frozen", False):
+        import glob
+        wheels = sorted(glob.glob(os.path.join(
+            ASSET_DIR, "agent-wheel", "llama_rpc_farm_agent-*.whl")))
+        if wheels:
+            base = os.path.basename(wheels[-1])
+            m = re.match(r"llama_rpc_farm_agent-([^-]+)-", base)
+            return m.group(1) if m else None
+        return None
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "peer_agent", "pyproject.toml")
+    try:
+        text = open(path, encoding="utf-8").read()
+        m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def _agent_version_payload(machine):
+    latest = _agent_latest_version()
+    if local_node.is_local(machine):
+        return {"current": None, "latest": latest, "on_latest": True,
+                "local": True}
+    current = None
+    try:
+        current = agent_client.version(machine, timeout=4).get("agent_version")
+    except Exception:
+        current = None
+    return {"current": current, "latest": latest,
+            "on_latest": bool(current and latest and current == latest)}
+
+
+def _update_agent_remote(machine):
+    """Install/update the agent through its in-place /agent/update endpoint."""
+    name = machine.get("name") or machine.get("id") or "?"
+    if local_node.is_local(machine):
+        return {"ok": True, "machine": name, "skipped": True, "local": True,
+                "detail": "local master uses the app directly; no peer agent"}
+    wheel = _agent_wheel_path()
+    version = _agent_latest_version()
+    if True:
+        try:
+            with open(wheel, "rb") as f:
+                blob = f.read()
+            res = agent_client.agent_update(machine, blob, version or "")
+            if res.get("ok"):
+                for _ in range(15):
+                    import time as _t
+                    _t.sleep(1)
+                    try:
+                        h = agent_client.health(machine, timeout=3)
+                        if h.get("agent_version") == version:
+                            return {"ok": True, "machine": name,
+                                    "wheel": os.path.basename(wheel),
+                                    "agent_version": h.get("agent_version"),
+                                    "protocol_version": h.get("protocol_version"),
+                                    "method": "agent"}
+                    except Exception:
+                        continue
+                return {"ok": False, "machine": name,
+                        "wheel": os.path.basename(wheel),
+                        "method": "agent",
+                        "detail": "agent accepted update but did not come back healthy"}
+        except Exception as e:
+            return {"ok": False, "machine": name,
+                    "wheel": os.path.basename(wheel),
+                    "method": "agent",
+                    "detail": f"agent update failed: {e}"}
+
+@app.get("/api/machines/{name}/agent-version")
+async def agent_version_machine(name: str):
+    machine = cfg.machines.require(name)
+    return await run_in_threadpool(_agent_version_payload, machine)
+
+
+@app.post("/api/machines/{name}/update-agent")
+async def update_agent_machine(name: str):
+    """Build current agent, install it over SSH bootstrap, restart it."""
+    machine = cfg.machines.require(name)
+    try:
+        res = await run_in_threadpool(_update_agent_remote, machine)
+    except Exception as e:
+        raise HTTPException(status_code=502,
+                            detail=f"agent update failed: {e}")
+    if not res.get("ok"):
+        raise HTTPException(status_code=502, detail=res.get("detail") or "agent update failed")
+    return res
 
 
 @app.post("/api/machines/{name}/update-llama-cpp")
@@ -4169,106 +4485,12 @@ async def install_llama_swap(name: str = ""):
                         content=result)
 
 
-@app.post("/api/machines/{name}/install-vllm")
-async def install_vllm_machine(name: str = ""):
-    """Install vLLM on ONE machine via vllm_installer (venv delivery —
-    PyPI wheel into the dedicated venv; docker delivery refuses inside
-    the installer). Returns the run_steps report, same shape as the
-    llama.cpp install endpoint (ok=true -> 200, failed -> 502)."""
-    if not name:
-        raise HTTPException(status_code=400, detail="machine name required")
-    try:
-        machine = cfg.machines.require(name)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    import vllm_installer
-    result = await run_in_threadpool(vllm_installer.install_on, machine)
-    # Passthrough: the caller gets the full run_steps report (machine,
-    # delivery, target, steps[], ok, failed, detail) — same contract as
-    # the llamacpp install endpoint. A refusal (windows, docker, no GPU
-    # tooling) is a FAILED INSTALL, not a server error: the report rides
-    # back with a 502 so the UI can show the installer's own message.
-    return JSONResponse(status_code=200 if result.get("ok") else 502,
-                        content=result)
-
-
-@app.post("/api/install-vllm/all")
-async def install_vllm_all(p: InstallAllIn | None = None):
-    """Batch vLLM install: iterate configured machines and run
-    vllm_installer on each (sequentially — installs are heavy downloads;
-    mirroring the llama.cpp batch pattern). Non-linux machines are
-    skipped up front (vLLM is linux-only) and collect the installer's
-    refusal report instead of running anything on them."""
-    import vllm_installer
-    machines = cfg.machines.all()
-    # modal subset (mirrors the llama.cpp batch endpoint): only the
-    # ticked machines are checked/installed; None = all configured
-    only = {n for n in (p.machines if p and p.machines else []) if n}
-    if only:
-        machines = [m for m in machines if m.get("name") in only]
-    if not machines:
-        return JSONResponse(status_code=200,
-                            content={"results": [],
-                                     "message": "no machines configured"})
-    results = []
-    for m in machines:
-        name = m.get("name", "?")
-        os_type = (m.get("os") or "linux").strip().lower()
-        if os_type != "linux":
-            results.append({"machine": name, "os": os_type,
-                            "status": "skipped",
-                            "ok": False,
-                            "detail": ("vLLM is linux-only — install on "
-                                       "a linux host (or a WSL2 instance "
-                                       "added as a linux machine)")})
-            continue
-        res = await run_in_threadpool(vllm_installer.install_on, m)
-        res["status"] = "installed" if res.get("ok") else "install-failed"
-        results.append(res)
-    installed = sum(1 for r in results if r.get("status") == "installed")
-    failed = sum(1 for r in results if r.get("status") == "install-failed")
-    skipped = sum(1 for r in results if r.get("status") == "skipped")
-    return {
-        "results": results,
-        "summary": (f"{len(results)} nodes: {installed} installed, "
-                    f"{failed} failed, {skipped} skipped (non-linux)"),
-        "missing": [r["machine"] for r in results
-                    if r.get("status") == "install-failed"],
-    }
-
-
-@app.get("/api/machines/{name}/vllm-plan")
-async def vllm_plan_machine(name: str):
-    """B13 pre-flight method report for ONE machine: WHICH delivery method
-    the installer would choose and WHY (per-machine vllm_delivery override
-    wins over the settings global), plus the OS/hardware gates it would
-    hit — BEFORE any install runs. Read-only (vllm_installer.plan never
-    executes commands). 200 with the plan dict; a failed plan (windows,
-    docker override in the venv-only wave, bad override value, unknown
-    machine) is 200 too with ok=false + error — it is an ANSWER to "what
-    would happen", not a server error. 404 only for an unknown machine."""
-    if not name or not name.strip():
-        raise HTTPException(status_code=400, detail="machine name required")
-    try:
-        machine = cfg.machines.require(name)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    import vllm_installer
-    plan = await run_in_threadpool(vllm_installer.plan, machine)
-    # plan() output only contains installer facts (no machine record fields
-    # ride along), so no password can leak — assert-and-return keeps the
-    # contract explicit for future fields.
-    plan = dict(plan)
-    plan.pop("password", None)
-    return JSONResponse(status_code=200, content=plan)
-
-
 # ---------------------------------------------------------------------------
 # Unified installer endpoints (UX-1): probe/plan/execute layer in app
 # ---------------------------------------------------------------------------
 # Wraps src/installer/{probe,execute}.py. Remote machines run the probe
-# ladder + executor over an SSHManager-backed RunCmd; local machines run
-# RealRunCmd locally. NO GPU drivers are ever installed (executor refuses);
+# ladder + executor; remote probing is agent-only (local RunCmd here).
+# NO GPU drivers are ever installed (executor refuses);
 # llama.cpp serving behavior is untouched (this only adds new endpoints).
 
 
@@ -4282,10 +4504,9 @@ class ToolsInstallIn(pydantic.BaseModel):
 def _machine_env(machine):
     """(SystemInfo, RunCmd) for a machine record: local machines probe
     locally; remote machines run the same read-only probe ladder over
-    SSH (vllm_installer._make_runner pattern). OS/gpu_vendor come from
-    the machine record (config truth), the rest from the remote probes."""
+    SSH. OS/gpu_vendor come from the machine record (config truth), the
+    rest from the remote probes."""
     from installer.env import SystemInfo, RealFS, RunResult
-    from installer.probe import LLCPP_BACKEND, VLLM_BACKEND
     import gpu_vendor as _gv
     import local_node as _ln
 
@@ -4299,31 +4520,11 @@ def _machine_env(machine):
         from installer.env import RealRunCmd as _RRC
         run = _RRC()
     else:
-        from ssh_manager import SSHManager
-
-        class _SSHRunCmd:
-            """RunCmd adapter: SSHManager.run -> (code, out, err) ->
-            RunResult. Windows peers get a PowerShell wrapper so the
-            probe ladder's shell syntax parses (cmd.exe default shell)."""
-
-            def __init__(self, m):
-                self._ssh = SSHManager(m["ip"], m.get("username", ""),
-                                       m.get("password", ""),
-                                       port=m.get("port", 22))
-                self._win = os_type == "windows"
-
-            def run(self, cmd, timeout=30.0):
-                real = cmd
-                if self._win:
-                    real = ('powershell -NoProfile -Command "'
-                            + cmd.replace('"', '\\"') + '"')
-                try:
-                    code, out, err = self._ssh.run(real, timeout=timeout)
-                except Exception as e:
-                    return RunResult(cmd, 255, "", f"ssh error: {e}")
-                return RunResult(cmd, code, out or "", err or "")
-
-        run = _SSHRunCmd(machine)
+        raise HTTPException(
+            status_code=400,
+            detail="remote installer probes are agent-only; install via the "
+                   "peer agent's /install/* endpoints or run the installer on "
+                   "that machine")
 
     # detect the rest of SystemInfo with the shared probe ladder (cheap,
     # read-only; same code path bootstrap.py uses locally)
@@ -4373,10 +4574,8 @@ class _ToolsProgress:
 async def tools_install(p: ToolsInstallIn):
     """Unified install: plan for ONE machine (installer.probe), execute
     it (installer.execute), streaming per-step progress as NDJSON
-    ({event: log|done}). Engine-gated: the plan carries per-tool
-    skip/refuse notes for both engine modes; llama.cpp behavior is
-    untouched (this endpoint only ADDS surfaces). Windows machines get
-    a vLLM refusal with WSL guidance (probe parity matrix)."""
+    ({event: log|done}). The plan carries per-tool skip/refuse notes;
+    llama.cpp behavior is untouched (this endpoint only ADDS surfaces)."""
     machine = p.machine
     try:
         m = cfg.machines.require(machine)
@@ -4393,9 +4592,6 @@ async def tools_install(p: ToolsInstallIn):
             from installer.execute import Executor
 
             fs = RealFS() if local_node.is_local(m) else _RemoteFS(run, is_win=getattr(run, '_win', False))
-            # probe's parity matrix refuses windows/non-offered vLLM
-            # backends as PlanNote (WSL guidance verbatim); engine mode
-            # rides in settings, not in this endpoint's contract.
             plan = installer_probe(info, fs, run, role=role)
             if p.tools:
                 keep = set(p.tools)
@@ -4450,8 +4646,8 @@ async def _tools_ndjson(progress):
 
 
 class _RemoteFS:
-    """FS adapter for remote machines: existence/version checks over SSH
-    (vllm_installer's runner pattern). Only what probe.py touches."""
+    """FS adapter for remote machines: existence/version checks over SSH.
+    Only what probe.py touches."""
 
     def __init__(self, run, is_win=False):
         self._run = run
@@ -4528,37 +4724,14 @@ def _execute_plan(plan, info, dry_run):
     return summary
 
 
-@app.post("/api/machines/{name}/uninstall-vllm")
-async def uninstall_vllm_machine(name: str = ""):
-    """Uninstall vLLM from ONE machine via vllm_uninstaller (venv
-    delivery — removes the farm-managed venv and clears settings
-    vllm.venv_bin; docker delivery refuses inside the uninstaller).
-    Returns the run_steps report, same shape as the install endpoint
-    (ok=true -> 200, failed -> 502). B12."""
-    if not name:
-        raise HTTPException(status_code=400, detail="machine name required")
-    try:
-        machine = cfg.machines.require(name)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    import vllm_uninstaller
-    result = await run_in_threadpool(vllm_uninstaller.uninstall_on, machine)
-    # Passthrough: the caller gets the full run_steps report. A refusal
-    # (docker, non-farm venv path) is a FAILED uninstall, not a server
-    # error: the report rides back with a 502 so the UI can show the
-    # uninstaller's own message.
-    return JSONResponse(status_code=200 if result.get("ok") else 502,
-                        content=result)
-
-
 @app.post("/api/machines/{name}/uninstall-llamacpp")
 async def uninstall_llamacpp_machine(name: str = ""):
     """Uninstall llama.cpp from ONE machine via llamacpp_uninstaller
     (removes ONLY the farm-managed install dir the installer created —
     path-guarded, never a source build, never anything outside the
     guarded root) and clears the machine's llama_bin pointer.
-    Returns the run_steps report, same shape as the vllm uninstall
-    endpoint (ok=true -> 200, failed -> 502). DEC5 (T5-1)."""
+    Returns the run_steps report (ok=true -> 200, failed -> 502).
+    DEC5 (T5-1)."""
     if not name:
         raise HTTPException(status_code=400, detail="machine name required")
     try:
@@ -4578,8 +4751,7 @@ async def uninstall_llamacpp_machine(name: str = ""):
 
 # ---------------- GET /api/tools/verify (UX-3, design §8) --------------------
 # The old REST install endpoints (install-llama-cpp{,/all,/install},
-# install-llama-swap, machines/{name}/install-vllm, install-vllm/all,
-# machines/{name}/vllm-plan, uninstall-vllm, uninstall-llamacpp) are
+# install-llama-swap, uninstall-llamacpp) are
 # RETIRED: the app never executes installs anymore — src/bootstrap.py owns
 # them (copy-paste one-liner from the UI, no exec from the app). What
 # survives is the read-only status probe: per tool {found, path, version,
@@ -4591,7 +4763,7 @@ async def uninstall_llamacpp_machine(name: str = ""):
 
 @app.get("/api/tools/verify")
 async def tools_verify():
-    """Read-only per-tool status: llama.cpp / llama-swap / vLLM.
+    """Read-only per-tool status: llama.cpp / llama-swap.
     Each entry: {found, path, version, expected, configured} where
     `configured` is the settings-recorded path (may be stale). Probes are
     local-only (this host) and read-only — nothing is ever installed,
@@ -4617,7 +4789,6 @@ async def tools_verify():
         return cur if isinstance(cur, str) else None
 
     settings_bin = _settings_key(SETTINGS_FILE, "llama_bin")
-    venv_bin = _settings_key(SETTINGS_FILE, "vllm.venv_bin")
     try:
         import swap_manager
         swap_bin = (swap_manager.load_settings() or {}).get("binary")
@@ -4647,13 +4818,6 @@ async def tools_verify():
         p, ver = swap_bin, (installer_probe._version_from_output(
             r.stdout + " " + r.stderr) if r.ok else None)
     out["llama-swap"] = _entry(p, p, ver, "255+", swap_bin)
-    # vLLM
-    p, ver = installer_probe.probe_vllm(fs, run)
-    if not p and venv_bin and fs.isfile(venv_bin):
-        r = fs.file_exists_and_runs(venv_bin)
-        p, ver = venv_bin, (installer_probe._version_from_output(
-            r.stdout + " " + r.stderr) if r.ok else None)
-    out["vllm"] = _entry(p, p, ver, "0.30.0", venv_bin)
     return out
 
 
@@ -4678,6 +4842,17 @@ async def restart_app():
     ]
     py = next((c for c in candidates if c and os.path.exists(c)), sys.executable)
     log = os.path.join(tempfile.gettempdir(), "llama-web.log")
+    # POSIX: one code path for CLI and dashboard — restart.sh --full stops
+    # llama-swap + every farm-managed llama/RPC process on all machines, then
+    # restarts the daemon and this UI. Windows has no bash; the PowerShell
+    # branch below remains the fallback (and covers installs without restart.sh).
+    script = os.path.join(project_root, "restart.sh")
+    if os.name != "nt" and os.path.exists(script):
+        _sp.Popen(["/bin/bash", script, "--full"], start_new_session=True,
+                  close_fds=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        return {"status": "restarting",
+                "message": "Full restart started (llama-swap + all machines). "
+                           "It will be back in ~5s at http://127.0.0.1:8199"}
     if os.name == "nt":
         # Windows: PowerShell — kill daemons + port owner, then start
         # detached (Start-Process survives the parent).
@@ -4714,11 +4889,6 @@ async def restart_app():
             "sleep 1; "
             "pkill llama-swap 2>/dev/null || true; "
             "pkill llama-server 2>/dev/null || true; "
-            # BRACKET TRICK: this bash's own cmdline CONTAINS the literal
-            # 'vllm serve' text, so `pkill -f 'vllm serve'` matches and
-            # kills ITSELF (observed: restart bash died right here, swap
-            # never started). The [v] character class breaks self-match.
-            "pkill -f '[v]llm serve' 2>/dev/null || true; "
             "(fuser -k 8199/tcp > /dev/null 2>&1 || true); "
             # Observed: right after fuser -k, the dying process can still
             # hold :8199 for up to ~9s (SIGTERM shutdown + TIME_WAIT-ish
@@ -4727,8 +4897,8 @@ async def restart_app():
             # manual start. Poll for the port going free BEFORE setsid, so
             # the handoff never races (max 15s).
             "for i in $(seq 0 30); do "
-            "  python3 -c \"import socket;s=socket.socket();\\"
-            "s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);\\"
+            "  python3 -c \"import socket;s=socket.socket();"
+            "s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);"
             "s.bind(('0.0.0.0',8199));s.close()\" 2>/dev/null && break; "
             "  sleep 0.5; "
             "done; "
@@ -4815,132 +4985,51 @@ def _fs_list_local(raw_path, show_hidden=False):
     return {"path": raw_path, "alias": alias, "display_path": disp_path, "parent": parent, "exists": exists, "is_dir": is_dir, "os": "windows" if os.name == "nt" else "macos" if sys.platform == "darwin" else "linux", "entries": entries}
 
 
-def _fs_list_remote(machine, raw_path, show_hidden=False):
-    from ssh_manager import SSHManager, SSHError
+def _fs_list_agent(machine, raw_path, show_hidden=False):
+    import ntpath
     is_win = machine.get("os", "linux") == "windows"
+    join = ntpath.join if is_win else os.path.join
+    dirname = ntpath.dirname if is_win else os.path.dirname
     if not raw_path or raw_path.strip() == "":
-        raw_path = "~" if not is_win else "%USERPROFILE%"
-    # store:// on remote: resolve for that machine's OS (best-effort: use local stores.yaml)
+        raw_path = "~"
     if raw_path.startswith(path_resolver.PREFIX):
         try:
             raw_path = path_resolver.resolve_for(raw_path, machine.get("os", "linux"))
         except Exception:
             pass
-    ssh = SSHManager(machine["ip"], machine["username"], machine["password"], port=machine.get("port", 22))
-    if not is_win:
-        # Use python if available for robust listing, else fallback to ls
-        exp_path = raw_path
-        # embed path as python repr to avoid argv/-- confusion and space handling
-        import json as _json_local
-        repr_path = repr(exp_path)
-        code, out, err = ssh.run(f'python3 -c "import os, json; p=os.path.expanduser({repr_path}); print(json.dumps({{\'exists\': os.path.exists(p), \'is_dir\': os.path.isdir(p), \'parent\': os.path.dirname(os.path.abspath(p)), \'real\': p}}))"', timeout=15)
-        meta = None
-        if code == 0 and out.strip():
-            try:
-                import json as _json
-                meta = _json.loads(out.strip().splitlines()[-1])
-            except Exception:
-                meta = None
-        if meta and meta.get("exists"):
-            real = meta["real"]
-            parent = meta["parent"]
-            is_dir = meta["is_dir"]
-            if not is_dir:
-                real = parent
-                is_dir = True
-                repr_real = repr(real)
-                code, out, _ = ssh.run(f'python3 -c "import os; print(os.path.dirname(os.path.abspath(os.path.expanduser({repr_real}))))"', timeout=10)
-                parent = out.strip().splitlines()[-1] if code == 0 else os.path.dirname(real)
-            # list entries — try python json, else ls -p fallback
-            repr_real2 = repr(real)
-            code, out, _ = ssh.run(f'python3 -c "import os, json; p={repr_real2}; print(json.dumps([{{\'name\': n, \'is_dir\': os.path.isdir(os.path.join(p,n))}} for n in os.listdir(p) if not n.startswith(\".\") or {str(show_hidden).lower()}]))" 2>/dev/null || ls -1 -p "{real}"', timeout=15)
-            entries = []
-            if code == 0 and out.strip():
-                # try json first
-                try:
-                    import json as _json
-                    parsed = _json.loads(out.strip().splitlines()[-1])
-                    if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
-                        for e in parsed:
-                            entries.append({"name": e["name"], "path": os.path.join(real, e["name"]), "is_dir": bool(e["is_dir"])})
-                    else:
-                        raise ValueError()
-                except Exception:
-                    # ls -p fallback
-                    for line in out.splitlines():
-                        name = line.strip()
-                        if not name:
-                            continue
-                        if name.startswith(".") and not show_hidden:
-                            continue
-                        is_d = name.endswith("/")
-                        clean = name.rstrip("/")
-                        entries.append({"name": clean, "path": os.path.join(real, clean), "is_dir": is_d})
-                entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
-            try:
-                alias = path_resolver.to_alias(real)
-            except Exception:
-                alias = real
-            return {"path": real, "alias": alias, "parent": parent, "exists": True, "is_dir": True, "os": "linux", "entries": entries}
-        # fallback: try ls directly
-        code, out, _ = ssh.run(f'ls -ld "{exp_path}" 2>&1', timeout=10)
-        if code != 0:
-            raise HTTPException(status_code=404, detail=f"path not found or unreachable: {raw_path}")
-        # expand via echo
-        code, out, _ = ssh.run(f'echo "{exp_path}"', timeout=10)
-        real = out.strip() or exp_path
-        try:
-            alias = path_resolver.to_alias(real)
-        except Exception:
-            alias = real
-        return {"path": real, "alias": alias, "parent": os.path.dirname(real), "exists": True, "is_dir": True, "os": "linux", "entries": []}
-    else:
-        # windows remote via powershell
-        # normalize slashes
-        ps_path = raw_path.replace("'", "''")
-        # if empty or ~, use $env:USERPROFILE
-        if raw_path.strip() in ("~", "%USERPROFILE%", "$env:USERPROFILE"):
-            ps_path = "$env:USERPROFILE"
-        code, out, err = ssh.run(f'powershell -NoProfile -Command "$p=\\"{ps_path}\\"; $e=Test-Path $p; $isDir=(Test-Path $p -PathType Container); $real=(Resolve-Path $p -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path -ErrorAction SilentlyContinue); if (-not $real) {{ $real=$p }}; $parent=Split-Path $real -Parent; if (-not $parent) {{ $parent=$real }}; Write-Output (@{{exists=$e; isDir=$isDir; real=$real; parent=$parent}} | ConvertTo-Json -Compress)"', timeout=15)
-        if code != 0 or not out.strip():
-            raise HTTPException(status_code=500, detail=f"windows browse failed: {err or out}")
-        import json as _json
-        try:
-            meta = _json.loads(out.strip().splitlines()[-1])
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"parse failed: {e} – {out}")
-        exists = bool(meta.get("exists"))
-        is_dir = bool(meta.get("isDir"))
-        real = meta.get("real") or raw_path
-        parent = meta.get("parent") or os.path.dirname(real)
-        if not exists:
-            raise HTTPException(status_code=404, detail=f"path not found: {raw_path}")
-        if not is_dir:
-            real = parent
-        # list
-        code, out, err = ssh.run(f'powershell -NoProfile -Command "Get-ChildItem -Force -Path \\"{ps_path}\\" | Select-Object Name,FullName,PSIsContainer | ConvertTo-Json -Compress"', timeout=15)
-        entries = []
-        if code == 0 and out.strip():
-            try:
-                data = _json.loads(out.strip())
-                if isinstance(data, dict):
-                    data = [data]
-                for e in data or []:
-                    name = e.get("Name")
-                    if not name:
-                        continue
-                    if name.startswith(".") and not show_hidden:
-                        continue
-                    entries.append({"name": name, "path": e.get("FullName") or os.path.join(real, name), "is_dir": bool(e.get("PSIsContainer"))})
-                entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
-            except Exception:
-                pass
-        try:
-            alias = path_resolver.to_alias(real)
-        except Exception:
-            alias = real
-        return {"path": real, "alias": alias, "parent": parent, "exists": exists, "is_dir": is_dir, "os": "windows", "entries": entries}
+    stat = agent_client.file_stat(machine, raw_path)
+    if not stat.get("exists"):
+        raise HTTPException(status_code=404,
+                            detail=f"path not found or unreachable: {raw_path}")
+    real = stat["path"]
+    is_dir = bool(stat.get("is_dir"))
+    parent = dirname(real)
+    if not is_dir:
+        real = parent
+        is_dir = True
+    listing = agent_client.file_list(machine, real, show_hidden)
+    entries = [{"name": e["name"], "path": join(real, e["name"]),
+                "is_dir": bool(e.get("is_dir"))}
+               for e in listing.get("entries", [])]
+    entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
+    try:
+        alias = path_resolver.to_alias(real)
+    except Exception:
+        alias = real
+    return {"path": real, "alias": alias, "parent": parent,
+            "exists": True, "is_dir": is_dir,
+            "os": "windows" if is_win else
+                  "macos" if machine.get("os") == "macos" else "linux",
+            "entries": entries}
 
+
+def _fs_list_remote(machine, raw_path, show_hidden=False):
+    try:
+        return _fs_list_agent(machine, raw_path, show_hidden)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"agent browse failed: {e}")
 
 @app.get("/api/fs/browse")
 async def fs_browse(path: str = "", machine: str = "", show_hidden: bool = False):
@@ -4975,28 +5064,13 @@ _stats_cache = {}  # key -> {"ts": ..., "data": ...}
 _STATS_TTL = 5.0  # seconds
 
 
-def _active_engine_is_vllm():
-    """Engine toggle read for the stats/overview surfaces. Best-effort:
-    a registry hiccup means llama_cpp behavior (no filtering) rather
-    than an error page."""
-    try:
-        from engine_registry import load_settings as _engine_load
-        return (_engine_load().get("engine") or "llama_cpp") == "vllm"
-    except ImportError:
-        return False
-
-
 @app.get("/api/stats")
 async def get_stats(light: bool = False):
     """Get cluster-wide machine stats (GPU, CPU, RAM). Cached briefly so the
     auto-refresh poll doesn't re-SSH every second. light=true skips the slow
     full SSH collection and returns reachability + identity instantly (the
     overview uses this; the detail modal does a full collection on demand).
-    Cache is keyed by light so the two never overwrite each other.
-    Engine-aware (vLLM mode): hosts the engine cannot use (windows/macos/
-    intel/cpu — _vllm_capability) are EXCLUDED from data, totals and the
-    machine count entirely, so the Cluster Overview only accounts for
-    vLLM-serving hosts. Under llama_cpp nothing is filtered."""
+    Cache is keyed by light so the two never overwrite each other."""
     key = "light" if light else "full"
     now = time.time()
     ent = _stats_cache.get(key)
@@ -5008,25 +5082,6 @@ async def get_stats(light: bool = False):
         fn = stats_collector.machine_stats_light if light else stats_collector.machine_stats
         with ThreadPoolExecutor(max_workers=len(machines) or 1) as pool:
             data = list(pool.map(fn, machines))
-        # DEC-17: every stats entry carries the server's vLLM hardware
-        # verdict (same fields as /api/machines) so the overview machine
-        # cards can dim incapable hosts under vllm WITHOUT re-deriving
-        # os/vendor rules client-side (B14). Stamped response-only, never
-        # persisted. Under llama_cpp the UI ignores the fields entirely.
-        by_name = {m["name"]: m for m in machines}
-        for s in data:
-            m = by_name.get(s.get("name"))
-            if m is not None:
-                capable, reason, info = _vllm_capability(m)
-                s["vllm_capable"] = capable
-                s["vllm_capability_reason"] = reason
-                s["vllm_capability_info"] = info
-        # vLLM mode drops incapable hosts from the overview wholesale —
-        # their VRAM/RAM/cores must not inflate cluster totals and their
-        # cards must not imply they could ever serve (B16). llama_cpp
-        # keeps the verbatim full list.
-        if _active_engine_is_vllm():
-            data = [s for s in data if s.get("vllm_capable") is not False]
         return {"data": data, "totals": stats_collector.cluster_totals(data)}
     result = await run_in_threadpool(collect_all)
     _stats_cache[key] = {"ts": time.time(), "data": result}
@@ -5048,12 +5103,6 @@ async def get_stats_stream():
     machines = cfg.machines.all()
     per_machine_cache = _stats_cache.setdefault("per-machine", {})
     now = time.time()
-    # vLLM mode: incapable hosts (windows/mac/intel/cpu) never stream and
-    # never enter totals — the overview accounts only for vLLM-capable
-    # machines (B16; /api/stats parity)
-    if _active_engine_is_vllm():
-        machines = [m for m in machines
-                    if _vllm_capability(m)[0] is not False]
 
     def gen():
         data = {}
@@ -5069,12 +5118,6 @@ async def get_stats_stream():
                     s = stats_collector._empty(m.get("os", "linux"))
                 s["name"] = m["name"]
                 s["ip"] = m["ip"]
-                # DEC-17: server's vLLM hardware verdict on every streamed
-                # entry too (same fields as /api/machines; response-only).
-                capable, reason, info = _vllm_capability(m)
-                s["vllm_capable"] = capable
-                s["vllm_capability_reason"] = reason
-                s["vllm_capability_info"] = info
                 data[m["name"]] = s
                 fresh[m["name"]] = time.time()
                 yield json.dumps(s) + "\n"
@@ -5174,20 +5217,13 @@ def _save_speed_cache(cache):
         pass
 
 
-def _measure_ssh_speed(ssh, mb=50):
-    """Measure real throughput over the existing SSH connection by having the
-    remote stream `mb` MB to stdout and timing the read. Returns Mb/s."""
-    import time as _t
-    start = _t.time()
+
+
+def _measure_agent_speed(machine, mb=50):
     try:
-        code, out, _ = ssh.run(f"dd if=/dev/zero bs=1M count={mb} 2>/dev/null",
-                               timeout=60)
+        return agent_client.speedtest(machine, mb=mb)
     except Exception:
         return None
-    elapsed = _t.time() - start
-    if elapsed <= 0 or code != 0:
-        return None
-    return round(mb * 8 / elapsed)
 
 
 @app.get("/api/machines/{name}/detail")
@@ -5202,30 +5238,11 @@ async def machine_detail(name: str):
     is_local = local_node.is_local(machine)
     machine_os = machine.get("os", "linux")
 
-    # reuse ONE SSH connection for all commands (opening one per command was
-    # slow — each handshake is ~1s+). Local runs use subprocess directly.
-    ssh = None
-    if not is_local:
-        try:
-            from ssh_manager import SSHManager
-            ssh = SSHManager(machine["ip"], machine["username"],
-                             machine["password"], port=machine.get("port", 22))
-        except Exception:
-            ssh = None
-
     def _run(cmd, timeout=20):
-        if is_local:
-            try:
-                p = subprocess.run(cmd, shell=True, capture_output=True,
-                                   text=True, timeout=timeout)
-                return p.stdout.strip()
-            except Exception:
-                return ""
-        if ssh is None:
-            return ""
         try:
-            code, out, _ = ssh.run(cmd, timeout=timeout)
-            return out.strip() if code == 0 else ""
+            p = subprocess.run(cmd, shell=True, capture_output=True,
+                               text=True, timeout=timeout)
+            return p.stdout.strip()
         except Exception:
             return ""
 
@@ -5234,7 +5251,12 @@ async def machine_detail(name: str):
               "gpu_vendor": machine.get("gpu_vendor", "nvidia"),
               "rpc_port": machine.get("rpc_port", 50052),
               "llama_bin": machine.get("llama_bin", ""),
-              "mac": (machine.get("mac") or "")}
+              "mac": (machine.get("mac") or ""),
+              "transport": machine.get("transport") or "auto",
+              "agent_port": machine.get("agent_port") or 8198,
+              "connection": ("local" if is_local else
+                             "agent" if agent_client.should_use_agent(machine)
+                             else "ssh")}
 
     # ---- combine all detail queries into ONE round-trip per OS ----
     detail["net"] = {"ip": "", "speed": ""}
@@ -5250,118 +5272,137 @@ async def machine_detail(name: str):
         "gid": machine.get("rdma_gid", ""),
     }
     detail["disk"] = {"free": "", "mount": ""}
-    if machine_os == "windows":
-        blob = _run(
-            "powershell -NoProfile -Command \""
-            "$o=@{};"
-            "$o.kernel=(ver);"
-            "$o.cpu=(Get-CimInstance Win32_Processor).Name;"
-            "$o.uptime=((Get-Date)-(Get-CimInstance Win32_OperatingSystem).LastBootUpTime).ToString();"
-            "$o.ip=((Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*'} | Select-Object -First 1).IPAddress);"
-            "$o.speed=((Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object -First 1).LinkSpeed);"
-            "$o.disk=(Get-PSDrive -PSProvider FileSystem | Where-Object {$_.Free -gt 0} | Select-Object Name,Free,Used | ConvertTo-Json -Compress);"
-            "$o.cores=(Get-CimInstance Win32_Processor | Measure-Object -Sum NumberOfLogicalProcessors).Sum;"
-            "$o.coreload=(Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor | Where-Object {$_.Name -ne '_Total'} | Select-Object -ExpandProperty PercentProcessorTime | ForEach-Object {[math]::Round($_,1)} | ConvertTo-Json -Compress);"
-            "$o.llama=((& (Join-Path $env:USERPROFILE 'llama.cpp\\bin\\llama-server.exe') --version 2>&1 | Select-String 'version:' | Select-Object -First 1).ToString());"
-            "if (-not $o.llama) { $o.llama=((& (Join-Path $env:USERPROFILE 'llama.cpp\\llama-server.exe') --version 2>&1 | Select-String 'version:' | Select-Object -First 1).ToString()); }"
-            "$o | ConvertTo-Json -Compress\"", timeout=30)
-        try:
-            o = json.loads(blob)
-            detail["kernel"] = o.get("kernel", "")
-            detail["cpu_model"] = o.get("cpu", "")
-            detail["uptime"] = o.get("uptime", "")
-            detail["net"]["ip"] = o.get("ip", "")
-            detail["net"]["speed"] = o.get("speed", "")
-            detail["disk"]["free"], detail["disk"]["total"] = _parse_win_disk(o.get("disk", ""))
-            detail["llama_version"] = o.get("llama", "")
-            # coreload comes back as a JSON string; parse it into a list
-            cl = o.get("coreload")
-            if isinstance(cl, str):
-                try:
-                    detail["cpu_cores"] = json.loads(cl)
-                except Exception:
-                    detail["cpu_cores"] = []
-            else:
-                detail["cpu_cores"] = cl or []
-            detail["cores"] = o.get("cores", "")
-        except Exception:
-            pass
-    elif machine_os == "macos":
-        blob = _run(
-            "echo \"K:$(uname -a)\";"
-            "echo \"C:$(sysctl -n machdep.cpu.brand_string)\";"
-            "echo \"U:$(uptime)\";"
-            "echo \"I:$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)\";"
-            "echo \"S:$(networksetup -getmedia en0 2>/dev/null | grep -i 'current' | sed 's/.*: //')\";"
-            "echo \"D:$(df -k / | awk 'NR==2 {print $4}')\";"
-            "echo \"DT:$(df -k / | awk 'NR==2 {print $2}')\";"
-            "echo \"L:$(\\\"{bin}/llama-server\\\" --version 2>&1 || "
-            "\\\"{bin}/llama-cli\\\" --version 2>&1)\"".format(
-                bin=machine.get('llama_bin', '') or '.'), timeout=30)
-        _parse_posix_blob(detail, blob)
-    else:
-        _bin = machine.get('llama_bin', '')
-        blob = _run(
-            f"K=$(uname -a); "
-            f"C=$(lscpu | grep 'Model name' | cut -d: -f2 | sed 's/^ *//'); "
-            f"U=$(uptime -p); "
-            f"I=$(hostname -I 2>/dev/null | grep -oF '{machine['ip']}' | head -n1); "
-            f"S=$(for i in $(ls /sys/class/net | grep -v '^lo'); do "
-            f"d=$(readlink /sys/class/net/$i/device/driver 2>/dev/null); "
-            f"case \"$i\" in veth*|br-*|docker*|virbr*|tailscale*) continue;; esac; "
-            f"case \"$d\" in *bridge*|*veth|*tun|*tap) continue;; esac; "
-            f"s=$(cat /sys/class/net/$i/speed 2>/dev/null); "
-            f"if [ -n \"$s\" ] && [ \"$s\" != \"-1\" ] && [ \"$s\" -gt 0 ]; then "
-            f"if [ \"$s\" -ge 1000 ]; then echo \"$((s/1000)) Gb/s\"; "
-            f"else echo \"${{s}} Mb/s\"; fi; break; fi; "
-            f"e=$(ethtool $i 2>/dev/null | grep -i speed | sed 's/.*: *//;s/ *$//'); "
-            f"if [ -n \"$e\" ] && [ \"$e\" != \"Unknown!\" ]; then echo \"$e\"; break; fi; "
-            f"case \"$d\" in *virtio*) echo \"virtio (speed n/a)\"; break;; esac; done); "
-            f"D=$(df -k / | tail -n1 | awk '{{print $4}}'); "
-            f"DT=$(df -k / | tail -n1 | awk '{{print $2}}'); "
-            f"L=$(\"{_bin}/llama-server\" --version 2>&1 || \"{_bin}/llama-cli\" --version 2>&1); "
-            f"echo \"K:$K\"; echo \"C:$C\"; echo \"U:$U\"; echo \"I:$I\"; "
-            f"echo \"S:$S\"; echo \"D:$D\"; echo \"DT:$DT\"; echo \"L:$L\"", timeout=30)
-        _parse_posix_blob(detail, blob)
+    try:
+        detail.update(_machine_connection_caps(machine))
+    except Exception:
+        pass
 
-    # ---- real throughput over SSH (cached 1h) ----
-    # virtio/virtual NICs don't report a link speed, so measure what the
-    # machine can actually push to the cluster over its SSH link. For the
-    # local machine, measure to the first reachable peer.
-    speed_ssh = None
-    if not is_local and ssh is not None:
-        speed_ssh = ssh
-    elif is_local:
-        for peer in cfg.machines.all():
-            if peer.get("name") == name or local_node.is_local(peer):
-                continue
+    # Remote machines: the agent's /system/detail is the single source of
+    # truth (same fields the local command ladder produces).
+    if not is_local:
+        try:
+            sd = agent_client.system_detail(machine) or {}
+        except Exception as e:
+            raise HTTPException(status_code=502,
+                                detail=f"agent detail failed: {e}")
+        detail.update(sd)
+        detail.setdefault("net", {"ip": machine.get("ip", ""), "speed": ""})
+        detail.setdefault("disk", {"free": "", "mount": ""})
+        try:
+            detail["stats"] = stats_collector.machine_stats(machine)
+        except Exception:
+            detail["stats"] = None
+        return detail
+    agent_detail = None
+    if not is_local and agent_client.should_use_agent(machine):
+        try:
+            agent_detail = agent_client.system_detail(machine)
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                agent_detail = {}
+            else:
+                print(f"[agent] {machine['name']}: detail failed, falling back to SSH: {e}")
+    if agent_detail is not None:
+        detail.update(agent_detail)
+    else:
+        if machine_os == "windows":
+            blob = _run(
+                "powershell -NoProfile -Command \""
+                "$o=@{};"
+                "$o.kernel=(ver);"
+                "$o.cpu=(Get-CimInstance Win32_Processor).Name;"
+                "$o.uptime=((Get-Date)-(Get-CimInstance Win32_OperatingSystem).LastBootUpTime).ToString();"
+                "$o.ip=((Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*'} | Select-Object -First 1).IPAddress);"
+                "$o.speed=((Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object -First 1).LinkSpeed);"
+                "$o.disk=(Get-PSDrive -PSProvider FileSystem | Where-Object {$_.Free -gt 0} | Select-Object Name,Free,Used | ConvertTo-Json -Compress);"
+                "$o.cores=(Get-CimInstance Win32_Processor | Measure-Object -Sum NumberOfLogicalProcessors).Sum;"
+                "$o.coreload=(Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor | Where-Object {$_.Name -ne '_Total'} | Select-Object -ExpandProperty PercentProcessorTime | ForEach-Object {[math]::Round($_,1)} | ConvertTo-Json -Compress);"
+                "$o.llama=((& (Join-Path $env:USERPROFILE 'llama.cpp\\bin\\llama-server.exe') --version 2>&1 | Select-String 'version:' | Select-Object -First 1).ToString());"
+                "if (-not $o.llama) { $o.llama=((& (Join-Path $env:USERPROFILE 'llama.cpp\\llama-server.exe') --version 2>&1 | Select-String 'version:' | Select-Object -First 1).ToString()); }"
+                "$o | ConvertTo-Json -Compress\"", timeout=30)
             try:
-                from ssh_manager import SSHManager
-                speed_ssh = SSHManager(peer["ip"], peer["username"],
-                                        peer["password"],
-                                        port=peer.get("port", 22))
-                break
+                o = json.loads(blob)
+                detail["kernel"] = o.get("kernel", "")
+                detail["cpu_model"] = o.get("cpu", "")
+                detail["uptime"] = o.get("uptime", "")
+                detail["net"]["ip"] = o.get("ip", "")
+                detail["net"]["speed"] = o.get("speed", "")
+                detail["disk"]["free"], detail["disk"]["total"] = _parse_win_disk(o.get("disk", ""))
+                detail["llama_version"] = o.get("llama", "")
+                # coreload comes back as a JSON string; parse it into a list
+                cl = o.get("coreload")
+                if isinstance(cl, str):
+                    try:
+                        detail["cpu_cores"] = json.loads(cl)
+                    except Exception:
+                        detail["cpu_cores"] = []
+                else:
+                    detail["cpu_cores"] = cl or []
+                detail["cores"] = o.get("cores", "")
             except Exception:
-                continue
-    # only measure over SSH when the reported link speed is missing/unknown
-    # (virtio/virtual NICs). Machines with a real reported speed keep it.
+                pass
+        elif machine_os == "macos":
+            blob = _run(
+                "echo \"K:$(uname -a)\";"
+                "echo \"C:$(sysctl -n machdep.cpu.brand_string)\";"
+                "echo \"U:$(uptime)\";"
+                "echo \"I:$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)\";"
+                "echo \"S:$(networksetup -getmedia en0 2>/dev/null | grep -i 'current' | sed 's/.*: //')\";"
+                "echo \"D:$(df -k / | awk 'NR==2 {print $4}')\";"
+                "echo \"DT:$(df -k / | awk 'NR==2 {print $2}')\";"
+                "echo \"L:$(\\\"{bin}/llama-server\\\" --version 2>&1 || "
+                "\\\"{bin}/llama-cli\\\" --version 2>&1)\"".format(
+                    bin=machine.get('llama_bin', '') or '.'), timeout=30)
+            _parse_posix_blob(detail, blob)
+        else:
+            _bin = machine.get('llama_bin', '')
+            blob = _run(
+                f"K=$(uname -a); "
+                f"C=$(lscpu | grep 'Model name' | cut -d: -f2 | sed 's/^ *//'); "
+                f"U=$(uptime -p); "
+                f"I=$(hostname -I 2>/dev/null | grep -oF '{machine['ip']}' | head -n1); "
+                f"S=$(for i in $(ls /sys/class/net | grep -v '^lo'); do "
+                f"d=$(readlink /sys/class/net/$i/device/driver 2>/dev/null); "
+                f"case \"$i\" in veth*|br-*|docker*|virbr*|tailscale*) continue;; esac; "
+                f"case \"$d\" in *bridge*|*veth|*tun|*tap) continue;; esac; "
+                f"s=$(cat /sys/class/net/$i/speed 2>/dev/null); "
+                f"if [ -n \"$s\" ] && [ \"$s\" != \"-1\" ] && [ \"$s\" -gt 0 ]; then "
+                f"if [ \"$s\" -ge 1000 ]; then echo \"$((s/1000)) Gb/s\"; "
+                f"else echo \"${{s}} Mb/s\"; fi; break; fi; "
+                f"e=$(ethtool $i 2>/dev/null | grep -i speed | sed 's/.*: *//;s/ *$//'); "
+                f"if [ -n \"$e\" ] && [ \"$e\" != \"Unknown!\" ]; then echo \"$e\"; break; fi; "
+                f"case \"$d\" in *virtio*) echo \"virtio (speed n/a)\"; break;; esac; done); "
+                f"D=$(df -k / | tail -n1 | awk '{{print $4}}'); "
+                f"DT=$(df -k / | tail -n1 | awk '{{print $2}}'); "
+                f"L=$(\"{_bin}/llama-server\" --version 2>&1 || \"{_bin}/llama-cli\" --version 2>&1); "
+                f"echo \"K:$K\"; echo \"C:$C\"; echo \"U:$U\"; echo \"I:$I\"; "
+                f"echo \"S:$S\"; echo \"D:$D\"; echo \"DT:$DT\"; echo \"L:$L\"", timeout=30)
+            _parse_posix_blob(detail, blob)
+
+    # ---- real throughput over the peer agent (cached 1h) ----
+    speed_agent = None
+    for peer in cfg.machines.all():
+        if peer.get("name") == name or local_node.is_local(peer):
+            continue
+        speed_agent = peer
+        break
     reported = str(detail["net"].get("speed") or "").strip()
     need_measure = (not reported or "n/a" in reported.lower()
                     or "unknown" in reported.lower())
-    if need_measure and speed_ssh is not None:
+    if need_measure and speed_agent is not None:
         cache = _load_speed_cache()
         ent = cache.get(name)
         now = time.time()
         if ent and now - ent.get("ts", 0) < _SPEED_CACHE_TTL:
             detail["net"]["speed"] = ent.get("mbps")
         else:
-            mbps = _measure_ssh_speed(speed_ssh)
+            mbps = _measure_agent_speed(speed_agent)
             if mbps:
                 detail["net"]["speed"] = mbps
                 cache[name] = {"mbps": mbps, "ts": now}
                 _save_speed_cache(cache)
         if detail["net"]["speed"]:
-            detail["net"]["speed"] = f"{detail['net']['speed']} Mb/s (SSH)"
+            detail["net"]["speed"] = f"{detail['net']['speed']} Mb/s (agent)"
 
     # live stats ride along so the modal shows current numbers
     try:
@@ -5600,10 +5641,7 @@ async def launch_model(l: LaunchIn):
     """Live launch: orchestrate everything from model config, no scripts.
     If variant is set, the variant's deployment is merged with the base model."""
     # B5a2 + DEC-06: the single-model launch path is engine-owned — the
-    # adapter either runs it (llama.cpp: rpc_manager.launch_model) or
-    # refuses it (vLLM serving routes through llama-swap /api/swap/*).
-    # The refusal surfaces as 409, never a silent no-op, and fires before
-    # any server-list validation (the mode gate is first).
+    # adapter runs it (llama.cpp: rpc_manager.launch_model).
     try:
         engine = engine_registry.get_engine()
     except ValueError as e:
@@ -5627,16 +5665,9 @@ async def launch_model(l: LaunchIn):
             raise HTTPException(status_code=404,
                                 detail=f"model '{lmid}' not found")
         allow = access.view_allow()
-        # STRICT posture: an unknown/unresolvable key is restricted with
-        # allow None — it may launch nothing (404-shaped, same as chat).
         if allow is None or lmid not in allow:
             raise HTTPException(status_code=404,
                                 detail=f"model '{lmid}' not found")
-    if not engine.capable("rpc_cluster"):
-        try:
-            engine.start_model(l.model_id, l.servers, l.port, l.variant)
-        except ValueError as e:
-            raise HTTPException(status_code=409, detail=str(e)) from None
     valid = {m["name"] for m in cfg.machines.all()}
     unknown = [s for s in l.servers if s not in valid]
     if unknown:
@@ -5662,10 +5693,9 @@ async def launch_model(l: LaunchIn):
             engine.start_model, l.model_id, l.servers, l.port, l.variant,
             master_name, mode)
     except ValueError as e:
-        # Engine-level failures (unknown id, config refusal, etc.) stay a
-        # failed launch report (500), matching the legacy rpc_manager path.
-        report = {"model_id": l.model_id, "failed": True,
-                  "error": str(e)}
+        return JSONResponse(
+            {"model_id": l.model_id, "failed": True, "error": str(e),
+             "steps": []}, status_code=500)
     status = 500 if report.get("failed") else 200
     return JSONResponse(report, status_code=status)
 
@@ -5674,11 +5704,7 @@ async def launch_model(l: LaunchIn):
 async def stop_launch(l: LaunchIn):
     """Stop a live-launched model on its servers."""
     # B15 + DEC-06: the stop path is engine-owned. llama.cpp:
-    # rpc_manager.stop_model kills llama.cpp RPC ports. vLLM models are
-    # served BY llama-swap, so the engine stop is llama-swap's model
-    # unload: the adapter runs the entry's cmdStop (docker stop / pkill,
-    # vllm_manager.build_cmd_stop) through the swap-host unload proxy —
-    # exactly what the Swap tab's Evict does. Swap down -> 503.
+    # rpc_manager.stop_model kills llama.cpp RPC ports.
     # access.py: same "never existed" rule as /api/launch — a scoped
     # strict-mode key may only stop tokens it is granted (stopping is a
     # model-scoped action; a variant grant does not cover the base key).
@@ -5718,23 +5744,31 @@ async def stop_launch(l: LaunchIn):
     # stop actually unloads it and the serve group frees the box.
     # Swap down -> 503, same as the Swap tab's Evict. Unknown ids keep
     # the legacy path.
+    # Stop BOTH possible owners: a live launch (llama-server on the
+    # requested port) and, when the same deployment is served by
+    # llama-swap, its remote-proxy entry. A live launch on a remote box is
+    # indistinguishable by model id alone, so do the live port-targeted
+    # stop first, then best-effort unload the swap entry.
+    res = await run_in_threadpool(rpc_manager.stop_model, l.servers,
+                                  l.model_id, l.variant, l.master_name,
+                                  l.port)
     try:
         verdict = swap_manager.deployment_launch_mode(l.model_id, l.variant)
     except ValueError:
         verdict = None
     if verdict and verdict["mode"] == "local" and verdict["box"]:
-        return await _proxy_swap_unload(verdict["swap_key"])
-    return await run_in_threadpool(rpc_manager.stop_model, l.servers,
-                                   l.model_id, l.variant, l.master_name)
+        try:
+            await _proxy_swap_unload(verdict["swap_key"])
+        except Exception:
+            pass
+    return res
 
 
 @app.get("/api/launch/active")
 async def active_launches():
     """Which configured model ports are serving right now (any machine).
     DEC-06: the per-machine serving probe is the adapter's active_model —
-    llama.cpp checks the machine's RPC port, a swap-only engine probes
-    HTTP /health on the llama-swap listen port (swap_manager
-    listen_port — no hardcoded 8080)."""
+    llama.cpp checks the machine's RPC port."""
     machines = cfg.machines.all()
     try:
         engine = engine_registry.get_engine()
@@ -5749,9 +5783,6 @@ class SwapIn(pydantic.BaseModel):
     binary: str | None = None
     listen_port: int | None = None
     config_path: str | None = None
-    # DEC-03 (AUDIT-T6 §1.6): vllm's swap-config file. Empty string clears
-    # back to derive-from-config_path (engine-qualified sibling file).
-    config_path_vllm: str | None = None
     host_name: str | None = None
     launch_config: dict | None = None
 
@@ -5768,7 +5799,7 @@ async def swap_settings():
 async def save_swap_settings(s: SwapIn):
     return swap_manager.save_settings(
         s.binary, s.listen_port, s.config_path, s.host_name,
-        s.launch_config, config_path_vllm=s.config_path_vllm)
+        s.launch_config)
 
 
 @app.get("/api/swap/preview")
@@ -5894,133 +5925,14 @@ async def swap_loaded_models(request: Request):
         return {"loaded": [], "running": True, "error": str(e)}
 
 
-@app.get("/api/flow/vllm-metrics")
-async def flow_vllm_metrics():
-    """Visualizer feed for engine=vllm: scrape the loaded upstream's
-    /metrics (Prometheus text) and return the gauges + counters the flow
-    diagram renders — per-model token counters (deltas computed from the
-    previous scrape, monotonic within this app's lifetime), KV-cache
-    usage, queue depth, prefix-cache hit rate. llama-swap exposes the
-    upstream port per model; only loaded models answer, so unloaded ones
-    report nulls. Same urllib-in-threadpool idiom as /api/swap/loaded."""
-    global _FLOW_VLLM_METRICS_PREV
-    st = swap_manager.status()
-    if not st.get("running"):
-        return {"models": {}, "running": False}
-
-    def fetch():
-        import urllib.request, json as _json
-        base = (f"http://127.0.0.1:{st['port']}"
-                if local_node.is_local(cfg.machines.require(st["host"]))
-                else f"http://{st.get('host_ip')}:{st['port']}")
-        with urllib.request.urlopen(base + "/v1/models", timeout=5) as r:
-            models = _json.load(r).get("data", [])
-        loaded = [m["id"] for m in models
-                  if (m.get("status") or {}).get("value") == "loaded"]
-        out = {}
-        for mid in loaded:
-            # the upstream serves on its own port; llama-swap's /upstream/
-            # <id> proxy path works without knowing that port
-            try:
-                with urllib.request.urlopen(
-                        f"{base}/upstream/{mid}/metrics", timeout=5) as r:
-                    body = r.read().decode()
-                out[mid] = _parse_vllm_metrics(body)
-            except Exception:
-                out[mid] = None
-        return out
-
-    try:
-        fresh = await run_in_threadpool(fetch)
-    except Exception as e:
-        return {"models": {}, "running": True, "error": str(e)}
-    # per-model counters are deltas vs the previous scrape (tokens/sec is
-    # the visualizer's animation driver; raw counters would never decay)
-    result = {}
-    # Identity gate (same rule as /api/swap/loaded): metrics per model
-    # are serving telemetry — a scoped viewer sees only granted models
-    # (deltas still computed from the FULL previous scrape so a granted
-    # model's counters stay monotonic-correct across the filter).
-    _flow_allow = None if access.gate_open() else access.view_allow()
-    from swap_gateway import _mid_allowed as _mid_ok
-    for mid, cur in fresh.items():
-        if _flow_allow is not None and not (
-                _mid_ok(mid, _flow_allow) or not cur):
-            # ungranted model: drop its row entirely, but only when it is
-            # serving (a None row tells the UI "loaded but quiet" — that
-            # state must not leak either, so drop those too)
-            continue
-        if not cur:
-            result[mid] = None
-            continue
-        prev = (_FLOW_VLLM_METRICS_PREV or {}).get(mid)
-        result[mid] = cur
-        if prev:
-            result[mid]["prompt_tps"] = max(
-                0.0, cur["prompt_tokens"] - prev["prompt_tokens"])
-            result[mid]["gen_tps"] = max(
-                0.0, cur["gen_tokens"] - prev["gen_tokens"])
-        else:
-            result[mid]["prompt_tps"] = 0.0
-            result[mid]["gen_tps"] = 0.0
-    _FLOW_VLLM_METRICS_PREV = fresh
-    return {"models": result, "running": True,
-            "host": st["host"], "port": st["port"]}
-
-
-def _parse_vllm_metrics(body):
-    """Scrape the handful of vLLM gauges the visualizer renders. Counter
-    names are model_name-tagged (one scrape per loaded upstream port, so
-    there is exactly one model per body)."""
-    gauges = {"kv_cache_usage_perc": None, "num_requests_running": None,
-              "num_requests_waiting": None, "prompt_tokens": None,
-              "gen_tokens": None, "prefix_cache_hits": None,
-              "prefix_cache_queries": None}
-    prefixes = {
-        "vllm:kv_cache_usage_perc": "kv_cache_usage_perc",
-        "vllm:num_requests_running": "num_requests_running",
-        "vllm:num_requests_waiting": "num_requests_waiting",
-        "vllm:prompt_tokens_total{": "prompt_tokens",
-        "vllm:generation_tokens_total{": "gen_tokens",
-        "vllm:prefix_cache_hits_total{": "prefix_cache_hits",
-        "vllm:prefix_cache_queries_total{": "prefix_cache_queries",
-    }
-    for line in (body or "").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        name, _, raw = line.rpartition(" ")
-        if not name:
-            continue
-        for p, key in prefixes.items():
-            if name.startswith(p):
-                try:
-                    gauges[key] = float(raw)
-                except ValueError:
-                    pass
-                break
-    if all(v is None for v in gauges.values()):
-        return None
-    for k in ("prompt_tokens", "gen_tokens", "prefix_cache_hits",
-              "prefix_cache_queries"):
-        gauges[k] = gauges[k] or 0.0
-    return gauges
-
-
-# last scrape's per-model counters (module state — /metrics counters are
-# cumulative; the visualizer needs tokens-per-scrape deltas)
-_FLOW_VLLM_METRICS_PREV = None
-
-
 @app.post("/api/swap/load/{model_id}")
-async def swap_load_model(model_id: str):
-    """Load one model through the running swap daemon: vLLM models load
-    on first request, so this fires a minimal warmup completion
-    (max_tokens=1) at the daemon and waits for it. First load takes
-    minutes (Ray cluster + weight load + warmup); the daemon-side
-    timeout is generous for that reason. 404 for unknown models, 503
-    when the daemon is down. Same urllib-in-threadpool idiom as
-    swap_loaded_models (stdlib only, no extra deps)."""
+async def swap_load_model(model_id: str, request: Request):
+    """Load one model through the running swap daemon: this fires a minimal
+    warmup completion (max_tokens=1) at the daemon and waits for it. First
+    load takes a while (weight load + warmup); the daemon-side timeout is
+    generous for that reason. 404 for unknown models, 503 when the daemon
+    is down. Same urllib-in-threadpool idiom as swap_loaded_models
+    (stdlib only, no extra deps)."""
     st = swap_manager.status()
     if not st.get("running"):
         raise HTTPException(status_code=503,
@@ -6029,27 +5941,55 @@ async def swap_load_model(model_id: str):
 
     def warmup():
         import urllib.request, urllib.error, json as _json
-        base = (f"http://127.0.0.1:{st['port']}"
-                if local_node.is_local(cfg.machines.require(st["host"]))
-                else f"http://{st.get('host_ip')}:{st['port']}")
-        payload = _json.dumps(
-            {"model": model_id,
-             "messages": [{"role": "user", "content": "hi"}],
-             "max_tokens": 1}).encode()
-        req = urllib.request.Request(
-            base + "/v1/chat/completions", data=payload,
-            headers={"Content-Type": "application/json"}, method="POST")
-        t0 = _time.time()
+        # Go through the farm gateway (:8090) with the logged-in user's
+        # identity (session cookie → access key), exactly like API clients.
+        base = _gateway_url("")
+        is_embed = False
         try:
-            with urllib.request.urlopen(req, timeout=600) as r:
-                body = _json.load(r)
-        except urllib.error.HTTPError as e:
-            raise RuntimeError(f"daemon refused load: HTTP {e.code} "
-                               f"{e.read(300).decode('utf-8', 'replace')}")
+            engine = engine_registry.get_engine()
+            emb_ids = {m.get("model_id") for m in
+                       (engine.filter_embedding_models(cfg.list_models()) or [])}
+            is_embed = model_id.split("--")[0] in emb_ids
+        except Exception:
+            pass
+        if is_embed:
+            payload = _json.dumps(
+                {"model": model_id, "input": "hi"}).encode()
+            path = "/v1/embeddings"
+        else:
+            payload = _json.dumps(
+                {"model": model_id,
+                 "messages": [{"role": "user", "content": "hi"}],
+                 "max_tokens": 1}).encode()
+            path = "/v1/chat/completions"
+        req = urllib.request.Request(
+            base + path, data=payload,
+            headers=_gateway_headers(request), method="POST")
+        t0 = _time.time()
+        body = None
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=600) as r:
+                    body = _json.load(r)
+                break
+            except urllib.error.HTTPError as e:
+                detail = e.read(300).decode("utf-8", "replace")
+                # App startup reloads llama-swap (stop+start); a load that
+                # lands in that window gets a transient 5xx. Retry briefly.
+                if e.code in (500, 502, 503) and attempt < 2:
+                    _time.sleep(2)
+                    continue
+                raise RuntimeError(
+                    f"daemon refused load: HTTP {e.code} {detail}")
+        if body is None:
+            raise RuntimeError("daemon refused load: no response")
         choice = ((body.get("choices") or [{}])[0].get("message") or {})
+        preview = (choice.get("content") or "")
+        if not preview and body.get("data"):
+            preview = "(embedding ok)"
         return {"ok": True, "model": model_id,
                 "elapsed_s": round(_time.time() - t0, 1),
-                "preview": (choice.get("content") or "")[:120]}
+                "preview": preview[:120]}
     try:
         return await run_in_threadpool(warmup)
     except RuntimeError as e:
@@ -6101,17 +6041,38 @@ async def swap_disable_get(model_id: str):
     return {"model_id": model_id, "swap_disabled": bool(m.get("swap_disabled"))}
 
 
-async def _proxy_swap_unload(model_id: str):
+def _swap_host_unload(model_id: str):
     """POST /api/models/unload/{model_id} on the swap host — llama-swap then
-    runs the model entry's cmdStop, which under vLLM IS the engine stop
-    (`docker stop farm-<id>` / pkill, vllm_manager.build_cmd_stop). Shared by
-    /api/swap/evict/{model_id} and the vllm branch of /api/launch/stop (B15):
-    one proxy body so the two entry points can never drift. No-op if swap down.
-    DEC-06: the body lives in vllm_manager.swap_host_unload (the adapter's
-    stop path calls the same function); app.py only maps SwapDownError -> 503."""
+    runs the model entry's cmdStop. Shared by /api/swap/evict/{model_id}
+    and the remote-proxy branch of /api/launch/stop: one proxy body so the
+    two entry points can never drift. Swap down raises ValueError."""
+    st = swap_manager.status()
+    if not st.get("running"):
+        raise ValueError("swap not running")
+    host = cfg.machines.require(st["host"])
+    is_local = local_node.is_local(host)
+    url = (f"http://127.0.0.1:{st['port']}/api/models/unload/{model_id}"
+           if is_local else
+           f"http://{st.get('host_ip')}:{st['port']}/api/models/unload/{model_id}")
+    import urllib.request
+    import urllib.error
+    req = urllib.request.Request(url, data=b"", method="POST")
     try:
-        return await run_in_threadpool(vllm_manager.swap_host_unload, model_id)
-    except vllm_manager.SwapDownError as e:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return {"ok": True, "status": r.status,
+                    "body": r.read().decode()[:500]}
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "status": e.code,
+                "error": e.read().decode()[:500]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+async def _proxy_swap_unload(model_id: str):
+    """Proxy an unload to the swap host. No-op if swap down."""
+    try:
+        return await run_in_threadpool(_swap_host_unload, model_id)
+    except ValueError as e:
         raise HTTPException(status_code=503, detail=str(e)) from None
 
 
@@ -6147,11 +6108,10 @@ async def swap_evict_all():
 @app.get("/api/embeddings/models")
 async def list_embedding_models():
     # capability detection is the engine adapter's vocabulary (G-6):
-    # llama.cpp keeps the "embed"-substring heuristic, vLLM extends it
-    # with the known embedding families (bge/nomic/gte/…) + config.json
-    # architectures. Same shape both ways.
+    # llama.cpp keeps the "embed"-substring heuristic.
     engine = engine_registry.get_engine()
-    return engine.filter_embedding_models(cfg.list_models())
+    return _access_filter_models(
+        engine.filter_embedding_models(cfg.list_models()))
 
 
 class EmbedIn(pydantic.BaseModel):
@@ -6161,17 +6121,19 @@ class EmbedIn(pydantic.BaseModel):
 
 
 @app.post("/api/embeddings")
-async def create_embeddings(e: EmbedIn):
+async def create_embeddings(e: EmbedIn, request: Request):
     st = swap_manager.status()
     if not st.get("running"):
         raise HTTPException(status_code=503, detail="swap not running — Launch All first")
     host = cfg.machines.require(st["host"])
     is_local = local_node.is_local(host)
-    url = "http://127.0.0.1:8090/v1/embeddings"  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
+    url = _gateway_url("/v1/embeddings")  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
     def do():
         import urllib.request, json as _json, urllib.error
         payload = _json.dumps({"model": e.model, "input": e.input}).encode()
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+        req = urllib.request.Request(url, data=payload,
+                                     headers=_gateway_headers(request),
+                                     method="POST")
         try:
             with urllib.request.urlopen(req, timeout=7200) as r:
                 body = r.read().decode()
@@ -6197,7 +6159,8 @@ async def create_embeddings(e: EmbedIn):
 async def list_audio_models():
     # capability detection is the engine adapter's vocabulary (G-8)
     engine = engine_registry.get_engine()
-    return engine.filter_audio_models(cfg.list_models())
+    return _access_filter_models(
+        engine.filter_audio_models(cfg.list_models()))
 
 
 @app.get("/api/decision/models")
@@ -6207,7 +6170,8 @@ async def list_decision_models():
     via the engine adapter, so a future engine just filters its own
     vocabulary."""
     engine = engine_registry.get_engine()
-    return engine.filter_decision_models(cfg.list_models())
+    return _access_filter_models(
+        engine.filter_decision_models(cfg.list_models()))
 
 
 class AudioIn(pydantic.BaseModel):
@@ -6217,7 +6181,7 @@ class AudioIn(pydantic.BaseModel):
 
 
 @app.post("/api/audio")
-async def audio_test(v: AudioIn):
+async def audio_test(v: AudioIn, request: Request):
     """Transcribe browser-captured audio via OpenAI-style input_audio
     (base64 data URI) in a chat completion. Audio never touches disk."""
     st = swap_manager.status()
@@ -6225,7 +6189,7 @@ async def audio_test(v: AudioIn):
         raise HTTPException(status_code=503, detail="swap not running — Launch All first")
     host = cfg.machines.require(st["host"])
     is_local = local_node.is_local(host)
-    url = "http://127.0.0.1:8090/v1/chat/completions"  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
+    url = _gateway_url("/v1/chat/completions")  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
     def do():
         import urllib.request, json as _json, urllib.error
         msgs = []
@@ -6242,7 +6206,9 @@ async def audio_test(v: AudioIn):
             {"type": "input_audio", "input_audio": {"data": v.audio, "format": "wav"}},
         ]})
         payload = _json.dumps({"model": v.model, "messages": msgs}).encode()
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+        req = urllib.request.Request(url, data=payload,
+                                     headers=_gateway_headers(request),
+                                     method="POST")
         try:
             with urllib.request.urlopen(req, timeout=7200) as r:
                 resp = _json.loads(r.read().decode())
@@ -6276,11 +6242,10 @@ async def audio_test(v: AudioIn):
 @app.get("/api/vision/models")
 async def list_vision_models():
     # capability detection is the engine adapter's vocabulary (G-9):
-    # llama.cpp filters by the mmproj projector flag; vLLM vision models
-    # are HF-format (no mmproj) and are detected from config.json
-    # vision_config / architectures + known vision families.
+    # llama.cpp filters by the mmproj projector flag.
     engine = engine_registry.get_engine()
-    return engine.filter_vision_models(cfg.list_models())
+    return _access_filter_models(
+        engine.filter_vision_models(cfg.list_models()))
 
 
 class VisionIn(pydantic.BaseModel):
@@ -6290,13 +6255,13 @@ class VisionIn(pydantic.BaseModel):
 
 
 @app.post("/api/vision")
-async def vision_test(v: VisionIn):
+async def vision_test(v: VisionIn, request: Request):
     st = swap_manager.status()
     if not st.get("running"):
         raise HTTPException(status_code=503, detail="swap not running — Launch All first")
     host = cfg.machines.require(st["host"])
     is_local = local_node.is_local(host)
-    url = "http://127.0.0.1:8090/v1/chat/completions"  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
+    url = _gateway_url("/v1/chat/completions")  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
     def do():
         import urllib.request, json as _json, urllib.error
         payload = _json.dumps({
@@ -6306,7 +6271,9 @@ async def vision_test(v: VisionIn):
                 {"type": "image_url", "image_url": {"url": v.image}},
             ]}],
         }).encode()
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+        req = urllib.request.Request(url, data=payload,
+                                     headers=_gateway_headers(request),
+                                     method="POST")
         try:
             with urllib.request.urlopen(req, timeout=7200) as r:
                 resp = _json.loads(r.read().decode())
@@ -6400,9 +6367,8 @@ async def scan_models(path: str, recursive: bool = False):
         filtered_models.append(model)
     # Engine-gate (DEC-07): /api/scan is the wizard's model source list —
     # only models in the ACTIVE engine's downloads vocabulary are
-    # offered. llama.cpp serves GGUF (hf entries hidden); vLLM serves HF
-    # dirs (gguf entries hidden). Projectors are editor chrome, not
-    # engine-qualified model sources — both engines keep them.
+    # offered. llama.cpp serves GGUF (hf entries hidden). Projectors are
+    # editor chrome, not engine-qualified model sources.
     engine = engine_registry.get_engine()
     allowed = engine.ui_manifest().get("downloads", {}).get("formats", [])
     filtered_models = [

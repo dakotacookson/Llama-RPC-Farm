@@ -4,9 +4,8 @@ schema (ARD §2). Pure logic: no network, no real machines.
 Covers the B1 checkpoint:
 - default engine injected when the settings key is missing
 - invalid engine -> startup ValueError listing valid values (no silent fallback)
-- vllm block normalization/validation (defaults, unknown keys, delivery, gmu)
 - LlamaCppAdapter delegation to rpc_manager/swap_manager (zero behavior change)
-- get_engine() seam: unknown-but-valid engine names rejected until registered
+- get_engine() seam resolves the llama.cpp adapter
 """
 import os
 
@@ -40,15 +39,11 @@ def _write_settings(path, data):
 
 def test_default_engine_injected_when_missing(settings_file):
     """Existing installs have no engine key — the default must be
-    injected. DEC-01 (engine-qualified blocks): llama_cpp mode materializes
-    NO vllm vocabulary — a llama.cpp settings file carries only shared
-    farm keys (spec §1.4/§3)."""
+    injected."""
     _write_settings(settings_file, {"model_dir": "store://llm-models",
                                     "llama_bin": "~/llama.cpp/build/bin"})
     out = load_settings(settings_file)
     assert out["engine"] == DEFAULT_ENGINE == "llama_cpp"
-    # engine-qualified: NO vllm block in llama_cpp mode
-    assert "vllm" not in out
     # unrelated keys survive untouched
     assert out["llama_bin"] == "~/llama.cpp/build/bin"
 
@@ -56,7 +51,6 @@ def test_default_engine_injected_when_missing(settings_file):
 def test_missing_settings_file_behaves_like_empty(settings_file):
     out = load_settings(settings_file)  # file never written
     assert out["engine"] == "llama_cpp"
-    assert "vllm" not in out
 
 
 def test_engine_llama_cpp_round_trips(settings_file):
@@ -67,7 +61,7 @@ def test_engine_llama_cpp_round_trips(settings_file):
 
 # ---------------- invalid engine -> startup error, no fallback ------------
 
-@pytest.mark.parametrize("bad", ["vllm ", "llama-cpp", "VLLM", "llama",
+@pytest.mark.parametrize("bad", ["bogus", "llama-cpp", "LLAMA_CPP", "llama",
                                  "engine_x", ""])
 def test_invalid_engine_raises_listing_valid_values(settings_file, bad):
     """A typo must be a startup error listing valid values — never a
@@ -77,75 +71,21 @@ def test_invalid_engine_raises_listing_valid_values(settings_file, bad):
         load_settings(settings_file)
     msg = str(ei.value)
     assert bad in msg
-    assert "llama_cpp" in msg and "vllm" in msg
+    assert "llama_cpp" in msg
 
 
 def test_invalid_engine_raises_even_via_get_engine(settings_file):
-    _write_settings(settings_file, {"engine": "vllmm"})
+    _write_settings(settings_file, {"engine": "bogus"})
     with pytest.raises(ValueError):
         load_settings(settings_file)
-
-
-# ---------------- vllm block validation ----------------
-
-def test_vllm_block_partial_overrides_keep_rest_of_defaults(settings_file):
-    _write_settings(settings_file, {"engine": "vllm",
-                                    "vllm": {"delivery": "docker"}})
-    out = load_settings(settings_file)
-    assert out["engine"] == "vllm"
-    assert out["vllm"]["delivery"] == "docker"
-    assert out["vllm"]["venv_bin"] == "~/vllm-env/bin/vllm"  # default kept
-
-
-def test_vllm_unknown_key_rejected(settings_file):
-    # DEC-01: foreign vllm vocabulary only validates when vllm is ACTIVE
-    _write_settings(settings_file, {"engine": "vllm",
-                                    "vllm": {"deliveri": "venv"}})
-    with pytest.raises(ValueError) as ei:
-        load_settings(settings_file)
-    assert "deliveri" in str(ei.value)
-
-
-def test_vllm_invalid_delivery_rejected(settings_file):
-    _write_settings(settings_file, {"engine": "vllm",
-                                    "vllm": {"delivery": "snap"}})
-    with pytest.raises(ValueError) as ei:
-        load_settings(settings_file)
-    assert "venv" in str(ei.value) and "docker" in str(ei.value)
-
-
-def test_vllm_bad_gpu_memory_utilization_rejected(settings_file):
-    for bad in (0, 1.5, -0.1, "high", True):
-        _write_settings(settings_file,
-                        {"engine": "vllm",
-                         "vllm": {"default_gpu_memory_utilization": bad}})
-        with pytest.raises(ValueError):
-            load_settings(settings_file)
-
-
-def test_vllm_non_mapping_block_rejected(settings_file):
-    _write_settings(settings_file, {"engine": "vllm", "vllm": ["venv"]})
-    with pytest.raises(ValueError):
-        load_settings(settings_file)
-
-
-def test_foreign_vllm_block_tolerated_in_llama_cpp_mode(settings_file):
-    """DEC-01 (spec §3): per-model/foreign vocabulary on disk is
-    dead-but-tolerated — a llama.cpp load must not validate (or fail on)
-    the vllm block; it passes through untouched."""
-    _write_settings(settings_file, {"engine": "llama_cpp",
-                                    "vllm": {"deliveri": "venv"}})
-    out = load_settings(settings_file)
-    assert out["vllm"] == {"deliveri": "venv"}
 
 
 # ---------------- config_loader helpers (schema vocabulary) ----------------
 
 def test_validate_engine_accepts_enum_and_rejects_typo():
     assert cfg.validate_engine("llama_cpp") == "llama_cpp"
-    assert cfg.validate_engine("vllm") == "vllm"
     with pytest.raises(ValueError):
-        cfg.validate_engine("vllam")
+        cfg.validate_engine("bogus")
 
 
 def test_inject_engine_defaults_mutates_and_returns():
@@ -153,35 +93,8 @@ def test_inject_engine_defaults_mutates_and_returns():
     out = cfg.inject_engine_defaults(s)
     assert out is s
     assert s["engine"] == "llama_cpp"
-    # engine-qualified: llama_cpp injects no vllm block (DEC-01)
 
 
-def test_inject_engine_defaults_preserves_partial_vllm_block():
-    s = {"engine": "vllm", "vllm": {"venv_bin": "/opt/vllm/bin/vllm"}}
-    cfg.inject_engine_defaults(s)
-    assert s["vllm"]["venv_bin"] == "/opt/vllm/bin/vllm"
-    assert s["vllm"]["delivery"] == "venv"
-
-
-def test_inject_engine_defaults_delegates_to_active_adapter():
-    """DEC-01: inject_engine_defaults shrinks to engine enum + dispatch —
-    the vllm block validation runs on the adapter the registry returns."""
-    import vllm_manager
-    s = {"engine": "vllm"}
-    calls = []
-    orig = vllm_manager.VllmAdapter.settings_section
-
-    def spy(self, raw_settings):
-        calls.append(dict(raw_settings))
-        return orig(self, raw_settings)
-
-    vllm_manager.VllmAdapter.settings_section = spy
-    try:
-        cfg.inject_engine_defaults(s)
-    finally:
-        vllm_manager.VllmAdapter.settings_section = orig
-    assert calls == [{"engine": "vllm"}]
-    assert s["vllm"]["delivery"] == "venv"  # adapter applied the defaults
 
 
 def test_inject_engine_defaults_llamacpp_settings_section_noop():
@@ -191,16 +104,6 @@ def test_inject_engine_defaults_llamacpp_settings_section_noop():
     assert adapter.settings_section(raw) is raw
     assert raw == {"llama_bin": "x"}
 
-
-def test_adapter_ownership_members():
-    """DEC-01 identity/file-ownership members on both adapters."""
-    llamacpp = LlamaCppAdapter()
-    assert llamacpp.engine_id == "llama_cpp"
-    assert llamacpp.config_section is None
-    import vllm_manager
-    va = vllm_manager.VllmAdapter()
-    assert va.engine_id == "vllm"
-    assert va.config_section == "vllm"
 
 
 # ---------------- get_engine: registry seam ----------------
@@ -221,33 +124,6 @@ def test_get_engine_rejects_invalid_engine_value():
     with pytest.raises(ValueError):
         get_engine({"engine": "llama_cpppp"})
 
-
-def test_get_engine_returns_vllm_adapter():
-    """B2 registered VllmAdapter: 'vllm' resolves to it, and the adapter
-    is the Protocol-conformant class from vllm_manager."""
-    import vllm_manager
-
-    adapter = get_engine({"engine": "vllm"})
-    assert adapter.name == "vllm"
-    assert isinstance(adapter, vllm_manager.VllmAdapter)
-
-
-def test_get_engine_rejects_unknown_engine_with_options():
-    """A name passing the enum but missing from _REGISTRY (defensive: only
-    possible if a config names an engine the checkout lacks the module
-    for) must error listing the registered options — never silently
-    fall back to llama_cpp."""
-    import engine_registry
-
-    saved = engine_registry._REGISTRY.pop("vllm", None)
-    try:
-        with pytest.raises(ValueError) as ei:
-            get_engine({"engine": "vllm"})
-        assert "no adapter" in str(ei.value)
-        assert "options:" in str(ei.value)
-    finally:
-        if saved is not None:
-            engine_registry._REGISTRY["vllm"] = saved
 
 
 # ---------------- LlamaCppAdapter delegation (zero behavior change) --------
@@ -349,29 +225,6 @@ def test_adapter_ui_hints_shape():
     assert hints["flag_presets"]["ctx_size"]["flag"] == "--ctx-size"
 
 
-def test_vllm_adapter_ui_manifest_has_pp_preset():
-    """A1 fix: UI parity — a pipeline-parallel preset alongside TP.
-    AUDIT-T6 §1.5 (DEC-02): the manifest is the engine-owned contract;
-    the deprecated ui_hints view projects from it."""
-    import vllm_manager
-    man = vllm_manager.ui_manifest()
-    presets = man["flag_presets"]
-    assert presets["parallelism"]["flag"] == "--tensor-parallel-size"
-    assert presets["parallelism_pp"]["flag"] == "--pipeline-parallel-size"
-    # complete inventory: vllm_section is the only editor surface the
-    # engine owns; llama.cpp panels/tabs are hidden; swap_only launch,
-    # HF downloads
-    assert man["model_editor"]["sections"] == [{"id": "vllm_section"}]
-    assert set(man["hidden_panels"]) == {"tuner", "tensor_split", "rpc_peers", "rpc_launch"}
-    assert man["hidden_tabs"] == ["audio"]
-    assert man["launch"] == {"mode": "swap_only", "probe_label": "HTTP /health",
-                             "multi_host": True}
-    assert man["downloads"] == {"formats": ["hf"], "browse_source": "hf_repos"}
-    # shim projection stays in sync with the manifest
-    hints = vllm_manager.VllmAdapter().ui_hints()
-    assert hints["hidden_panels"] == man["hidden_panels"]
-    assert hints["hidden_tabs"] == man["hidden_tabs"]
-
 
 def test_adapter_swap_entries_delegates_to_generate(monkeypatch):
     """swap_entries must be pure delegation to swap_manager.launch_plan
@@ -389,8 +242,32 @@ def test_adapter_swap_entries_delegates_to_generate(monkeypatch):
     assert calls["args"] == ("/cfg/swap.yaml", "aibox1")
 
 
-def test_settings_file_default_points_at_repo_config():
-    """The registry's default settings path must be the repo config file."""
+def test_settings_file_default_points_at_repo_config(monkeypatch):
+    """The registry's default settings path must be the repo config file.
+
+    conftest isolates SETTINGS_FILE for the whole suite; restore the
+    repository default explicitly so this test checks the constant's
+    intended value without breaking that isolation."""
     import engine_registry as er
-    assert er.SETTINGS_FILE.endswith(os.path.join("config", "settings.yaml"))
-    assert os.path.exists(er.SETTINGS_FILE)
+
+    repo_root = os.path.dirname(
+        os.path.dirname(os.path.abspath(er.__file__))
+    )
+    repo_default = os.path.join(repo_root, "config", "settings.yaml")
+
+    # Restore the repository default for this assertion only; the suite-wide
+    # settings_file fixture intentionally isolates SETTINGS_FILE in tmp_path.
+    monkeypatch.setattr(er, "SETTINGS_FILE", repo_default)
+
+    assert er.SETTINGS_FILE.endswith(
+        os.path.join("config", "settings.yaml")
+    )
+    # config/settings.yaml is per-install user data (gitignored) and is
+    # written by runtime_paths.ensure_runtime_layout() on first run, so a
+    # clean checkout has only the tracked template at that location.
+    import runtime_paths
+
+    assert "config/settings.yaml" in runtime_paths._DEFAULT_CONFIG_FILES
+    assert os.path.exists(
+        os.path.join(repo_root, "config", "settings.example.yaml")
+    )

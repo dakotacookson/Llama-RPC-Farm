@@ -2,7 +2,7 @@
 
 Bug (observed live 2026-09-24): switching themes in the UI POSTs to
 /api/settings, whose writer did `yaml.safe_dump(current)` — losing every
-comment and commented-out block in config/settings.yaml (the B1 engine/vllm
+comment and commented-out block in config/settings.yaml (the B1 engine
 docs block was wiped on the first theme change). The persister now round-trips
 through ruamel.yaml (comment-preserving), and unknown top-level keys survive
 verbatim. The repo's own config/settings.yaml is never read or written here.
@@ -20,10 +20,12 @@ import app as app_module  # noqa: E402
 
 
 @pytest.fixture
-def settings_file(tmp_path):
+def settings_file(tmp_path, monkeypatch):
     """Redirect the app's SETTINGS_FILE into the pytest tmp dir."""
     path = tmp_path / "settings.yaml"
     app_module.SETTINGS_FILE = str(path)
+    import access
+    monkeypatch.setattr(access, "_settings_path", lambda: str(path))
     yield path
     app_module.SETTINGS_FILE = os.path.join(
         app_module.BASE_DIR, "config", "settings.yaml")
@@ -53,7 +55,7 @@ def vault_env(tmp_path, monkeypatch):
 
 
 MARKER_COMMENT = (
-    "# Engine selection (ARD: feature/vllm-support).\n"
+    "# Engine selection (ARD).\n"
     "#   llama_cpp — default. RPC clusters of llama-server across machines.\n"
     "# A missing key means llama_cpp; a typo is a STARTUP ERROR listing the\n"
     "# valid values (never a silent fallback).\n"
@@ -90,7 +92,7 @@ def _read_raw(path):
 def test_theme_post_preserves_comments(settings_file, client):
     """A theme switch (POST with only model_dir/llama_bin/theme_*) must
     keep every comment in settings.yaml, including the commented-out
-    engine/vllm doc block — the exact live bug from 2026-09-24."""
+    engine doc block — the exact live bug from 2026-09-24."""
     _write_raw(settings_file, SAMPLE_SETTINGS)
     r = client.post("/api/settings", json={
         "theme_family": "nord", "theme_mode": "dark"})
@@ -118,8 +120,6 @@ def test_theme_post_preserves_unknown_keys(settings_file, client):
     assert on_disk["nested_unknown"] == {"a": 1, "b": ["x", "y"]}
     # and the schema keys are still normalized into the file
     assert on_disk["engine"] == "llama_cpp"
-    # DEC-01: no vllm vocabulary in llama_cpp mode (engine-qualified)
-    assert "vllm" not in on_disk
 
 
 def test_persister_helper_round_trips_comments(tmp_path):
@@ -147,8 +147,8 @@ def test_persister_helper_round_trips_comments(tmp_path):
 def test_persister_helper_creates_file_when_missing(tmp_path):
     """First save with no settings file: writes a valid mapping."""
     p = tmp_path / "settings.yaml"
-    app_module._dump_settings_yaml_preserving({"engine": "vllm"}, str(p))
-    assert yaml.safe_load(_read_raw(p))["engine"] == "vllm"
+    app_module._dump_settings_yaml_preserving({"engine": "llama_cpp"}, str(p))
+    assert yaml.safe_load(_read_raw(p))["engine"] == "llama_cpp"
 
 
 def test_persister_helper_falls_back_without_ruamel(tmp_path, monkeypatch):
@@ -183,20 +183,19 @@ def test_ruamel_is_a_declared_requirement():
     assert "ruamel.yaml" in text
 
 
-# ---------------- engine/vllm POSTs keep the fix ----------------
+# ---------------- engine POSTs keep the fix ----------------
 
 def test_engine_post_preserves_comments_and_unknown_keys(settings_file, client):
     """The comment-preserving round trip applies to every POST, not just
     theme switches."""
     _write_raw(settings_file, SAMPLE_SETTINGS)
-    r = client.post("/api/settings", json={"engine": "vllm"})
+    r = client.post("/api/settings", json={"engine": "llama_cpp"})
     assert r.status_code == 200
     text = _read_raw(settings_file)
     assert "STARTUP ERROR" in text
     assert "legacy_unknown_key: keep-me" in text
     on_disk = yaml.safe_load(text)
-    assert on_disk["engine"] == "vllm"
-    assert on_disk["vllm"]["delivery"] == "venv"
+    assert on_disk["engine"] == "llama_cpp"
 
 
 def test_legacy_yaml_token_still_removed_on_post(settings_file, client):

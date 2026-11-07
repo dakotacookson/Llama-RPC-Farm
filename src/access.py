@@ -43,6 +43,8 @@ import contextvars
 import os
 import secrets
 
+from runtime_paths import data_dir
+
 VIEWS_SETTINGS_KEY = "views"            # legacy block, read for migration view
 ADMIN_IPS_SETTINGS_KEY = "admin_ips"    # legacy, no longer grants trust
 ADMINS_UNRESTRICTED_KEY = "admins_unrestricted"  # legacy flag, moot under keys
@@ -91,6 +93,7 @@ def current_key_record():
 def _load_settings():
     try:
         import yaml
+
         p = os.environ.get("FARM_SETTINGS_FILE") or _settings_path()
         with open(p, "r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
@@ -99,8 +102,7 @@ def _load_settings():
 
 
 def _settings_path():
-    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, "config", "settings.yaml")
+    return os.path.join(data_dir(), "config", "settings.yaml")
 
 
 def access_keys():

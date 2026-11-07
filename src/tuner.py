@@ -5,7 +5,7 @@ servers + device_order chips) -> safe defaults -> Tune -> save winner.
 
 Phase 1 (0 loads, pure math): weights + mmproj + KV(ctx) + SSM state +
 MTP draft overhead vs usable VRAM -> max ctx + integer split weights +
-safe ubatch. Mirrors vLLM --max-model-len auto / Ollama fit-vram logic.
+safe ubatch. Mirrors Ollama fit-vram logic.
 
 Phase 2 (staged live search, early exits): baseline at locked ctx,
 then MTP variants, KV ladder (current/q8/f16/q4), forced splits,
@@ -22,6 +22,20 @@ import config_loader as cfg
 import gguf_inspect
 import path_resolver
 import stats_collector
+import agent_client
+from runtime_paths import data_dir
+
+
+def _generated_dir():
+    """Writable generated/ dir in the per-user data root (never the
+    PyInstaller bundle, which is a throwaway extraction directory)."""
+    d = os.path.join(data_dir(), "generated")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _generated_path(name):
+    return os.path.join(_generated_dir(), name)
 
 # ctx ladder we walk DOWN from the math estimate until tok/s >= target
 CTX_LADDER = [262144, 200000, 160000, 128000, 100000,
@@ -671,9 +685,7 @@ def _history_log(model_id, label, bench, max_temp="", trial=None):
     the hardware fingerprint so reuse never crosses topologies."""
     try:
         import csv
-        p = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "generated", "tune-history.csv")
+        p = _generated_path("tune-history.csv")
         new = not os.path.exists(p)
         with open(p, "a", encoding="utf-8", newline="") as f:
             w = csv.writer(f)
@@ -721,9 +733,8 @@ def _fit_print(model_id, base_path, extra_args=None, target_os="linux"):
 
 def _seed_path(model_id):
     safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in model_id)
-    return os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "config", "models", f"{safe}.seed")
+    os.makedirs(cfg.MODELS_DIR, exist_ok=True)
+    return os.path.join(cfg.MODELS_DIR, f"{safe}.seed")
 
 
 def snapshot_seed(model_id):
@@ -753,9 +764,7 @@ def _load_seed(model_id):
 
 
 def _priors_path():
-    return os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "generated", "tune-priors.json")
+    return _generated_path("tune-priors.json")
 
 
 def load_priors():
@@ -875,9 +884,7 @@ def _history_lookup(model_id, label, trial=None, max_age_days=7):
     identical model+label+HARDWARE measured within N days returns tps)."""
     import csv
     try:
-        p = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "generated", "tune-history.csv")
+        p = _generated_path("tune-history.csv")
         if not os.path.exists(p):
             return None
         fp = _hw_fingerprint(trial) if trial is not None else None
@@ -911,9 +918,7 @@ def _history_lookup(model_id, label, trial=None, max_age_days=7):
 
 def _probe_cache():
     import json as _js
-    p = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "generated", "net-probe.json")
+    p = _generated_path("net-probe.json")
     try:
         return (_js.load(open(p)) if os.path.exists(p) else {}), p
     except Exception:
@@ -933,28 +938,33 @@ def _pcie_info(machine):
     val = ""
     q = ("nvidia-smi --query-gpu=pcie.link.gen.current,"
          "pcie.link.width.current --format=csv,noheader,nounits")
-    try:
-        from ssh_manager import SSHManager
-        import local_node as _ln
-        if _ln.is_local(machine):
-            p = subprocess.run(q.split(), capture_output=True, text=True,
-                               timeout=10)
-            out = p.stdout
-        else:
-            ssh = SSHManager(machine["ip"], machine["username"],
-                             machine["password"],
-                             port=machine.get("port", 22))
-            code, out, _ = ssh.run(q, timeout=15)
-            if code != 0:
+    agent_selected = agent_client.should_use_agent(machine)
+    if agent_selected:
+        try:
+            val = (agent_client.system_detail(machine).get("pcie") or "")
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                val = ""
+            else:
+                print(f"[agent] {machine.get('name')}: pcie failed, falling back to SSH: {e}")
+    if not val and not (agent_selected and
+                        agent_client.transport(machine) == "agent"):
+        try:
+            import local_node as _ln
+            if _ln.is_local(machine):
+                p = subprocess.run(q.split(), capture_output=True, text=True,
+                                   timeout=10)
+                out = p.stdout
+            else:
                 out = ""
-        tags = []
-        for line in (out or "").splitlines():
-            cells = [x.strip() for x in line.split(",")]
-            if len(cells) == 2 and cells[0].isdigit() and cells[1].isdigit():
-                tags.append(f"g{cells[0]}x{cells[1]}")
-        val = ",".join(tags)
-    except Exception:
-        val = ""
+            tags = []
+            for line in (out or "").splitlines():
+                cells = [x.strip() for x in line.split(",")]
+                if len(cells) == 2 and cells[0].isdigit() and cells[1].isdigit():
+                    tags.append(f"g{cells[0]}x{cells[1]}")
+            val = ",".join(tags)
+        except Exception:
+            val = ""
     cache[key] = {"val": val, "ts": time.time()}
     try:
         _js.dump(cache, open(cache_p, "w"))
@@ -975,30 +985,24 @@ def probe_link_mbps(machine, size_mb=32):
     if hit and time.time() - hit.get("ts", 0) < 7 * 86400:
         return hit["mbps"]
     mbps = 0
+    agent_selected = agent_client.should_use_agent(machine)
+    if agent_selected:
+        try:
+            mbps = agent_client.speedtest(machine, size_mb) or 0
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                mbps = 0
+            else:
+                print(f"[agent] {name}: speedtest failed, falling back to SSH: {e}")
     try:
-        from ssh_manager import SSHManager
         import local_node as _ln
-        if _ln.is_local(machine):
+        if mbps or (agent_selected and
+                    agent_client.transport(machine) == "agent"):
+            pass
+        elif _ln.is_local(machine):
             mbps = 0  # local: not a network hop
         else:
-            t0 = time.time()
-            # pump zeros over the same SSH path RPC tensors take.
-            # sshpass -e reads the password from $SSHPASS (environment),
-            # never from the command line — -p '...' would expose it in
-            # `ps aux` to every user on the box. Password itself comes
-            # from the in-memory vault-resolved machine dict.
-            import os as _os
-            cmd = (f"dd if=/dev/zero bs=1M count={size_mb} 2>/dev/null | "
-                   f"sshpass -e ssh "
-                   f"-o StrictHostKeyChecking=no "
-                   f"-o ConnectTimeout=8 -c aes128-gcm@openssh.com "
-                   f"{machine['username']}@{machine['ip']} "
-                   f"-p {machine.get('port', 22)} 'cat > /dev/null'")
-            env = dict(_os.environ, SSHPASS=machine['password'] or "")
-            r = subprocess.run(["bash", "-c", cmd], timeout=120, env=env)
-            dt = max(0.5, time.time() - t0)
-            if r.returncode == 0:
-                mbps = round(size_mb * 8 / dt)
+            mbps = 0
     except Exception:
         mbps = 0
     cache[name] = {"mbps": mbps, "ts": time.time()}
@@ -1015,8 +1019,20 @@ def virt_info(machine=None):
     not). Returns dict; best-effort, never raises."""
     import subprocess
     info = {"virt": "", "cpu": "", "rebar": ""}
+    if machine is not None and agent_client.should_use_agent(machine):
+        try:
+            d = agent_client.system_detail(machine)
+            return {
+                "virt": d.get("virt") or "bare?",
+                "cpu": (str(d.get("cpu_model") or "") + " " +
+                        str(d.get("cpu_flags") or ""))[:160],
+                "rebar": d.get("rebar") or "",
+            }
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                return info
+            print(f"[agent] {machine.get('name')}: virt failed, falling back to SSH: {e}")
     try:
-        from ssh_manager import SSHManager
         import local_node as _ln
         if machine is None or _ln.is_local(machine):
             def run(cmd):
@@ -1024,13 +1040,8 @@ def virt_info(machine=None):
                                    text=True, timeout=10)
                 return p.stdout.strip()
         else:
-            ssh = SSHManager(machine["ip"], machine["username"],
-                             machine["password"],
-                             port=machine.get("port", 22))
-
             def run(cmd):
-                code, out, _ = ssh.run(cmd, timeout=15)
-                return out.strip() if code == 0 else ""
+                return ""
         info["virt"] = run("systemd-detect-virt") or "bare?"
         cpu = run("lscpu -J")
         if cpu:
@@ -1137,19 +1148,26 @@ def measure_headroom(servers):
             m = cfg.machines.require(name)
         except ValueError:
             continue
+        if agent_client.should_use_agent(m):
+            try:
+                for g in agent_client.metrics(m).get("gpus") or []:
+                    free = float(g.get("mem_total_gb") or 0) - float(
+                        g.get("mem_used_gb") or 0)
+                    if free > 0:
+                        frees.append(free)
+                continue
+            except Exception as e:
+                if agent_client.transport(m) == "agent":
+                    continue
+                print(f"[agent] {name}: metrics failed, falling back to SSH: {e}")
         try:
-            from ssh_manager import SSHManager
             import local_node as _ln
             if _ln.is_local(m):
                 p = subprocess.run(q.split(), capture_output=True, text=True,
                                    timeout=10)
                 out = p.stdout
             else:
-                ssh = SSHManager(m["ip"], m["username"], m["password"],
-                                 port=m.get("port", 22))
-                code, out, _ = ssh.run(q, timeout=15)
-                if code != 0:
-                    continue
+                out = ""
             for line in (out or "").splitlines():
                 line = line.strip()
                 if line.replace(".", "", 1).isdigit():
@@ -1219,7 +1237,7 @@ def _run_trial(model_id, trial, port, label, path_map=None):
     import subprocess
     import copy
     import platform as _platform
-    # Trials execute generated POSIX shell scripts (bash, sshpass, /dev/tcp
+    # Trials execute generated POSIX shell scripts (bash, curl, /dev/tcp
     # probes) — Windows can't run them locally. macOS works (bash exists).
     if _platform.system() == "Windows":
         return False, {"ok": False, "error": "tuning runs locally only on Linux/macOS (POSIX shell required)"}
@@ -1232,9 +1250,7 @@ def _run_trial(model_id, trial, port, label, path_map=None):
     # phantom. History CSV stays as audit-only; each rung loads fresh.
     # bench server output goes here (not DEVNULL) so dead-rung
     # failures (e.g. fa=off refusing to bind) stay diagnosable
-    bench_log = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "generated", f"bench-{tmp_id}.log")
+    bench_log = _generated_path(f"bench-{tmp_id}.log")
     trial = copy.deepcopy(trial)
     if path_map:
         # point trials at local SSD copies (mapped by resolved orig path)
@@ -1263,16 +1279,11 @@ def _run_trial(model_id, trial, port, label, path_map=None):
         m, peers = rpc_manager._split_servers(servers)
         if peers:
             script = rpc_manager.generate_script(trial, servers)
-            # generated scripts are vault-only (no baked password): supply
-            # $SSH_PASS from the in-memory vault-resolved master password.
-            # Env-only — never on the command line (ps-visible) or on disk.
-            import os as _os2
-            trial_env = dict(_os2.environ,
-                             SSH_PASS=m.get("password") or "")
+            # Agent-only scripts read AGENT_TOKEN_* from swap-secrets.env.
             proc = subprocess.Popen(
                 ["bash", script, str(port)],
                 stdout=blog, stderr=subprocess.STDOUT,
-                start_new_session=True, env=trial_env)
+                start_new_session=True)
         else:
             cmd = rpc_manager.build_llama_command(
                 trial, servers).replace('"$PORT"', str(port))

@@ -171,15 +171,20 @@
         </ol>
         <div id="wiz-step-1">
           <fieldset>
-            <legend>Scan the network <small class="hint">ping + SSH banner — OS detected without login; enrichment uses the username below (default zazi), editable in step 3</small></legend>
+            <legend>Discover peer agents <small class="hint">UDP discovery on port 8199 — no credentials, no SSH</small></legend>
             <div class="row">
-              <label>Network
+              <label>Discovery
+                <select id="d-mode">
+                  <option value="peer" selected>Peer agents (auto discovery)</option>
+                </select>
+              </label>
+              <label id="d-subnet-label" hidden>Network
                 <select id="d-subnet"></select>
               </label>
-              <label>SSH port <input id="d-port" type="number" value="22"></label>
+              <label id="d-port-label" hidden>Port <input id="d-port" type="number" value="0"></label>
               <button type="button" id="d-scan" style="align-self:end">Scan</button>
             </div>
-            <p class="hint" id="wiz-scan-hint">Hit Scan to ping the network and fingerprint SSH hosts. Already know the IP? Just Continue — you can enter it manually in step 2.</p>
+            <p class="hint" id="wiz-scan-hint">Hit Scan to discover peers advertising the Llama RPC Farm agent (UDP 8199). Already know the IP? Just Continue — enter it manually in step 2.</p>
           </fieldset>
         </div>
         <div id="wiz-step-2" hidden>
@@ -198,11 +203,14 @@
           <label>IP <input id="m-ip" required list="discovered-ips" placeholder="type to pick a discovered host">
             <datalist id="discovered-ips"></datalist>
           </label>
-          <label>Username <input id="m-username" required value="zazi"></label>
-          <label>Password <input id="m-password" type="password"><small id="m-password-hint" class="hint"></small></label>
         </div>
         <div class="row">
-          <label>SSH port <input id="m-port" type="number" value="22"></label>
+          <label id="m-username-label" hidden>Username <input id="m-username" value=""></label>
+          <label id="m-password-label" hidden>Password <input id="m-password" type="password"><small id="m-password-hint" class="hint"></small></label>
+          <label id="m-port-label" hidden>Port <input id="m-port" type="number" value="1"></label>
+          <label id="m-transport-label" hidden>Connection <input id="m-transport" value="agent"></label>
+          <label id="m-agent-port-label">Agent port <input id="m-agent-port" type="number" value="8198" min="1" max="65535"></label>
+          <label id="m-agent-token-label">Agent token <input id="m-agent-token" type="password" autocomplete="new-password"><small id="m-agent-token-hint" class="hint"></small></label>
           <label>Role
             <select id="m-role">
               <option value="peer">peer</option>
@@ -259,27 +267,32 @@
         <fieldset>
           <legend>RDMA transport (llama.cpp RPC)</legend>
           <div class="row">
-            <label style="display:flex;gap:8px;align-items:center;white-space:nowrap">
-              <input type="checkbox" id="m-rdma" style="width:auto">
-              Use RDMA (RoCE) for RPC
-            </label>
-            <label class="wide">RDMA NIC IP (RoCE v2 address, must be in the NIC's GID table)
-              <input id="m-rdma-ip" placeholder="e.g. 10.0.0.105" disabled>
-            </label>
+            <input type="checkbox" id="m-rdma" hidden>
+            <button type="button" id="m-rdma-toggle" class="chip-switch" aria-pressed="false" title="Enable or disable RDMA transport">
+              <span class="chip-knob"><i class="fa-solid fa-bolt"></i></span>
+              <span class="chip-label" id="m-rdma-label">RDMA off</span>
+            </button>
           </div>
-          <div class="row">
-            <label>ibverbs device (pin; empty = auto-detect)
-              <input id="m-rdma-dev" placeholder="e.g. rocep4s0" disabled>
-            </label>
-            <label>GID index (pin; empty = auto-detect)
-              <input id="m-rdma-gid" placeholder="e.g. 4" disabled>
-            </label>
-            <label style="display:flex;gap:8px;align-items:center;white-space:nowrap">
-              <input type="checkbox" id="m-rdma-cm" style="width:auto" disabled>
-              Use rdma_cm QP setup (ConnectX-3/mlx4)
-            </label>
+          <div id="m-rdma-options" hidden>
+            <div class="row">
+              <label class="wide">RDMA NIC IP (RoCE v2 address, must be in the NIC's GID table)
+                <input id="m-rdma-ip" placeholder="e.g. 10.0.0.105" disabled>
+              </label>
+            </div>
+            <div class="row">
+              <label>ibverbs device (pin; empty = auto-detect)
+                <input id="m-rdma-dev" placeholder="e.g. rocep4s0" disabled>
+              </label>
+              <label>GID index (pin; empty = auto-detect)
+                <input id="m-rdma-gid" placeholder="e.g. 4" disabled>
+              </label>
+              <label style="display:flex;gap:8px;align-items:center;white-space:nowrap">
+                <input type="checkbox" id="m-rdma-cm" style="width:auto" disabled>
+                Use rdma_cm QP setup (ConnectX-3/mlx4)
+              </label>
+            </div>
+            <small class="hint">Off forces TCP RPC — stable under heavy load. On: RDMA inference (~3.5µs latency, 9+ Gb/s) with automatic pacing + flow control. "rdma_cm" is required for ConnectX-3/mlx4 cards; leave off for mlx5/E810+.</small>
           </div>
-          <small class="hint">Off (default) forces TCP RPC — stable under heavy load. On: RDMA inference (~3.5µs latency, 9+ Gb/s) with automatic pacing + flow control. "rdma_cm" is required for ConnectX-3/mlx4 cards; leave off for mlx5/E810+.</small>
         </fieldset>
         </div><!-- /wiz-step-3 -->
         <div class="actions" id="wiz-nav">
@@ -296,6 +309,7 @@
       </form>
       <div class="row">
         <button type="button" id="detect-all-btn">Detect Hardware (all machines)</button>
+        <button type="button" id="detect-connections-btn">Detect Connections</button>
       </div>
       <div id="machines-list"></div>
     </section>
@@ -367,8 +381,6 @@
                   <option value="all">All offered tools (skip what's present)</option>
                   <option value="llama.cpp">llama.cpp only</option>
                   <option value="llama-swap">llama-swap only</option>
-                  <option value="vllm">vLLM only</option>
-                  <option value="ray">ray only</option>
                 </select>
               </label>
             </div>
@@ -477,7 +489,7 @@
         </div>
         <div id="mowiz-step-2" hidden>
           <fieldset>
-            <legend>Hardware <small class="hint" data-panel="rpc_peers">pick GPU/RAM chips — one model can span machines</small><small class="hint" data-engine="vllm" hidden>chips map to CUDA_VISIBLE_DEVICES per host — one host = single-GPU/TP, multiple hosts = pipeline layer split (configure in Advanced)</small></legend>
+            <legend>Hardware <small class="hint" data-panel="rpc_peers">pick GPU/RAM chips — one model can span machines</small></legend>
             <div class="row">
               <label>Group affinity
                 <select id="mo-group"><option value="">(custom / no group)</option></select>
@@ -528,53 +540,6 @@
         <details id="mo-advanced" class="collapsible-panel advanced-details" open>
           <summary><i class="fa-solid fa-sliders"></i> Advanced <span class="hint" id="mo-advanced-badge"></span><span class="hint" style="margin-left:auto"><i class="fa-solid fa-chevron-down" style="font-size:10px"></i></span></summary>
           <div class="advanced-body">
-            <div class="card" id="mo-vllm" data-engine="vllm" hidden style="padding:10px; background:var(--inset)">
-          <div class="hint" style="font-weight:600; margin-bottom:8px"><i class="fa-solid fa-bolt"></i> vLLM (per-model) <span class="hint">saved as the model's <code>vllm:</code> section — empty fields fall back to vLLM defaults; GPU memory utilization falls back to the Settings-level default</span></div>
-
-          <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-arrows-left-right"></i> Parallelism</div>
-          <div class="chip-group" id="chips-vllm-layout" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px">
-            <button type="button" class="hw-chip active" data-value="pp"><i class="fa-solid fa-layer-group"></i> PP <small>layer split</small></button>
-            <button type="button" class="hw-chip" data-value="tp"><i class="fa-solid fa-arrows-left-right"></i> TP <small>tensor split</small></button>
-          </div>
-          <select id="mo-vllm-layout" hidden>
-            <option value="pp" selected>pp (layer split)</option>
-            <option value="tp">tp (tensor split)</option>
-          </select>
-          <div class="row" style="flex-wrap:wrap" title="pp = layer split across hosts (one activation pass per boundary — the llama.cpp RPC style, right for 1xPCIe/Ethernet); tp = tensor split across hosts (allreduce every layer — Infiniband-class only)">
-            <label title="pipeline stages — pp layout: one stage per host">Pipeline parallel <input id="mo-vllm-pp" type="number" placeholder="e.g. 1" style="width:110px"></label>
-            <label title="tensor ranks within a host (must divide the model's attention heads)">Tensor parallel <input id="mo-vllm-tp" type="number" placeholder="e.g. 2" style="width:110px"></label>
-            <label title="fraction of VRAM for model+KV (0–1); per-model override — weak-GPU machines get a smaller budget">GPU mem util <input id="mo-vllm-gmu" type="number" step="0.05" min="0.05" max="1" placeholder="e.g. 0.35" style="width:110px"></label>
-          </div>
-
-          <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-gauge-high"></i> Serving</div>
-          <div class="row" style="flex-wrap:wrap">
-            <label title="max context window — agentic clients like opencode request max_tokens=16384, so 8k rejects their requests">Max model len <input id="mo-vllm-max-model-len" type="number" placeholder="e.g. 32768" style="width:130px"></label>
-            <label>Max seqs <input id="mo-vllm-max-num-seqs" type="number" placeholder="e.g. 256" style="width:110px"></label>
-            <label>KV cache <select id="mo-vllm-kv" style="min-width:90px"><option value="">default</option><option value="auto">auto</option><option value="fp8">fp8</option></select></label>
-            <label>CPU offload GB <input id="mo-vllm-cpu-offload" type="number" placeholder="e.g. 20" style="width:120px"></label>
-            <label>Quantization <input id="mo-vllm-quant" placeholder="e.g. fp8" style="width:110px"></label>
-          </div>
-
-          <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-microchip"></i> Precision & performance</div>
-          <div class="row" style="flex-wrap:wrap">
-            <label title="auto lets vLLM pick (bf16 on sm_80+); Turing (RTX 20xx) cannot run bf16 — use half or float32">Compute dtype <select id="mo-vllm-dtype" style="min-width:110px"><option value="">auto</option><option value="half">half (fp16)</option><option value="bfloat16">bfloat16</option><option value="float32">float32</option></select></label>
-            <label title="disable CUDA graphs — default ON for multi-host (capture hangs across Ethernet TP); uncheck for Infiniband/fast interconnects"><button type="button" class="hw-chip" id="chip-vllm-eager" data-checked="false"><i class="fa-solid fa-bolt"></i> eager</button><input id="mo-vllm-eager" type="checkbox" hidden></label>
-          </div>
-
-          <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-screwdriver-wrench"></i> Tool calling</div>
-          <div class="row" style="flex-wrap:wrap">
-            <label title="allow tool_choice=auto — opencode and agentic clients require it"><button type="button" class="hw-chip" id="chip-vllm-tools" data-checked="false"><i class="fa-solid fa-screwdriver-wrench"></i> auto-tools</button><input id="mo-vllm-tools" type="checkbox" hidden></label>
-            <label title="how the model's tool-call syntax is parsed — hermes covers the Qwen/Most chat-template family">Tool parser <select id="mo-vllm-tool-parser" style="min-width:120px"><option value="">hermes (default)</option><option value="hermes">hermes</option><option value="llama3_json">llama3_json</option><option value="mistral">mistral</option><option value="glm45">glm45</option><option value="qwen25">qwen25</option></select></label>
-          </div>
-
-          <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-file-lines"></i> Extras</div>
-          <div class="row" style="flex-wrap:wrap">
-            <label class="wide">Tokenizer (path or HF id, when it differs from the model) <input id="mo-vllm-tokenizer" class="wide"></label>
-            <label class="wide">Extra vLLM args (comma- or newline-separated, e.g. --swap-space 4, --enable-prefix-caching) <input id="mo-vllm-extra-args" class="wide"></label>
-            <label class="wide" title="multi-host Ray/NCCL transport overrides — defaults (NCCL_P2P_DISABLE=1 etc.) suit Ethernet/consumer-GPU clusters; use KEY=false to drop one, or set your own for Infiniband">Ray env overrides (KEY=VALUE per line; KEY=false drops a default) <input id="mo-vllm-ray-env" class="wide" placeholder="NCCL_P2P_DISABLE=false"></label>
-          </div>
-        </div>
-
             <div class="card" data-panel="tensor_split" style="padding:10px">
               <div class="hint" style="font-weight:600; margin-bottom:8px"><i class="fa-solid fa-sliders"></i> Tensor placement <span class="hint">(llama-server's fitter assigns whole layers by live free VRAM — VRAM-first, RAM spill last)</span></div>
               <div class="chip-group" id="chips-tensor-mode" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px">
@@ -685,7 +650,6 @@
         <div style="display:flex; gap:8px; align-items:center; padding:12px 14px 0; background:var(--surface)">
           <div class="chip-group" id="hf-fmt-chips" style="display:flex; gap:6px">
             <button type="button" class="hw-chip active" data-fmt="gguf" title="GGUF quants — llama.cpp engines"><i class="fa-solid fa-cube"></i> GGUF (llama.cpp)</button>
-            <button type="button" class="hw-chip" data-fmt="safetensors" title="Source repos (config.json + *.safetensors) — vLLM"><i class="fa-solid fa-cubes"></i> Safetensors (vLLM)</button>
           </div>
           <span class="hint" id="hf-fmt-hint">GGUF = ready-to-run quantized weights for llama.cpp</span>
         </div>
@@ -942,10 +906,10 @@ technical | bugs, errors, login problems</textarea></label>
     </section>
     <!-- Launch -->
     <section id="tab-launch" class="tab">
-      <h2>Live Launch</h2>
+      <h2>Launch (via llama-swap API)</h2>
       <div class="card" id="swap-card">
         <h3>Launch All via llama-swap <span id="swap-status" class="serving-ind">…</span></h3>
-        <p class="hint"><span data-launch-view="rpc_cluster">Generates llama-swap's config.yaml from all model configs, pushes it to the host (<span id="swap-host">…</span>), starts <span data-engine-label="peers">RPC peers</span>, then starts the llama-swap daemon. Models load on first request. Linux hosts get per-model .sh wrappers (proven start-rpc-qwen.sh shape); Windows hosts get direct commands.</span><span data-launch-view="swap_only">Generates the vLLM engine's config.vllm.yaml from all model configs, pushes it to the host (<span id="swap-host">…</span>), then starts the llama-swap daemon — vLLM serves one host per model, so there are no RPC peers to start in this mode. Models load on first request through llama-swap.</span></p>
+        <p class="hint"><span data-launch-view="rpc_cluster">Generates llama-swap's config.yaml from all model configs, pushes it to the host (<span id="swap-host">…</span>), starts <span data-engine-label="peers">RPC peers</span>, then starts the llama-swap daemon. Models load on first request. Linux hosts get per-model .sh wrappers (proven start-rpc-qwen.sh shape); Windows hosts get direct commands.</span></p>
         <div class="row">
           <label>Host <select id="swap-host-select"></select></label>
           <label>Binary <input id="swap-binary" placeholder="llama-swap" readonly title="Probed by the installer — edit config/swap.yaml for edge cases"></label>
@@ -968,13 +932,9 @@ technical | bugs, errors, login problems</textarea></label>
           <button class="small danger" id="evict-all">Evict all</button>
         </div>
       </div>
-      <p class="hint" data-panel="rpc_launch">Or start a single model directly — no scripts. Heterogeneous parallel: disjoint hardware sets can run concurrently — launching a model only stops its own servers (not all). Stops old instances on its servers, starts <span data-engine-label="peers">RPC peers</span>, launches <span data-engine-label="server">llama-server</span>.</p>
+      <p class="hint" data-panel="rpc_launch">Load and Evict call the same llama-swap API path as clients — no per-model port, host, or launch mode to configure. Servers and flags come from the model config.</p>
       <div class="launch-grid" id="launch-grid" data-panel="rpc_launch"></div>
       <div id="disabled-models-strip" data-panel="rpc_launch"></div>
-      <div class="card" id="vllm-launch-view" data-launch-view="swap_only" hidden>
-        <h3>vLLM serving <span data-engine-label="probe" class="serving-ind" style="font-size:0.7em">HTTP /health</span></h3>
-        <p class="hint">vLLM models serve through llama-swap — there is no per-model direct launch in this mode (the RPC cluster grid is a llama.cpp concept). Use <b>Launch All</b> above to start the daemon; models load on first request and stop via the llama-swap unload path (the Stop button on active models below). Health is probed over HTTP /health on the swap listen port, not RPC ports.</p>
-      </div>
     </section>
 
     <!-- Serve Groups (llama-swap model co-serving) -->
@@ -1236,7 +1196,17 @@ technical | bugs, errors, login problems</textarea></label>
               <small class="hint" id="set-hf-token-hint">Not set — gated downloads will 401.</small>
             </label>
           </div>
-          <p class="hint" style="margin:-8px 0 10px">Saved to <code>config/settings.yaml</code> as <code>hf_token</code> (or set <code>HF_TOKEN</code> env). Needed only after you've clicked “Agree and access repository” on the gated HF page.</p>
+          <p class="hint" style="margin:-8px 0 10px">Saved to <code>config/settings.yaml</code> as <code>hf_token</code> (or set <code>HF_TOKEN</code> env). Needed only after you've clicked “Agree and access repository” on the gated HF page.</p>          <div class="row">
+            <label class="wide">Farm agent token (shared by all peers)
+              <div style="display:flex;gap:6px;align-items:center">
+                <input id="set-farm-agent-token" type="password" placeholder="one token for every agent" autocomplete="off">
+                <button type="button" class="small" id="set-farm-agent-token-toggle" title="Show/hide token"><i class="fa-solid fa-eye"></i></button>
+                <button type="button" class="small danger" id="set-farm-agent-token-clear" title="Remove the saved farm token">Clear</button>
+              </div>
+              <small class="hint" id="set-farm-agent-token-hint">Not set — per-machine tokens are used.</small>
+            </label>
+          </div>
+          <p class="hint" style="margin:-8px 0 10px">When set, every discovered/new agent verifies automatically if it uses the same token. Stored encrypted in the vault, never in YAML.</p>
         <div data-engine="llama_cpp">
         <div class="row" style="margin-top:12px">
           <button id="install-open-modal" class="small" style="width:100%;background:var(--accent-dim);color:var(--accent);border:2px solid var(--accent);padding:8px;font-size:13px;font-weight:550;border-radius:var(--r-md);"><i class="fa-solid fa-download" style="margin-right:6px"></i>Run installer…</button>
@@ -1245,15 +1215,6 @@ technical | bugs, errors, login problems</textarea></label>
           <button id="install-llama-cpp-others" class="small" style="width:100%;background:var(--surface);color:var(--text);border:2px solid var(--border-strong);padding:8px;font-size:13px;font-weight:550;border-radius:var(--r-md);"><i class="fa-solid fa-server" style="margin-right:6px"></i>Install on other machines…</button>
         </div>
         </div>
-        <div data-engine="vllm" hidden>
-        <div class="row" style="margin-top:12px">
-          <button id="install-vllm" class="small" style="width:100%;background:var(--accent-dim);color:var(--accent);border:2px solid var(--accent);padding:8px;font-size:13px;font-weight:550;border-radius:var(--r-md);"><i class="fa-solid fa-download" style="margin-right:6px"></i>Install vLLM (this host)</button>
-        </div>
-        <div class="row" style="margin-top:8px">
-          <button id="install-vllm-others" class="small" style="width:100%;background:var(--surface);color:var(--text);border:2px solid var(--border-strong);padding:8px;font-size:13px;font-weight:550;border-radius:var(--r-md);"><i class="fa-solid fa-server" style="margin-right:6px"></i>Install on other machines…</button>
-        </div>
-        </div>
-        <div id="install-vllm-status" style="margin-top:8px" hidden></div>
         <div id="install-all-status" style="margin-top:8px" hidden></div>
         <div class="row" style="margin-top:12px">
           <button id="install-llama-swap" class="small" style="width:100%;background:var(--accent-dim);color:var(--accent);border:2px solid var(--accent);padding:8px;font-size:13px;font-weight:550;border-radius:var(--r-md);" hidden><i class="fa-solid fa-download" style="margin-right:6px"></i>Install llama-swap (this host)</button>
@@ -1271,44 +1232,6 @@ technical | bugs, errors, login problems</textarea></label>
           <button type="button" id="set-save">Save defaults</button>
         </div>
         <div id="set-status"></div>
-          </div>
-        </details>
-      </div>
-      <div class="card" id="engine-card">
-        <details id="engine-wrap" class="collapsible-panel">
-          <summary><i class="fa-solid fa-microchip"></i> <span>Engine</span></summary>
-          <div class="theme-builder-panel">
-            <p class="hint" style="margin-top:10px">Serving engine for launches. <strong>llama.cpp</strong> serves GGUF via llama-server, spanning machines as an RPC cluster. <strong>vLLM is experimental</strong> — it serves HF models across machines via tensor/pipeline parallel over a Ray multi-node cluster (vLLM must be installed on each host). Works best on matched GPUs with fast interconnects; hybrid-architecture models (GDN/linear-attention) and mixed consumer GPUs may fail at engine init (upstream vLLM limitations). Panels on other tabs follow the engine; Save defaults to apply.</p>
-            <div class="row">
-              <label class="wide">Engine
-                <select id="set-engine">
-                  <option value="llama_cpp">llama.cpp (llama-server, RPC cluster)</option>
-                  <option value="vllm">vLLM (experimental — multi-host TP/PP, Ray)</option>
-                </select>
-              </label>
-            </div>
-            <div id="set-vllm" hidden>
-              <div class="row">
-                <label>Delivery
-                  <select id="set-vllm-delivery">
-                    <option value="venv">venv (pip)</option>
-                    <option value="docker">docker image</option>
-                  </select>
-                </label>
-              </div>
-              <div class="row">
-                <label class="wide" data-vllm-delivery="venv">vLLM binary (venv) <input id="set-vllm-venv-bin" placeholder="~/vllm-env/bin/vllm" readonly title="Probed by the installer — edit config/settings.yaml for edge cases"></label>
-                <label class="wide" data-vllm-delivery="docker" hidden>Docker image <input id="set-vllm-docker-image" placeholder="vllm/vllm-openai:latest"></label>
-              </div>
-              <div class="row">
-                <label>Default GPU memory utilization <input type="range" id="set-vllm-gpu-mem" min="0.05" max="1" step="0.05" value="0.9"> <span id="set-vllm-gpu-mem-v">0.90</span></label>
-                <small class="hint">fraction of each GPU vLLM may claim (0–1] — settings-level only, no per-model override</small>
-              </div>
-              <div class="row" style="margin-top:8px">
-                <button type="button" id="uninstall-vllm" class="small danger" style="width:100%;padding:8px;font-size:13px;font-weight:550;border-radius:var(--r-md);" hidden><i class="fa-solid fa-trash-can" style="margin-right:6px"></i>Uninstall vLLM (this host)</button>
-              </div>
-              <div id="uninstall-vllm-status" style="margin-top:8px" hidden></div>
-            </div>
           </div>
         </details>
       </div>
@@ -1410,8 +1333,7 @@ technical | bugs, errors, login problems</textarea></label>
   </main>
 
   <!-- Install-on-machines modal: tick one or more remote hosts, check
-       their install state, install where missing. Engine-parameterized
-       (llama.cpp prebuilts vs vLLM venv) by the opener button. -->
+       their install state, install where missing. -->
   <div id="install-modal" class="modal hidden" aria-hidden="true">
     <div class="modal-backdrop" id="install-modal-backdrop"></div>
     <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="install-modal-title">
@@ -1482,11 +1404,8 @@ technical | bugs, errors, login problems</textarea></label>
               <label>Label <input class="v-label" placeholder="e.g. 2x3090" style="min-width:140px"></label>
               <label>Group <select class="v-group"><option value="">(inherit)</option></select></label>
             </div>
-            <!-- DEC-10 (T4-G1): everything tagged data-variant-lcpp below
-                 is llama.cpp tensor-placement/flags vocabulary — hidden
-                 (not translated) when the active engine's manifest hides
-                 the tensor_split panel; the data-variant-vllm card is the
-                 vLLM engine's own per-variant surface. -->
+            <!-- everything tagged data-variant-lcpp below is llama.cpp
+                 tensor-placement/flags vocabulary. -->
             <div class="hint" data-variant-lcpp style="font-weight:600; margin:6px 0 6px"><i class="fa-solid fa-arrow-down-wide-short"></i> Device order</div>
             <div class="chip-group v-chips-order" data-variant-lcpp style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px">
               <button type="button" class="hw-chip" data-value=""><i class="fa-solid fa-ban"></i> Inherit</button>
@@ -1494,56 +1413,6 @@ technical | bugs, errors, login problems</textarea></label>
               <button type="button" class="hw-chip" data-value="vram-first"><i class="fa-solid fa-memory"></i> VRAM-first</button>
             </div>
             <select class="v-order-policy" data-variant-lcpp hidden><option value="">inherit</option><option value="as-selected">as-selected</option><option value="vram-first">vram-first</option></select>
-            <!-- DEC-10 (T4-G1): vLLM per-variant overrides — the active
-                 engine's own fields (max-len/seqs/TP/PP/gmu/kv/cpu-offload/
-                 quant + extra args), partial-merge over the primary's
-                 `vllm:` section (same semantics as the flags override).
-                 The llama.cpp vocab blocks above stay in the DOM but
-                 HIDE under vllm (hidden-not-translated). -->
-            <div class="card v-vllm" data-variant-vllm hidden style="padding:10px; background:var(--inset)">
-              <div class="hint" style="font-weight:600; margin-bottom:8px"><i class="fa-solid fa-bolt"></i> vLLM overrides <span class="hint">(merge over the primary model's vllm section — blank fields inherit)</span></div>
-
-              <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-arrows-left-right"></i> Parallelism</div>
-              <div class="chip-group v-chips-vllm-layout" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px">
-                <button type="button" class="hw-chip" data-value=""><i class="fa-solid fa-ban"></i> Inherit</button>
-                <button type="button" class="hw-chip" data-value="pp"><i class="fa-solid fa-layer-group"></i> PP <small>layer split</small></button>
-                <button type="button" class="hw-chip" data-value="tp"><i class="fa-solid fa-arrows-left-right"></i> TP <small>tensor split</small></button>
-              </div>
-              <select class="v-vllm-layout" hidden><option value="">inherit</option><option value="pp">pp (layer split)</option><option value="tp">tp (tensor split)</option></select>
-              <div class="row" style="flex-wrap:wrap">
-                <label title="pipeline stages — pp layout: one stage per host">Pipeline parallel <input class="v-vllm-pp" type="number" placeholder="inherit" style="width:110px"></label>
-                <label title="tensor parallel size — GPUs on this variant's host">Tensor parallel <input class="v-vllm-tp" type="number" placeholder="inherit" style="width:110px"></label>
-                <label title="fraction of VRAM for model+KV (0–1)">GPU mem util <input class="v-vllm-gmu" type="number" step="0.05" min="0.05" max="1" placeholder="inherit" style="width:110px"></label>
-              </div>
-
-              <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-gauge-high"></i> Serving</div>
-              <div class="row" style="flex-wrap:wrap">
-                <label title="max context window — agentic clients request max_tokens=16384, so 8k rejects">Max model len <input class="v-vllm-max-model-len" type="number" placeholder="inherit" style="width:110px"></label>
-                <label>Max seqs <input class="v-vllm-max-num-seqs" type="number" placeholder="inherit" style="width:110px"></label>
-                <label>KV cache <select class="v-vllm-kv" style="min-width:90px"><option value="">inherit</option><option value="auto">auto</option><option value="fp8">fp8</option></select></label>
-                <label>CPU offload GB <input class="v-vllm-cpu-offload" type="number" placeholder="inherit" style="width:120px"></label>
-                <label>Quantization <input class="v-vllm-quant" placeholder="inherit" style="width:110px"></label>
-              </div>
-
-              <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-microchip"></i> Precision & performance</div>
-              <div class="row" style="flex-wrap:wrap">
-                <label title="auto lets vLLM pick (bf16 on sm_80+); Turing cannot run bf16 — half/float32">Compute dtype <select class="v-vllm-dtype" style="min-width:110px"><option value="">inherit</option><option value="half">half (fp16)</option><option value="bfloat16">bfloat16</option><option value="float32">float32</option></select></label>
-                <label title="disable CUDA graphs (multi-host capture hangs over Ethernet); uncheck the override only with Infiniband"><button type="button" class="hw-chip v-chip-vllm-eager" data-checked="false"><i class="fa-solid fa-bolt"></i> eager</button><input class="v-vllm-eager" type="checkbox" hidden></label>
-              </div>
-
-              <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-screwdriver-wrench"></i> Tool calling</div>
-              <div class="row" style="flex-wrap:wrap">
-                <label title="allow tool_choice=auto"><button type="button" class="hw-chip v-chip-vllm-tools" data-checked="false"><i class="fa-solid fa-screwdriver-wrench"></i> auto-tools</button><input class="v-vllm-tools" type="checkbox" hidden></label>
-                <label title="how the model's tool-call syntax is parsed">Tool parser <select class="v-vllm-tool-parser" style="min-width:120px"><option value="">inherit</option><option value="hermes">hermes</option><option value="llama3_json">llama3_json</option><option value="mistral">mistral</option><option value="glm45">glm45</option><option value="qwen25">qwen25</option></select></label>
-              </div>
-
-              <div class="hint" style="font-weight:600; margin:10px 0 8px"><i class="fa-solid fa-file-lines"></i> Extras</div>
-              <div class="row" style="flex-wrap:wrap">
-                <label class="wide">Tokenizer (path or HF id, when it differs from the model) <input class="v-vllm-tokenizer" placeholder="inherit"></label>
-                <label class="wide">Extra vLLM args (comma- or newline-separated) <input class="v-vllm-extra-args wide" placeholder="inherit"></label>
-                <label class="wide" title="multi-host Ray/NCCL overrides — KEY=VALUE per line; KEY=false drops a built-in default">Ray env overrides <input class="v-vllm-ray-env wide" placeholder="inherit"></label>
-              </div>
-            </div>
             <div class="hint" data-variant-lcpp style="font-weight:600; margin:6px 0 6px"><i class="fa-solid fa-sliders"></i> Tensor placement</div>
             <div class="chip-group v-chips-tensor-mode" data-variant-lcpp style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px">
               <button type="button" class="hw-chip" data-value=""><i class="fa-solid fa-ban"></i> Inherit</button>

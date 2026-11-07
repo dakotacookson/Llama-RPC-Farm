@@ -19,15 +19,15 @@ requests.
 1. **"Nothing outside the folder is ever modified"** — the app must not
    touch the user's llama.cpp/llama-swap configs or anything outside the
    project directory.
-2. **No secrets in configs, scripts, or API responses** — machine SSH
-   passwords and tokens live in the encrypted vault only. If you touch
-   shell generation, there are injection tests you must keep green
+2. **No secrets in configs, scripts, or API responses** — peer-agent tokens
+   live in the encrypted vault only. If you touch shell generation, there
+   are injection tests you must keep green
    (`tests/test_shell_injection.py`, `tests/test_script_injection.py`).
-3. **All generated scripts are vault-fed at runtime** (`scripts/farm-run.sh`
-   pattern) — nothing baked into disk.
+3. **All generated scripts are vault-fed at runtime** — agent tokens come
+   from the pushed `swap-secrets.env` sidecar; nothing is baked into disk.
 4. **Cross-platform correctness** — Linux/Windows/macOS peers must all
-   survive your change: Windows OpenSSH runs cmd.exe (wrap
-   PowerShell), macOS has no `pgrep`/`pkill`/`setsid`. See AGENTS.md.
+   survive your change: agents run on Windows/macOS/Linux, macOS has no
+   `pgrep`/`pkill`/`setsid`, Windows uses PowerShell. See AGENTS.md.
 
 ## Getting started
 
@@ -57,9 +57,8 @@ single-source-of-truth rules catch most newcomers.
 ## Great first contributions
 
 - 🧪 **Hardware matrix testing** (see README "Supported hardware"): real
-  reports for AMD ROCm, Apple Silicon/metal, CPU-RAM-sharing or Intel XPU
-  setups — "works on my box" reports, logs, and PRs that fix what breaks
-  on them are gold.
+  reports for AMD ROCm, CPU-RAM-sharing or Intel XPU setups — "works on
+  my box" reports, logs, and PRs that fix what breaks on them are gold.
 - Docs improvements (especially for platforms beyond the maintainer's).
 - Test coverage in areas the string tests don't reach.
 

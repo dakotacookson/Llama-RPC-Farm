@@ -101,22 +101,118 @@ function makeArchSection(container, key, title, count) {
   return { sec, archBody };
 }
 
-/* Toast: replaces native alert()/confirm(), which browsers block or
-   suppress (that silently killed the delete/status buttons). */
-function toast(msg, kind = "info", ms = 6000) {
+function _toastHost() {
   let host = $("#toast-host");
   if (!host) {
     host = document.createElement("div");
     host.id = "toast-host";
     document.body.appendChild(host);
   }
+  return host;
+}
+
+/* Toast: replaces native alert()/confirm(), which browsers block or
+   suppress (that silently killed the delete/status buttons). */
+function loadedNotice(key, label) {
+  const el = stickyNotice(
+    `✓ ${label} loaded — serving via the farm API (:8090)`,
+    "ok", `loaded:${key}`,
+    "Model is loaded on the swap host and available to API clients.");
+  el.classList.add("toast-loaded");
+  // long enough to notice from any tab, still self-clears
+  setTimeout(() => { if (el && el.isConnected) el.remove(); }, 20000);
+  return el;
+}
+
+function clearLoadedNotice(key) {
+  const host = _toastHost();
+  [...host.children].forEach(c => {
+    if (c.dataset && c.dataset.noticeKey === `loaded:${key}`) c.remove();
+  });
+}
+
+function toast(msg, kind = "info", ms = 6000) {
+  const host = _toastHost();
   const el = document.createElement("div");
   el.className = `toast toast-${kind}`;
   el.textContent = msg;
   host.appendChild(el);
-  while (host.children.length > 5) host.firstChild.remove();
+  // only transient toasts are capped — sticky notices stay until dismissed
+  const transient = [...host.children].filter(
+    c => !c.classList.contains("toast-persistent"));
+  while (transient.length > 5) transient.shift().remove();
   setTimeout(() => el.remove(), ms);
   console.log("[ui]", kind, msg);
+}
+
+/* Persistent top-right notice (load failures). Same key updates in place
+   (with a ×N counter) instead of stacking duplicate cards; only the X
+   button clears it. */
+function stickyNotice(msg, kind = "bad", key = "", detail = "") {
+  const host = _toastHost();
+  let el = key ? [...host.children].find(
+    c => c.dataset.noticeKey === key && c.classList.contains("toast-persistent")
+  ) : null;
+  if (el) {
+    el._count = (el._count || 1) + 1;
+    const body = el.querySelector(".toast-body");
+    if (body) body.textContent = msg;
+    const cnt = el.querySelector(".toast-count");
+    if (cnt) cnt.textContent = el._count > 1 ? ` ×${el._count}` : "";
+    if (detail) el.title = detail;
+    return el;
+  }
+  el = document.createElement("div");
+  el.className = `toast toast-${kind} toast-persistent`;
+  el.dataset.noticeKey = key || "";
+  el._count = 1;
+  if (detail) el.title = detail;
+  const body = document.createElement("span");
+  body.className = "toast-body";
+  body.textContent = msg;
+  const cnt = document.createElement("span");
+  cnt.className = "toast-count";
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "toast-close";
+  close.setAttribute("aria-label", "Dismiss notification");
+  close.textContent = "×";
+  close.onclick = () => el.remove();
+  el.append(body, cnt, close);
+  host.appendChild(el);
+  return el;
+}
+
+/* Keep a global socket open for load-failure notices, independent of the
+   active tab. The backend tails llama-swap's proxy+upstream logs, primes
+   history, and emits one event per model/failure cooldown. */
+let faultWs = null;
+let faultWsRetry = 0;
+function initFaultWatch() {
+  if (faultWs && (faultWs.readyState === 0 || faultWs.readyState === 1)) return;
+  try {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    faultWs = new WebSocket(`${proto}://${location.host}/ws/swap/faults`);
+    faultWs.onmessage = (e) => {
+      let ev;
+      try { ev = JSON.parse(e.data); } catch (_) { return; }
+      if (!ev || ev.type !== "load_failure") return;
+      const prefix = ev.model ? `${ev.model}: ` : "";
+      stickyNotice(`${prefix}${ev.reason}`, "bad",
+        `load:${ev.model || "?"}`,
+        ev.detail || "");
+    };
+    faultWs.onopen = () => { faultWsRetry = 0; };
+    faultWs.onclose = (e) => {
+      faultWs = null;
+      if (e && e.code === 1008) return;   // unauthenticated/scoped: no retry loop
+      const delay = Math.min(30000, 2000 + faultWsRetry++ * 3000);
+      setTimeout(initFaultWatch, delay);
+    };
+    faultWs.onerror = () => {};
+  } catch (_) {
+    setTimeout(initFaultWatch, 5000);
+  }
 }
 
 /* ---------------- tabs ---------------- */
@@ -264,23 +360,27 @@ async function loadUsageByModel(light = false) {
       }
       const cards = Object.entries(mods).sort((a, b) =>
         (b[1].total?.requests || 0) - (a[1].total?.requests || 0));
-      // same count → patch values in place; count change → full rebuild
+      // same count → patch by MODEL ID (not DOM index: sort order can
+      // change between polls, which used to write model A's values into
+      // model B's card). Count/identity change → full rebuild.
       if (cards.length === grid.children.length) {
         const maxH = Math.max(0.01, ...cards.map(([, x]) =>
           x.total?.hours || 0)) * 1.15;
-        cards.forEach(([m, d], i) => {
-          const card = grid.children[i];
+        let ok = true;
+        for (const [m, d] of cards) {
+          const card = grid.querySelector(
+            `[data-model="${CSS.escape(m)}"]`);
+          if (!card) { ok = false; break; }
           const hours = d.total?.hours || 0;
           const sub = card.querySelectorAll(".hint")[0];
-          if (sub) sub.innerHTML =
-            `${d.total?.requests||0} req · ${_fmtTok(d.total?.tok_out||0)} out · ${_fmtTok(d.total?.tok_in||0)} in${d.avg_spd ? ` · <b>${d.avg_spd} tok/s</b>` : ""}${d.total?.errors ? ` · <span style="color:var(--warn)">${d.total.errors} err</span>` : ""}`;
-          const val = card.querySelector("text.gauge-val");
-          if (val && _gaugePatch(card, hours, maxH, _fmtHours)) {
-            const nameEl = card.firstElementChild;
-            if (nameEl) nameEl.title = m;
+          if (sub) sub.innerHTML = _ubmSub(d);
+          if (!_gaugePatch(card, hours, maxH, _fmtHours, "total")) {
+            ok = false; break;
           }
-        });
-        return;
+          const nameEl = card.firstElementChild;
+          if (nameEl) nameEl.title = m;
+        }
+        if (ok) return;
       }
     } catch (err) { /* fall through to full render */ }
   }
@@ -298,20 +398,31 @@ async function loadUsageByModel(light = false) {
       host.innerHTML = '<div class="card gauge-card accent"><span class="hint">no usage recorded yet — every model you use through the gateway gets a card here</span></div>';
       return;
     }
+    const maxH = Math.max(0.01, ...cards.map(([, x]) =>
+      x.total?.hours || 0)) * 1.15;
     host.innerHTML = `<div class="launch-grid" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:var(--s-3); align-items:stretch">` +
       cards.map(([m, d]) => {
         const t = d.total || {};
         const hours = t.hours || 0;
-        const maxH = Math.max(0.01, ...cards.map(([, x]) => x.total?.hours || 0)) * 1.15;
-        return `<div class="card gauge-card accent" style="display:flex; flex-direction:column; align-items:center; justify-content:center; padding:8px 10px">
+        return `<div class="card gauge-card accent" data-model="${escHtml(m)}" style="display:flex; flex-direction:column; align-items:center; justify-content:center; padding:8px 10px">
           <div style="font-size:0.95em; font-weight:600; width:100%; text-align:center; overflow:hidden; text-overflow:ellipsis" title="${escHtml(m)}">${escHtml(m.length > 30 ? m.slice(0,29) + "…" : m)}</div>
-          ${_gaugeSkel(hours, maxH, "accent", _fmtHours, "compute time", "")}
-          <div class="hint" style="width:100%; text-align:center; margin-top:2px">${t.requests||0} req · ${_fmtTok(t.tok_out||0)} out · ${_fmtTok(t.tok_in||0)} in${d.avg_spd ? ` · <b>${d.avg_spd} tok/s</b>` : ""}${t.errors ? ` · <span style="color:var(--warn)">${t.errors} err</span>` : ""}</div>
+          ${_gaugeSkel(hours, maxH, "accent", _fmtHours, "compute time", "", "total")}
+          <div class="hint" style="width:100%; text-align:center; margin-top:2px">${_ubmSub(d)}</div>
         </div>`;
       }).join("") + `</div>`;
   } catch (err) {
     host.textContent = "by-model failed: " + err.message;
   }
+}
+
+function _ubmSub(d) {
+  const t = d.total || {};
+  const spd = d.avg_spd
+    ? ` · <b>${d.avg_spd} tok/s avg</b>${d.peak_spd ? ` · peak ${d.peak_spd} tok/s` : ""}`
+    : (d.peak_spd ? ` · peak ${d.peak_spd} tok/s` : "");
+  return `${t.requests||0} req · ${_fmtTok(t.tok_out||0)} out · ` +
+    `${_fmtTok(t.tok_in||0)} in${spd}` +
+    `${t.errors ? ` · <span style="color:var(--warn)">${t.errors} err</span>` : ""}`;
 }
 
 function _userRefreshVisible() {
@@ -335,15 +446,22 @@ function _userRefreshVisible() {
    maintainable each renderer owns its light path: same data, then
    patch values via data-field hooks. Gauge cards carry data-field
    markers on the value text/arc/peak/sub nodes. */
-function _gaugePatch(card, value, max, fmt) {
+function _gaugePatch(card, value, max, fmt, note) {
   const svg = card.querySelector("svg");
   if (!svg) return false;
   // value text (3rd text node class gauge-val)
   const val = svg.querySelector("text.gauge-val");
   if (val) val.textContent = fmt(value ?? 0);
-  // arc path = 2nd path (track first)
+  // arc path = 2nd path (track first). A gauge first rendered at value 0
+  // has ONLY the track path — create the value path on the first nonzero
+  // patch, or fresh usage would never draw an arc until a full rebuild.
   const paths = svg.querySelectorAll("path");
-  if (paths.length === 2) {
+  let arcPath = paths[1];
+  if (!arcPath && paths[0]) {
+    arcPath = paths[0].cloneNode(false);
+    paths[0].parentNode.insertBefore(arcPath, paths[0].nextSibling);
+  }
+  if (arcPath) {
     const frac = Math.max(0, Math.min(1, value / Math.max(max, 1e-9)));
     // recompute d for the 270° sweep
     const W = 300, H = 175, cx = W/2, cy = H*0.78, R = 105;
@@ -353,14 +471,22 @@ function _gaugePatch(card, value, max, fmt) {
     const large = (r1 - a0) > Math.PI ? 1 : 0;
     const x0 = cx + R * Math.cos(a0), y0 = cy + R * Math.sin(a0);
     if (frac <= 0) {
-      paths[1].setAttribute("opacity", "0");
+      arcPath.setAttribute("opacity", "0");
     } else {
-      paths[1].setAttribute("opacity", "0.95");
-      paths[1].setAttribute("d", `M ${x0.toFixed(1)} ${y0.toFixed(1)} A ${R} ${R} 0 ${large} 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`);
+      arcPath.setAttribute("opacity", "0.95");
+      arcPath.setAttribute("d", `M ${x0.toFixed(1)} ${y0.toFixed(1)} A ${R} ${R} 0 ${large} 1 ${x1.toFixed(1)} ${y1.toFixed(1)}`);
     }
   }
-  const peak = [...svg.querySelectorAll("text")].find(t => t.textContent.startsWith("peak"));
-  if (peak) peak.textContent = `peak ${fmt(max)}`;
+  let noteEl = svg.querySelector("text.gauge-note");
+  if (!noteEl) noteEl = [...svg.querySelectorAll("text")].find(
+    t => t.textContent.startsWith("peak"));
+  if (noteEl) {
+    let noteText;
+    if (note === undefined) noteText = `peak ${fmt(max)}`;
+    else if (note === null) noteText = "";
+    else noteText = typeof note === "function" ? note(max) : String(note);
+    noteEl.textContent = noteText;
+  }
   return true;
 }
 
@@ -795,35 +921,19 @@ function statCardHTML(m) {
   const ramPct = m.ram_total_gb ? Math.round(m.ram_used_gb / m.ram_total_gb * 100) : 0;
   const vramPct = totalVram ? Math.round(usedVram / totalVram * 100) : 0;
   const osLabel = (m.os || "linux").charAt(0).toUpperCase() + (m.os || "linux").slice(1);
-  // DEC-16: engine-correct card subtitle. Under llama_cpp verbatim
-  // (RPC up/down + RDMA/TCP); under vllm there are no RPC peers, so
-  // hidden-not-translated: host facts only (IP · load) — same
-  // manifestHasSection idiom as the DEC-10 model rows.
-  const vllmMode = manifestHasSection("vllm_section");
-  // DEC-17: under vllm, machines the server says are vLLM-incapable
-  // (vllm_capable === false — e.g. Windows hosts) render dimmed with an
-  // explicit "not available under vLLM" line. The verdict comes from the
-  // /api/stats payload stamped by the backend (B14 — no client-side
-  // os/vendor re-derivation). Under llama_cpp the fields are ignored
-  // entirely: cards render verbatim as before.
-  const vllmBlind = vllmMode && m.vllm_capable === false;
-  const vllmReason = m.vllm_capability_reason || "vLLM is not usable on this host";
-  const cardSub = vllmMode
-    ? `${m.ip}${m.load ? ` — load ${m.load}` : ""}`
-    : `${m.ip} — RPC <span class="${m.rpc_running ? "status-ok" : "status-warn"}">${m.rpc_running ? "up" : "down"}</span>${m.rdma ? ' — <span class="badge-rdma" style="padding:1px 6px;border-radius:6px">RDMA</span>' : " — TCP"}${m.load ? ` — load ${m.load}` : ""}`;
+  const cardSub = `${m.ip} — RPC <span class="${m.rpc_running ? "status-ok" : "status-warn"}">${m.rpc_running ? "up" : "down"}</span>${m.rdma ? ' — <span class="badge-rdma" style="padding:1px 6px;border-radius:6px">RDMA</span>' : " — TCP"}${m.load ? ` — load ${m.load}` : ""}`;
   return `
-    <div class="machine-status-card ${online ? "online" : "offline"}${vllmBlind ? " vllm-unavailable" : ""}" data-machine="${escHtml(m.name)}" title="${vllmBlind ? escHtml(vllmReason) : "Click for details"}">
-      ${vllmBlind ? '<div class="vllm-unavailable-tag"><i class="fa-solid fa-ban"></i> not available under vLLM</div>' : ""}
+    <div class="machine-status-card ${online ? "online" : "offline"}" data-machine="${escHtml(m.name)}" title="Click for details">
       <div class="card-header">
         <span class="card-label">
           <span class="status-dot ${online ? "on" : "off"}"></span>
           <i class="fa-solid fa-server card-label-icon"></i>
           ${m.name}
           ${m.is_master ? '<span class="badge badge-master">master</span>' : ""}
-          ${m.is_local ? '<span class="badge badge-local">this machine</span>' : ""}
         </span>
         <div class="card-actions">
           <span class="os-badge">${osLabel}</span>
+          ${connectionBadge(m)}
         </div>
       </div>
       <div class="card-sub">${cardSub}</div>
@@ -940,13 +1050,7 @@ function renderMachineDetail(body, d) {
     const freeGB = toGB(disk.free), totalGB = toGB(disk.total);
     if (freeGB != null && totalGB > 0) diskPct = Math.round((1 - freeGB / totalGB) * 100);
   }
-  // DEC-16: engine-correct hero subtitle. Under llama_cpp verbatim
-  // ("RPC up/down · role:"); under vllm RPC status is hidden-not-
-  // translated — host facts + role only, same manifestHasSection idiom.
-  const mdVllm = manifestHasSection("vllm_section");
-  const mdHeroSub = mdVllm
-    ? `${escHtml(d.ip)}${s.load ? ` · load ${escHtml(s.load)}` : ""}${d.role ? ` · role: ${escHtml(d.role)}` : ""}`
-    : `${escHtml(d.ip)} · RPC <span class="${s.rpc_running ? "status-ok" : "status-warn"}">${s.rpc_running ? "up" : "down"}</span> · role: ${escHtml(d.role)}`;
+  const mdHeroSub = `${escHtml(d.ip)} · RPC <span class="${s.rpc_running ? "status-ok" : "status-warn"}">${s.rpc_running ? "up" : "down"}</span> · role: ${escHtml(d.role)}`;
   body.innerHTML = `
     <div class="md-hero">
       <div class="md-hero-title">
@@ -966,6 +1070,12 @@ function renderMachineDetail(body, d) {
         ${kv("CPU", d.cpu_model)}
         ${kv("Cores", s.cores)}
         ${kv("Uptime", d.uptime)}
+        ${kv("Connection", (() => {
+          const caps = connCaps(d);
+          const extra = (caps.mode === "agent" || caps.mode === "both")
+            ? ` · agent :${d.agent_port || 8198}` : "";
+          return connectionLabel(d) + extra;
+        })())}
         ${kv("llama.cpp", d.llama_version)}
         ${kv("llama bin", d.llama_bin)}
         <div class="md-row"><span class="md-key">update</span>
@@ -1308,6 +1418,7 @@ function _streamedCards() {
 async function _loadStatusInner() {
   // hidden tab: skip the whole poll — DOM churn with nothing watching
   if (document.hidden) return;
+  await refreshConnectionCaps();
   const grid = $("#status-grid");
   // cold start with a cache: paint the last-good cards IMMEDIATELY, then
   // refresh in place when the fetch returns (no dead spinner, no flicker)
@@ -1464,26 +1575,20 @@ on("#stop-swap", "click", async (e) => {
   const btn = e.currentTarget;
   dashStatus("stop-all clicked");
   if (!armed(btn, "Stop All")) return;
-  btn.disabled = true; btn.textContent = "stopping…";
+  btn.disabled = true; btn.textContent = "evicting…";
   dashStatus("stopping llama-swap + all RPC…");
   try {
     const r = await api("POST", "/api/swap/stop", {});
     dashStatus(`swap stop response: ${JSON.stringify(r)}`);
     let msg = `${r.host}: ${r.stopped ? "stopped" : "STILL RUNNING"}`;
-    // G-3: rpc-server cleanup is a llama.cpp-only concept — under vLLM
-    // there are no ggml-rpc-server processes; skip the leg entirely.
-    if ((appSettings && appSettings.engine) === "vllm") {
-      msg += " || rpc: n/a (vLLM mode)";
-    } else {
-      try {
-        const q = await api("POST", "/api/rpc/stop-all");
-        dashStatus(`rpc stop-all response: ${JSON.stringify(q)}`);
-        const failed = q.filter(x => !x.killed).map(x => x.machine);
-        msg += failed.length
-          ? ` || rpc FAILED on: ${failed.join(", ")}`
-          : ` || rpc: ${q.map(x => `${x.machine}: cleared`).join(" | ")}`;
-      } catch (e2) { msg += ` || rpc stop failed: ${e2.message}`; }
-    }
+    try {
+      const q = await api("POST", "/api/rpc/stop-all");
+      dashStatus(`rpc stop-all response: ${JSON.stringify(q)}`);
+      const failed = q.filter(x => !x.killed).map(x => x.machine);
+      msg += failed.length
+        ? ` || rpc FAILED on: ${failed.join(", ")}`
+        : ` || rpc: ${q.map(x => `${x.machine}: cleared`).join(" | ")}`;
+    } catch (e2) { msg += ` || rpc stop failed: ${e2.message}`; }
     dashStatus(msg);
   } catch (err) {
     console.error("[ui] stop-all failed:", err);
@@ -1517,13 +1622,9 @@ on("#start-all", "click", async (e) => {
   try {
     const r = await api("POST", "/api/start-all");
     dashStatus(`start-all raw: ${JSON.stringify(r)}`);
-    // G-3: under vLLM the backend skips the RPC phase and reports
-    // rpc: [{skipped, reason}] — show an honest summary, not "DOWN".
-    const rpcPart = (r.rpc || []).length === 1 && r.rpc[0].skipped
-      ? r.rpc[0].reason
-      : (r.rpc || [])
-          .map(x => `${x.machine}: ${x.running ? `up (:${x.port})` : "DOWN"}`)
-          .join(" | ");
+    const rpcPart = (r.rpc || [])
+      .map(x => `${x.machine}: ${x.running ? `up (:${x.port})` : "DOWN"}`)
+      .join(" | ");
     const sw = r.swap || {};
     dashStatus(`rpc: ${rpcPart} || swap: `
       + (sw.failed ? `FAILED (${sw.error || "see Launch tab"})`
@@ -1532,28 +1633,64 @@ on("#start-all", "click", async (e) => {
     console.error("[ui] start-all failed:", err);
     dashStatus(`Start All failed: ${err.message}`);
   }
-  // FIX-A7: restore the ENGINE-AWARE label, not a hardcoded "Start All" —
-  // under vLLM the button reads "Start llama-swap" (applyEngineHints set it).
   // While the daemon is up the button stays disabled (re-launch would pile
   // up another instance) — sync from live status, not from intent.
   delete btn.dataset.busy;
-  const engine = (appSettings && appSettings.engine) || "llama_cpp";
-  btn.textContent = engine === "vllm" ? "Start llama-swap" : "Start All";
+  btn.textContent = "Start All";
   try {
     const st = await api("GET", "/api/swap/status");
     syncStartAll(st);
     if (!st.running) { btn.disabled = false; }
-    else btn.textContent = engine === "vllm" ? "Start llama-swap" : "Start All";
+    else btn.textContent = "Start All";
   } catch (_) { btn.disabled = false; }
   loadStatus();
 });
 
 /* ---------------- machines ---------------- */
-const EMPTY_MACHINE = { name: "", ip: "", username: "zazi", password: "", port: 22, role: "peer", os: "linux", rpc_port: 50052, gpu: "", llama_bin: "", rdma: false, rdma_ip: "", rdma_dev: "", rdma_gid: "", rdma_cm: false };
+const EMPTY_MACHINE = { name: "", ip: "", username: "", password: "", port: 1, transport: "agent", agent_port: 8198, agent_token: "", role: "peer", os: "linux", rpc_port: 50052, gpu: "", llama_bin: "", rdma: false, rdma_ip: "", rdma_dev: "", rdma_gid: "", rdma_cm: false };
 
 async function defaultLlamaBin() {
   const s = await getAppSettings();
   return s.llama_bin || "~/llama.cpp/build/bin";
+}
+
+function syncTransportFields() {
+  // Agent-only: SSH fields are retired. Keep the hidden inputs for payload
+  // compatibility but never show or require them.
+  for (const id of ["m-username-label", "m-password-label", "m-port-label"]) {
+    const el = $("#" + id);
+    if (el) el.style.display = "none";
+  }
+  for (const id of ["m-agent-port-label", "m-agent-token-label"]) {
+    const el = $("#" + id);
+    if (el) el.style.display = "";
+  }
+  const user = $("#m-username");
+  if (user) user.required = false;
+  const tr = $("#m-transport");
+  if (tr) tr.value = "agent";
+}
+
+function syncRoleFields() {
+  const master = ($("#m-role")?.value || "peer") === "master";
+  for (const id of ["m-agent-port-label", "m-agent-token-label"]) {
+    const el = $("#" + id);
+    if (el) el.style.display = master ? "none" : "";
+  }
+}
+
+function syncRdmaFields() {
+  const on = Boolean($("#m-rdma")?.checked);
+  const box = $("#m-rdma-options");
+  if (box) box.hidden = !on;
+  const toggle = $("#m-rdma-toggle");
+  if (toggle) toggle.setAttribute("aria-pressed", on ? "true" : "false");
+  const label = $("#m-rdma-label");
+  if (label) label.textContent = on ? "RDMA on" : "RDMA off";
+  for (const id of ["m-rdma-ip", "m-rdma-dev", "m-rdma-gid", "m-rdma-cm"]) {
+    const el = $("#" + id);
+    if (el) el.disabled = !on;
+  }
 }
 
 function machineFormLoad(m, isEdit) {
@@ -1566,14 +1703,23 @@ function machineFormLoad(m, isEdit) {
   $("#machine-original-name").value = editing ? (m.name || "") : "";
   $("#m-name").value = m.name || "";
   $("#m-ip").value = m.ip || "";
-  $("#m-username").value = m.username || "zazi";
-  $("#m-password").value = ""; // never fill the real password — hint shows state
+  $("#m-username").value = "";
+  $("#m-password").value = "";
+  $("#m-agent-token").value = ""; // write-only: stored in the vault
+  const atHint = $("#m-agent-token-hint");
+  if (atHint) atHint.textContent = (editing && m.agent_token_set)
+    ? "Token saved in vault — leave blank to keep, type to replace."
+    : (editing ? "No agent token saved — type one to set it." : "Stored encrypted in the vault, never YAML.");
   const pwHint = $("#m-password-hint");
   if (pwHint) pwHint.textContent = (editing && m.password_set)
     ? "Password saved in vault — leave blank to keep, type to replace."
     : (editing ? "No password saved — type one to set it." : "Stored encrypted in the vault (.env).");
-  $("#m-port").value = m.port ?? 22;
+  $("#m-port").value = 1;
+  $("#m-transport").value = "agent";
+  $("#m-agent-port").value = m.agent_port ?? 8198;
+  syncTransportFields();
   $("#m-role").value = m.role || "peer";
+  syncRoleFields();
   $("#m-os").value = m.os || "linux";
   $("#m-gpu-vendor").value = m.gpu_vendor || "nvidia";
   $("#m-rpc-port").value = m.rpc_port ?? 50052;
@@ -1594,13 +1740,10 @@ function machineFormLoad(m, isEdit) {
   $("#m-expose-gpus").placeholder = avail.length ? `available: ${avail.join(",")}` : "all (not detected)";
   $("#m-rdma").checked = Boolean(m.rdma);
   $("#m-rdma-ip").value = m.rdma_ip || "";
-  $("#m-rdma-ip").disabled = !$("#m-rdma").checked;
   $("#m-rdma-dev").value = m.rdma_dev || "";
   $("#m-rdma-gid").value = m.rdma_gid || "";
   $("#m-rdma-cm").checked = Boolean(m.rdma_cm);
-  $("#m-rdma-dev").disabled = !$("#m-rdma").checked;
-  $("#m-rdma-gid").disabled = !$("#m-rdma").checked;
-  $("#m-rdma-cm").disabled = !$("#m-rdma").checked;
+  syncRdmaFields();
   $("#machine-cancel").hidden = !editing;
   // add mode = 3-step wizard (Scan → Select → Configure), one step at a
   // time; edit mode skips the wizard and shows Configure directly
@@ -1685,19 +1828,29 @@ async function showHostFingerprint() {
   if (!box) return;
   const ip = $("#m-ip").value.trim();
   if (!ip) { box.textContent = ""; return; }
-  const port = parseInt($("#m-port").value, 10) || 22;
-  box.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> checking host key…';
+  if (($("#m-role")?.value || "peer") === "master") {
+    box.innerHTML = '<span class="hint"><i class="fa-solid fa-server"></i> Local master — managed directly by the app; no peer agent needed.</span>';
+    return;
+  }
+  const tok = ($("#m-agent-token")?.value || "").trim();
+  const editing = Boolean($("#machine-original-name").value);
+  const tokHint = ($("#m-agent-token-hint")?.textContent || "");
+  const savedToken = editing && /leave blank to keep/i.test(tokHint);
+  if (!tok && !savedToken) {
+    box.innerHTML = '<span class="hint"><i class="fa-solid fa-plug"></i> Agent discovered — enter its token to verify. Tokens are never broadcast by discovery.</span>';
+    return;
+  }
+  box.innerHTML = '<span class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Checking peer agent…</span>';
   try {
-    const r = await api("POST", "/api/machines/fingerprint",
-      { ip, port, username: $("#m-username").value.trim() });
-    const mismatch = r.known && r.stored_fingerprint && r.stored_fingerprint !== r.fingerprint;
-    box.innerHTML = mismatch
-      ? `<span class="status-bad"><i class="fa-solid fa-triangle-exclamation"></i> Host key CHANGED for ${escHtml(ip)}! stored: <code>${escHtml(r.stored_fingerprint)}</code> · now: <code>${escHtml(r.fingerprint)}</code> — verify before trusting</span>`
-      : r.known
-        ? `<i class="fa-solid fa-fingerprint"></i> Host key (trusted): <code>${escHtml(r.fingerprint)}</code> <small class="hint">(${escHtml(r.type)}, saved on first login)</small>`
-        : `<i class="fa-solid fa-fingerprint"></i> First login — host key <code>${escHtml(r.fingerprint)}</code> <small class="hint">(${escHtml(r.type)}) will be trusted on save and pinned for future logins</small>`;
+    const a = await api("POST", "/api/machines/agent-check", {
+      ip,
+      agent_port: parseInt($("#m-agent-port").value, 10) || 8198,
+      agent_token: $("#m-agent-token").value,
+      name: $("#machine-original-name").value || $("#m-name").value.trim(),
+    });
+    box.innerHTML = `<span class="status-ok"><i class="fa-solid fa-plug"></i> Peer agent connected — v${escHtml(a.agent_version || "?")} (protocol ${escHtml(String(a.protocol_version ?? "?"))})</span>`;
   } catch (e) {
-    box.innerHTML = `<span class="status-warn"><i class="fa-solid fa-triangle-exclamation"></i> Host key check failed: ${escHtml(e.message)}</span>`;
+    box.innerHTML = `<span class="status-bad"><i class="fa-solid fa-plug"></i> Peer agent check failed: ${escHtml(e.message)}</span>`;
   }
 }
 
@@ -1705,9 +1858,12 @@ function machineFormRead() {
   return {
     name: $("#m-name").value.trim(),
     ip: $("#m-ip").value.trim(),
-    username: $("#m-username").value.trim(),
-    password: $("#m-password").value,
-    port: parseInt($("#m-port").value, 10),
+    username: "",
+    password: "",
+    port: 1,
+    transport: "agent",
+    agent_port: parseInt($("#m-agent-port").value, 10) || 8198,
+    agent_token: $("#m-agent-token").value,
     role: $("#m-role").value,
     os: $("#m-os").value,
     gpu_vendor: $("#m-gpu-vendor").value,
@@ -1727,8 +1883,9 @@ function machineFormRead() {
   };
 }
 
-async function loadMachines() {
+async function loadMachines(skipCaps = false) {
   const body = $("#machines-list");
+  if (!skipCaps) await refreshConnectionCaps();
   if (body && !body.querySelector(".arch-section") && !body.querySelector(".scan-model"))
     body.innerHTML = loadingSpinner("Loading machines…");
   const machines = await api("GET", "/api/machines");
@@ -1764,23 +1921,16 @@ async function loadMachines() {
       (a.name || "").toLowerCase().localeCompare((b.name || "").toLowerCase()));
     const { sec, archBody: secBody } = makeArchSection(body, "machines:" + title, title, secMachines.length);
     for (const m of secMachines) {
-      // DEC-17: under vllm, machines the server declares vLLM-incapable
-      // (vllm_capable === false from /api/machines — B14, no client-side
-      // OS re-derivation) render dimmed with a "not available under
-      // vLLM" line. Under llama_cpp this is dead code — full function.
-      const isVllm = (appSettings && appSettings.engine) === "vllm";
-      const vllmBlind = isVllm && m.vllm_capable === false;
-      const vllmReason = m.vllm_capability_reason || "vLLM is not usable on this host";
       const tr = document.createElement("div");
       tr.innerHTML = `
-      <div class="scan-main${vllmBlind ? " vllm-unavailable" : ""}"><div class="scan-title">${osIcon(m.os)}${m.name}${m.role === "master" ? ' <span class="badge badge-master">master</span>' : ""}</div>
-        <small>${m.ip} · ${m.role} (${m.os}) · GPUs: ${m.gpu || "-"} · ${exposeHTML(m)}</small>
-        ${detectedHTML(m)}
-        ${vllmBlind ? `<span class="vllm-unavailable-tag"><i class="fa-solid fa-ban"></i> not available under vLLM — ${escHtml(vllmReason)}</span>` : ""}</div>
+      <div class="scan-main"><div class="scan-title">${osIcon(m.os)}${m.name}${m.role === "master" ? ' <span class="badge badge-master">master</span>' : ""}</div>
+        <small>${m.ip} · ${m.role} (${m.os}) · GPUs: ${m.gpu || "-"} · ${exposeHTML(m)} · ${connectionBadge(m)}</small>
+        ${detectedHTML(m)}</div>
       <div class="scan-model-actions">
         <button class="small" data-act="edit">Edit</button>
         <button class="small" data-act="detect">Detect</button>
         <button class="small" data-act="update">Update</button>
+        ${(m.role === "master" || m.is_local) ? "" : '<button class="small" data-act="agent-update" title="Install or update the peer agent on this machine">Agent ⟳</button>'}
         <button class="small danger" data-act="delete">Delete</button>
       </div>`;
       tr.classList.add("scan-model");
@@ -1805,6 +1955,25 @@ async function loadMachines() {
         } catch (err) {
           btn.textContent = "Update"; btn.disabled = false;
           toast(err.message, "bad");
+        }
+      };
+      const agentUpdateBtn = tr.querySelector('[data-act="agent-update"]');
+      if (agentUpdateBtn) agentUpdateBtn.onclick = async (e) => {
+        const btn = e.currentTarget;
+        if (!window.confirm(`Install/update the peer agent on ${m.name}?\n\nThe agent will be restarted.`)) return;
+        btn.disabled = true;
+        const old = btn.textContent;
+        btn.textContent = "Updating agent…";
+        try {
+          const r = await api("POST", `/api/machines/${encodeURIComponent(m.name)}/update-agent`);
+          toast(r.skipped ? `${m.name}: ${r.detail || "no peer agent needed"}`
+                          : `${m.name}: peer agent ${r.agent_version || "updated"}`,
+                "ok");
+          loadMachines(true);
+        } catch (err) {
+          toast(`Agent update failed on ${m.name}: ${err.message}`, "bad");
+          btn.disabled = false;
+          btn.textContent = old;
         }
       };
       tr.querySelector('[data-act="detect"]').onclick = async (e) => {
@@ -1837,6 +2006,7 @@ async function loadMachines() {
       };
       secBody.appendChild(tr);
       fillInlineUpdateState(tr, m.name);
+      fillAgentUpdateState(tr, m.name);
     }
     body.appendChild(sec);
   }
@@ -1847,6 +2017,34 @@ async function loadMachines() {
    update job would short-circuit anyway); behind latest it shows the
    current→latest build jump it will perform. Falls back to a plain
    Update button when the version can't be probed (offline machine). */
+function fillAgentUpdateState(tr, name) {
+  const btn = tr.querySelector('[data-act="agent-update"]');
+  if (!btn) return;
+  api("GET", `/api/machines/${encodeURIComponent(name)}/agent-version`)
+    .then(v => {
+      if (!btn.isConnected) return;
+      if (v.local) {
+        btn.hidden = true;
+        btn.style.display = "none";
+        btn.title = "The UI host is managed locally; it runs no peer agent.";
+        return;
+      }
+      if (v.on_latest) {
+        btn.disabled = true;
+        btn.textContent = `Agent on latest (${v.latest})`;
+        btn.title = "peer agent is already on the current version";
+      } else if (v.current && v.latest) {
+        btn.disabled = false;
+        btn.textContent = `Agent ${v.current}→${v.latest}`;
+        btn.title = `peer agent ${v.current} → ${v.latest}`;
+      } else if (v.latest) {
+        btn.disabled = false;
+        btn.textContent = `Install agent ${v.latest}`;
+        btn.title = "peer agent is not installed or unreachable";
+      }
+    }).catch(() => { /* keep the plain Agent button */ });
+}
+
 function fillInlineUpdateState(tr, name) {
   const btn = tr.querySelector('[data-act="update"]');
   if (!btn) return;
@@ -1882,6 +2080,16 @@ function exposeHTML(m) {
   return `${mode}${gpuNote}`;
 }
 
+on("#detect-connections-btn", "click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true; btn.textContent = "Detecting connections…";
+  try {
+    await refreshConnectionCaps(true);
+    await loadMachines(true);
+    toast("Connection types refreshed", "ok");
+  } catch (err) { toast(err.message, "bad"); }
+  btn.disabled = false; btn.textContent = "Detect Connections";
+});
 on("#detect-all-btn", "click", async (e) => {
   const btn = e.target;
   btn.disabled = true; btn.textContent = "Detecting...";
@@ -1907,11 +2115,63 @@ async function discoverInit() {
         `<option value="${escHtml(s)}"${s === r.default ? " selected" : ""}>${escHtml(s)}${s === r.default ? " (this network)" : ""}</option>`
       ).join("");
   } catch (_) { /* dropdown stays empty; scan will error visibly */ }
+  syncDiscoveryMode();
 }
+
+function syncDiscoveryMode() {
+  // Agent-only discovery: UDP peer-agent responder, never an SSH scan.
+  const subnet = $("#d-subnet-label");
+  const port = $("#d-port-label");
+  if (subnet) subnet.style.display = "none";
+  if (port) port.style.display = "none";
+  const mode = $("#d-mode");
+  if (mode) mode.value = "peer";
+  const hint = $("#wiz-scan-hint");
+  if (hint) hint.textContent = "Hit Scan to discover peers advertising the Llama RPC Farm agent (UDP 8199). Peer agents are installed from their own platform package.";
+}
+on("#d-mode", "change", syncDiscoveryMode);
 
 function gpuPrefix(vendor) {
   const v = (vendor || "").toLowerCase();
   return v === "amd" ? "ROCm" : v === "apple" ? "Metal" : v === "intel" ? "SYCL" : "CUDA";
+}
+const CONN_CAPS = {};
+let _connCapsAt = 0;
+async function refreshConnectionCaps(force = false) {
+  if (!force && Date.now() - _connCapsAt < 30000) return CONN_CAPS;
+  try {
+    const r = await api("GET", "/api/machines/connections");
+    for (const k of Object.keys(CONN_CAPS)) delete CONN_CAPS[k];
+    Object.assign(CONN_CAPS, r || {});
+    _connCapsAt = Date.now();
+  } catch (_) { /* keep last known caps */ }
+  return CONN_CAPS;
+}
+function connCaps(m) {
+  return (m && m.name && CONN_CAPS[m.name]) || (m && m.mode ? m : {});
+}
+function connectionLabel(m) {
+  if (m && m.is_local) return "local";
+  const caps = connCaps(m);
+  const c = caps.mode || (m && (m.connection || m.transport)) || "ssh";
+  return c === "both" ? "SSH + agent"
+    : c === "agent" ? "agent only"
+    : c === "ssh" ? "SSH only"
+    : c === "local" ? "local"
+    : c === "none" ? "unreachable"
+    : "SSH + agent";
+}
+function connectionBadge(m) {
+  const caps = connCaps(m);
+  const c = (m && m.is_local) ? "local"
+    : caps.mode || (m && (m.connection || m.transport)) || "ssh";
+  const icon = c === "local" ? "fa-house"
+    : c === "both" ? "fa-link"
+    : c === "agent" ? "fa-plug"
+    : c === "none" ? "fa-triangle-exclamation"
+    : "fa-terminal";
+  const cls = c === "none" ? " status-bad" : "";
+  return `<span class="badge badge-conn${cls}" title="Detected connection: ${connectionLabel(m)}"><i class="fa-solid ${icon}"></i> ${connectionLabel(m)}</span>`;
 }
 function osIcon(os) {
   const o = (os || "").toLowerCase();
@@ -1999,48 +2259,70 @@ function discoveredFill(h) {
   machineFormLoad({
     name: h.hostname || h.ip.replace(/\./g, "-"),
     ip: h.ip,
-    username: h.username || $("#m-username").value.trim() || "zazi",
-    password: $("#m-password").value,
-    port: h.port || 22,
+    username: "",
+    password: "",
+    port: 1,
+    transport: "agent",
+    agent_port: h.agent_port || 8198,
     os: h.os || "linux",
     gpu_vendor: h.gpu_vendor || "nvidia",
     gpu: (h.gpus || []).length ? h.gpus.map((g, i) => `${pref}${i}`).join(",") : "",
+    ram_total_gb: h.ram_total_gb || null,
   }, false);  // suggested name, but still a NEW machine — keep wizard visible
   if (orig) $("#machine-original-name").value = orig;
   wizForceWizard = fw;
   wizClearPick();
   wizShow(3);
-  toast("Review the details, then Save (Save verifies SSH before storing)", "ok");
+  toast("Review the details, then Save (Save verifies the peer agent before storing)", "ok");
 }
 // IP / SSH port edits change which host we fingerprint — re-check live
+on("#m-role", "change", syncRoleFields);
+on("#m-rdma", "change", syncRdmaFields);
+on("#m-rdma-toggle", "click", () => {
+  const cb = $("#m-rdma");
+  if (!cb) return;
+  cb.checked = !cb.checked;
+  syncRdmaFields();
+});
 on("#m-ip", "input", () => {
   const box = $("#m-fingerprint");
   if (box) box.textContent = "";
 });
 on("#m-port", "change", () => { if (wizStep === 3) showHostFingerprint(); });
+on("#m-transport", "change", () => {
+  syncTransportFields();
+  if (wizStep === 3) showHostFingerprint();
+});
 
 on("#d-scan", "click", async (e) => {
   const btn = e.currentTarget;
   const res = $("#d-results");
-  btn.disabled = true; btn.textContent = "scanning… (~1 min)";
-  res.innerHTML = '<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Pinging subnet, sweeping for SSH port, grabbing banners…</p>';
+  const peerMode = true;
+  btn.disabled = true; btn.textContent = peerMode ? "discovering agents…" : "scanning… (~1 min)";
+  res.innerHTML = peerMode
+    ? '<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Listening for peer agents on UDP 8199…</p>'
+    : '<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Pinging subnet, sweeping for SSH port, grabbing banners…</p>';
   let scanned = false;
   try {
     const r = await api("POST", "/api/discover", {
-      subnet: $("#d-subnet").value,
-      port: parseInt($("#d-port").value, 10) || 22,
-      username: $("#m-username").value.trim(),
-      password: $("#m-password").value,
-      ping: true,
+      agent_only: true,
+      include_known: true,
     });
     r.results.forEach(h => DISCOVERED[h.ip] = h);
     $("#discovered-ips").innerHTML = r.results.map(h => `<option value="${escHtml(h.ip)}">`).join("");
     scanned = true;
     if (!r.results.length) {
-      res.innerHTML = `<p class="hint">Nothing identifiable on ${escHtml(r.subnet)} — ${r.alive || 0} alive, ${r.ssh_hosts || 0} with SSH port ${r.port}${r.unknown ? `, ${r.unknown} without a recognizable banner (hidden)` : ""}.</p>`;
+      res.innerHTML = peerMode
+        ? '<p class="hint">No peer agents answered on UDP 8199. Make sure the agent service is running and discovery is enabled.</p>'
+        : `<p class="hint">Nothing identifiable on ${escHtml(r.subnet)} — ${r.alive || 0} alive, ${r.ssh_hosts || 0} with SSH port ${r.port}${r.unknown ? `, ${r.unknown} without a recognizable banner (hidden)` : ""}.</p>`;
     } else {
-      res.innerHTML = `<p class="hint">${escHtml(r.subnet)}: ${r.alive} alive, ${r.ssh_hosts} with SSH port ${r.port} — ${r.results.length} candidate(s)${r.unknown ? `, ${r.unknown} unknown hidden` : ""}. Click a row to select it, then Continue — or Select → to jump straight to Configure.</p>` +
-        '<table><thead><tr><th>IP</th><th>Ping</th><th>SSH</th><th>OS (banner)</th><th>Hostname</th><th>GPUs</th><th></th></tr></thead><tbody></tbody></table>';
+      if (peerMode) {
+        res.innerHTML = `<p class="hint">${r.results.length} peer agent(s) found. Click a row to select it, then Continue — or Select → to jump straight to Configure.</p>` +
+          '<table><thead><tr><th>IP</th><th>Hostname</th><th>OS</th><th>Agent</th><th></th></tr></thead><tbody></tbody></table>';
+      } else {
+        res.innerHTML = `<p class="hint">${escHtml(r.subnet)}: ${r.alive} alive, ${r.ssh_hosts} with SSH port ${r.port} — ${r.results.length} candidate(s)${r.unknown ? `, ${r.unknown} unknown hidden` : ""}. Click a row to select it, then Continue — or Select → to jump straight to Configure.</p>` +
+          '<table><thead><tr><th>IP</th><th>Ping</th><th>SSH</th><th>OS (banner)</th><th>Hostname</th><th>GPUs</th><th></th></tr></thead><tbody></tbody></table>';
+      }
       const tbody = res.querySelector("tbody");
       for (const h of r.results) {
         const tr = document.createElement("tr");
@@ -2052,16 +2334,15 @@ on("#d-scan", "click", async (e) => {
         const osTxt = h.os
           ? `${osIcon(h.os)}${escHtml(h.os)}${h.banner ? ` <small class="hint" title="${escHtml(h.banner)}">${escHtml(h.banner.split("$").pop() || "")}</small>` : ""}`
           : '<span class="status-warn">unknown</span>';
-        tr.innerHTML = `
-          <td>${escHtml(h.ip)}</td>
-          <td>${pingTxt}</td>
-          <td>${sshTxt}</td>
-          <td>${osTxt}</td>
-          <td>${escHtml(h.hostname || "-")}</td>
-          <td>${escHtml((h.gpus || []).join(", ") || "-")}</td>
-          <td>${h.already_added
-            ? '<small class="hint">already added</small>'
-            : (h.os ? `<button type="button" class="small" data-act="add">Select →</button>` : "")}</td>`;
+        const addCell = h.already_added
+          ? '<small class="hint">already added</small>'
+          : (h.os ? `<button type="button" class="small" data-act="add">Select →</button>` : "");
+        const agentTxt = h.agent
+          ? `<span class="status-ok"><i class="fa-solid fa-plug"></i> ${escHtml(h.agent_version || "agent")}:${h.agent_port || 8198}</span>`
+          : "—";
+        tr.innerHTML = peerMode
+          ? `<td>${escHtml(h.ip)}</td><td>${escHtml(h.hostname || "-")}</td><td>${osTxt}</td><td>${agentTxt}</td><td>${addCell}</td>`
+          : `<td>${escHtml(h.ip)}</td><td>${pingTxt}</td><td>${sshTxt}</td><td>${osTxt}</td><td>${escHtml(h.hostname || "-")}</td><td>${escHtml((h.gpus || []).join(", ") || "-")}</td><td>${addCell}</td>`;
         const addBtn = tr.querySelector('[data-act="add"]');
         if (addBtn) addBtn.onclick = () => { wizSelection = h.ip; discoveredFill(h); };
         // clicking the row selects it (Continue uses the selection)
@@ -2105,7 +2386,9 @@ on("#m-ip", "change", () => {
   if (!$("#m-name").value.trim()) $("#m-name").value = h.hostname || h.ip.replace(/\./g, "-");
   if (h.os) $("#m-os").value = h.os;
   if (h.gpu_vendor) $("#m-gpu-vendor").value = h.gpu_vendor;
-  $("#m-port").value = h.port || 22;
+  $("#m-port").value = 1;
+  $("#m-transport").value = "agent";
+  if (h.agent_port) $("#m-agent-port").value = h.agent_port;
   if ((h.gpus || []).length && !$("#m-gpu").value.trim())
     $("#m-gpu").value = h.gpus.map((g, i) => `${gpuPrefix(h.gpu_vendor)}${i}`).join(",");
 });
@@ -2118,12 +2401,14 @@ on("#m-detect-form", "click", async (e) => {
   try {
     const m = await api("POST", "/api/machines/probe", {
       ip,
-      username: $("#m-username").value.trim() || "zazi",
-      password: $("#m-password").value,
-      port: parseInt($("#m-port").value, 10) || 22,
       os: $("#m-os").value,
+      gpu_vendor: $("#m-gpu-vendor").value,
       rpc_port: parseInt($("#m-rpc-port").value, 10) || 50052,
+      agent_port: parseInt($("#m-agent-port").value, 10) || 8198,
+      agent_token: $("#m-agent-token").value,
+      name: $("#m-name").value.trim(),
     });
+    if (m.gpu_vendor) $("#m-gpu-vendor").value = m.gpu_vendor;
     $("#m-gpu").value = m.gpu || "";
     $("#m-ram").value = m.ram_total_gb || "";
     $("#m-expose-gpus").placeholder = m.gpu ? `available: ${m.gpu}` : "all (not detected)";
@@ -2161,13 +2446,7 @@ function grpRenderReview(){
   const desc = $("#g-description").value.trim();
   const machines = readGroupMachines();
   const chips = machines.map(m => `<span class="sg-member-chip"><i class="fa-solid fa-server" style="color:var(--accent)"></i>${escHtml(m)}</span>`).join("");
-  // DEC-17: engine-appropriate group vocabulary — under vllm a machine
-  // group is not an RPC peer cluster, so "deploy across machines" hides
-  // (hidden-not-translated; same manifestHasSection idiom as DEC-16).
-  const grpVllmReview = manifestHasSection("vllm_section");
-  const behaviorLine = grpVllmReview
-    ? `<span>${machines.length} machine(s)</span>`
-    : `<span>${machines.length} machine(s) — models assigned to this group deploy across them</span>`;
+  const behaviorLine = `<span>${machines.length} machine(s) — models assigned to this group deploy across them</span>`;
   box.innerHTML = `
     <div class="sg-group-title" style="margin-bottom:6px"><i class="fa-solid fa-layer-group" style="color:var(--accent)"></i> ${escHtml(name || "(unnamed)")}</div>
     ${desc ? `<div class="sg-group-desc">${escHtml(desc)}</div>` : ""}
@@ -2284,11 +2563,8 @@ async function loadGroups() {
       cell.innerHTML = '<span class="hint">checking…</span>';
       try {
         const st = await api("GET", `/api/groups/${encodeURIComponent(g.name)}/status`);
-        // DEC-16: engine-correct group status line — RPC up/down is
-        // llama.cpp-only vocabulary; under vllm show reachable only.
-        const grpVllm = manifestHasSection("vllm_section");
         cell.innerHTML = st.map(s =>
-          `<span class="${s.reachable && (grpVllm || s.rpc_running) ? "status-ok" : "status-warn"}">${escHtml(s.name)}: ${s.reachable ? "online" : "offline"}${grpVllm ? "" : `, rpc ${s.rpc_running ? "up" : "down"}`}</span>`).join(" · ");
+          `<span class="${s.reachable && s.rpc_running ? "status-ok" : "status-warn"}">${escHtml(s.name)}: ${s.reachable ? "online" : "offline"}, rpc ${s.rpc_running ? "up" : "down"}</span>`).join(" · ");
       } catch (err) { cell.innerHTML = `<span class="status-bad">${escHtml(err.message)}</span>`; }
       btn.disabled = false; btn.textContent = "Status";
     };
@@ -2306,53 +2582,20 @@ async function loadGroups() {
   }
 }
 
-// Engine-aware machine chips (B8 + B14): machines the vLLM engine cannot
-// use are greyed out in vllm mode. Capability comes from the BACKEND
-// payload (vllm_capable / vllm_capability_reason / vllm_capability_info,
-// HW-PARITY audit §3b — windows/macos/intel/cpu) — the client must NOT
-// re-derive os/gpu_vendor rules (B8's old client-side isWindows check
-// could drift from the server's decision). Capable-but-caveated hosts
-// (ROCm wheels, unknown gpu_vendor) stay checkable and show an info note.
-
 async function renderGroupMachines(selected) {
   const chipList = $("#g-machines-chip-list");
   if (!chipList) return;
   let machines = [];
   try { machines = await api("GET", "/api/machines"); }
   catch (_) { chipList.innerHTML = '<span class="status-bad">machines unavailable</span>'; return; }
-  const settings = await getAppSettings();
-  const isVllm = (settings && settings.engine) === "vllm";
   const chosen = new Set(selected || []);
   chipList.innerHTML = machines.map(mac => {
-    // B14: consume the server's hardware verdict — no client-side re-derivation
-    const capable = mac.vllm_capable !== false;
-    const reason = mac.vllm_capability_reason || "vLLM is not usable on this host";
-    const info = mac.vllm_capability_info || "";
-    const disabled = isVllm && !capable;
-    const chipClass = `hw-chip${mac.role === "master" ? " ram-chip" : ""}${disabled ? " vllm-disabled" : ""}`;
-    // info tooltip = proper in-chip info section (platform + why + what to
-    // use instead), not just title text
-    const tooltip = disabled
-      ? `<span class="vllm-capability-info" role="note">`
-          + `<span class="vllm-cap-platform">${escHtml((mac.os || "linux").toLowerCase())}</span>`
-          + ` — ${escHtml(reason)}`
-          + ` <span class="vllm-cap-alt">Use the llama.cpp engine for this machine.</span>`
-          + `</span>`
-      : "";
-    const warnNote = (!disabled && isVllm && info)
-      ? `<span class="chip-sub" style="color:var(--warn)"> · ${escHtml(info)}</span>`
-      : "";
-    const disabledSub = disabled
-      ? `<span class="chip-sub" style="color:var(--warn)"> · ${escHtml((mac.os || "linux").toLowerCase())} — ${escHtml(reason)}</span>`
-      : "";
-    return `<label class="${chipClass}"${disabled ? ` title="${escHtml(reason)}"` : ""}>
-      <input type="checkbox" value="${escHtml(mac.name)}" ${disabled ? "disabled" : ""} ${chosen.has(mac.name) ? "checked" : ""}>
+    const chipClass = `hw-chip${mac.role === "master" ? " ram-chip" : ""}`;
+    return `<label class="${chipClass}">
+      <input type="checkbox" value="${escHtml(mac.name)}" ${chosen.has(mac.name) ? "checked" : ""}>
       <i class="fa-solid fa-server chip-icon"></i>
       <span class="chip-name">${escHtml(mac.name)}${mac.role === "master" ? ' <span class="badge badge-master">master</span>' : ""}</span>
       <span class="chip-sub">${escHtml(mac.ip)} · ${((mac.detected || {}).gpu_names || []).length || "?"} GPU</span>
-      ${disabledSub}
-      ${warnNote}
-      ${tooltip}
     </label>`;
   }).join("");
 }
@@ -2933,56 +3176,11 @@ function modelFormLoad(m, isEdit) {
   $("#flags-container").innerHTML = "";
   for (const [k, v] of Object.entries(m.flags || {})) addFlagRow(k, v);
   $("#flags-text").value = flagsToText(m.flags || {});
-  // per-model vllm section (schema-valid keys only). A NEW model under
-  // the vllm engine pre-fills the live-validated farm defaults (fp32,
-  // eager, tool-calling, 32k len, pp layout) — mirrors the backend's
-  // save-time fill so the editor and the emitted script can't drift,
-  // and every value stays individually editable.
-  const mv = (m.vllm && Object.keys(m.vllm).length)
-    ? m.vllm
-    : (!m.model_id && (appSettings?.engine === "vllm")
-       ? (appSettings.ui_manifest?.vllm_new_model_defaults || {}) : {});
-  $("#mo-vllm-max-model-len").value = mv.max_model_len ?? "";
-  $("#mo-vllm-max-num-seqs").value = mv.max_num_seqs ?? "";
-  $("#mo-vllm-tp").value = mv.tensor_parallel_size ?? "";
-  $("#mo-vllm-pp").value = mv.pipeline_parallel_size ?? "";
-  // A2: per-model gmu override; empty = settings default (shown as
-  // placeholder so the effective value is visible without being stored)
-  const gmInp = $("#mo-vllm-gmu");
-  if (gmInp) {
-    gmInp.value = mv.gpu_memory_utilization ?? "";
-    const dflt = (appSettings && typeof appSettings.vllm?.default_gpu_memory_utilization === "number")
-      ? appSettings.vllm.default_gpu_memory_utilization : 0.9;
-    gmInp.placeholder = `default ${dflt}`;
-  }
-  $("#mo-vllm-kv").value = mv.kv_cache_dtype || "";
-  $("#mo-vllm-cpu-offload").value = mv.cpu_offload_gb ?? "";
-  $("#mo-vllm-quant").value = mv.quantization || "";
-  $("#mo-vllm-dtype").value = mv.dtype || "";
-  // eager/tools are hw-chip toggles (llama.cpp flash-attn pattern):
-  // default ON unless explicitly stored false — matches the launch
-  // default, so editor and emitted script never drift
-  const eg = $("#mo-vllm-eager");
-  if (eg) { eg.checked = mv.enforce_eager !== false; syncToggleChip("chip-vllm-eager", "mo-vllm-eager"); }
-  const tcol = $("#mo-vllm-tools");
-  if (tcol) { tcol.checked = mv.enable_auto_tool_choice !== false; syncToggleChip("chip-vllm-tools", "mo-vllm-tools"); }
-  const tpr = $("#mo-vllm-tool-parser");
-  if (tpr) tpr.value = mv.tool_call_parser || "";
-  const lay = $("#mo-vllm-layout");
-  if (lay) { lay.value = mv.parallel_layout || "pp"; syncVllmLayoutChips(); }
-  $("#mo-vllm-tokenizer").value = mv.tokenizer || "";
-  $("#mo-vllm-extra-args").value = (mv.extra_args || []).join(", ");
-  const reEnv = $("#mo-vllm-ray-env");
-  if (reEnv) {
-    const pairs = Object.entries(mv.ray_env || {})
-      .map(([k, v]) => `${k}=${v}`);
-    reEnv.value = pairs.join("\n");
-  }
   $("#model-cancel").hidden = !editing;
   // Advanced is always open by default (wizard decision) — no collapsing logic
   const adv = $("#mo-advanced");
   if (adv) adv.open = true;
-  try{ syncTensorChips(); syncOrderChips(); syncVllmLayoutChips(); syncToggleChip("chip-pinned","mo-pinned"); syncToggleChip("chip-flash-attn","flag-flash-attn"); syncToggleChip("chip-jinja","flag-jinja"); syncToggleChip("chip-vllm-eager","mo-vllm-eager"); syncToggleChip("chip-vllm-tools","mo-vllm-tools"); }catch(_){}
+  try{ syncTensorChips(); syncOrderChips(); syncToggleChip("chip-pinned","mo-pinned"); syncToggleChip("chip-flash-attn","flag-flash-attn"); syncToggleChip("chip-jinja","flag-jinja"); }catch(_){}
   updateAdvancedBadge();
   // variants
   renderVariants(m.variants || []);
@@ -3093,145 +3291,20 @@ function refreshVariantSummary(card){
   if (d.group) parts.push(`group: ${d.group}`);
   if (d.tensor_split_mode) parts.push(`split: ${d.tensor_split_mode}${d.tensor_split ? ` (${d.tensor_split})` : ""}`);
   const f = d.flags || {};
-  // DEC-10 (T4-G1): summary follows the active engine's vocabulary —
-  // under vllm the llama.cpp flags never render; the engine's own
-  // `vllm:` overrides do
-  if (manifestHiddenPanels().includes("tensor_split")) {
-    const v = d.vllm || {};
-    if (v.tensor_parallel_size) parts.push(`TP ${v.tensor_parallel_size}`);
-    if (v.pipeline_parallel_size) parts.push(`PP ${v.pipeline_parallel_size}`);
-    if (v.max_model_len) parts.push(`max-len ${v.max_model_len}`);
-    if (v.kv_cache_dtype) parts.push(`kv ${v.kv_cache_dtype}`);
-    if (v.gpu_memory_utilization) parts.push(`gmu ${v.gpu_memory_utilization}`);
-    if (v.cpu_offload_gb) parts.push(`offload ${v.cpu_offload_gb}G`);
-    if (v.quantization) parts.push(`quant ${v.quantization}`);
-    if ((v.extra_args || []).length) parts.push(`${v.extra_args.length} extra`);
-  } else {
-    if (f["ctx-size"] || f["c"]) parts.push(`ctx: ${f["ctx-size"] || f["c"]}`);
-    if (f["flash-attn"]) parts.push("flash");
-    if (f["jinja"]) parts.push("jinja");
-  }
+  if (f["ctx-size"] || f["c"]) parts.push(`ctx: ${f["ctx-size"] || f["c"]}`);
+  if (f["flash-attn"]) parts.push("flash");
+  if (f["jinja"]) parts.push("jinja");
   if (d.pinned) parts.push("pinned");
   sub.textContent = parts.length ? parts.join(" · ") : "no overrides — inherits primary";
 }
 /* ---- variant modal wizard (separate from the primary model wizard) ---- */
 let variantModalCard = null;
-/* DEC-10 (T4-G1): gate the modal per the active engine's manifest. When
-   the engine hides the tensor_split panel (vllm), the llama.cpp blocks
-   (device order / tensor placement / llama bin / flags override) hide
-   and the engine's own v-vllm override card shows. Hidden-not-
-   translated: nothing is converted, the fields simply are not that
-   engine's vocabulary. */
-function applyVariantModalEngineGate(modal){
-  const lcppHidden = manifestHiddenPanels().includes("tensor_split");
-  modal.querySelectorAll("[data-variant-lcpp]").forEach(el => { el.hidden = lcppHidden; });
-  const vllmCard = modal.querySelector("[data-variant-vllm]");
-  if (vllmCard) vllmCard.hidden = !lcppHidden;
-  return lcppHidden;
-}
-/* read the modal's v-vllm override inputs into a `vllm:` section dict
-   (empty-string fields are omitted → inherit the primary's values).
-   Mirrors the primary's #mo-vllm-* save path field-for-field. */
-function readVariantVllm(modal){
-  const sec = {};
-  const numOr = (cls) => {
-    const t = (modal.querySelector("." + cls)?.value || "").trim();
-    if (t === "") return null;
-    const n = parseInt(t, 10);
-    return Number.isFinite(n) ? n : null;
-  };
-  for (const [key, cls] of [
-    ["max_model_len", "v-vllm-max-model-len"],
-    ["max_num_seqs", "v-vllm-max-num-seqs"],
-    ["tensor_parallel_size", "v-vllm-tp"],
-    ["pipeline_parallel_size", "v-vllm-pp"],
-    ["cpu_offload_gb", "v-vllm-cpu-offload"],
-  ]) {
-    const n = numOr(cls);
-    if (n !== null) sec[key] = n;
-  }
-  // gmu is a float override (0–1); out-of-range input is dropped (same
-  // rule as the primary's #mo-vllm-gmu)
-  const gRaw = (modal.querySelector(".v-vllm-gmu")?.value || "").trim();
-  if (gRaw !== "") {
-    const g = parseFloat(gRaw);
-    if (Number.isFinite(g) && g > 0 && g <= 1) sec.gpu_memory_utilization = g;
-  }
-  const kv = (modal.querySelector(".v-vllm-kv")?.value || "").trim();
-  if (kv) sec.kv_cache_dtype = kv;
-  const quant = (modal.querySelector(".v-vllm-quant")?.value || "").trim();
-  if (quant) sec.quantization = quant;
-  const lay = (modal.querySelector(".v-vllm-layout")?.value || "").trim();
-  if (lay) sec.parallel_layout = lay;
-  const dt = (modal.querySelector(".v-vllm-dtype")?.value || "").trim();
-  if (dt) sec.dtype = dt;
-  const eg = modal.querySelector(".v-vllm-eager");
-  if (eg && eg.checked) sec.enforce_eager = true;
-  const tcol = modal.querySelector(".v-vllm-tools");
-  if (tcol && !tcol.checked) sec.enable_auto_tool_choice = false;
-  const tpr = (modal.querySelector(".v-vllm-tool-parser")?.value || "").trim();
-  if (tpr) sec.tool_call_parser = tpr;
-  const tokz = (modal.querySelector(".v-vllm-tokenizer")?.value || "").trim();
-  if (tokz) sec.tokenizer = tokz;
-  // ray_env: same KEY=VALUE parsing as the primary's field
-  const reTxt = (modal.querySelector(".v-vllm-ray-env")?.value || "").trim();
-  if (reTxt) {
-    const env = {};
-    reTxt.split(/[\n,]/).map(x => x.trim()).filter(Boolean).forEach(pair => {
-      const i = pair.indexOf("=");
-      if (i < 1) return;
-      const k = pair.slice(0, i).trim();
-      const raw = pair.slice(i + 1).trim();
-      if (!k) return;
-      if (raw === "false") env[k] = false;
-      else if (raw === "true") env[k] = true;
-      else env[k] = raw;
-    });
-    if (Object.keys(env).length) sec.ray_env = env;
-  }
-  const extra = (modal.querySelector(".v-vllm-extra-args")?.value || "")
-    .split(/[\n,]/).map(x => x.trim()).filter(Boolean);
-  if (extra.length) sec.extra_args = extra;
-  return Object.keys(sec).length ? sec : null;
-}
 function openVariantModal(card){
   variantModalCard = card;
   const modal = $("#variant-modal");
   if (!modal) return;
   const d = card._data || {};
   const f = d.flags || {};
-  // DEC-10 (T4-G1): gate the modal to the active engine's vocabulary,
-  // then load the engine's own override fields (below)
-  const lcppHidden = applyVariantModalEngineGate(modal);
-  // vLLM per-variant overrides: prefill from the variant's existing
-  // `vllm:` section (blank = inherit the primary's values)
-  const vSec = d.vllm || {};
-  const vSet = (cls, val) => { const el = modal.querySelector("." + cls); if (el) el.value = val == null ? "" : String(val); };
-  vSet("v-vllm-max-model-len", vSec.max_model_len);
-  vSet("v-vllm-max-num-seqs", vSec.max_num_seqs);
-  vSet("v-vllm-tp", vSec.tensor_parallel_size);
-  vSet("v-vllm-pp", vSec.pipeline_parallel_size);
-  vSet("v-vllm-gmu", vSec.gpu_memory_utilization);
-  vSet("v-vllm-kv", vSec.kv_cache_dtype);
-  vSet("v-vllm-quant", vSec.quantization);
-  vSet("v-vllm-tokenizer", vSec.tokenizer);
-  const vLay = modal.querySelector(".v-vllm-layout");
-  if (vLay) vLay.value = vSec.parallel_layout || "";
-  const vDt = modal.querySelector(".v-vllm-dtype");
-  if (vDt) vDt.value = vSec.dtype || "";
-  const vEg = modal.querySelector(".v-vllm-eager");
-  if (vEg) vEg.checked = vSec.enforce_eager === true;
-  const vTcol = modal.querySelector(".v-vllm-tools");
-  if (vTcol) vTcol.checked = vSec.enable_auto_tool_choice !== false;
-  const vTpr = modal.querySelector(".v-vllm-tool-parser");
-  if (vTpr) vTpr.value = vSec.tool_call_parser || "";
-  const vRe = modal.querySelector(".v-vllm-ray-env");
-  if (vRe) {
-    vRe.value = Object.entries(vSec.ray_env || {})
-      .map(([k, val]) => `${k}=${val}`).join("\n");
-  }
-  const vExtraEl = modal.querySelector(".v-vllm-extra-args");
-  if (vExtraEl) vExtraEl.value = (vSec.extra_args || []).join(", ");
   // label
   $("#variant-modal .v-label").value = d.label || "";
   // group
@@ -3401,12 +3474,6 @@ function variantModalSave(){
   const vCacheK = modal.querySelector(".v-cache-k").value || "";
   const vCacheV = modal.querySelector(".v-cache-v").value || "";
   const vExtraText = modal.querySelector(".v-flags-text").value || "";
-  // DEC-10 (T4-G1): vLLM per-variant overrides — read the engine's own
-  // card. When the llama.cpp surface is hidden (vllm), the llama.cpp
-  // vocab keys are stripped from the payload instead of saved from
-  // hidden inputs (device-order policy / tensor placement / llama bin /
-  // flags are not this engine's fields — hidden-not-translated).
-  const vllmOverride = readVariantVllm(modal);
   let vFlags = null;
   const hasFlagOverride = vCtx || vFlash || vJinja || vCacheK || vCacheV || vExtraText.trim();
   if (hasFlagOverride) {
@@ -3436,25 +3503,19 @@ function variantModalSave(){
       if (!Object.keys(vFlags).length) vFlags = null;
     } catch (_) {}
   }
-  const lcppHidden = manifestHiddenPanels().includes("tensor_split");
   variantModalCard._data = {
     label,
     servers: Array.from(machineNames),
-    device_order: (lcppHidden ? null : (deviceOrder || null)),
-    device_order_policy: lcppHidden ? null : (vOrder || null),
+    device_order: (deviceOrder || null),
+    device_order_policy: vOrder || null,
     expose: Object.keys(exposeUpdates).length ? exposeUpdates : null,
     group: vGroup || null,
-    tensor_split_mode: lcppHidden ? null : (vTensorMode || null),
-    tensor_split: lcppHidden ? null : (vTensorSplit || null),
-    fit_margin: lcppHidden ? null : (vFitMargin ? parseInt(vFitMargin,10) : null),
-    fit_ram_allow: lcppHidden ? null : (vFitRam ? parseInt(vFitRam,10) : null),
-    llama_bin: lcppHidden ? null : (vLlamaBin || null),
-    flags: lcppHidden ? null : vFlags,
-    // DEC-10 (T4-G1/A2): per-variant vllm overrides — saved from the
-    // engine's own card (readVariantVllm); backend shallow-merges over
-    // the primary's `vllm:` section (same partial-override semantics as
-    // the flags merge in swap_manager).
-    vllm: lcppHidden ? vllmOverride : ((variantModalCard._data || {}).vllm || null),
+    tensor_split_mode: vTensorMode || null,
+    tensor_split: vTensorSplit || null,
+    fit_margin: vFitMargin ? parseInt(vFitMargin,10) : null,
+    fit_ram_allow: vFitRam ? parseInt(vFitRam,10) : null,
+    llama_bin: vLlamaBin || null,
+    flags: vFlags,
     pinned: vPinned ? true : null,
     ttl: vTtl ? parseInt(vTtl,10) : null
   };
@@ -3486,12 +3547,10 @@ function syncVariantModalChips(){
   modal.querySelectorAll(".v-chips-tensor-mode .hw-chip").forEach(b=> b.classList.toggle("active", b.dataset.value===tVal));
   const oVal = modal.querySelector(".v-order-policy").value || "";
   modal.querySelectorAll(".v-chips-order .hw-chip").forEach(b=> b.classList.toggle("active", b.dataset.value===oVal));
-  [[".v-chip-flash",".v-flash"],[".v-chip-jinja",".v-jinja"],[".v-chip-pinned",".v-pinned"],[".v-chip-vllm-eager",".v-vllm-eager"],[".v-chip-vllm-tools",".v-vllm-tools"]].forEach(([chipSel,inpSel])=>{
+  [[".v-chip-flash",".v-flash"],[".v-chip-jinja",".v-jinja"],[".v-chip-pinned",".v-pinned"]].forEach(([chipSel,inpSel])=>{
     const chip = modal.querySelector(chipSel), inp = modal.querySelector(inpSel);
     if (chip && inp) { chip.classList.toggle("active", inp.checked); chip.dataset.checked = inp.checked ? "true":"false"; }
   });
-  const layVal = modal.querySelector(".v-vllm-layout")?.value || "";
-  modal.querySelectorAll(".v-chips-vllm-layout .hw-chip").forEach(b=> b.classList.toggle("active", b.dataset.value===layVal));
   applyVariantTensorVisibility();
 }
 function wireVariantModalCtxSync(){
@@ -3579,7 +3638,7 @@ document.querySelectorAll("#variant-modal .v-chips-order .hw-chip").forEach(b =>
     syncVariantModalChips();
   });
 });
-[[".v-chip-flash",".v-flash"],[".v-chip-jinja",".v-jinja"],[".v-chip-pinned",".v-pinned"],[".v-chip-vllm-eager",".v-vllm-eager"],[".v-chip-vllm-tools",".v-vllm-tools"]].forEach(([chipSel,inpSel])=>{
+[[".v-chip-flash",".v-flash"],[".v-chip-jinja",".v-jinja"],[".v-chip-pinned",".v-pinned"]].forEach(([chipSel,inpSel])=>{
   document.querySelectorAll(`#variant-modal ${chipSel}`).forEach(chip => {
     chip.addEventListener("click", () => {
       const modal = $("#variant-modal");
@@ -3588,14 +3647,6 @@ document.querySelectorAll("#variant-modal .v-chips-order .hw-chip").forEach(b =>
       inp.checked = !inp.checked;
       syncVariantModalChips();
     });
-  });
-});
-document.querySelectorAll("#variant-modal .v-chips-vllm-layout .hw-chip").forEach(b => {
-  b.addEventListener("click", () => {
-    const modal = $("#variant-modal");
-    if (!modal) return;
-    modal.querySelector(".v-vllm-layout").value = b.dataset.value;
-    syncVariantModalChips();
   });
 });
 async function renderVariantServers(vData, container){
@@ -3670,9 +3721,6 @@ function collectVariants(){
       fit_ram_allow: d.fit_ram_allow || null,
       llama_bin: d.llama_bin || null,
       flags: d.flags || null,
-      // A2: per-variant vllm overrides round-trip untouched (backend
-      // sanitizes against the same schema as the primary's section)
-      vllm: d.vllm || null,
       pinned: d.pinned ? true : null,
       ttl: d.ttl || null
     });
@@ -3684,25 +3732,7 @@ function updateAdvancedBadge(){
   const badge = $("#mo-advanced-badge");
   if (!badge) return;
   let n = 0;
-  const isVllm = (appSettings?.engine === "vllm");
-  if (isVllm) {
-    // Advanced IS the vLLM card in this engine — count its non-empty
-    // overrides (the llama.cpp counters below tally hidden fields).
-    const ids = ["mo-vllm-max-model-len","mo-vllm-max-num-seqs","mo-vllm-tp",
-                 "mo-vllm-pp","mo-vllm-gmu","mo-vllm-cpu-offload",
-                 "mo-vllm-quant","mo-vllm-tokenizer","mo-vllm-extra-args",
-                 "mo-vllm-ray-env"];
-    for (const id of ids) {
-      const el = document.getElementById(id);
-      if (el && el.value.trim()) n++;
-    }
-    if (!$("#mo-vllm-eager")?.checked) n++;   // eager off = override
-    if (!$("#mo-vllm-tools")?.checked) n++;         // tools off = override
-    if ($("#mo-vllm-layout")?.value !== "pp") n++; // non-default layout
-    if ($("#mo-vllm-dtype")?.value) n++;
-    if ($("#mo-vllm-kv")?.value) n++;
-    if ($("#mo-vllm-tool-parser")?.value) n++;
-  } else {
+
     const mode = $("#mo-tensor-mode")?.value;
     if (mode && mode!=="auto") n++;
     if ($("#mo-fit-margin")?.value && $("#mo-fit-margin").value!="1024") n++;
@@ -3717,7 +3747,6 @@ function updateAdvancedBadge(){
     if ($("#mo-ttl")?.value.trim()) n++;
     const flagCount = document.querySelectorAll("#flags-container .flag-row").length;
     if (flagCount) n+= flagCount;
-  }
   badge.textContent = n ? `(${n})` : "";
 }
 function syncCommonFlagsToRows(){
@@ -3850,7 +3879,6 @@ function upsertFlagTextLine(key, value) {
 // card system for advanced — sync chips <-> hidden inputs (no stock radio/select)
 function syncTensorChips(){ const v=$("#mo-tensor-mode")?.value; document.querySelectorAll("#chips-tensor-mode .hw-chip").forEach(b=>b.classList.toggle("active", b.dataset.value===v)); }
 function syncOrderChips(){ const v=$("#mo-order-policy")?.value; document.querySelectorAll("#chips-order-policy .hw-chip").forEach(b=>b.classList.toggle("active", b.dataset.value===v)); }
-function syncVllmLayoutChips(){ const v=$("#mo-vllm-layout")?.value || "pp"; document.querySelectorAll("#chips-vllm-layout .hw-chip").forEach(b=>b.classList.toggle("active", b.dataset.value===v)); }
 function syncToggleChip(chipId, inputId){
   const chip=document.getElementById(chipId), inp=document.getElementById(inputId);
   if(!chip||!inp) return;
@@ -3865,10 +3893,7 @@ document.querySelectorAll("#chips-order-policy .hw-chip").forEach(b=>{
   b.addEventListener("click", ()=>{ $("#mo-order-policy").value=b.dataset.value; syncOrderChips(); updateAdvancedBadge();
     const cl = $("#mo-servers-chip-list"); if (cl) renderDeviceOrderPreview(cl, cl._machinesData || []); });
 });
-document.querySelectorAll("#chips-vllm-layout .hw-chip").forEach(b=>{
-  b.addEventListener("click", ()=>{ $("#mo-vllm-layout").value=b.dataset.value; syncVllmLayoutChips(); updateAdvancedBadge(); });
-});
-for(const [chipId,inputId] of [["chip-pinned","mo-pinned"],["chip-flash-attn","flag-flash-attn"],["chip-jinja","flag-jinja"],["chip-vllm-eager","mo-vllm-eager"],["chip-vllm-tools","mo-vllm-tools"]]){
+for(const [chipId,inputId] of [["chip-pinned","mo-pinned"],["chip-flash-attn","flag-flash-attn"],["chip-jinja","flag-jinja"]]){
   const chip=document.getElementById(chipId), inp=document.getElementById(inputId);
   if(!chip||!inp) continue;
   chip.addEventListener("click", ()=>{
@@ -3888,7 +3913,7 @@ function syncAllHwChips(){
   });
   // also sync the new card chips for tensor/device/pinned
   try{ syncTensorChips(); syncOrderChips(); }catch(_){}
-  try{ syncToggleChip("chip-pinned","mo-pinned"); syncToggleChip("chip-flash-attn","flag-flash-attn"); syncToggleChip("chip-jinja","flag-jinja"); syncToggleChip("chip-vllm-eager","mo-vllm-eager"); syncToggleChip("chip-vllm-tools","mo-vllm-tools"); }catch(_){}
+  try{ syncToggleChip("chip-pinned","mo-pinned"); syncToggleChip("chip-flash-attn","flag-flash-attn"); syncToggleChip("chip-jinja","flag-jinja"); }catch(_){}
 }
 document.addEventListener('change', (e)=>{
   if(e.target.matches('.hw-chip input, .server-chip input, .ram-chip input')){
@@ -3930,7 +3955,7 @@ async function applyPreset(kind){
     $("#flag-cache-k").value="q8_0"; $("#flag-cache-v").value="q8_0";
     syncCommonFlagsToRows();
   }
-  try{ syncTensorChips(); syncOrderChips(); syncVllmLayoutChips(); syncToggleChip("chip-pinned","mo-pinned"); syncToggleChip("chip-flash-attn","flag-flash-attn"); syncToggleChip("chip-jinja","flag-jinja"); syncToggleChip("chip-vllm-eager","mo-vllm-eager"); syncToggleChip("chip-vllm-tools","mo-vllm-tools"); }catch(_){}
+  try{ syncTensorChips(); syncOrderChips(); syncToggleChip("chip-pinned","mo-pinned"); syncToggleChip("chip-flash-attn","flag-flash-attn"); syncToggleChip("chip-jinja","flag-jinja"); }catch(_){}
   updateAdvancedBadge();
   toast(`Preset ${kind} applied`, "ok");
 }
@@ -4066,92 +4091,6 @@ async function saveModelForm(btn, skipArm = false) {
     if ($("#mo-custom-vision")?.checked) data.custom.vision = true;
   } else {
     data.custom = null;
-  }
-  // DEC-10 (T4-G2): tensor-placement vocabulary is llama.cpp-only. When
-  // the active engine's manifest hides the tensor_split panel, strip the
-  // keys from the payload so a vllm model can never silently file
-  // device-order policy the swap config ignores (hidden-not-translated —
-  // the values are simply not this engine's fields).
-  if (manifestHiddenPanels().includes("tensor_split")) {
-    data.tensor_split_mode = "auto";
-    data.tensor_split = "";
-    data.fit_margin = 1024;
-    data.fit_ram_allow = 1024;
-    data.device_order = "";
-    data.device_order_policy = "as-selected";
-    data.expose = {};
-  }
-  // per-model vllm section — only when the active engine is vllm; empty
-  // fields are omitted so no-op keys never reach the config file
-  if ((appSettings && appSettings.engine) === "vllm") {
-    const numOr = (id) => {
-      const t = ($(id)?.value || "").trim();
-      if (t === "") return null;
-      const n = parseInt(t, 10);
-      return Number.isFinite(n) ? n : null;
-    };
-    const sec = {};
-    for (const [key, id] of [
-      ["max_model_len", "#mo-vllm-max-model-len"],
-      ["max_num_seqs", "#mo-vllm-max-num-seqs"],
-      ["tensor_parallel_size", "#mo-vllm-tp"],
-      ["pipeline_parallel_size", "#mo-vllm-pp"],
-      ["cpu_offload_gb", "#mo-vllm-cpu-offload"],
-    ]) {
-      const n = numOr(id);
-      if (n !== null) sec[key] = n;
-    }
-    // A2: gmu is a float override (0–1); empty = inherit the settings
-    // default. Out-of-range input is dropped here — the backend 400s it.
-    const gmRaw = ($("#mo-vllm-gmu")?.value || "").trim();
-    if (gmRaw !== "") {
-      const g = parseFloat(gmRaw);
-      if (Number.isFinite(g) && g > 0 && g <= 1) sec.gpu_memory_utilization = g;
-    }
-    const kv = ($("#mo-vllm-kv")?.value || "").trim();
-    if (kv) sec.kv_cache_dtype = kv;
-    const quant = ($("#mo-vllm-quant")?.value || "").trim();
-    if (quant) sec.quantization = quant;
-    const dt = ($("#mo-vllm-dtype")?.value || "").trim();
-    if (dt && dt !== "auto") sec.dtype = dt;
-    // eager/tools are hw-chip toggles now (default ON): the stored
-    // section carries the explicit bool, matching launch behavior
-    const eg = $("#mo-vllm-eager");
-    if (eg) sec.enforce_eager = eg.checked;
-    // tools: explicit opt-out only... stored as bool either way so the
-    // editor round-trips what it shows
-    const tcol = $("#mo-vllm-tools");
-    if (tcol) sec.enable_auto_tool_choice = tcol.checked;
-    const tpr = $("#mo-vllm-tool-parser");
-    if (tpr && tpr.value) sec.tool_call_parser = tpr.value;
-    // multi-host layout: pp (layer split) is the default — only store an
-    // explicit choice; absent keeps the build-time pp default
-    const lay = $("#mo-vllm-layout");
-    if (lay && lay.value && lay.value !== "pp") sec.parallel_layout = lay.value;
-    const tokz = ($("#mo-vllm-tokenizer")?.value || "").trim();
-    if (tokz) sec.tokenizer = tokz;
-    const extra = ($("#mo-vllm-extra-args")?.value || "")
-      .split(/[\n,]/).map(x => x.trim()).filter(Boolean);
-    if (extra.length) sec.extra_args = extra;
-    // ray_env: KEY=VALUE per line; bare KEY=false (literal) drops the
-    // built-in default. Parsed leniently — the backend sanitizes and
-    // rejects malformed names/shapes with a 400.
-    const reTxt = ($("#mo-vllm-ray-env")?.value || "").trim();
-    if (reTxt) {
-      const env = {};
-      reTxt.split(/[\n,]/).map(x => x.trim()).filter(Boolean).forEach(pair => {
-        const i = pair.indexOf("=");
-        if (i < 1) return;
-        const k = pair.slice(0, i).trim();
-        const raw = pair.slice(i + 1).trim();
-        if (!k) return;
-        if (raw === "false") env[k] = false;
-        else if (raw === "true") env[k] = true;
-        else env[k] = raw;
-      });
-      if (Object.keys(env).length) sec.ray_env = env;
-    }
-    if (Object.keys(sec).length) data.vllm = sec;
   }
   let ok = false;
   try {
@@ -4292,19 +4231,8 @@ async function loadModels() {
       tr.classList.add("scan-model");
       tr.dataset.modelId = m.model_id;
       if (selectedModelId === m.model_id) tr.classList.add("row-selected");
-      const vllmMode = manifestHasSection("vllm_section");
-      // DEC-10 (T4-G4): per-engine row rendering. Under vllm the
-      // llama.cpp columns (servers / tensor-split / llama.cpp flags)
-      // and the Tune button (409s — _refuse_tuner_in_vllm) hide; the
-      // row subtitle shows the engine's own fields instead, same idiom
-      // as modelSubVllm on the launch cards. Under llama.cpp nothing
-      // changes (verbatim columns).
-      const sub1 = vllmMode
-        ? `${escHtml((m.base_path || "").split("/").pop())}${m.group ? ` · group: ${escHtml(m.group)}` : ""} · ${escHtml(modelSubVllm(m))}`
-        : `${escHtml((m.base_path || "").split("/").pop())}${m.group ? ` · group: ${escHtml(m.group)}` : ""} · servers: ${escHtml((m.servers || []).join(", ")) || "-"}${m.pinned ? ' · <span class="badge" style="background:var(--ok-dim);color:var(--ok)">pinned</span>' : ""}`;
-      const sub2 = vllmMode
-        ? `${(m.variants||[]).length ? ` · configs: ${escHtml((m.variants||[]).map(v=>v.label).join(" | "))}` : ""}${m.pinned ? ' · <span class="badge" style="background:var(--ok-dim);color:var(--ok)">pinned</span>' : ""}`
-        : `${escHtml(((m.tensor_split_mode === "manual" ? "fit" : m.tensor_split_mode || "auto")) + " " + Object.entries(m.flags || {}).map(([k, v]) => `${k}=${v}`).join(" ").trim() || "-")}${(m.variants||[]).length ? ` · variants: ${escHtml((m.variants||[]).map(v=>`${v.label}(${(v.servers||[]).join(",")})`).join(" | "))}` : ""}`;
+      const sub1 = `${escHtml((m.base_path || "").split("/").pop())}${m.group ? ` · group: ${escHtml(m.group)}` : ""} · servers: ${escHtml((m.servers || []).join(", ")) || "-"}${m.pinned ? ' · <span class="badge" style="background:var(--ok-dim);color:var(--ok)">pinned</span>' : ""}`;
+      const sub2 = `${escHtml(((m.tensor_split_mode === "manual" ? "fit" : m.tensor_split_mode || "auto")) + " " + Object.entries(m.flags || {}).map(([k, v]) => `${k}=${v}`).join(" ").trim() || "-")}${(m.variants||[]).length ? ` · variants: ${escHtml((m.variants||[]).map(v=>`${v.label}(${(v.servers||[]).join(",")})`).join(" | "))}` : ""}`;
       tr.innerHTML = `
       <div class="scan-main"><div class="scan-title">${modelIconHTML(m.model_id)}${escHtml(m.model_id)} ${(m.variants||[]).length ? `<span class="badge" style="background:var(--accent-dim);color:var(--accent)" title="${escHtml((m.variants||[]).map(v=>v.label).join(", "))}">+${(m.variants||[]).length} configs</span>` : ""}${m.decision_type ? ` <span class="badge" style="background:var(--ok-dim);color:var(--ok)" title="TypeSafe decision model — serves /v1/systemone only (no chat generation)">decision</span>` : ""}</div>
         <small>${sub1}</small>
@@ -4312,7 +4240,7 @@ async function loadModels() {
       <div class="scan-model-actions">
         <button class="small" data-act="edit">Edit</button>
         <button class="small" data-act="check">Check</button>
-        ${vllmMode ? "" : `<button class="small" data-act="tune" title="Auto-tune: ctx, KV, MTP, ubatch — saves fastest >=20 tok/s">Tune</button>`}
+        <button class="small" data-act="tune" title="Auto-tune: ctx, KV, MTP, ubatch — saves fastest >=20 tok/s">Tune</button>
         <button class="small" data-act="pin">${m.pinned ? "Unpin" : "Pin"}</button>
         <button class="small danger" data-act="delfiles">Delete files</button>
         <button class="small danger" data-act="delete">Delete</button>
@@ -4640,19 +4568,6 @@ async function renderModelServers(m) {
     cb.onchange = () => {
       if (cb.checked) selectedHardware.add(cb.value);
       else selectedHardware.delete(cb.value);
-      // vLLM is multi-host now: checking a chip while other machines are
-      // selected just announces the forming cluster. llama.cpp
-      // multi-select is untouched.
-      if (cb.checked && appSettings && appSettings.engine === "vllm") {
-        const keep = parseChip(cb.value).machine;
-        const machinesSet = new Set();
-        chipList.querySelectorAll("input[type=checkbox]").forEach(other => {
-          if (other.checked) machinesSet.add(parseChip(other.value).machine);
-        });
-        if (machinesSet.size > 1) {
-          toast(`multi-host vLLM — ${machinesSet.size} machines will form the tensor-parallel cluster (master: ${keep})`, "info", 8000);
-        }
-      }
       // sync card visual
       const chip = cb.closest('.hw-chip, .ram-chip');
       if (chip) chip.classList.toggle('active', cb.checked);
@@ -4719,16 +4634,9 @@ function engineManifest() {
 /* does the active engine's model_editor surface include `secId`? */
 function manifestHasSection(secId) {
   const secs = ((engineManifest().model_editor || {}).sections) || [];
-  if (secs.some(sec => sec && sec.id === secId)) return true;
-  // engine-name fallback ONLY when no manifest is cached (older backend
-  // / stale cache — same rule as applyEngineHints' ownsVllm)
-  const man = (appSettings || {}).ui_manifest;
-  if (!man || !Object.keys(man).length) {
-    if (secId === "vllm_section") return (appSettings || {}).engine === "vllm";
-  }
-  return false;
+  return secs.some(sec => sec && sec.id === secId);
 }
-/* llama.cpp-only panels the active engine hides (vllm lists them) */
+/* llama.cpp-only panels the active engine hides */
 function manifestHiddenPanels() {
   return engineManifest().hidden_panels || [];
 }
@@ -4743,17 +4651,12 @@ function applyEngineHints(s) {
   // editor sections list) — engine-name fallback only when the manifest
   // itself is missing (stale cache / older backend)
   const sections = ((hints.model_editor || {}).sections) || [];
-  const ownsVllm = sections.some(sec => sec && sec.id === "vllm_section")
-    || (!Object.keys(manifest).length && engine === "vllm");
-  const launchMode = ((hints.launch || {}).mode)
-    || (engine === "vllm" ? "swap_only" : "rpc_cluster");
+  const launchMode = ((hints.launch || {}).mode) || "rpc_cluster";
   const hidden = hints.hidden_panels || [];
   // DEC-12: the Launch tab renders engine-native views from the
   // manifest's launch.mode (the adapter's launch semantics, DEC-06) —
   // no engine-name comparisons. rpc_cluster keeps the llama.cpp copy
-  // (RPC peers + per-model grid); swap_only is vLLM's own view (daemon
-  // launch + HTTP /health prose; the rpc_launch grid hides via
-  // hidden_panels and this view replaces it).
+  // (RPC peers + per-model grid).
   document.querySelectorAll("[data-launch-view]").forEach(el => {
     el.hidden = el.dataset.launchView !== launchMode;
   });
@@ -4792,9 +4695,7 @@ function applyEngineHints(s) {
   });
   // DEC-10 (T4-G3): the model editor's surfaces render FROM the
   // manifest's model_editor.sections — a surface the active engine
-  // doesn't list hides (vllm lists only vllm_section, so the llama.cpp
-  // flags fieldset + common-flags card disappear; hidden-not-
-  // translated). Panels above already gate via hidden_panels.
+  // doesn't list hides. Panels above already gate via hidden_panels.
   const activeSecs = sections.map(sec => sec && sec.id).filter(Boolean);
   if (activeSecs.length) {
     document.querySelectorAll("[data-editor-section]").forEach(el => {
@@ -4827,74 +4728,29 @@ function applyEngineHints(s) {
       });
     }
     // custom-link pane speaks the engine's vocabulary: llama.cpp points
-    // at single .gguf files; vLLM downloads whole HF repos. The copy
-    // (hint + placeholder) and the repo flag follow the manifest.
-    const vllmDl = dlFormats.includes("hf") && !dlFormats.includes("gguf");
+    // at single .gguf files.
     const dlHint = $("#dl-pane-custom p.hint");
-    if (dlHint) dlHint.textContent = vllmDl
-      ? "Paste an hf:// repo link (e.g. hf://Qwen/Qwen3-0.6B — the whole model repo downloads together: config.json + *.safetensors)."
-      : "Paste an hf:// link (e.g. hf://orcarouter/Repo/file.gguf — split models download all shards together). The file streams straight to the store location on disk; the HF cache is bypassed entirely.";
+    if (dlHint) dlHint.textContent = "Paste an hf:// link (e.g. hf://orcarouter/Repo/file.gguf — split models download all shards together). The file streams straight to the store location on disk; the HF cache is bypassed entirely.";
     const dlInput = $("#dl-link");
-    if (dlInput) dlInput.placeholder = vllmDl
-      ? "hf://Qwen/Qwen3-0.6B"
-      : "hf://orcarouter/Qwen3.8-27B-Uncensored-GGUF/Qwen3.8-27B-Uncensored-F16-00001-of-00002.gguf";
+    if (dlInput) dlInput.placeholder = "hf://orcarouter/Qwen3.8-27B-Uncensored-GGUF/Qwen3.8-27B-Uncensored-F16-00001-of-00002.gguf";
   }
   // relabels (server / peers / probe) come from the adapter's labels
   document.querySelectorAll("[data-engine-label]").forEach(el => {
     const lbl = (hints.labels || {})[el.dataset.engineLabel];
     if (lbl) el.textContent = lbl;
   });
-  // FIX-A7 (t_cc420d42): Start All is NOT hidden under vLLM — its backend
-  // (/api/start-all) is engine-aware: it skips the RPC phase and still
-  // launches llama-swap. The old blanket hide of llama.cpp-only controls
-  // is retired; relabel instead so the action reads honestly in each
-  // mode — wording from launch.mode (swap_only = daemon-only start).
   const startAll = $("#start-all");
   if (startAll) {
-    if (launchMode === "swap_only") {
-      startAll.textContent = "Start llama-swap";
-      startAll.title = "Launch the llama-swap daemon (RPC phase skipped — vLLM serves through llama-swap)";
-    } else {
-      startAll.textContent = "Start All";
-      startAll.title = "Start RPC servers on every machine, then llama-swap";
-    }
+    startAll.textContent = "Start All";
+    startAll.title = "Start RPC servers on every machine, then llama-swap";
   }
   const eng = $("#set-engine");
   if (eng) eng.value = engine;
-  // the settings vllm card shows when the manifest lists the engine's
-  // vllm_section editor surface (engine-name fallback for stale caches)
-  const vcard = $("#set-vllm");
-  if (vcard) vcard.hidden = !ownsVllm;
-  const v = s.vllm || {};
-  const del = $("#set-vllm-delivery");
-  if (del) del.value = v.delivery || "venv";
-  const vb = $("#set-vllm-venv-bin");
-  if (vb) vb.value = v.venv_bin || "";
-  const di = $("#set-vllm-docker-image");
-  if (di) di.value = v.docker_image || "";
-  const gmu = (typeof v.default_gpu_memory_utilization === "number")
-    ? v.default_gpu_memory_utilization : 0.9;
-  const slider = $("#set-vllm-gpu-mem");
-  if (slider) {
-    slider.value = gmu;
-    const out = $("#set-vllm-gpu-mem-v");
-    if (out) out.textContent = Number(gmu).toFixed(2);
-  }
-  syncVllmDeliveryRows();
   renderFlagPresets();
 }
 
-function syncVllmDeliveryRows() {
-  const d = ($("#set-vllm-delivery")?.value) || "venv";
-  document.querySelectorAll("[data-vllm-delivery]").forEach(el => {
-    el.hidden = el.dataset.vllmDelivery !== d;
-  });
-}
-
 /* Preset chips in the flags editor, built from ui_manifest.flag_presets.
-   llama.cpp: click adds a generic flag row. vLLM: schema fields fill the
-   per-model vllm card directly; anything else appends to extra args
-   (vLLM's launch command reads extra_args, not the generic flags dict). */
+   llama.cpp: click adds a generic flag row. */
 function renderFlagPresets() {
   const box = $("#flag-presets");
   if (!box) return;
@@ -4916,84 +4772,15 @@ function renderFlagPresets() {
       const p = presets[btn.dataset.preset] || {};
       const flag = String(p.flag || "").replace(/^--/, "");
       if (!flag) return;
-      // route by the manifest's editor surface: an engine whose
-      // model_editor lists vllm_section fills the vllm card; anything
-      // else appends a generic flag row. Engine-name fallback only when
-      // no manifest is cached (older backend — same rule as
-      // applyEngineHints' ownsVllm).
-      const man = (appSettings && appSettings.ui_manifest) || {};
-      const hasManifest = Object.keys(man).length > 0;
-      const secs = ((hasManifest ? man
-        : ((appSettings || {}).ui_hints || {})).model_editor || {}).sections || [];
-      if (secs.some(sec => sec && sec.id === "vllm_section")
-        || (!hasManifest && (appSettings && appSettings.engine) === "vllm"))
-        applyVllmPreset(flag, p);
-      else addFlagRow(flag, "");
+      addFlagRow(flag, "");
     };
   });
 }
 
-function applyVllmPreset(flag, p) {
-  const fieldInputs = {
-    "max-model-len": "#mo-vllm-max-model-len",
-    "max-num-seqs": "#mo-vllm-max-num-seqs",
-    "tensor-parallel-size": "#mo-vllm-tp",
-    "pipeline-parallel-size": "#mo-vllm-pp",
-    "cpu-offload-gb": "#mo-vllm-cpu-offload",
-    "quantization": "#mo-vllm-quant",
-  };
-  const example = String(p.placeholder || "").replace(/^e\.g\.\s*/, "").split(/[,;]/)[0].trim();
-  if (fieldInputs[flag]) {
-    const el = $(fieldInputs[flag]);
-    if (el) { el.value = example; el.focus(); }
-    return;
-  }
-  if (flag === "kv-cache-dtype") {
-    const sel = $("#mo-vllm-kv");
-    if (sel) sel.value = (p.choices || []).find(c => c !== "auto") || (p.choices || [""])[0] || "";
-    return;
-  }
-  const inp = $("#mo-vllm-extra-args");
-  if (!inp) return;
-  const token = p.flag || flag;
-  const have = inp.value.split(/[\n,]/).map(x => x.trim()).filter(Boolean);
-  if (have.includes(token)) return;
-  inp.value = have.length ? have.join(", ") + ", " + token : token;
-}
-
-/* launch-card subtitle under vllm — reads the per-model vllm section.
-   Mirrors the editor's Advanced card field-for-field so the launch page
-   shows the actual configured launch options, not a stale subset. */
-function modelSubVllm(m) {
-  const v = (m && m.vllm) || {};
-  const bits = ["vLLM"];
-  if (v.parallel_layout) bits.push(v.parallel_layout === "pp" ? "PP layer-split" : "TP tensor-split");
-  if (v.max_model_len) bits.push(`max-len ${v.max_model_len}`);
-  if (v.tensor_parallel_size) bits.push(`TP ${v.tensor_parallel_size}`);
-  if (v.pipeline_parallel_size) bits.push(`PP ${v.pipeline_parallel_size}`);
-  if (v.dtype && v.dtype !== "auto") bits.push(v.dtype);
-  if (v.enforce_eager) bits.push("eager");
-  if (v.enable_auto_tool_choice !== false) bits.push("tools");
-  if (v.tool_call_parser && v.tool_call_parser !== "hermes" && v.tool_call_parser !== "auto") bits.push(v.tool_call_parser);
-  if (v.kv_cache_dtype) bits.push(`kv ${v.kv_cache_dtype}`);
-  if (v.gpu_memory_utilization) bits.push(`gmu ${v.gpu_memory_utilization}`);
-  const chips = (m.device_order || "").split(",").map(s => s.trim()).filter(Boolean);
-  if (chips.length) bits.push(chips.join(" "));
-  else if ((m.servers || []).length) bits.push(`servers: ${m.servers.join(",")}`);
-  return bits.join(" · ");
-}
-
 on("#set-engine", "change", () => {
-  const card = $("#set-vllm");
-  if (card) card.hidden = ($("#set-engine")?.value) !== "vllm";
-  // B8: engine switch must re-gate the machine chips (Windows greys out
-  // in vllm mode) — re-render the group wizard list if it's on screen
+  // engine switch must re-gate the machine chips — re-render the group
+  // wizard list if it's on screen
   if (document.querySelector("#g-machines-chip-list")) renderGroupMachines(readGroupMachines());
-});
-on("#set-vllm-delivery", "change", syncVllmDeliveryRows);
-on("#set-vllm-gpu-mem", "input", () => {
-  const out = $("#set-vllm-gpu-mem-v");
-  if (out) out.textContent = Number($("#set-vllm-gpu-mem")?.value).toFixed(2);
 });
 
 /* ---------------- on page load ---------------- */
@@ -5002,7 +4789,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   loadArchPersisted();
   const dashBtn = document.querySelector('nav button[data-tab="dashboard"]');
   if (dashBtn) dashBtn.click();
-  getAppSettings().then(s => { applyEngineHints(s); refreshVllmInstallButton(); }).catch(() => {});
+  getAppSettings().then(s => { applyEngineHints(s); }).catch(() => {});
   // mode-save round-trip: an Access-tab save reloaded us — re-open the
   // tab onto fresh data so the operator lands where they were working
   try {
@@ -5438,10 +5225,10 @@ async function loadSwap() {
   };
   $("#swap-stop").onclick = async (e) => {
     const btn = e.target;
-    btn.disabled = true; btn.textContent = "stopping…";
+    btn.disabled = true; btn.textContent = "evicting…";
     try { await api("POST", "/api/swap/stop", {}); loadSwap(); }
     catch (err) { toast(err.message, "bad"); }
-    btn.disabled = false; btn.textContent = "Stop";
+    btn.disabled = false; btn.textContent = "Evict";
   };
   /* UX-3: the swap-install button is retired (bootstrap.py owns installs);
      the hidden button has no handler — nothing to do here anymore. */
@@ -5449,16 +5236,14 @@ async function loadSwap() {
 
 async function loadLaunch() {
   loadSwap();
-  const [models, machines, active] = await Promise.all([
-    api("GET", "/api/models"), api("GET", "/api/machines"), api("GET", "/api/launch/active"),
+  const [models, machines, swapLoaded, embModels] = await Promise.all([
+    api("GET", "/api/models"), api("GET", "/api/machines"),
+    api("GET", "/api/swap/loaded").catch(() => ({ loaded: [] })),
+    api("GET", "/api/embeddings/models").catch(() => []),
   ]);
-  // vLLM mode: per-model launch cards (configured options + Load/Evict)
-  // live in #vllm-launch-view — the llama.cpp RPC grid below stays hidden
-  // via the rpc_launch panel gate. Same card idiom, vLLM vocabulary.
-  if ((appSettings && appSettings.engine) === "vllm") {
-    loadVllmLaunchCards(models, machines).catch(err =>
-      console.error("[ui] vllm launch cards failed:", err));
-  }
+  const loadedSet = new Set((swapLoaded && swapLoaded.loaded) || []);
+  const embSet = new Set((embModels || []).map(m => m.model_id));
+  const decSet = new Set(models.filter(m => m.decision_type).map(m => m.model_id));
   // live reachability gate (non-blocking: cards render immediately as ready,
   // then downgrade when stats arrive ~seconds later). A server counts as down
   // ONLY on positive signal (stats succeeded AND status !== "online", or name
@@ -5487,8 +5272,16 @@ async function loadLaunch() {
         ? `<i class="fa-solid fa-triangle-exclamation"></i> needs ${down.map(d => escHtml(d)).join(", ")} — offline (change servers in the Models tab)`
         : "";
     }
+    const cst = card.querySelector(".card-loaded");
+    if (cst) {
+      const key = card.dataset.variant
+        ? `${card.dataset.model}--${card.dataset.variant}`
+        : card.dataset.model;
+      const on = loadedSet.has(key);
+      cst.className = `serving-ind card-loaded ${on ? "status-ok" : "status-warn"}`;
+      cst.textContent = on ? "loaded" : "idle";
+    }
   }
-  const servingSet = new Set(active.filter(a => a.serving).map(a => a.name));
   const grid = $("#launch-grid");
   // flatten primary + variants into deployments
   const deployments = [];
@@ -5498,8 +5291,7 @@ async function loadLaunch() {
     // Enable button); its cards never launch or push to the swap.
     if (m.swap_disabled) continue;
     deployments.push({ model: m, variant: null, label: m.model_id, servers: m.servers||[], title: m.name||m.model_id,
-      sub: ((appSettings && appSettings.engine) === "vllm") ? modelSubVllm(m)
-        : ((m.flags||{}).ctx_size ? `-c ${(m.flags||{}).ctx_size} · ${(m.tensor_split_mode === "manual" ? "fit" : m.tensor_split_mode||"auto")} split` : `${(m.tensor_split_mode === "manual" ? "fit" : m.tensor_split_mode||"auto")} split`) });
+      sub: ((m.flags||{}).ctx_size ? `-c ${(m.flags||{}).ctx_size} · ${(m.tensor_split_mode === "manual" ? "fit" : m.tensor_split_mode||"auto")} split` : `${(m.tensor_split_mode === "manual" ? "fit" : m.tensor_split_mode||"auto")} split`) });
     for (const v of (m.variants||[])) {
       const lab = (v.label||"").trim(); if (!lab) continue;
       deployments.push({ model: m, variant: lab, label: `${m.model_id}--${lab}`, servers: v.servers||[], title: `${m.name||m.model_id} <span class="badge" style="background:var(--accent-dim);color:var(--accent)">${escHtml(lab)}</span>`, sub: `variant ${escHtml(lab)} · ${(v.servers||[]).join(",")||"no servers"}` });
@@ -5528,20 +5320,12 @@ async function loadLaunch() {
           </label>`;}).join("") || '<span class="hint">no servers configured — set them in the Models tab</span>'}
       </div>
       <div class="launch-ready-hint"></div>
-      <label class="auto-refresh">Port <input type="number" value="8080" class="port-input" data-model="${escHtml(m.model_id)}"></label>
-      <label class="auto-refresh">Run on <select class="run-on-select" data-model="${escHtml(m.model_id)}">
-        ${cardServers.map(s => `<option value="${escHtml(s)}">${escHtml(s)}${(machines.find(x => x.name===s)||{}).role === "master" ? " (master)" : ""}</option>`).join("")}
-      </select></label>
-      <label class="auto-refresh">Mode <select class="launch-mode-select" data-model="${escHtml(m.model_id)}">
-        <option value="auto" selected>Auto (device heuristic)</option>
-        <option value="rpc">RPC cluster</option>
-        <option value="local">Local only (this machine, no RPC)</option>
-      </select></label>
+      <p class="hint">Served via llama-swap — the same path as the client API. Configure servers/flags in the Models tab.</p>
       <div class="actions">
-        <button class="small" data-act="launch">Launch</button>
-        <button class="small danger" data-act="stop">Stop</button>
+        <button class="small" data-act="launch">Load</button>
+        <button class="small danger" data-act="stop">Evict</button>
         <button class="small" data-act="swap-disable" title="Hide this model from the swap config until re-enabled (takes effect on next push / Launch All)">Disable</button>
-        <span class="serving-ind ${servingSet.size ? "status-ok" : "status-warn"}">${servingSet.size ? `live (${servingSet.size} node)` : "idle"}</span>
+        <span class="serving-ind card-loaded status-warn">idle</span>
       </div>
     </div>`;
   }).join("");
@@ -5590,64 +5374,77 @@ async function loadLaunch() {
     btn.onclick = async () => {
       const card = btn.closest(".launch-card");
       const mid = card.dataset.model;
-      const variant = card.dataset.variant || null;
-      const servers = [...card.querySelectorAll("input[type=checkbox]:checked")].map(cb => cb.value);
-      const downNow = servers.filter(isDown);
-      if (downNow.length) {
-        toast(`Cannot launch ${mid}: ${downNow.join(", ")} is down (change servers in the Models tab)`, "bad");
-        loadLaunch();
-        return;
-      }
-      const port = parseInt(card.querySelector(".port-input").value, 10) || 8080;
-      const runOn = card.querySelector(".run-on-select");
-      const modeSel = card.querySelector(".launch-mode-select");
-      const mode = modeSel ? modeSel.value : "auto";
-      const masterName = runOn ? runOn.value : null;
-      if (mode === "local" && masterName && !servers.includes(masterName)) {
-        toast(`Cannot launch ${mid} local: ${masterName} is not among the configured servers`, "bad");
-        btn.disabled = false; btn.textContent = "Launch";
-        return;
-      }
-      btn.disabled = true; btn.textContent = "launching...";
+      const variant = card.dataset.variant || "";
+      const key = variant ? `${mid}--${variant}` : mid;
+      const base = `http://${window.location.hostname}:8090`;
+      const headers = {"Content-Type": "application/json"};
+      if (_accessKey) headers["Authorization"] = `Bearer ${_accessKey}`;
+      btn.disabled = true; btn.textContent = "loading…";
       try {
-        const body = { model_id: mid, servers, port };
-        if (variant) body.variant = variant;
-        if (masterName) body.master_name = masterName;
-        if (mode !== "rpc") body.mode = mode;
-        const r = await api("POST", "/api/launch", body);
-        const ok = !r.failed;
-        const livePort = r.port || port;
-        const steps = r.steps.map(s => `${s.step}: ${s.error ? "ERR " + s.error : (s.running !== undefined ? (s.running ? "up" : "DOWN") : (s.killed !== undefined ? (s.killed ? "cleared" : "STUCK") : "?"))}`).join("\n");
-        const rolledNote = r.port_rolled ? ` (port ${port} busy — moved to ${livePort})` : "";
-        toast(ok ? `Launched ${mid}${variant?` (${variant})`:``} on :${livePort}${rolledNote}: ${steps}` : `Launch failed: ${steps}`, ok ? "ok" : "bad", 10000);
-        const portInput = card.querySelector(".port-input");
-        if (r.port_rolled && portInput) portInput.value = livePort;
+        // Ensure llama-swap has the current model config, then call the
+        // REAL API exactly like a client would (same endpoints the Chat /
+        // Tests tabs use) — no server-side warmup imitation.
+        await api("POST", "/api/swap/push");
+        await new Promise(res => setTimeout(res, 2300)); // watch-config poll
+        let path, payload;
+        if (decSet.has(mid)) {
+          path = "/v1/systemone";
+          payload = { model: key, state: "warmup",
+                      questions: { route: { type: "choice",
+                        instructions: "Pick one",
+                        criteria: { yes: 1, no: 2 } } } };
+        } else if (embSet.has(mid)) {
+          path = "/v1/embeddings";
+          payload = { model: key, input: "hi" };
+        } else {
+          path = "/v1/chat/completions";
+          payload = { model: key, max_tokens: 1,
+                      messages: [{ role: "user", content: "hi" }] };
+        }
+        const r = await fetch(base + path, {
+          method: "POST", credentials: "include", headers,
+          body: JSON.stringify(payload),
+        });
+        let detail = "";
+        if (!r.ok) {
+          try { detail = (await r.json())?.error?.message || `HTTP ${r.status}`; }
+          catch (_) { detail = `HTTP ${r.status}`; }
+        }
+        // A decision/embedding warmup may return a non-2xx while still
+        // loading the model; confirm against swap's loaded list.
+        let loaded = false;
+        for (let i = 0; i < 40; i++) {
+          await new Promise(res => setTimeout(res, 500));
+          try {
+            const l = await api("GET", "/api/swap/loaded");
+            if ((l.loaded || []).includes(key)) { loaded = true; break; }
+          } catch (_) { /* keep polling */ }
+        }
+        if (!loaded && !r.ok) throw new Error(detail);
+        loadedNotice(key, key);
         loadLaunch();
       } catch (err) {
-        toast(err.message, "bad");
-        // 409 (vllm mode) and other launch errors land inline on the card
-        // — the hint element already exists in the card template
         const hint = card.querySelector(".launch-ready-hint");
         if (hint) hint.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> ' + escHtml(err.message);
+        toast(err.message, "bad");
       }
-      btn.disabled = false; btn.textContent = "Launch";
+      btn.disabled = false; btn.textContent = "Load";
     };
   });
   grid.querySelectorAll('[data-act="stop"]').forEach(btn => {
     btn.onclick = async () => {
       const card = btn.closest(".launch-card");
       const mid = card.dataset.model;
-      const servers = [...card.querySelectorAll("input[type=checkbox]:checked")].map(cb => cb.value);
-      const port = parseInt(card.querySelector(".port-input").value, 10) || 8080;
-      const runOn = card.querySelector(".run-on-select");
-      btn.disabled = true; btn.textContent = "stopping...";
+      const variant = card.dataset.variant || "";
+      const key = variant ? `${mid}--${variant}` : mid;
+      btn.disabled = true; btn.textContent = "evicting…";
       try {
-        const stopBody = { model_id: mid, servers, port };
-        if (runOn && runOn.value) stopBody.master_name = runOn.value;
-        await api("POST", "/api/launch/stop", stopBody);
+        await api("POST", `/api/swap/evict/${encodeURIComponent(key)}`);
+        clearLoadedNotice(key);
+        toast(`Evicted ${key} from llama-swap`, "ok");
         loadLaunch();
       } catch (err) { toast(err.message, "bad"); }
-      btn.disabled = false; btn.textContent = "Stop";
+      btn.disabled = false; btn.textContent = "Evict";
     };
   });
   grid.querySelectorAll('[data-act="swap-disable"]').forEach(btn => {
@@ -5661,85 +5458,6 @@ async function loadLaunch() {
       } catch (err) { toast(err.message, "bad"); }
       btn.disabled = false;
       loadLaunch();
-    };
-  });
-}
-
-/* vLLM per-model launch cards (rendered into #vllm-launch-view): the
-   configured launch options for each model — same card idiom as the
-   llama.cpp launch grid, vLLM vocabulary. Server chips are display-only
-   (locked to the model config); Load fires a warmup request through the
-   daemon (models load on first request); Evict unloads. Status comes
-   from /api/swap/loaded. */
-async function loadVllmLaunchCards(models, machines) {
-  const view = $("#vllm-launch-view");
-  if (!view) return;
-  let loaded = [];
-  try {
-    const r = await api("GET", "/api/swap/loaded");
-    loaded = r.loaded || [];
-  } catch (_) { /* daemon down — all cards show idle */ }
-  const loadedSet = new Set(loaded);
-  const known = new Set((machines || []).map(m => m.name));
-  const cards = (models || []).map(m => {
-    const isLoaded = loadedSet.has(m.model_id);
-    const chips = ((m.servers || []).length ? m.servers : []).map(s =>
-      `<label class="server-chip${known.has(s) ? "" : " machine-down"}" title="as configured — change servers in the Models tab">
-        <input type="checkbox" value="${escHtml(s)}" checked disabled>
-        <span class="chip-name">${escHtml(s)}</span>
-      </label>`).join("") || '<span class="hint">no servers</span>';
-    const variants = (m.variants || []).filter(v => (v.label || "").trim()).map(v =>
-      `<span class="badge" style="background:var(--accent-dim);color:var(--accent)">${escHtml(v.label.trim())}</span>`).join(" ");
-    return `
-    <div class="card launch-card" data-model="${escHtml(m.model_id)}">
-      <h3>${escHtml(m.name || m.model_id)}</h3>
-      <div class="chip-sub">${escHtml(modelSubVllm(m))}${variants ? " · " + variants : ""}</div>
-      <div class="checkbox-list">${chips}</div>
-      <div class="launch-ready-hint"></div>
-      <div class="actions">
-        <button class="small" data-act="vllm-load" ${isLoaded ? "disabled" : ""}>${isLoaded ? "Loaded" : "Load"}</button>
-        <button class="small danger" data-act="vllm-evict" ${isLoaded ? "" : "disabled"}>Evict</button>
-        <span class="serving-ind ${isLoaded ? "status-ok" : "status-warn"}">${isLoaded ? "loaded" : "idle"}</span>
-      </div>
-    </div>`;
-  }).join("");
-  // keep the explanatory prose, append the cards grid after it
-  let grid = view.querySelector(".vllm-launch-grid");
-  if (!grid) {
-    grid = document.createElement("div");
-    grid.className = "launch-grid vllm-launch-grid";
-    view.appendChild(grid);
-  }
-  grid.innerHTML = cards || `<p class="hint">No models configured — add one on the Models tab.</p>`;
-  grid.querySelectorAll('[data-act="vllm-load"]').forEach(btn => {
-    btn.onclick = async () => {
-      const card = btn.closest(".launch-card");
-      const mid = card.dataset.model;
-      btn.disabled = true; btn.textContent = "loading… (minutes on first load)";
-      try {
-        const r = await api("POST", `/api/swap/load/${encodeURIComponent(mid)}`, {});
-        toast(`Loaded ${mid} in ${r.elapsed_s || "?"}s`, "ok");
-        loadVllmLaunchCards(models, machines);
-        if (typeof loadActiveModels === "function") loadActiveModels();
-      } catch (err) {
-        toast(err.message, "bad");
-        const hint = card.querySelector(".launch-ready-hint");
-        if (hint) hint.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> ' + escHtml(err.message);
-        btn.disabled = false; btn.textContent = "Load";
-      }
-    };
-  });
-  grid.querySelectorAll('[data-act="vllm-evict"]').forEach(btn => {
-    btn.onclick = async () => {
-      const card = btn.closest(".launch-card");
-      const mid = card.dataset.model;
-      btn.disabled = true; btn.textContent = "evicting…";
-      try {
-        await api("POST", `/api/swap/evict/${encodeURIComponent(mid)}`, {});
-        toast(`Evicted ${mid}`, "ok");
-        loadVllmLaunchCards(models, machines);
-        if (typeof loadActiveModels === "function") loadActiveModels();
-      } catch (err) { toast(err.message, "bad"); btn.disabled = false; btn.textContent = "Evict"; }
     };
   });
 }
@@ -6765,6 +6483,14 @@ async function loadSettings() {
         ? "Token saved — gated models will use it. Paste a new one to replace."
         : "Not set — gated downloads will 401.";
     }
+    const ftok = $("#set-farm-agent-token");
+    if (ftok) ftok.value = "";
+    const fhint = $("#set-farm-agent-token-hint");
+    if (fhint) {
+      fhint.textContent = s.farm_agent_token_set
+        ? "Farm token saved — discovered agents using it verify automatically."
+        : "Not set — per-machine tokens are used.";
+    }
     appSettings = s;
     applyEngineHints(s);
     if (s.theme_family && !localStorage.getItem("ui-theme-family")) {
@@ -6789,22 +6515,10 @@ on("#set-save", "click", async (e) => {
     // only send the token when the user typed one — empty keeps the saved one
     const tok = $("#set-hf-token")?.value.trim();
     if (tok) payload.hf_token = tok;
-    // engine + vllm block; the backend merges the partial vllm dict over
-    // the stored one, so only keys the UI owns are sent
+    const ftok = $("#set-farm-agent-token")?.value.trim();
+    if (ftok) payload.farm_agent_token = ftok;
     const engSel = $("#set-engine");
     if (engSel?.value) payload.engine = engSel.value;
-    if (payload.engine === "vllm") {
-      const vllmOut = {};
-      const del = $("#set-vllm-delivery")?.value;
-      if (del) vllmOut.delivery = del;
-      const vb = $("#set-vllm-venv-bin")?.value.trim();
-      if (vb) vllmOut.venv_bin = vb;
-      const di = $("#set-vllm-docker-image")?.value.trim();
-      if (di) vllmOut.docker_image = di;
-      const g = parseFloat($("#set-vllm-gpu-mem")?.value);
-      if (Number.isFinite(g) && g > 0 && g <= 1) vllmOut.default_gpu_memory_utilization = g;
-      if (Object.keys(vllmOut).length) payload.vllm = vllmOut;
-    }
     const saved = await api("POST", "/api/settings", payload);
     // engine flip (T4-G7): wholesale refresh, not a merge. The POST
     // response lacks ui_manifest (only GET injects it), and every
@@ -6818,7 +6532,6 @@ on("#set-save", "click", async (e) => {
     const prevEngine = (appSettings || {}).engine;
     appSettings = await api("GET", "/api/settings");
     applyEngineHints(appSettings);
-    refreshVllmInstallButton();
     if ((appSettings.engine || "llama_cpp") !== (prevEngine || "llama_cpp")) {
       // wholesale re-render: models table + scan list are engine-filtered
       // server-side (DEC-07/DEC-11), downloads pane is manifest-driven
@@ -6832,8 +6545,8 @@ on("#set-save", "click", async (e) => {
       loadDownloads();
       loadLaunch();
     }
-    // B8: saved engine change re-gates the machine chips (Windows greys
-    // out in vllm mode) — refresh the group wizard list if it's on screen
+    // saved engine change re-gates the machine chips — refresh the group
+    // wizard list if it's on screen
     if (document.querySelector("#g-machines-chip-list")) renderGroupMachines(readGroupMachines());
     const hint = $("#set-hf-token-hint");
     if (hint) {
@@ -6843,7 +6556,15 @@ on("#set-save", "click", async (e) => {
     }
     const tokInput = $("#set-hf-token");
     if (tokInput) tokInput.value = "";
-    box.innerHTML = `<p class="status-ok">Defaults saved${tok ? " (HF token updated)." : "."}</p>`;
+    const fHint = $("#set-farm-agent-token-hint");
+    if (fHint) {
+      fHint.textContent = saved.farm_agent_token_set
+        ? "Farm token saved — discovered agents using it verify automatically."
+        : "Not set — per-machine tokens are used.";
+    }
+    const fInput = $("#set-farm-agent-token");
+    if (fInput) fInput.value = "";
+    box.innerHTML = `<p class="status-ok">Defaults saved${tok ? " (HF token updated)." : "."}${ftok ? " (farm agent token updated)." : ""}</p>`;
     toast("Defaults saved", "ok");
   } catch (err) {
     box.innerHTML = `<p class="status-bad">${escHtml(err.message)}</p>`;
@@ -6852,6 +6573,22 @@ on("#set-save", "click", async (e) => {
   btn.disabled = false; btn.textContent = "Save defaults";
 });
 
+on("#set-farm-agent-token-toggle", "click", () => {
+  const inp = $("#set-farm-agent-token");
+  if (inp) inp.type = inp.type === "password" ? "text" : "password";
+});
+on("#set-farm-agent-token-clear", "click", async (e) => {
+  e.currentTarget.disabled = true;
+  try {
+    const saved = await api("POST", "/api/settings", { clear_farm_agent_token: true });
+    const hint = $("#set-farm-agent-token-hint");
+    if (hint) hint.textContent = saved.farm_agent_token_set
+      ? "Farm token saved."
+      : "Not set — per-machine tokens are used.";
+    toast(saved.farm_agent_token_set ? "Farm token cleared" : "No farm token was saved", saved.farm_agent_token_set ? "warn" : "ok");
+  } catch (err) { toast(err.message, "bad"); }
+  e.currentTarget.disabled = false;
+});
 on("#set-hf-token-toggle", "click", () => {
   const inp = $("#set-hf-token");
   if (!inp) return;
@@ -6883,7 +6620,7 @@ on("#set-hf-token-clear", "click", async (e) => {
    installs/uninstalls (copy-paste one-liner from the README/install docs).
    The single "Tool status" panel below is the read-only replacement:
    per-tool found/version/path from GET /api/tools/verify. The settings
-   install fields (llama_bin, vllm.venv_bin, swap binary) render read-only
+   install fields (llama_bin, swap binary) render read-only
    from the same probed records (readonly inputs in index.html). */
 
 async function loadToolStatus() {
@@ -6892,7 +6629,7 @@ async function loadToolStatus() {
   panel.innerHTML = '<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> probing…</p>';
   try {
     const v = await api("GET", "/api/tools/verify");
-    const order = [["llama.cpp", "llama.cpp"], ["llama-swap", "llama-swap"], ["vllm", "vLLM"]];
+    const order = [["llama.cpp", "llama.cpp"], ["llama-swap", "llama-swap"]];
     panel.innerHTML = order.map(([key, label]) => {
       const e = v[key] || {};
       const ok = e.found;
@@ -6913,14 +6650,14 @@ async function loadToolStatus() {
 
 /* keep the old element ids alive as no-ops: the buttons are hidden in the
    template; any stray trigger is a no-op instead of a dead fetch. */
-["#uninstall-vllm", "#install-llama-cpp", "#install-llama-cpp-all",
- "#install-vllm", "#install-llama-swap"].forEach(sel => {
+["#install-llama-cpp", "#install-llama-cpp-all",
+ "#install-llama-swap"].forEach(sel => {
   on(sel, "click", () => {});
 });
 
 
 /* ---------------- installer modal (UX-2) ----------------
-   One modal for ALL tools (llama.cpp / llama-swap / vLLM / ray): node
+   One modal for ALL tools (llama.cpp / llama-swap): node
    picker (machines.yaml, "this machine" first), tool set, role, dry-run.
    Submits POST /api/tools/install and consumes the NDJSON progress
    stream ({event: log|done}) — busy state + per-step log + result
@@ -7073,23 +6810,19 @@ on("#install-llama-cpp", "click", async (e) => {
    configured machine except the local host, auto-checks install state
    (existing installs are reported, never touched), and installs only on
    the ticked machines via the batch endpoints' `machines` subset. */
-let installModalEngine = "llama_cpp";
 function installModalEndpoint() {
-  return installModalEngine === "vllm"
-    ? "/api/install-vllm/all"
-    : "/api/install-llama-cpp/all";
+  return "/api/install-llama-cpp/all";
 }
 function installModalLabel() {
-  return installModalEngine === "vllm" ? "vLLM" : "llama.cpp";
+  return "llama.cpp";
 }
-function openInstallModal(engine) {
-  installModalEngine = engine === "vllm" ? "vllm" : "llama_cpp";
+function openInstallModal() {
   const modal = $("#install-modal");
   if (!modal) return;
   $("#install-modal-title").innerHTML =
     `<i class="fa-solid fa-server"></i> Install ${escHtml(installModalLabel())} on other machines`;
   $("#install-modal-sub").textContent =
-    `Tick machines to check. Existing installs are skipped — only missing ones get the ${installModalLabel()} ${installModalEngine === "vllm" ? "venv" : "prebuilt for its machine type"}.`;
+    `Tick machines to check. Existing installs are skipped — only missing ones get the ${installModalLabel()} prebuilt for its machine type.`;
   $("#install-modal-list").innerHTML =
     `<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Loading machines…</p>`;
   modal.classList.remove("hidden");
@@ -7182,24 +6915,12 @@ async function runInstallModalInstall(btn) {
   }
   btn.disabled = false; btn.textContent = "Install selected";
 }
-on("#install-llama-cpp-others", "click", () => openInstallModal("llama_cpp"));
-on("#install-vllm-others", "click", () => openInstallModal("vllm"));
+on("#install-llama-cpp-others", "click", () => openInstallModal());
 on("#install-modal-close", "click", closeInstallModal);
 on("#install-modal-backdrop", "click", closeInstallModal);
 on("#install-modal-check", "click", runInstallModalCheck);
 on("#install-modal-install", "click", (e) => runInstallModalInstall(e.currentTarget));
 
-
-/* Settings tab: install vLLM (this host) — engine-conditional (B10b).
-   data-engine="vllm" on the button makes applyEngineHints show it ONLY
-   in vllm mode (hidden entirely on llama_cpp). Capability gate: the
-   machine payload's vllm_capable (B14) hides the button on incapable
-   hosts (windows/macos/intel/cpu) with the verbatim reason as tooltip. */
-async function refreshVllmInstallButton() {
-  /* UX-3: retired — the install button is hidden in the template and the
-     vllm-plan endpoint no longer exists. Kept as a no-op so the two
-     legacy call sites stay valid. */
-}
 
 /* tool status rides along with the settings load (same panel, same tab) */
 const _loadSettings = loadSettings;
@@ -7207,50 +6928,6 @@ loadSettings = async function () {
   await _loadSettings();
   loadToolStatus();
 };
-
-/* Settings tab: install vLLM (this host) — single combined button with
-   busy state + run_steps result report (B10b). The endpoint answers 502
-   with the full report on a failed/refused install, so raw fetch keeps
-   the report visible instead of collapsing it into an error string.
-   A refusal (windows, docker, no GPU tooling) is an install failure,
-   not a server error. */
-on("#install-vllm", "click", async (e) => {
-  const btn = e.currentTarget;
-  const box = $("#install-vllm-status");
-  const statusBox = $("#set-status");
-  btn.disabled = true; btn.textContent = "installing vLLM…";
-  if (box) box.innerHTML = `<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> checking for an existing install, then installing — heavy download, may take minutes…</p>`;
-  try {
-    const machines = await api("GET", "/api/machines");
-    const local = machines.find(m => m.role === "master") || machines[0];
-    if (!local) throw new Error("no machines configured");
-    const res = await fetch(`/api/machines/${encodeURIComponent(local.name)}/install-vllm`, { method: "POST", headers: { "Content-Type": "application/json" } });
-    const report = await res.json().catch(() => ({}));
-    const already = !!report.skipped
-      || (report.steps || []).some(s => s.skipped)
-      || (report.detail || "").startsWith("already");
-    const cls = already ? "status-ok" : report.ok ? "status-ok" : "status-bad";
-    if (box) {
-      const head = already
-        ? `<p class="status-ok"><i class="fa-solid fa-circle-check"></i> Already installed — ${escHtml((report.detail || "existing install verified").replace(/^already installed:?\s*/i, ""))}</p>`
-        : `<p class="${cls}"><i class="fa-solid ${report.ok ? "fa-circle-check" : "fa-triangle-exclamation"}"></i> ${escHtml(report.detail || (report.ok ? "install complete" : "install failed"))}</p>`;
-      const steps = (report.steps || []).length
-        ? `<div class="card" style="padding:8px 10px;overflow:hidden;margin-top:4px;white-space:pre-wrap;font-size:12px">${escHtml(fmtVllmSteps(report))}</div>`
-        : "";
-      box.innerHTML = head + steps
-        + (report.target ? `<small class="hint" style="display:block;margin-top:4px">vllm bin: ${escHtml(report.target)}</small>` : "");
-    }
-    if (statusBox) statusBox.innerHTML = `<p class="${cls}">${escHtml(report.detail || (already ? "already installed" : report.ok ? "install complete" : "install failed"))}</p>`;
-    toast(already ? "vLLM already installed"
-            : report.ok ? "vLLM installed"
-            : `vLLM install failed: ${report.detail || "see report"}`,
-          already || report.ok ? "ok" : "bad");
-  } catch (err) {
-    if (box) box.innerHTML = `<p class="status-bad">${escHtml(err.message)}</p>`;
-    toast(err.message, "bad");
-  }
-  btn.disabled = false; btn.textContent = "Install vLLM (this host)";
-});
 
 /* ---------------- file explorer modal (Settings + per-machine) ---------------- */
 let fsTargetInput = null;
@@ -7497,20 +7174,10 @@ on("#dl-start", "click", async (e) => {
   const link = $("#dl-link").value.trim();
   const store = $("#dl-store").value;
   if (!link) { toast("paste an hf:// link first", "bad"); return; }
-  // DEC-11 (T4-G5): in the engine's vocabulary the custom pane either
-  // fetches a .gguf file (llama.cpp) or a whole HF repo (vLLM). A bare
-  // hf://owner/name repo link posts repo:true so the vLLM path runs
-  // start_repo; the llama.cpp gate would 409 it anyway, so this never
-  // changes llama.cpp behavior (its example copy points at files).
-  const dlFormats = ((appSettings && appSettings.ui_manifest
-                      && appSettings.ui_manifest.downloads) || {}).formats || [];
-  const repoLink = dlFormats.includes("hf") && !dlFormats.includes("gguf")
-    && !/\.[A-Za-z0-9]+$/.test(link.split("/").pop() || "");
   btn.disabled = true; btn.textContent = "starting…";
   const box = $("#dl-status");
   try {
-    const r = await api("POST", "/api/downloads",
-                        repoLink ? { link, store, repo: true } : { link, store });
+    const r = await api("POST", "/api/downloads", { link, store });
     const jobs = r.jobs || [r];
     const started = jobs.filter(j => j.status !== "done");
     const existed = jobs.filter(j => j.status === "done");
@@ -7906,196 +7573,20 @@ async function selectHfModel(modelId){
       : `<p class="status-bad">${escHtml(msg)}</p>`;
   }
 }
-/* Safetensors detail: whole-repo download (config.json + *.safetensors
-   land in store/<ModelName>/ — what model_parser scans and `vllm serve`
-   takes as a path). Sizes come from the detail endpoint (blobs=true). */
-async function selectHfSafetensorsModel(modelId){
-  const detail=$("#hf-detail"); if(!detail) return;
-  detail.style.display="block";
-  detail.innerHTML = `<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Loading repo files…</p>`;
-  try{
-    const [author, name] = modelId.split("/");
-    const data = await api("GET", `/api/hf/models/${encodeURIComponent(author)}/${encodeURIComponent(name)}/safetensors`);
-    const files = data.siblings||[];
-    const totalSize = files.reduce((a, f) => a + (f.size || 0), 0);
-    const storeVal = $("#hf-store")?.value || $("#dl-store")?.value || "llm-models";
-    const avatarUrl = await getHfAvatar(data.author) || `https://ui-avatars.com/api/?name=${encodeURIComponent(data.author)}&background=171c29&color=9aa5bd&size=56&bold=true`;
-    detail.innerHTML = `
-      <div style="display:flex; justify-content:space-between; align-items:start; gap:8px; margin-bottom:10px">
-        <div style="display:flex; gap:10px; align-items:center"><img class="hf-avatar" src="${escHtml(proxiedImgSrc(avatarUrl))}" alt="${escHtml(data.author)}" style="width:32px;height:32px"><div><strong>${escHtml(data.id)}</strong> ${data.gated?'<span class="badge" style="background:var(--warn-dim);color:var(--warn)"><i class="fa-solid fa-lock"></i> gated</span>':''}<br><small class="hint">${escHtml(data.pipeline_tag||"")} · <i class="fa-solid fa-download"></i> ${data.downloads.toLocaleString()} · <i class="fa-solid fa-heart"></i> ${data.likes.toLocaleString()}</small></div></div>
-        <a href="https://huggingface.co/${escHtml(data.id)}" target="_blank" class="small"><i class="fa-solid fa-external-link"></i> HF</a>
-      </div>
-      ${data.gated ? `<div id="hf-access-box" style="margin-bottom:10px"><p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Checking saved token against this repo…</p></div>` : ""}
-      <p class="hint" style="margin-bottom:8px">Source repo (vLLM format). Downloads <strong>config.json + *.safetensors</strong> (+ tokenizer, remote code, LICENSE, README and any mmproj/MTP companion GGUFs) into <code>store://${escHtml(storeVal)}/${escHtml(name)}/</code> — the format vLLM serves directly and model discovery picks up.</p>
-      <div class="hf-file-row recommended">
-        <div style="min-width:0; flex:1">
-          <div class="hf-detail-file">${escHtml(name)}/</div>
-          <small class="hint">${files.length} safetensors file${files.length===1?"":"s"} · ${fmtBytes(totalSize)} total${files.length !== files.filter(f=>f.size).length ? " · some sizes unknown" : ""}</small>
-          <small class="hint" style="display:block; word-break:break-all" title="${escHtml(files.map(f => f.rfilename).join("\n"))}">${escHtml(files[0]?.rfilename || "")}${files.length > 1 ? ` … +${files.length - 1} more` : ""}</small>
-        </div>
-        <button id="hf-st-download" style="background:var(--accent-dim);border-color:var(--accent);color:var(--accent); margin-left:8px">Download repo</button>
-      </div>
-      <details style="margin-top:8px">
-        <summary class="hint" style="cursor:pointer">${files.length} file(s)</summary>
-        ${files.map(f => `<small class="hint" style="display:block; word-break:break-all">${escHtml(f.rfilename)} — ${fmtBytes(f.size||0)}</small>`).join("")}
-      </details>
-      <small class="hint" style="display:block; margin-top:8px">Whole-repo download via <code>snapshot_download</code> — weights, tokenizer/config, LICENSE/README and any mmproj/MTP companion GGUFs are included; other GGUF/bin/checkpoint files are skipped.</small>`;
-    const btn = detail.querySelector("#hf-st-download");
-    if (btn) btn.onclick = async ()=>{
-      btn.disabled=true; btn.textContent="starting…";
-      const store = $("#hf-store")?.value || $("#dl-store")?.value || "llm-models";
-      try{
-        await api("POST","/api/downloads",{link:`hf://${data.id}`, store, repo:true});
-        toast(`Repo download started → ${data.id} into store://${store}`, "ok");
-        loadDownloads();
-        dlSubTab("jobs");
-      }catch(e){
-        const msg = e.message||"";
-        const isGated = /gated|401|403|access.*restricted|invite|agree/i.test(msg);
-        if(isGated){
-          toast(`Gated model — visit https://huggingface.co/${data.id} to request access, paste your token in Settings → Defaults → Hugging Face token, then retry. ${msg}`, "bad", 9000);
-        } else toast(msg,"bad");
-      }
-      btn.disabled=false; btn.textContent="Download repo";
-    };
-    if (data.gated) checkHfAccess(data, files[0]?.rfilename || "");
-  }catch(e){
-    const msg = e.message||"";
-    const isGated = /gated|401|403|access.*restricted|invite|agree/i.test(msg);
-    detail.innerHTML = isGated
-      ? `<p class="status-bad">This model is invite-only/gated. Visit <a href="https://huggingface.co/${escHtml(modelId)}" target="_blank">huggingface.co/${escHtml(modelId)}</a> and request access from the maintainer, then paste your token in <code>Settings → Defaults → Hugging Face token</code> and retry.</p><p class="hint">${escHtml(msg)}</p>`
-      : `<p class="status-bad">${escHtml(msg)}</p>`;
-  }
-}
-/* Live token check for gated repos: 1-byte range GET proves the saved
-   token can download. Granted → green banner, warning dismissed.
-   Denied → warning with the concrete reason + a Re-check button (use
-   right after clicking Agree on the HF page). */
-async function checkHfAccess(data, testFile) {
-  const box = $("#hf-access-box");
-  if (!box) return;
-  const hfLink = `https://huggingface.co/${data.id}`;
-  const deniedHTML = (reason) => `
-    <div class="hint-box" style="border-left:3px solid var(--warn); padding-left:8px">
-      <i class="fa-solid fa-lock"></i> <strong>Gated model</strong> — requires agreement.
-      Visit <a href="${escHtml(hfLink)}" target="_blank">${escHtml(data.id)}</a>, click “Agree and access repository”,
-      then paste your token in <code>Settings → Defaults → Hugging Face token</code> and retry.
-      <br><small class="hint">Check: ${escHtml(reason)}</small>
-      <div style="margin-top:6px"><button class="small" id="hf-recheck">Re-check access</button></div>
-    </div>`;
-  try {
-    const parts = (data.id || "").split("/");
-    const author = parts.shift() || "";
-    const name = parts.join("/");
-    const q = testFile ? `?file=${encodeURIComponent(testFile)}` : "";
-    const r = await api("GET", `/api/hf/access/${encodeURIComponent(author)}/${encodeURIComponent(name)}${q}`);
-    if (r.access === "granted") {
-      box.innerHTML = `
-        <div class="hint-box" style="border-left:3px solid var(--ok); padding-left:8px">
-          <i class="fa-solid fa-circle-check" style="color:var(--ok)"></i>
-          <strong>Access granted</strong> — your saved token works for this repo. Downloads will succeed.
-        </div>`;
-    } else {
-      box.innerHTML = deniedHTML(r.reason || `HF answered ${r.status || "denied"}`);
-      on("#hf-recheck", "click", () => {
-        box.innerHTML = `<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Checking saved token against this repo…</p>`;
-        checkHfAccess(data, testFile);
-      });
-    }
-  } catch (e) {
-    box.innerHTML = deniedHTML(`couldn't verify: ${e.message}`);
-    on("#hf-recheck", "click", () => {
-      box.innerHTML = `<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Checking saved token against this repo…</p>`;
-      checkHfAccess(data, testFile);
-    });
-  }
-}
-function hfSetQuant(q){
-  hfQuant = q||"";
-  document.querySelectorAll("#hf-quant-chips .hw-chip").forEach(b=> b.classList.toggle("active", b.dataset.quant===hfQuant));
-  // reflective: company/collection lists depend on quant
-  loadHfCompanies();
-  if(hfCompany) loadHfCollections(hfCompany);
-  doHfSearch(true);
-}
-function hfSetTask(t){
-  hfTask = t||"";
-  document.querySelectorAll("#hf-task-chips .hw-chip").forEach(b=> b.classList.toggle("active", b.dataset.task===hfTask));
-  const sel=$("#hf-pipeline-select"); if(sel) sel.value = hfTask;
-  // reflective: company/collection lists depend on task
-  loadHfCompanies();
-  if(hfCompany) loadHfCollections(hfCompany);
-  doHfSearch(true);
-}
-on("#hf-search-btn","click", ()=> doHfSearch(true));
-on("#hf-query","keydown", (e)=>{ if(e.key==="Enter") doHfSearch(true); });
-on("#hf-query","input", ()=>{
-  clearTimeout(hfDebounce);
-  hfDebounce = setTimeout(()=> doHfSearch(true), 400);
-});
-on("#hf-sort","change", ()=> doHfSearch(true));
-on("#hf-store","change", ()=>{
-  const v=$("#hf-store").value; if(v && $("#dl-store")) $("#dl-store").value=v;
-  // re-render detail to update store hint
-  if(hfActiveId) selectHfModel(hfActiveId);
-});
-document.querySelectorAll("#hf-quant-chips .hw-chip").forEach(b=>{
-  b.addEventListener("click", ()=> hfSetQuant(b.dataset.quant||""));
-});
-document.querySelectorAll("#hf-task-chips .hw-chip").forEach(b=>{
-  b.addEventListener("click", ()=> hfSetTask(b.dataset.task||""));
-});
-on("#hf-pipeline-select","change", ()=>{
-  const v=$("#hf-pipeline-select").value || "";
-  hfTask = v;
-  document.querySelectorAll("#hf-task-chips .hw-chip").forEach(b=> b.classList.toggle("active", b.dataset.task===hfTask));
-  loadHfCompanies();
-  if(hfCompany) loadHfCollections(hfCompany);
-  doHfSearch(true);
-});
-on("#hf-recommended","click", ()=>{
-  hfRecommended = !hfRecommended;
-  const chip=$("#hf-recommended"); if(chip){ chip.classList.toggle("active", hfRecommended); chip.dataset.recommended = hfRecommended?"true":"false"; }
-  loadHfCompanies();
-  if(hfCompany) loadHfCollections(hfCompany);
-  doHfSearch(true);
-});
-on("#hf-company","change", async ()=>{
-  hfCompany = $("#hf-company").value || "";
-  hfCollection = "";
-  const sel=$("#hf-collection"); if(sel) sel.value="";
-  await loadHfCollections(hfCompany);
-  doHfSearch(true);
-});
-on("#hf-collection","change", ()=>{
-  hfCollection = $("#hf-collection").value || "";
-  doHfSearch(true);
-});
-on("#hf-company-search","input", (e)=>{
-  clearTimeout(hfCompanyFilterDebounce);
-  hfCompanyFilterDebounce = setTimeout(()=> filterHfCompaniesLocal(e.target.value), 200);
-});
-on("#hf-prev","click", ()=>{ if(hfPage>0){ hfPage--; doHfSearch(false); } });
-on("#hf-next","click", ()=>{ hfPage++; doHfSearch(false); });
-/* format toggle: GGUF quants (llama.cpp) vs source repos (vLLM). Swaps the
-   quant-row/task visibility, resets filters that don't apply, re-searches. */
+/* format is always GGUF quants (llama.cpp). */
 function hfSetFormat(fmt){
-  if(hfFormat === fmt) return;
-  hfFormat = fmt;
-  document.querySelectorAll("#hf-fmt-chips .hw-chip").forEach(b=> b.classList.toggle("active", b.dataset.fmt===hfFormat));
+  hfFormat = "gguf";
+  document.querySelectorAll("#hf-fmt-chips .hw-chip").forEach(b=> b.classList.toggle("active", b.dataset.fmt==="gguf"));
   const quantRow = $("#hf-quant-row");
-  if(quantRow) quantRow.style.display = hfFormat === "safetensors" ? "none" : "";
+  if(quantRow) quantRow.style.display = "";
   const hint = $("#hf-fmt-hint");
-  if(hint) hint.textContent = hfFormat === "safetensors"
-    ? "Safetensors = source weights (config.json + *.safetensors) for vLLM — bigger downloads, no quantization"
-    : "GGUF = ready-to-run quantized weights for llama.cpp";
-  const collectionSel = $("#hf-collection"); if(collectionSel){ collectionSel.value=""; hfCollection=""; }
+  if(hint) hint.textContent = "GGUF = ready-to-run quantized weights for llama.cpp";
   hfActiveId = null;
   const detail = $("#hf-detail"); if(detail){ detail.style.display="none"; }
   doHfSearch(true);
 }
 document.querySelectorAll("#hf-fmt-chips .hw-chip").forEach(b=>{
-  b.addEventListener("click", ()=> hfSetFormat(b.dataset.fmt||"gguf"));
+  b.addEventListener("click", ()=> hfSetFormat("gguf"));
 });
 
 /* ---------------- flow visualizer ---------------- */
@@ -8320,15 +7811,6 @@ async function initFlowVisualizer() {
       const models = await api("GET", "/api/models");
       buildFlowModelMaps(models);
     } catch (_) {}
-    // vLLM refinement: scrape the upstream /metrics (per-model counters ->
-    // token deltas, KV usage, queue depth). Drives the same
-    // flowMarkActivity path the ws stats pulse uses but at scrape
-    // cadence with REAL throughput; the ws remains the activity signal
-    // between scrapes. ~every 4th tick (2s) is plenty — counters move
-    // with request traffic, not per token.
-    if ((appSettings && appSettings.engine) === "vllm") {
-      if (++flowVllmMetricsTick % 4 === 0) pollVllmFlowMetrics();
-    }
     if (!flowDrag) renderFlowDiagram();
   }, 500);
   // n8n-style pan/zoom: wheel to zoom toward cursor, drag to pan
@@ -8422,13 +7904,6 @@ function connectUpstreamWs() {
 }
 
 function handleUpstreamEvent(ev) {
-  // vLLM engine-stats events (10s cadence): same "is this model serving"
-  // signal as a llama.cpp token chunk, but carrying real throughput
-  // numbers. The pulse decays over the 10s gap via FLOW_SERVING_WINDOW.
-  if (ev.type === "vllm_stats") {
-    handleVllmStatsEvent(ev);
-    return;
-  }
   // hidden/inactive tab: still record lastSeen (cheap) but skip the
   // machine-lighting work — nothing is visible to animate
   if (document.hidden || !$("#tab-visualizer")?.classList.contains("active")) {
@@ -8496,83 +7971,6 @@ function handleUpstreamEvent(ev) {
     }
     requestFlowRender();
   }
-}
-
-/* vLLM serving pulse (engine=vllm): the upstream ws forwards the 10s
-   engine-stats line with the model bound from the stream's "<id>" tag.
-   Same lights-up-the-servers behavior as a llama.cpp token chunk, plus
-   a stats readout (throughput / KV / cache) on the model card. When the
-   stats line carries no model (no tag seen yet), fall back to the
-   single loaded model — the common single-model case. */
-function handleVllmStatsEvent(ev) {
-  let mid = ev.model || null;
-  if (!mid && flowLoadedModels.length === 1) mid = flowLoadedModels[0];
-  if (!mid) return;
-  const now = Date.now();
-  flowModelLastSeen[mid] = now;
-  const dash = mid.indexOf("--");
-  if (dash > 0) flowModelLastSeen[mid.slice(0, dash)] = now;
-  flowLastModel = mid;
-  const servers = flowModelIdServers[mid]
-    || flowModelIdServers[mid.slice(0, dash)] || flowLastServers;
-  if (!servers || !servers.length) return;
-  flowLastServers = servers;
-  // stats line alone tells us nothing about WHICH gpu computed — light
-  // the model's full server set (the /metrics poller below refines this
-  // with real per-model token deltas at scrape granularity)
-  for (const srv of servers) {
-    const m = flowMachines.find(x => x.name === srv);
-    const nGpus = ((m && m.detected) || {}).gpu_names || [];
-    const gi = nGpus.length ? 0 : "RAM";
-    flowMarkActivity(srv, gi, mid);
-  }
-  // live readout in the header badge
-  updateVllmStatsReadout(ev, mid);
-  requestFlowRender();
-}
-
-function updateVllmStatsReadout(ev, mid) {
-  const badge = $("#flow-status");
-  if (!badge) return;
-  const tps = `${ev.gen_tps.toFixed(1)} tok/s`;
-  badge.textContent = `${mid} · gen ${tps} · prompt ${ev.prompt_tps.toFixed(1)} · KV ${ev.kv_pct.toFixed(0)}% · cache ${ev.cache_hit_pct.toFixed(0)}%`;
-}
-
-/* /api/flow/vllm-metrics poller (engine=vllm): per-model counter deltas
-   from the upstream Prometheus scrape. Feeds flowMarkActivity with the
-   same (machine, gpu/RAM) targets the ws stats pulse uses — the metrics
-   scrape adds REAL tokens/s per model, so the animation reflects actual
-   work between the 10s ws stats lines. Errors stay silent (vLLM may
-   briefly not answer /metrics during weight load). */
-let flowVllmMetricsTick = 0;
-async function pollVllmFlowMetrics() {
-  let data;
-  try { data = await api("GET", "/api/flow/vllm-metrics"); } catch (_) { return; }
-  const models = data.models || {};
-  for (const [mid, m] of Object.entries(models)) {
-    if (!m) continue;
-    const servers = flowModelIdServers[mid] || [];
-    if (!servers.length) continue;
-    const active = (m.gen_tps > 0 || m.prompt_tps > 0
-      || (m.num_requests_running || 0) > 0);
-    if (!active) continue;
-    const now = Date.now();
-    flowModelLastSeen[mid] = now;
-    flowLastModel = mid;
-    flowLastServers = servers;
-    for (const srv of servers) {
-      const mm = flowMachines.find(x => x.name === srv);
-      const nGpus = ((mm && mm.detected) || {}).gpu_names || [];
-      flowMarkActivity(srv, nGpus.length ? 0 : "RAM", mid);
-    }
-    updateVllmStatsReadout({
-      prompt_tps: m.prompt_tps || 0, gen_tps: m.gen_tps || 0,
-      kv_pct: m.kv_cache_usage_perc || 0,
-      cache_hit_pct: (m.prefix_cache_queries > 0
-        ? 100 * m.prefix_cache_hits / m.prefix_cache_queries : 0),
-    }, mid);
-  }
-  requestFlowRender();
 }
 
 function handleSchedEvent(ev) {
@@ -9313,6 +8711,7 @@ document.addEventListener("click", (e) => {
 
 /* ---------------- init ---------------- */
 startAutoRefresh();
+initFaultWatch();  // global persistent load-failure notices (top right)
 applyRibbons();   // global ribbon backdrop behind every page (toggleable)
 on("#set-ribbons-chip", "click", () => {
   localStorage.setItem("ui-ribbons", ribbonsOn() ? "0" : "1");
@@ -9502,7 +8901,7 @@ function _uc_sub(el, text) {
    value arc relative to max, big center value, unit sub, peak note.
    `color` = css-Class suffix (accent|ok|ribbon|warn): arcs/texts use
    currentColor; theme re-skin is automatic on change. */
-function _gaugeSkel(value, max, color, fmt, unit, label) {
+function _gaugeSkel(value, max, color, fmt, unit, label, note) {
   const W = 300, H = 175, cx = W/2, cy = H*0.78, R = 105;
   const a0 = Math.PI * 0.75, a1 = Math.PI * 2.25;
   const frac = Math.max(0, Math.min(1, max > 0 ? value / max : 0));
@@ -9514,43 +8913,54 @@ function _gaugeSkel(value, max, color, fmt, unit, label) {
     return `<path d="M ${x0.toFixed(1)} ${y0.toFixed(1)} A ${R} ${R} 0 ${large} 1 ${x1.toFixed(1)} ${y1.toFixed(1)}" fill="none" stroke-width="${wdt}" stroke-linecap="round" opacity="${op}"/>`;
   };
   const v = Math.max(0, value || 0);
+  let noteText;
+  if (note === undefined) noteText = `peak ${fmt(max)}`;
+  else if (note === null) noteText = "";
+  else noteText = typeof note === "function" ? note(max) : String(note);
   return `<span class="gauge-wrap gauge-${color}" style="display:contents">
     <svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto">
       ${arc(0, 1, 14, 1)}
       ${frac > 0 ? arc(0, frac, 14, 0.95) : ""}
       <text class="gauge-val" x="${cx}" y="${cy - 34}" font-size="30" font-weight="700" text-anchor="middle">${escHtml(fmt(v))}</text>
       <text x="${cx}" y="${cy - 15}" font-size="10.5" text-anchor="middle" fill="var(--muted)">${escHtml(unit || label || "")}</text>
-      <text x="${cx}" y="${cy + 14}" font-size="9.5" text-anchor="middle" fill="var(--muted)">peak ${escHtml(fmt(max))}</text>
+      <text class="gauge-note" x="${cx}" y="${cy + 14}" font-size="9.5" text-anchor="middle" fill="var(--muted)">${escHtml(noteText)}</text>
     </svg></span>`;
 }
 
-function renderDecodeSpeedByModel(r, speed) {
-  /* per-model dials: one gauge card per model, arc vs fastest×1.15;
-     fastest = accent badge; all colors inherit the theme (accent). */
+function renderDecodeSpeedByModel(r, speed, peaks) {
+  /* per-model dials: value = that model's average decode tok/s, peak =
+     that model's own highest exact single-request rate. Never share one
+     model's scale across the grid (that made every card show the same
+     "peak"). fastest = highest average; colors inherit the theme. */
   const box = $("#user-dspeed");
   const sub = $("#udsp-sub");
   if (!box) return;
+  const peakMap = peaks || {};
   const entries = Object.entries(speed || {}).
     filter(([m, v]) => v && v > 0 && Number.isFinite(v)).
     sort((a, b) => b[1] - a[1]);
   if (sub) sub.textContent = entries.length
-    ? `${entries[0][0]} fastest · ${entries[0][1]} tok/s · ${entries.length} model(s)`
+    ? `${entries[0][0]} fastest avg · ${entries[0][1]} tok/s · ${entries.length} model(s)`
     : "";
   if (!entries.length) {
     box.innerHTML = '<div class="card gauge-card accent" style="display:flex; align-items:center; justify-content:center"><span class="hint">no decode volume yet — chat a decoder model through the gateway; decision models (laya) emit no completion tokens</span></div>';
     return;
   }
-  const max = Math.max(...entries.map(e => e[1])) * 1.15;
   box.innerHTML =
-    entries.map(([m, v], idx) => `
+    entries.map(([m, v], idx) => {
+      const p = Number(peakMap[m]);
+      const peak = (Number.isFinite(p) && p > 0) ? p : v;
+      const gaugeMax = Math.max(peak, v, 0.1);
+      return `
     <div class="card gauge-card accent" style="display:flex; flex-direction:column;
       align-items:center; justify-content:center;">
       <div style="font-size:0.95em; font-weight:600; width:100%; text-align:center;
         overflow:hidden; text-overflow:ellipsis" title="${escHtml(m)}">
         ${escHtml(m.length > 30 ? m.slice(0,29) + "…" : m)}${idx === 0 ? ' <span class="badge" style="background:var(--accent-dim);color:var(--accent)">fastest</span>' : ""}
       </div>
-      ${_gaugeSkel(v, max, "accent", x => x.toFixed(1), "tok/s", "")}
-    </div>`).join("");
+      ${_gaugeSkel(v, gaugeMax, "accent", x => x.toFixed(1), "tok/s", "")}
+    </div>`;
+    }).join("");
 }
 
 function _fmtTok(n) {
@@ -9697,7 +9107,7 @@ async function loadUsageTotals(light = false) {
       const t = r.total || {};
       let peakDay = {requests: 1, tok_out: 1, tok_in: 1, wall_s: 1, days: 1};
       try {
-        const dr = await api("GET", "/api/usage?period=day&count=90");
+        const dr = await api("GET", "/api/usage?period=day&count=60");
         const buckets = (dr.buckets || []);
         const pk = (k) => Math.max(1, ...buckets.map(b => b[k] || 0));
         peakDay = {requests: pk("requests"), tok_out: pk("tok_out"),
@@ -9708,15 +9118,18 @@ async function loadUsageTotals(light = false) {
       const spd = r.avg_tok_per_s || 0;
       const cards = pane.querySelectorAll(".gauge-card");
       const specs = [
-        [t.requests || 0, peakDay.requests * 1.15, _fmtTok],
-        [t.tok_out || 0, peakDay.tok_out * 1.15, _fmtTok],
-        [t.tok_in || 0, peakDay.tok_in * 1.15, _fmtTok],
-        [t.hours || 0, (peakDay.wall_s / 3600) * (peakDay.days || 1) || (t.hours || 0.01), _fmtHours],
-        [spd, Math.max(spd * 1.15, 1), v => v.toFixed(1)],
+        [t.requests || 0, peakDay.requests, _fmtTok,
+         `peak day ${_fmtTok(peakDay.requests)}`],
+        [t.tok_out || 0, peakDay.tok_out, _fmtTok,
+         `peak day ${_fmtTok(peakDay.tok_out)}`],
+        [t.tok_in || 0, peakDay.tok_in, _fmtTok,
+         `peak day ${_fmtTok(peakDay.tok_in)}`],
+        [t.hours || 0, (peakDay.wall_s / 3600) * (peakDay.days || 1) || (t.hours || 0.01), _fmtHours, "total"],
+        [spd, Math.max(r.peak_tok_per_s || spd, spd, 1), v => v.toFixed(1), undefined],
       ];
       cards.forEach((c, i) => {
-        const [v, m, f] = specs[i] || [];
-        if (v !== undefined) _gaugePatch(c, v, m, f);
+        const [v, m, f, note] = specs[i] || [];
+        if (v !== undefined) _gaugePatch(c, v, m, f, note);
       });
       return;
     } catch (err) { /* fall through to full render */ }
@@ -9726,7 +9139,7 @@ async function loadUsageTotals(light = false) {
     const t = r.total || {};
     let peakDay = {requests: 1, tok_out: 1, tok_in: 1};
     try {
-      const dr = await api("GET", "/api/usage?period=day&count=90");
+      const dr = await api("GET", "/api/usage?period=day&count=60");
       const buckets = (dr.buckets || []);
       const pk = (k) => Math.max(1, ...buckets.map(b => b[k] || 0));
       peakDay = {requests: pk("requests"), tok_out: pk("tok_out"),
@@ -9734,21 +9147,24 @@ async function loadUsageTotals(light = false) {
                  wall_s: Math.max(1, ...buckets.map(b => b.wall_s || 0)),
                  days: buckets.filter(b => (b.requests||0) > 0).length || 1};
     } catch (_) {}
-    const G = (value, max, cls, fmt, unit) => `
+    const G = (value, max, cls, fmt, unit, note) => `
       <div class="card gauge-card ${cls}">
-        ${_gaugeSkel(value, Math.max(max, 1e-6), cls, fmt, unit, "")}
+        ${_gaugeSkel(value, Math.max(max, 1e-6), cls, fmt, unit, "", note)}
       </div>`;
     const spd = r.avg_tok_per_s || 0;
     box.innerHTML =
-      G(t.requests || 0, peakDay.requests * 1.15, "accent",
-        v => _fmtTok(v), "requests all-time") +
-      G(t.tok_out || 0, peakDay.tok_out * 1.15, "accent",
-        _fmtTok, "tokens out") +
-      G(t.tok_in || 0, peakDay.tok_in * 1.15, "accent", _fmtTok, "tokens in") +
+      G(t.requests || 0, peakDay.requests, "accent",
+        v => _fmtTok(v), "requests all-time",
+        `peak day ${_fmtTok(peakDay.requests)}`) +
+      G(t.tok_out || 0, peakDay.tok_out, "accent",
+        _fmtTok, "tokens out", `peak day ${_fmtTok(peakDay.tok_out)}`) +
+      G(t.tok_in || 0, peakDay.tok_in, "accent", _fmtTok, "tokens in",
+        `peak day ${_fmtTok(peakDay.tok_in)}`) +
       G(t.hours || 0,
         (peakDay.wall_s / 3600) * (peakDay.days || 1) || (t.hours || 0.01),
-        "accent", _fmtHours, "compute time") +
-      G(spd, Math.max(spd * 1.15, 1), "accent", v => v.toFixed(1), "tok/s avg");
+        "accent", _fmtHours, "compute time", "total") +
+      G(spd, Math.max(r.peak_tok_per_s || spd, spd, 1), "accent",
+        v => v.toFixed(1), "tok/s avg");
     // per-model bar rows removed from this pane (decode speed pane owns per-model detail)
     if (per) per.innerHTML = "";
   } catch (err) {
@@ -9786,23 +9202,27 @@ async function loadUsageSeries(period, light = false) {
     const avgLat = buckets.reduce((a, b) =>
       a + ((b.requests) ? (b._avglat || 0) * b.requests : 0), 0) /
       Math.max(1, reqs);
-    const latRef = Math.max(0.5, Math.max(...buckets.map(b => b._avglat || 0)));
+    const peakLat = Math.max(...buckets.map(b => b._avglat || 0));
+    const latRef = Math.max(0.5, peakLat);
     const wallSum = buckets.reduce((a, b) => a + (b.wall_s || 0), 0);
     const tokSum = sum("tok_out");
     const errPct = reqs ? 100 * sum("errors") / reqs : 0;
     // (selector, cardClass, value, ref, fmt, unitLabel)
+    const peakReqs = peakOf("requests");
+    const peakTok = tokSum > 0 ? peakOf("tok_out") : peakOf("tok_in");
     const specs = [
-      ["#uc-requests", "accent", reqs, peakOf("requests") * 1.15,
-       v => _fmtTok(v), "requests"],
-      ["#uc-latency", "accent", avgLat, latRef, v => v.toFixed(1), "s / request"],
+      ["#uc-requests", "accent", reqs, peakReqs,
+       v => _fmtTok(v), "requests", `peak ${_fmtTok(peakReqs)}`],
+      ["#uc-latency", "accent", avgLat, latRef, v => v.toFixed(1), "s / request",
+       `peak ${peakLat.toFixed(1)}s`],
       ["#uc-tokens", "accent",
-       tokSum > 0 ? tokSum : sum("tok_in"),
-       tokSum > 0 ? peakOf("tok_out") * 1.15 : peakOf("tok_in") * 1.15,
-       _fmtTok, tokSum > 0 ? "tokens out" : "tokens in (no decode yet)"],
+       tokSum > 0 ? tokSum : sum("tok_in"), peakTok,
+       _fmtTok, tokSum > 0 ? "tokens out" : "tokens in (no decode yet)",
+       `peak ${_fmtTok(peakTok)}`],
       ["#uc-errors", "accent", errPct, Math.max(20, errPct * 1.5),
-       v => v.toFixed(1) + "%", "of requests failed"],
+       v => v.toFixed(1) + "%", "of requests failed", "rate"],
     ];
-    for (const [sel, cls, v, m, f, lbl] of specs) {
+    for (const [sel, cls, v, m, f, lbl, note] of specs) {
       const e = $(sel);
       if (!e) continue;
       const card = e.closest(".card");
@@ -9815,10 +9235,10 @@ async function loadUsageSeries(period, light = false) {
         const flip = sel === "#uc-tokens" &&
           ((wantsLbl.startsWith("tokens out") && !nowLbl.startsWith("tokens out")) ||
            (wantsLbl.startsWith("tokens in") && !nowLbl.startsWith("tokens")));
-        if (flip) e.innerHTML = _gaugeSkel(v, m, cls, f, lbl, "");
-        else _gaugePatch(card, v, m, f);
+        if (flip) e.innerHTML = _gaugeSkel(v, m, cls, f, lbl, "", note);
+        else _gaugePatch(card, v, m, f, note);
       } else {
-        e.innerHTML = _gaugeSkel(v, m, cls, f, lbl, "");
+        e.innerHTML = _gaugeSkel(v, m, cls, f, lbl, "", note);
       }
     }
     _uc_sub("#uc-requests-sub", `${reqs} total`);
@@ -9836,7 +9256,8 @@ async function loadUsageSeries(period, light = false) {
 async function loadDecodeSpeed() {
   try {
     const r = await api("GET", "/api/usage?period=all");
-    renderDecodeSpeedByModel(r, r.tok_out_per_s || {});
+    renderDecodeSpeedByModel(r, r.tok_out_per_s || {},
+                             r.tok_out_peak_per_s || {});
   } catch (err) {
     const box = $("#user-dspeed");
     if (box) box.textContent = "speed data failed: " + err.message;

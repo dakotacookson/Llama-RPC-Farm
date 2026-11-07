@@ -32,7 +32,6 @@ _IMPORTABLE_MODULES = [
     "model_parser",
     "path_resolver",
     "rpc_manager",
-    "ssh_manager",
     "stats_collector",
     # app.py starts uvicorn at import time in some configurations — skip.
     # hf_browse / hf_downloader / llamacpp_installer / tuner / steps /
@@ -48,6 +47,7 @@ _CANDIDATE_MODULES = [
     "steps",
     "swap_manager",
     "tuner",
+    "reaper",
 ]
 
 

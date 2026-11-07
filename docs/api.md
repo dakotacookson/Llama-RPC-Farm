@@ -7,7 +7,7 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 
 | Method + Path | Purpose |
 |---|---|
-| `GET /api/machines` | List machines (password replaced by `password_set` flag; response-only `vllm_capable` per entry — `false` for Windows hosts so the UI can grey them out in vllm mode) |
+| `GET /api/machines` | List machines (password replaced by `password_set` flag) |
 | `POST /api/machines` | Add machine (wizard payload) |
 | `PUT /api/machines/{name}` | Update machine |
 | `DELETE /api/machines/{name}` | Remove machine |
@@ -15,7 +15,11 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 | `POST /api/machines/{name}/detect` | Detect hardware (GPUs/cores/RAM) and persist into `detected` |
 | `POST /api/machines/detect-all` | Detect hardware on every machine |
 | `POST /api/machines/probe` | Probe hardware on an unsaved machine (wizard) |
-| `GET /api/machines/{name}/status` | Reachability + rpc-server running + IP sync. In vllm mode the payload gains `"engine": "vllm"` plus a `vllm` probe: `{"running": bool, "detail": str}` from `GET http://<ip>:<swap_port>/health` (detail strings: `vLLM /health 200`, `vLLM /health 503 (starting)`, `vLLM /health unreachable`, `probe failed: ...`). llama.cpp mode returns the payload exactly as before |
+| `POST /api/machines/agent-check` | Pre-save peer-agent health check for Add/Edit |
+| `GET /api/machines/connections` | Detected transport capability: local/both/ssh/agent/none |
+| `GET /api/machines/{name}/agent-version` | Current vs bundled agent version |
+| `POST /api/machines/{name}/update-agent` | Build/install agent, restart it, verify health |
+| `GET /api/machines/{name}/status` | Reachability + rpc-server running + IP sync |
 | `POST /api/machines/{name}/rpc/start` | Start rpc-server(s) on that machine |
 | `POST /api/machines/{name}/rpc/stop` | Stop rpc-server(s); body may carry `port` for per-port stop |
 | `POST /api/rpc/stop-all` | Stop every llama process on all machines |
@@ -27,7 +31,7 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 ## Discovery
 
 | `GET /api/discover/subnets` | Candidate subnets for scanning |
-| `POST /api/discover` | Scan a subnet for SSH hosts (fingerprint + OS probe) |
+| `POST /api/discover` | Scan SSH hosts, or peer agents with `agent_only: true` (UDP discovery) |
 | `GET /api/hardware/changes` | Hardware fingerprint diff polling |
 
 ## Groups (machine clusters)
@@ -39,8 +43,8 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 
 | Method + Path | Purpose |
 |---|---|
-| `GET /api/models` | All model configs (with variants). In vllm mode each config may carry a per-model `vllm:` section — `max_model_len`, `max_num_seqs`, `tensor_parallel_size`, `pipeline_parallel_size`, `kv_cache_dtype` (`auto` never stored — it's the default), `cpu_offload_gb`, `quantization`, `tokenizer`, `extra_args` (list of strings; the sanctioned escape hatch for Ray/distributed-executor flags). Unknown keys are rejected on save (`400`), numbers coerced to int, absent = engine default |
-| `POST /api/models` | Save model (wizard save); the `vllm:` section is validated + normalized in place (`config_loader.apply_vllm_section`), llama.cpp keys (`flags`, device chips) pass through untouched, an empty/absent `vllm:` is dropped so pre-vLLM configs never gain the key |
+| `GET /api/models` | All model configs (with variants) |
+| `POST /api/models` | Save model (wizard save); llama.cpp keys (`flags`, device chips) pass through untouched |
 | `GET/PUT/DELETE /api/models/{model_id}` | Read/update/delete one config |
 | `POST /api/models/{model_id}/test` | Live load test (single model) |
 | `POST /api/models/cleanup` | Remove configs whose GGUF file no longer exists |
@@ -64,7 +68,7 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 
 ## Launch (single model)
 
-| `POST /api/launch` | Stop old instances on its servers → RPC peers up → llama-server up; returns steps. **In vllm mode: `409`** — "vLLM mode does not use live RPC-cluster launch — serve models through llama-swap instead (Launch All / /api/swap/* endpoints)". Unreadable settings → `400` with the engine error |
+| `POST /api/launch` | Stop old instances on its servers → RPC peers up → llama-server up; returns steps. Unreadable settings → `400` with the engine error |
 | `POST /api/launch/stop` | Stop a model's processes |
 | `GET /api/launch/active` | Per-machine serving booleans (cheap) |
 
@@ -103,7 +107,7 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 
 | `GET/POST /api/flow/layout` | Visualizer node positions |
 | `GET/POST /api/accordion` | Collapsible panel open/closed state |
-| `GET/POST /api/settings` | App settings (model_dir, llama_bin, theme) plus the engine schema: responses carry `engine`, a fully-defaulted `vllm:` block (`delivery: venv\|docker`, `venv_bin`, `docker_image`, `default_gpu_memory_utilization`), `hf_token_set`, and `ui_hints` (adapter vocabulary: labels, hidden panels, flag presets). POST accepts optional `engine` (enum-checked, `400` with valid values on a typo) and a partial `vllm:` dict merged over the stored block (unknown keys / bad delivery / gpu-memory-utilization outside (0, 1] → `400`); writes go through the comment-preserving persister so unrelated keys and comments survive. Raw `hf_token` is never returned — only `hf_token_set` |
+| `GET/POST /api/settings` | App settings (model_dir, llama_bin, theme) plus the engine schema: responses carry `engine`, `hf_token_set`, and `ui_hints` (adapter vocabulary: labels, hidden panels, flag presets). POST accepts optional `engine` (enum-checked, `400` with valid values on a typo); writes go through the comment-preserving persister so unrelated keys and comments survive. Raw `hf_token` is never returned — only `hf_token_set` |
 | `GET/POST /api/themes/custom`, `DELETE /api/themes/custom/{tid}` | Custom themes |
 
 ## Installer
@@ -113,11 +117,6 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 | `POST /api/install-llama-cpp/all` | Check all machines, optionally install missing |
 | `POST /api/install-llama-swap?name=` | Install llama-swap on a machine if missing (local = no SSH); updates swap settings' binary |
 | `POST /api/restart` | Restart this web app (POSIX/Windows aware) |
-
-vLLM install is not HTTP-driven: `vllm_installer.install(machine)` /
-`plan(machine)` (same `steps.run_steps` report shape as the llama.cpp
-installer) run from code — gates → delivery (venv or docker pull) →
-verify → settings `vllm.venv_bin` update.
 
 ## Misc
 

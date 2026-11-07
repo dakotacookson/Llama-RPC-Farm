@@ -88,34 +88,6 @@ except Exception as e:
     sys.exit(1)
 """
 
-_REPO_CHILD = """\
-import os, sys
-from huggingface_hub import snapshot_download
-repo_id, local_dir = sys.argv[1:3]
-# weights + everything needed to load the model from Python + companion
-# GGUFs (mmproj/MTP/draft). Other GGUF quants are deliberately NOT pulled
-# by the whole-repo path. The .cache dir snapshot_download writes inside
-# local_dir is pruned by the parent at the end (keeps the store clean).
-try:
-    path = snapshot_download(
-        repo_id=repo_id, local_dir=local_dir,
-        allow_patterns=["*.safetensors", "*.json", "*.txt", "*.model",
-                        "*.py", "*.jinja", "*.jinja2", "*.tiktoken",
-                        "*.yaml", "*.yml",
-                        "LICENSE*", "LICENCE*", "COPYING*", "NOTICE*",
-                        "README*", "requirements*.txt",
-                        "mmproj*.gguf", "*mmproj*.gguf",
-                        "mtp-*.gguf", "*draft*.gguf"],
-        ignore_patterns=["*.bin", "*.pt", "*.pth", "*.ckpt",
-                         "*.h5", "*.msgpack", "*.onnx", "*.tflite",
-                         "*.gitattributes", "*.pdf"])
-    print("OK:" + path, flush=True)
-except Exception as e:
-    print("ERR:" + str(e), flush=True)
-    sys.exit(1)
-"""
-
-
 def parse_link(link):
     """hf://owner/repo/path/file.gguf -> (repo_id, filename).
 
@@ -431,7 +403,7 @@ def _finalize_bundle(bundle_id):
     while any(JOBS.get(j, {}).get("status") == "downloading" for j in ids):
         time.sleep(1)
     # hf leaves .cache/<...>/download metadata + hf-xet under the bundle;
-    # keep the model folder clean for model_parser / vllm.
+    # keep the model folder clean for model_parser.
     shutil.rmtree(os.path.join(bundle["dir"], ".cache"), ignore_errors=True)
     statuses = {JOBS.get(j, {}).get("status") for j in ids}
     bundle["status"] = ("done" if statuses and statuses <= {"done"}
@@ -672,152 +644,6 @@ def start_shards(link, store):
     }
 
 
-def repo_size(repo_id):
-    """Total bytes of the safetensors files snapshot_download would fetch.
-    Best-effort: None when the listing fails (gated/offline)."""
-    try:
-        from huggingface_hub import HfApi
-        info = HfApi().model_info(repo_id, files_metadata=True,
-                                  token=_token())
-        total = 0
-        for s in (info.siblings or []):
-            fn = s.rfilename or ""
-            if fn.lower().endswith(".safetensors"):
-                total += (s.size or 0)
-        return total or None
-    except Exception:
-        return None
-
-
-def start_repo(repo_id, store):
-    """Download a whole HF/safetensors repo into its own subfolder of the
-    store (config.json + *.safetensors = what model_parser and vllm serve
-    expect). One job, one child process; progress tracks the .incomplete
-    files snapshot_download writes under the repo subfolder.
-
-    The snapshot also carries tokenizer/config/remote-code, LICENSE and
-    README files, plus any mmproj/MTP/draft GGUF companions present in
-    the repo. A farm-bundle.json manifest is written on completion."""
-    repo_id = (repo_id or "").strip().strip("/")
-    if repo_id.count("/") != 1:
-        raise ValueError("expected owner/name repo id (e.g. Qwen/Qwen3-0.6B)")
-    root = path_resolver.resolve(f"store://{store}")
-    if not root or root.startswith("store://"):
-        raise ValueError(f"unknown store '{store}'")
-    job_id = uuid.uuid4().hex[:8]
-    dest = os.path.join(root, repo_id.split("/")[-1])
-    bundle_id = uuid.uuid4().hex[:8]
-    info = _repo_info(repo_id)
-    bundle = {
-        "id": bundle_id,
-        "name": repo_id.split("/")[-1],
-        "dir": dest,
-        "store": store,
-        "repo_id": repo_id,
-        "repo_revision": getattr(info, "sha", None),
-        "selected_file": None,
-        "base_model": (_base_model_ids(info) or [None])[0],
-        "license": _license_meta(info),
-        "created": datetime.now().isoformat(timespec="seconds"),
-        "status": "downloading",
-        "warnings": [],
-        "job_ids": [],
-        "kind": "repo",
-    }
-    BUNDLES[bundle_id] = bundle
-    job = {
-        "id": job_id, "link": f"hf://{repo_id}", "repo_id": repo_id,
-        "filename": repo_id.split("/")[-1] + "/", "store": store,
-        "dest": dest, "status": "downloading", "kind": "repo",
-        "bundle": bundle["name"], "bundle_dir": dest,
-        "started": datetime.now().isoformat(timespec="seconds"),
-        "total_bytes": repo_size(repo_id),
-        "done_bytes": 0, "error": None, "finished": None,
-    }
-    bundle["job_ids"].append(job_id)
-    if os.path.isdir(dest) and os.path.isfile(os.path.join(dest, "config.json")):
-        job["status"] = "done"
-        job["error"] = "model already exists at destination"
-        job["finished"] = datetime.now().isoformat(timespec="seconds")
-        JOBS[job_id] = job
-        bundle["status"] = "done"
-        _write_manifest(bundle)
-        return job
-    JOBS[job_id] = job
-    t = threading.Thread(target=_run_repo, args=(job_id,), daemon=True)
-    t.start()
-    return job
-
-
-def _run_repo(job_id):
-    job = JOBS[job_id]
-    local_dir = path_resolver.resolve(f"store://{job['store']}")
-    repo_dir = os.path.join(local_dir, job["repo_id"].split("/")[-1])
-    env = dict(os.environ)
-    env["HF_HUB_DISABLE_XET"] = "1"
-    env["HF_XET_CACHE"] = os.path.join(repo_dir, ".cache", "hf-xet")
-    env.pop("HF_HUB_ENABLE_HF_TRANSFER", None)
-    _tok = _token()
-    if _tok:
-        env["HF_TOKEN"] = _tok
-    os.makedirs(repo_dir, exist_ok=True)
-    proc = subprocess.Popen(
-        [sys.executable, "-u", "-c", _REPO_CHILD, job["repo_id"], repo_dir],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        bufsize=1, env=env)
-    _PROCS[job_id] = proc
-    lines = deque(maxlen=200)
-    reader = threading.Thread(target=_pump, args=(proc, lines), daemon=True)
-    reader.start()
-    while proc.poll() is None:
-        # progress = finished safetensors bytes + in-flight .incomplete bytes
-        done = _safetensors_bytes(repo_dir)
-        done += _incomplete_bytes(repo_dir)
-        job["done_bytes"] = done
-        job["log"] = list(lines)
-        time.sleep(1)
-    reader.join(timeout=5)
-    job["done_bytes"] = max(job["done_bytes"], _safetensors_bytes(repo_dir))
-    job["log"] = list(lines)
-    # snapshot_download leaves a .cache folder inside the repo dir; prune it
-    # so model_parser/vllm see a clean model dir
-    shutil.rmtree(os.path.join(repo_dir, ".cache"), ignore_errors=True)
-    if proc.returncode == 0:
-        job["status"] = "done"
-        job["total_bytes"] = _safetensors_bytes(repo_dir)
-        job["done_bytes"] = job["total_bytes"]
-    elif job["status"] != "canceled":
-        job["status"] = "error"
-        job["error"] = (lines[-1] if lines else "") or \
-            f"exit code {proc.returncode}"
-    job["finished"] = datetime.now().isoformat(timespec="seconds")
-    _PROCS.pop(job_id, None)
-    for b in BUNDLES.values():
-        if job_id in (b.get("job_ids") or []):
-            b["status"] = "done" if job["status"] == "done" else "error"
-            try:
-                _write_manifest(b)
-            except Exception:
-                pass
-            break
-
-
-def _safetensors_bytes(repo_dir):
-    total = 0
-    if not os.path.isdir(repo_dir):
-        return 0
-    for root, _, files in os.walk(repo_dir):
-        if os.path.basename(root) == ".cache":
-            continue
-        for f in files:
-            if f.lower().endswith(".safetensors"):
-                try:
-                    total += os.path.getsize(os.path.join(root, f))
-                except OSError:
-                    pass
-    return total
-
-
 def _run(job_id):
     job = JOBS[job_id]
     local_dir = job["local_dir"]
@@ -897,3 +723,141 @@ def all_jobs():
 def all_bundles():
     return sorted(BUNDLES.values(), key=lambda b: b.get("created") or "",
                   reverse=True)
+
+def _open_paths():
+    """Real paths of files currently held open by any process.
+
+    Linux: /proc/<pid>/fd scan. macOS/other POSIX: `lsof -Fn` fallback.
+    Windows: no scan — the age guard + active-job directory guard still
+    protect running downloads there.
+    """
+    paths = set()
+    if os.path.isdir("/proc"):
+        try:
+            pids = [p for p in os.listdir("/proc") if p.isdigit()]
+        except OSError:
+            pids = []
+        for pid in pids:
+            fd_dir = f"/proc/{pid}/fd"
+            try:
+                fds = os.listdir(fd_dir)
+            except OSError:
+                continue
+            for fd in fds:
+                try:
+                    paths.add(os.path.realpath(os.path.join(fd_dir, fd)))
+                except OSError:
+                    pass
+        if paths:
+            return paths
+    if shutil.which("lsof"):
+        try:
+            proc = subprocess.run(["lsof", "-Fn"], capture_output=True,
+                                  text=True, timeout=20)
+            for line in (proc.stdout or "").splitlines():
+                if line.startswith("n") and len(line) > 1:
+                    try:
+                        paths.add(os.path.realpath(line[1:]))
+                    except OSError:
+                        pass
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return paths
+
+
+def cleanup_stale_cache(min_age_seconds=3600, stores=None):
+    """Remove stale HF download `.incomplete` / `.lock` files.
+
+    Runs at app startup (and can be called manually). Only files older than
+    `min_age_seconds` are removed, cache dirs belonging to an in-process
+    active job are skipped wholesale, and any path currently open by a live
+    process is skipped (Linux /proc, POSIX lsof) — so a running download is
+    never touched. Scans each store root's `.cache/huggingface/download`
+    plus one level of per-model bundle folders.
+    """
+    roots = []
+    names = stores if stores is not None else list_stores()
+    for name in names:
+        try:
+            root = path_resolver.resolve(f"store://{name}")
+        except Exception:
+            continue
+        if root and not str(root).startswith("store://"):
+            roots.append(root)
+    roots = list(dict.fromkeys(roots))
+
+    cache_dirs = []
+    for root in roots:
+        cache_dirs.append(os.path.join(
+            root, ".cache", "huggingface", "download"))
+        try:
+            for entry in os.scandir(root):
+                if entry.is_dir(follow_symlinks=False):
+                    cache_dirs.append(os.path.join(
+                        entry.path, ".cache", "huggingface", "download"))
+        except OSError:
+            pass
+
+    open_paths = _open_paths()
+    # Never touch a cache directory that belongs to a download this process
+    # is still running — even if its mtime looks old (slow/blocked stream).
+    active_cache_dirs = set()
+    for job in JOBS.values():
+        if job.get("status") != "downloading":
+            continue
+        for base in (job.get("bundle_dir"), job.get("local_dir")):
+            if base and os.path.isdir(base):
+                active_cache_dirs.add(os.path.realpath(os.path.join(
+                    base, ".cache", "huggingface", "download")))
+    now = time.time()
+    result = {"removed_incomplete": 0, "removed_locks": 0,
+              "removed_bytes": 0, "skipped_active": 0,
+              "errors": []}
+    for cache_dir in dict.fromkeys(cache_dirs):
+        if not os.path.isdir(cache_dir):
+            continue
+        real_cache = os.path.realpath(cache_dir)
+        if any(real_cache == d or real_cache.startswith(d + os.sep)
+               for d in active_cache_dirs):
+            result["skipped_active"] += 1
+            continue
+        for dirpath, _dirnames, files in os.walk(cache_dir):
+            for fname in files:
+                if not (fname.endswith(".incomplete")
+                        or fname.endswith(".lock")):
+                    continue
+                path = os.path.join(dirpath, fname)
+                try:
+                    st = os.stat(path, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                except OSError as e:
+                    result["errors"].append(f"{path}: {e}")
+                    continue
+                if now - st.st_mtime < min_age_seconds:
+                    continue
+                if os.path.realpath(path) in open_paths:
+                    result["skipped_active"] += 1
+                    continue
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    continue
+                except OSError as e:
+                    result["errors"].append(f"{path}: {e}")
+                    continue
+                if fname.endswith(".incomplete"):
+                    result["removed_incomplete"] += 1
+                    result["removed_bytes"] += st.st_size
+                else:
+                    result["removed_locks"] += 1
+        # prune empty dirs left behind (keep the cache root itself)
+        for dirpath, _dirnames, _files in os.walk(cache_dir, topdown=False):
+            if dirpath == cache_dir:
+                continue
+            try:
+                if not os.listdir(dirpath):
+                    os.rmdir(dirpath)
+            except OSError:
+                pass
+    return result

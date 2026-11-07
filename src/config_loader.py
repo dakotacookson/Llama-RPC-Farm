@@ -10,6 +10,7 @@ from datetime import datetime
 import yaml
 
 import path_resolver
+from runtime_paths import data_dir
 import gguf_inspect
 
 # Cache for MTP detection results keyed by resolved absolute path to avoid re-reading GGUF files
@@ -56,7 +57,7 @@ def _get_decision_type(gguf_path):
     _decision_cache[gguf_path] = result
     return result
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = data_dir()
 CONFIG_DIR = os.path.join(BASE_DIR, "config")
 MODELS_DIR = os.path.join(CONFIG_DIR, "models")
 
@@ -65,91 +66,8 @@ MODELS_DIR = os.path.join(CONFIG_DIR, "models")
 # these helpers re-export the vocabulary so callers can validate without
 # importing the registry (which pulls in rpc_manager).
 ENGINE_LLAMA_CPP = "llama_cpp"
-ENGINE_VLLM = "vllm"
-VALID_ENGINES = (ENGINE_LLAMA_CPP, ENGINE_VLLM)
+VALID_ENGINES = (ENGINE_LLAMA_CPP,)
 DEFAULT_ENGINE = ENGINE_LLAMA_CPP
-
-VLLM_DELIVERY_DEFAULT = "venv"
-VALID_VLLM_DELIVERY = ("venv", "docker")
-# B13 per-machine override: a machine record (config/machines.yaml) may set
-# `vllm_delivery:` to pin ONE machine to a delivery method, overriding the
-# global settings vllm.delivery (e.g. a host without python3.12 could be
-# pinned to docker once docker ships). "" (the default) = inherit global.
-VLLM_MACHINE_DELIVERY_KEY = "vllm_delivery"
-VALID_MACHINE_VLLM_DELIVERY = ("", "venv", "docker")
-VLLM_BLOCK_DEFAULTS = {
-    "delivery": VLLM_DELIVERY_DEFAULT,
-    "venv_bin": "~/vllm-env/bin/vllm",
-    "docker_image": "vllm/vllm-openai:latest",
-    "default_gpu_memory_utilization": 0.9,
-    # multi-host Ray cluster knobs (design §2): gcs port + cluster-formation
-    # timeout (vLLM multi-node-serving.sh's 300 s leader loop).
-    "ray_port": 6379,
-    "ray_init_timeout": 300,
-    # Tool calling: auto tool choice requires a parser. "hermes" works for
-    # the Qwen family (incl. GGUF builds); per-model override via
-    # vllm.tool_call_parser, opt-out via vllm.enable_auto_tool_choice=False.
-    "default_tool_call_parser": "hermes",
-}
-VLLM_ALLOWED_KEYS = set(VLLM_BLOCK_DEFAULTS)
-
-# Per-model `vllm:` section (config/models/*.yaml, ARD §3.3). The schema
-# vocabulary lives here (like the engine enum above) so config round-trips
-# and save-path validation don't need vllm_manager (which pulls rpc_manager);
-# vllm_manager re-exports these names.
-VLLM_MODEL_KEYS = frozenset({
-    "max_model_len", "max_num_seqs", "tensor_parallel_size",
-    "pipeline_parallel_size",
-    "kv_cache_dtype", "cpu_offload_gb", "quantization", "tokenizer",
-    "extra_args",
-    # A2: hardware-sensitive — heterogeneous machines need a different
-    # budget per deployment (0.9 on the big GPU, 0.35 on the small one).
-    # Falls back to settings' default_gpu_memory_utilization when unset.
-    "gpu_memory_utilization",
-    # multi-host (Ray cluster): ray|mp; mp is refused with peers for now
-    # (vllm_manager.build_vllm_cluster_command) — reserved vocabulary.
-    "distributed_executor_backend",
-    # compute dtype for the model weights: Turing (sm_75, e.g. RTX 2060)
-    # cannot run bfloat16 (needs sm_80+) — heterogeneous clusters must
-    # force `half`. auto lets vLLM pick (bf16 on Ampere+).
-    "dtype",
-    # OpenAI tool-calling: --enable-auto-tool-choice + --tool-call-parser.
-    # Default ON (parser 'hermes' — the Qwen/Most chat-template family):
-    # opencode and every agentic client sends tools with
-    # tool_choice="auto", which vLLM 400s without these flags.
-    "enable_auto_tool_choice",
-    "tool_call_parser",
-    # Per-model Ray/NCCL transport env overrides for multi-host clusters.
-    # A mapping of env-var -> str|int|bool. The cluster script emits every
-    # key as `export KEY=VALUE` (VLLM_/NCCL_ prefixes are auto-copied to
-    # workers by vLLM's ray/ray_env.py). Absent keys keep the built-in
-    # heterogeneous-Ethernet defaults (see vllm_manager); users on
-    # Infiniband/NVLink clusters override or drop them here, per model.
-    "ray_env",
-    # Multi-host parallel layout: "pp" (default) = pipeline-parallel across
-    # hosts — layer-split, one activation pass per stage boundary, the
-    # llama.cpp-RPC-style layout. Far better over 1xPCIe/Ethernet than TP
-    # (which allreduces every layer). "tp" = tensor-parallel across hosts
-    # — only sensible with Infiniband/NVLink-class interconnects.
-    "parallel_layout",
-    # CUDA graphs: default ON (eager) for multi-host Ray clusters —
-    # capture hangs across heterogeneous Ethernet TP groups (upstream
-    # #36237/#41725). High-speed interconnect users can turn it off.
-    "enforce_eager",
-    # Attention backend (--attention-backend, vLLM 0.18+): the vLLM
-    # equivalent of llama.cpp's flash-attn toggle. flash_attn needs
-    # sm_80+ (RTX 2060-class Turing cards cannot use it — vLLM falls
-    # back to triton there); auto keeps vLLM's per-device pick.
-    "attention_backend",
-})
-# research pitfall: vLLM's kv cache quantization supports fp8 on SM89+
-# hardware ONLY (0.30's Triton attention backend raises on sm_86/sm_75:
-# "native FP8 (fp8e4nv) requires SM89+"). On older consumer GPUs the
-# supported set is the unquantized ones — auto/half/bfloat16/float16.
-# fp8 stays first (the llama.cpp q4_0/q8_0 cache types still have no
-# equivalent and must never reach the command line).
-VALID_KV_CACHE_DTYPES = ("auto", "fp8", "half", "bfloat16", "float16")
-VALID_COMPUTE_DTYPES = ("auto", "half", "float16", "bfloat16", "float32")
 
 
 def validate_engine(engine, where="settings.yaml"):
@@ -169,11 +87,10 @@ def inject_engine_defaults(settings):
     ValueError via validate_engine on a bad engine.
 
     Adapter v2 (AUDIT-T6 §1.4, DEC-01): the engine-qualified part is
-    DELEGATED to the active adapter's settings_section() — today that is
-    the `vllm:` block (owned by VllmAdapter); llama.cpp owns no block.
-    Unknown-but-valid engine names keep the same strictness: a registered
-    adapter is dispatched to; a recognized-but-unregistered engine raises
-    (get_engine's message) — never a silent fallback.
+    DELEGATED to the active adapter's settings_section() — llama.cpp owns
+    no block. Unknown-but-valid engine names keep the same strictness: a
+    registered adapter is dispatched to; a recognized-but-unregistered
+    engine raises (get_engine's message) — never a silent fallback.
     """
     if not isinstance(settings, dict):
         raise ValueError("settings must be a dict")
@@ -181,10 +98,10 @@ def inject_engine_defaults(settings):
     validate_engine(settings["engine"])
     # Adapter v2 dispatch (AUDIT-T6 §1.4, DEC-01): the ACTIVE adapter owns
     # its settings block. Deferred import — engine_registry imports THIS
-    # module at top level, so a module-level import here would be a cycle
-    # (same pattern vllm_manager uses). Restored by UX-2 (t_cda5171e): the
-    # installer-branch merge dropped the dispatch, so vllm-block validation
-    # silently vanished and 15 engine-registry/roundtrip tests failed.
+    # module at top level, so a module-level import here would be a cycle.
+    # Restored by UX-2 (t_cda5171e): the installer-branch merge dropped the
+    # dispatch, so block validation silently vanished and 15
+    # engine-registry/roundtrip tests failed.
     import engine_registry
     engine_registry.get_engine(settings).settings_section(settings)
     return settings
@@ -273,14 +190,16 @@ MACHINE_DEFAULTS = {
     "rdma_gid": "",          # optional pin: RoCE v2 GID index on that device; empty = auto
     "rdma_cm": False,        # use rdma_cm QP path resolution (mlx4/CX3); else raw path
     "swap_config_path": "",       # DEC-03: per-machine llama.cpp swap-config file ("" = inherit)
-    "swap_config_path_vllm": "",  # DEC-03: per-machine vllm swap-config file ("" = inherit)
+    # Optional peer agent (docs/peer-agent.md). auto = probe agent, fall
+    # back to SSH; ssh = never use the agent; agent = require it.
+    "transport": "auto",
+    "agent_port": 8198,
 }
 GROUP_DEFAULTS = {
     "description": "",
     "machines": [],        # list of machine names
     # DEC-17: engine-qualified groups. Both group collections carry an
-    # `engine` field (llama_cpp | vllm) so each backend sees its own
-    # world (dual-backend ideology: hidden-not-translated). Default
+    # `engine` field so each backend sees its own world. Default
     # llama_cpp keeps existing engine-blind YAML loading exactly as
     # before — the current full-cluster group never vanishes.
     "engine": ENGINE_LLAMA_CPP,
@@ -303,52 +222,28 @@ def migrate_group_engines():
     """DEC-17 migration: stamp `engine` on existing group entries so the
     engine-blind YAML keeps rendering under the engine it belongs to.
 
-    Machine groups (groups.yaml): every existing group predates the
-    split and was created under the llama.cpp world (RPC peer sets) —
-    stamped llama_cpp; a group created under vllm is stamped on write
-    by the API, so the only un-stamped entries are llama_cpp-era ones.
-
-    Serve groups (swap_groups.yaml): engine inferred from member
-    formats — a group whose members resolve to hf-format models is
-    vLLM's (llama.cpp cannot serve safetensors), otherwise llama_cpp.
-    Existing engine fields are NEVER overwritten. One-time per entry:
-    after stamping, the file on disk carries the field (idempotent).
+    Every existing group predates the engine split and was created under
+    the llama.cpp world — stamped llama_cpp. Existing engine fields are
+    NEVER overwritten. One-time per entry: after stamping, the file on
+    disk carries the field (idempotent).
     """
-    def _fmt_of_member(mid):
-        m = get_model(mid)
-        if not m:
-            return None
-        return (m.get("format")
-                or ("gguf" if str(m.get("base_path") or "")
-                    .lower().endswith(".gguf") else "hf"))
-
-    def _migrate(collection, infer):
+    def _migrate(collection):
         items = collection.all()
         changed = False
         for g in items:
             if g.get("engine"):
                 continue
-            g["engine"] = infer(g)
+            g["engine"] = ENGINE_LLAMA_CPP
             changed = True
         if changed:
             collection._save(items)
 
-    def _machine_group_engine(g):
-        return ENGINE_LLAMA_CPP
-
-    def _serve_group_engine(g):
-        fmts = [_fmt_of_member(mem) for mem in (g.get("members") or [])]
-        hf = [f for f in fmts if f]
-        if hf and all(f == "hf" for f in hf):
-            return ENGINE_VLLM
-        return ENGINE_LLAMA_CPP
-
     try:
-        _migrate(groups, _machine_group_engine)
+        _migrate(groups)
     except Exception:
         pass
     try:
-        _migrate(swap_groups, _serve_group_engine)
+        _migrate(swap_groups)
     except Exception:
         pass
 
@@ -441,56 +336,11 @@ machines.add = _machines_add
 machines.update = _machines_update
 
 
-def validate_machine_vllm_delivery(machine):
-    """Validate ONE machine record's `vllm_delivery` override (B13).
-
-    Accepted values: "", "venv", "docker" — anything else raises (a typo
-    must never silently inherit the global delivery, same strictness as
-    the settings vllm.delivery enum). Empty/missing = inherit global.
-    Called by resolve_vllm_delivery(); validation on the save path keeps
-    bad values out of machines.yaml in the first place.
-    """
-    delivery = (machine or {}).get(VLLM_MACHINE_DELIVERY_KEY)
-    if delivery is None:
-        return ""
-    if not isinstance(delivery, str):
-        raise ValueError(
-            f"machine vllm_delivery must be a string (one of "
-            f"{', '.join(v or '(inherit global)' for v in VALID_MACHINE_VLLM_DELIVERY)}), "
-            f"got {delivery!r}")
-    delivery = delivery.strip().lower()
-    if delivery not in VALID_MACHINE_VLLM_DELIVERY:
-        raise ValueError(
-            f"invalid machine vllm_delivery '{delivery}' — must be one of "
-            f"{', '.join(v or '(inherit global)' for v in VALID_MACHINE_VLLM_DELIVERY)}")
-    return delivery
-
-
-def resolve_vllm_delivery(machine, global_delivery=None):
-    """B13: the delivery method for ONE machine — per-machine
-    `vllm_delivery` override wins over the settings `vllm.delivery` global.
-
-    Returns (delivery, reason) where reason explains the choice in user
-    words ("machine override", "global default venv", ...). Raises via
-    validate_machine_vllm_delivery on a bad override. global_delivery may
-    be passed by callers who already loaded the settings block; otherwise
-    the default (venv) stands in — install()/plan() always pass the real
-    block through vllm_installer._vllm_block().
-    """
-    override = validate_machine_vllm_delivery(machine)
-    if override:
-        return override, f"machine override (vllm_delivery: {override})"
-    glob = global_delivery or VLLM_DELIVERY_DEFAULT
-    return glob, f"global default ({glob})"
-
-
 # DEC-03 (AUDIT-T6 §1.6): per-engine swap-config override keys for machine
-# records — the machine-keyed mirror of swap.yaml's config_path /
-# config_path_vllm two-key pattern (same shape as vllm_delivery above).
+# records — the machine-keyed mirror of swap.yaml's config_path pattern.
 # "" / missing = inherit the global per-engine path.
 SWAP_MACHINE_CONFIG_KEYS = {
     ENGINE_LLAMA_CPP: "swap_config_path",
-    ENGINE_VLLM: "swap_config_path_vllm",
 }
 
 
@@ -500,9 +350,8 @@ def machine_swap_config_override(machine, engine):
 
     Returns "" when the machine inherits the global per-engine path, or a
     non-empty stripped path when it pins one. Raises ValueError on an
-    unknown engine or a non-string override — same strictness as
-    validate_machine_vllm_delivery: a typo must never silently inherit
-    (a swapped-in garbage path would point the daemon at nothing).
+    unknown engine or a non-string override — a typo must never silently
+    inherit (a swapped-in garbage path would point the daemon at nothing).
     """
     key = SWAP_MACHINE_CONFIG_KEYS.get(engine)
     if key is None:
@@ -714,16 +563,6 @@ def save_model(model_id, data):
         raise ValueError(f"invalid model_id '{mid}'")
     os.makedirs(MODELS_DIR, exist_ok=True)
     data.pop("_file", None)
-    # additive vllm: section round-trip (ARD §3.3): validate + normalize in
-    # place — flags and other llama.cpp keys pass through untouched.
-    apply_vllm_section(data, where=f"model '{mid}'")
-    # A2: variants may carry their own vllm: overrides (shallow-merged
-    # over the primary at plan/launch time) — sanitize each with the same
-    # schema so a bad per-variant value can't reach disk.
-    for var in data.get("variants") or []:
-        if isinstance(var, dict) and var.get("vllm") is not None:
-            apply_vllm_section(
-                var, where=f"model '{mid}' variant '{var.get('label') or '?'}'")
     # don't pollute existing single-config files with empty variants
     if not data.get("variants"):
         data.pop("variants", None)
@@ -741,29 +580,6 @@ def delete_model(model_id):
         os.remove(path)
         return True
     return False
-
-
-# ---------------- per-model `vllm:` section round-trip (ARD 3.3) ----------
-# DEC-04: the sanitize/apply LOGIC moved to VllmAdapter
-# (vllm_manager.VllmAdapter.sanitize_model_section / apply_model_section) --
-# the adapter owns its per-model section (AUDIT-T6 1.3). These module
-# functions are kept as thin delegates so existing call sites (save_model,
-# tests) keep working without importing vllm_manager (which would drag
-# rpc_manager into every config_loader import -- the lazy registry import
-# avoids that).
-
-def sanitize_vllm_section(raw, where="vllm"):
-    """Delegate to the owning adapter (DEC-04). Same errors, same shapes."""
-    import engine_registry
-    return engine_registry.get_engine_section_adapter().sanitize_model_section(
-        raw, where=where)
-
-
-def apply_vllm_section(data, where="vllm"):
-    """Delegate to the owning adapter (DEC-04). Same errors, same shapes."""
-    import engine_registry
-    return engine_registry.get_engine_section_adapter().apply_model_section(
-        data, where=where)
 
 
 def _machine_hw_slots(m):

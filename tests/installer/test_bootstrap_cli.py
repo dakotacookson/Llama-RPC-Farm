@@ -52,7 +52,6 @@ def test_report_setup_not_found(bs, monkeypatch, capsys):
     assert bs.main(["report-setup"]) == 0
     out = capsys.readouterr().out
     assert "llama-swap: not found" in out
-    assert "vllm: not found" in out
 
 
 def test_report_setup_no_redaction_outside_home(bs, monkeypatch, capsys):
@@ -81,20 +80,18 @@ def _fake_info():
 def test_install_client_role_passes_role_to_probe(bs, monkeypatch, capsys):
     seen = {}
 
-    def fake_probe(info, fs, run, role="main", pinned=None, with_vllm=True,
-                   with_vllm_metal=False, force_settings=False, manifest=None):
+    def fake_probe(info, fs, run, role="main", pinned=None,
+                   force_settings=False, manifest=None):
         seen["role"] = role
-        seen["with_vllm"] = with_vllm
         seen["manifest"] = manifest
         return []
 
     monkeypatch.setattr(bs, "detect_system_info", lambda run: _fake_info())
     monkeypatch.setattr(bs, "probe", fake_probe)
     monkeypatch.setattr(bs, "_read_manifest", lambda log: {"tools": {}})
-    rc = bs.main(["install", "--role", "client", "--no-vllm", "--dry-run"])
+    rc = bs.main(["install", "--role", "client", "--dry-run"])
     assert rc == 0
     assert seen["role"] == "client"
-    assert seen["with_vllm"] is False
     assert seen["manifest"] == {"tools": {}}
 
 
@@ -154,5 +151,4 @@ def test_no_subcommand_prints_help(bs, capsys):
 
 def test_default_pins_match_design(bs):
     assert bs.DEFAULT_PINS["llama.cpp"]["version"].startswith("b")
-    assert bs.DEFAULT_PINS["vllm"]["version"]
     assert bs.DEFAULT_PINS["llama-swap"]["version"]

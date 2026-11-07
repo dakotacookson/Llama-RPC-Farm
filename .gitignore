@@ -21,8 +21,11 @@ generated/*.py
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
 .venv/
 venv/
+peer_agent/build/
+peer_agent/dist/
 
 # node
 node_modules/
@@ -70,14 +73,15 @@ config/usage/*.enc
 .qe/
 qe-result.json
 
-# Handovers
-AGENT_handover_STATUS.md 
-SUMMARY_installation.md
+# coverage
+.coverage
+htmlcov/
 
-# PErsonal during testing
-.agents/
-.github/workflows
-opencode.jsonc
+# local agent wheel builds (release workflow rebuilds these)
+generated/agent-wheel/
 
-# Graphs
-graphify*
+# release build artifacts (repo-root dist/build, bundled agent wheel)
+/dist/
+/build/
+/agent-wheel/
+/llama-peer-agent.spec

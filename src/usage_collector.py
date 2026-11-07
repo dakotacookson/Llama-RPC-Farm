@@ -22,7 +22,8 @@ import queue
 import threading
 import time
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from runtime_paths import data_dir
+BASE_DIR = data_dir()
 USAGE_DIR = os.path.join(BASE_DIR, "config", "usage")
 USAGE_SETTINGS_KEY = "usage_tracking"   # settings.yaml gate (default on)
 
@@ -149,6 +150,12 @@ def _add(bucket, r):
     if dur > 0 and tout > 0 and not r.get("est"):
         bucket["_spd_tok"] = bucket.get("_spd_tok", 0) + tout
         bucket["_spd_dur"] = round(bucket.get("_spd_dur", 0.0) + dur, 3)
+        # per-model PEAK decode rate: highest exact per-request tok/s.
+        # Averages stay ratio-of-sums (never per-request arithmetic mean);
+        # this is only the gauge's "peak" marker.
+        rate = tout / dur
+        if rate > bucket.get("_spd_peak", 0.0):
+            bucket["_spd_peak"] = round(rate, 2)
     bucket["errors"] += 1 if int(r.get("status") or 0) >= 400 else 0
     bucket["wall_s"] = round(bucket["wall_s"] + float(r.get("dur") or 0), 3)
     bucket["tok_in"] += int(r.get("tok_in") or 0)
@@ -165,6 +172,12 @@ def _speed(b):
     if t > 0 and d > 0:
         return round(t / d, 2)
     return None
+
+
+def _peak_speed(b):
+    """Highest exact single-request decode rate in a bucket, or None."""
+    peak = b.get("_spd_peak") or 0
+    return round(peak, 2) if peak > 0 else None
 
 
 def aggregate(name, period="all", count=12):
@@ -229,6 +242,7 @@ def aggregate(name, period="all", count=12):
     # decode-speed average per model: Σtok_out / Σdur (ratio-of-sums —
     # the same basis as the per-day cells below, so totals reconcile)
     per_model_speed = {m: _speed(b) for m, b in per_model.items()}
+    per_model_peak = {m: _peak_speed(b) for m, b in per_model.items()}
     def _clean(b):
         return {k: v for k, v in b.items()
                 if not k.startswith("_")}
@@ -237,7 +251,9 @@ def aggregate(name, period="all", count=12):
             "total": _clean(total),
             "per_model": {m: _clean(v) for m, v in sorted(per_model.items())},
             "avg_tok_per_s": _speed(total),
-            "tok_out_per_s": per_model_speed}
+            "peak_tok_per_s": _peak_speed(total),
+            "tok_out_per_s": per_model_speed,
+            "tok_out_peak_per_s": per_model_peak}
 
 
 def by_model_daily(name, days=30):
@@ -260,28 +276,42 @@ def by_model_daily(name, days=30):
                                     for L in labels},
                                    "total": _empty_bucket(),
                                    "last": 0})
-        day = b["days"].get(d)
-        if day is None:
-            continue  # outside window
-        day["requests"] += 1
-        day["tok_out"] += int(r.get("tok_out") or 0)
-        day["tok_in"] += int(r.get("tok_in") or 0)
-        day["wall_s"] = round(day["wall_s"] + float(r.get("dur") or 0), 3)
+        # Totals/last-used are ALL-TIME — the daily matrix below is the
+        # only windowed view. (A pre-fix `continue` here silently scoped
+        # the card totals to the 30-day window and hid older models.)
         _add(b["total"], r)
         b["last"] = max(b["last"], float(r.get("ts") or 0))
+        day = b["days"].get(d)
+        if day is None:
+            continue  # outside the daily-matrix window only
+        dur = float(r.get("dur") or 0)
+        tout = int(r.get("tok_out") or 0)
+        day["requests"] += 1
+        day["tok_out"] += tout
+        day["tok_in"] += int(r.get("tok_in") or 0)
+        day["wall_s"] = round(day["wall_s"] + dur, 3)
+        # same exact-only basis as the all-time _speed (never mix in
+        # estimated streamed token counts)
+        if dur > 0 and tout > 0 and not r.get("est"):
+            day["_spd_tok"] = day.get("_spd_tok", 0) + tout
+            day["_spd_dur"] = round(day.get("_spd_dur", 0.0) + dur, 3)
     out = {}
     for model, b in per.items():
         days_out = []
         for L in labels:
             row = b["days"][L]
-            spd = round(row["tok_out"] / row["wall_s"], 2) \
-                if row["wall_s"] > 0 and row["tok_out"] > 0 else None
-            days_out.append({"label": L, **row, "avg_spd": spd})
+            stok = row.get("_spd_tok") or 0
+            sdur = row.get("_spd_dur") or 0
+            spd = round(stok / sdur, 2) if stok > 0 and sdur > 0 else None
+            clean = {k: v for k, v in row.items()
+                     if not k.startswith("_")}
+            days_out.append({"label": L, **clean, "avg_spd": spd})
         out[model] = {
             "days": days_out,
             "total": {k: v for k, v in b["total"].items()
                       if not k.startswith("_")},
             "avg_spd": _speed(b["total"]),
+            "peak_spd": _peak_speed(b["total"]),
             "last_used": b["last"],
         }
     return out

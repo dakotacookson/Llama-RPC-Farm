@@ -54,9 +54,8 @@ def client(settings_file):
 
 # ---------------- GET /api/tools/verify ------------------------------------
 # NOTE (UX-3 merge): the per-machine verify shape ({machines: {...}}) was
-# superseded by the per-tool local probe ({llama.cpp, llama-swap, vllm})
-# — the shape the Settings-tab tool panel consumes. Covered in
-# test_engine_endpoints.py (shape + settings-record tests).
+# superseded by the per-tool local probe ({llama.cpp, llama-swap})
+# — the shape the Settings-tab tool panel consumes.
 
 
 # ---------------- POST /api/tools/install/sync -----------------------------
@@ -99,25 +98,6 @@ def test_install_sync_unknown_machine_404(client, monkeypatch):
     assert r.status_code == 404
     assert "ghost" in r.json()["detail"]
 
-
-def test_install_sync_windows_vllm_refused(client, monkeypatch, settings_file):
-    """A windows machine's plan carries the vLLM refusal (WSL guidance)
-    as a PlanNote — the endpoint surfaces it verbatim in `notes`."""
-    from installer.probe import PlanNote
-
-    def fake_execute(plan, info, dry_run):
-        notes = [(s.kind, s.tool, s.message) for s in plan
-                 if isinstance(s, PlanNote)]
-        return dict(_CANNED_SUMMARY, notes=notes)
-
-    monkeypatch.setattr(app_module, "_execute_plan", fake_execute)
-    win = tmp_machine(client, os_name="windows")
-    r = client.post("/api/tools/install/sync",
-                    json={"machine": win, "dry_run": True})
-    body = r.json()
-    refused = [n for n in body["notes"] if n[0] == "refused" and n[1] == "vllm"]
-    assert refused, body["notes"]
-    assert "WSL" in refused[0][2]
 
 
 def tmp_machine(client, os_name):

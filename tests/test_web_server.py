@@ -47,6 +47,11 @@ def _make_stub_cfg():
 
     stub.cfg = _Cfg()
     stub.Cfg = _Cfg
+    # engine_registry reads these at import time; keep the stub
+    # order-independent so this module can run first in isolation.
+    stub.VALID_ENGINES = ("llama_cpp",)
+    stub.DEFAULT_ENGINE = "llama_cpp"
+    stub.ENGINE_LLAMA_CPP = "llama_cpp"
     return stub
 
 

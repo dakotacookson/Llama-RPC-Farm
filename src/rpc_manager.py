@@ -10,21 +10,22 @@ Generated scripts mirror start-huihui-35b-rpc.sh / start-rpc-qwen.sh.
 This module NEVER touches files outside its own folder.
 """
 import os
+import re
 import time
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
 
-from ssh_manager import SSHManager, SSHError
 import config_loader as cfg
+import agent_client
+import peer_transport
 import gpu_vendor
 import gguf_inspect
 import local_node
 import path_resolver
 import stats_collector
+from runtime_paths import data_dir
 
-GENERATED_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "generated"
-)
+GENERATED_DIR = os.path.join(data_dir(), "generated")
 
 DEFAULT_BIN = "~/llama.cpp/build/bin"
 
@@ -150,59 +151,6 @@ def _swap_state_file(model_id):
     return f"swap.port.{safe}"
 
 
-def swap_state_killer_snippet(host, state_key, fallback_port,
-                              os_type="linux"):
-    """cmdStop one-liner: kill every llama-server whose --port is listed
-    in the group/machine state file, PLUS the config port. Serve-group
-    aware: swap_manager resolves the deployment's group and passes it as
-    `state_key` (never a hard-coded name in the generated string).
-
-    llama-swap execs cmdStop itself (no local shell) over sshpass — the
-    remote side runs ONE command so a missing state file degrades to the
-    bare config-port pkill (pre-fix behavior). Trailing-space anchoring
-    (`--port N `) is preserved: 52342 never matches 523421.
-
-    Returns the full `sshpass ... ssh ... '<remote>'` string; $SSH_PASS
-    stays BARE for llama-swap's direct exec."""
-    user = host.get("username") or "root"
-    ip = (host.get("ip") or "").strip()
-    if os_type != "windows":
-        state_rel = f".cache/llama-wrapper/{_swap_state_file(state_key)}"
-        remote = (
-            "bash -c 'ports=$(cat $HOME/" + state_rel + " 2>/dev/null); "
-            'pkill -u ' + user + ' -f "llama-[s]erver.*'
-            + _port_match_re(fallback_port) + '" 2>/dev/null; '
-            'for p in $ports; do '
-            r'pkill -u ' + user + ' -f "llama-[s]erver.*--port $p( |$)" '
-            "2>/dev/null; done; "
-            "rm -f $HOME/" + state_rel + "; true'")
-        return (
-            'sshpass -p "$SSH_PASS" ssh -n '
-            '-o StrictHostKeyChecking=no -o ConnectTimeout=5 '
-            f'{user}@{ip} {remote}')
-    # Windows box: PowerShell reads the state file and kills every
-    # llama-server whose command line carries ANY recorded --port (or the
-    # config port), then clears the file. ASCII only (PS 5.1 over SSH).
-    state_win = f".cache\\llama-wrapper\\{_swap_state_file(state_key)}"
-    ps = (
-        "$f=\"$env:USERPROFILE\\" + state_win + "\"; "
-        "$ports=@('" + str(fallback_port) + "'); "
-        "foreach ($p in (Get-Content $f -ErrorAction SilentlyContinue)) "
-        "{ $ports += [string]$p }; "
-        "Get-CimInstance Win32_Process | Where-Object { "
-        "$_.Name -like 'llama-server*' -and ("
-        "$cl = ' ' + $_.CommandLine + ' '; "
-        "($ports | ForEach-Object { "
-        "$cl.Contains(' --port ' + $_ + ' ') -or "
-        "$cl.EndsWith(' --port ' + $_) }) "
-        "-contains $true) } | ForEach-Object { "
-        "Stop-Process -Id $_.ProcessId -Force }; "
-        "Remove-Item $f -ErrorAction SilentlyContinue")
-    return (
-        'sshpass -p "$SSH_PASS" ssh -n '
-        '-o StrictHostKeyChecking=no -o ConnectTimeout=5 '
-        f'{user}@{ip} '
-        '"powershell -NoProfile -Command \\"' + ps + '\\""')
 
 
 def _model_rpc_ports(model_cfg, peers, device_order=None):
@@ -275,10 +223,10 @@ def _global_bin():
     """Global default from config/settings.yaml — fallback when machine has no override."""
     try:
         import yaml as _yaml
-        from pathlib import Path as _P
-        p = _P(__file__).resolve().parents[1] / "config" / "settings.yaml"
-        if p.exists():
-            data = _yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        p = os.path.join(data_dir(), "config", "settings.yaml")
+        if os.path.exists(p):
+            with open(p, encoding="utf-8") as f:
+                data = _yaml.safe_load(f) or {}
             v = (data.get("llama_bin") or "").strip()
             if v:
                 return v
@@ -331,41 +279,9 @@ def _win_exe_expr(machine, server="ggml-rpc-server"):
     return f"Join-Path ({base}) '{exe_name}'"
 
 
-class _MacCapturingSSH(SSHManager):
-    """SSHManager that remembers the machine it connects to. On the first
-    successful command run, grabs the machine's MAC (the identity that
-    never changes across DHCP re-leases) and stores it on the machine
-    config — later IP drift can then be auto-healed from the ARP table.
-    Capture is once-per-machine, off the hot path."""
-    def __init__(self, machine, *a, **kw):
-        super().__init__(machine["ip"], machine.get("username", ""),
-                         machine.get("password", ""), port=machine.get("port", 22),
-                         *a, **kw)
-        self._machine = machine
-        self._mac_done = bool((machine.get("mac") or "").strip())
-
-    def run(self, command, timeout=60):
-        code, out, err = super().run(command, timeout)
-        if code == 0 and not self._mac_done:
-            self._mac_done = True  # once per process, even on failure
-            try:
-                import discovery
-                os_type = self._machine.get("os", "linux")
-                mac_ip, mac = discovery.query_machine_mac(self, os_type)
-                if mac:
-                    self._machine["mac"] = mac
-                    cfg.machines.update(
-                        self._machine.get("name") or self._machine.get("id"),
-                        {"mac": mac})
-                    print(f"[mac-capture] {self._machine.get('name')}: {mac} @ {mac_ip}")
-            except Exception:
-                pass  # best-effort: never break a working command
-        return code, out, err
-
-
 def _ssh_for(machine):
-    return _MacCapturingSSH(machine)
-
+    """SSH runtime transport is removed — only the peer agent is used."""
+    raise RuntimeError("SSH transport removed; use the peer agent")
 
 def _bin_subdir(machine, binary):
     """Bin path for remote commands. ~/ paths become $HOME-relative
@@ -398,7 +314,7 @@ def _run_local(cmd, is_win, timeout=20):
         return 1, "", str(e)
 
 
-def stop_rpc(machine_name, port=None):
+def stop_rpc(machine_name, port=None, use_agent=True):
     """Stop llama processes on a machine, OS-aware, works locally and over SSH.
 
     port=None (default): legacy "stop everything" — kills llama-swap,
@@ -414,30 +330,91 @@ def stop_rpc(machine_name, port=None):
     is_local = local_node.is_local(machine)
     os_type = "windows" if is_win else "linux"
 
+    # Optional agent: per-port RPC stop, or the explicit stop-all parity
+    # endpoint when port is None.
+    if use_agent and not is_local and agent_client.should_use_agent(machine):
+        if port is None:
+            try:
+                res = agent_client.stop_all(machine)
+                return {
+                    "machine": machine_name, "port": None,
+                    "killed": bool(res.get("killed")),
+                    "detail": [], "remaining": res.get("remaining", {}),
+                }
+            except Exception as e:
+                if agent_client.transport(machine) == "agent":
+                    return {
+                        "machine": machine_name, "port": None,
+                        "killed": False, "detail": [],
+                        "stderr": f"agent error: {e}",
+                    }
+                print(f"[agent] {machine_name}: stop-all failed, falling back to SSH: {e}")
+        if port is not None:
+            try:
+                res = agent_client.rpc_stop(machine, int(port))
+                killed = bool(res.get("killed"))
+                return {
+                    "machine": machine_name, "port": int(port),
+                    "killed": killed,
+                    "detail": [{"process": f"ggml-rpc-server:-p{port}",
+                                "exit_code": 0 if killed else 1,
+                                "stdout": "", "stderr": ""}],
+                }
+            except Exception as e:
+                if agent_client.transport(machine) == "agent":
+                    return {
+                        "machine": machine_name, "port": int(port),
+                        "killed": False,
+                        "detail": [{"process": f"ggml-rpc-server:-p{port}",
+                                    "exit_code": 1, "stdout": "",
+                                    "stderr": f"agent error: {e}"}],
+                    }
+                print(f"[agent] {machine_name}: rpc/stop failed, falling back to SSH: {e}")
+
     def run(cmd, timeout=20):
         if is_local:
             return _run_local(cmd, is_win, timeout)
         try:
             return _ssh_for(machine).run(cmd, timeout=timeout)
-        except SSHError as e:
+        except RuntimeError as e:
             return 255, "", str(e)
 
     # ---- per-model port-targeted stop ----
     if port is not None:
         results = []
         if is_win:
-            # match the rpc-server whose command line contains "-p <port>"
-            ps = ("powershell -NoProfile -Command \""
-                  "Get-CimInstance Win32_Process | "
-                  f"Where-Object {{ (' ' + $_.CommandLine + ' ') -like '* -p {port} *' -and $_.Name -like 'ggml-rpc-server*' }} | "
-                  "ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}\"")
-            code, out, err = run(ps)
+            # Pipe-free PowerShell: cmd.exe mangles the pipe form of this
+            # command over OpenSSH (observed: Stop-Process never ran, but
+            # the old code reported success). foreach + explicit count is
+            # also verifiable.
+            ps_kill = (
+                "$c=0; foreach ($x in (Get-CimInstance Win32_Process)) { "
+                f"if ($x.Name -like 'ggml-rpc-server*' -and "
+                f"((' ' + $x.CommandLine + ' ') -like '*-p {port} *')) "
+                "{ Stop-Process -Id $x.ProcessId -Force; $c++ } }; $c")
+            code, out, err = run('powershell -NoProfile -Command "' + ps_kill + '"')
             results.append((f"ggml-rpc-server:-p{port}", code, out, err))
             # stale RPC tensor cache cleanup (see linux branch)
             run("powershell -NoProfile -Command \"Remove-Item "
                 "$env:USERPROFILE/.cache/llama.cpp/rpc -Recurse -Force "
                 "-ErrorAction SilentlyContinue\"")
-            still = False
+            still = True
+            ps_count = (
+                "$c=0; foreach ($x in (Get-CimInstance Win32_Process)) { "
+                f"if ($x.Name -like 'ggml-rpc-server*' -and "
+                f"((' ' + $x.CommandLine + ' ') -like '*-p {port} *')) "
+                "{ $c++ } }; $c")
+            for _ in range(5):
+                time.sleep(0.3)
+                _vc, vout, _ = run('powershell -NoProfile -Command "' + ps_count + '"')
+                try:
+                    count = int((vout or "").strip().splitlines()[-1])
+                except (ValueError, IndexError):
+                    count = 0
+                if count == 0:
+                    still = False
+                    break
+            code = 0 if not still else code
         else:
             user = (machine.get("username") or "").strip()
             uspec = f"-u {user} " if user else ""  # local master: no -u
@@ -481,8 +458,7 @@ def stop_rpc(machine_name, port=None):
     else:
         # stop+disable the systemd unit FIRST: it has Restart=always, so a
         # bare pkill just gets resurrected. Then pkill the stragglers.
-        run("systemctl --user stop llama-swap 2>/dev/null; "
-            "systemctl --user disable llama-swap 2>/dev/null; true")
+        run("systemctl --user stop llama-swap 2>/dev/null; true")
         # one pkill pass over all three, ordered; 1 = nothing matched is fine
         user = (machine.get("username") or "").strip()
         uspec = f"-u {user} " if user else ""  # local master: no -u
@@ -508,7 +484,7 @@ def stop_rpc(machine_name, port=None):
     }
 
 
-def stop_llama_server_port(machine_name, port):
+def stop_llama_server_port(machine_name, port, use_agent=True):
     """Kill ONLY the llama-server bound to --port <port> on a machine.
 
     Serve-group-safe pre-launch hygiene for single-box (local) launches:
@@ -521,12 +497,30 @@ def stop_llama_server_port(machine_name, port):
     is_win = machine.get("os", "linux") == "windows"
     is_local = local_node.is_local(machine)
 
+    if use_agent and not is_local and agent_client.should_use_agent(machine):
+        try:
+            res = agent_client.llama_stop(machine, int(port))
+            killed = bool(res.get("killed"))
+            return {"machine": machine_name, "port": int(port),
+                    "killed": killed,
+                    "detail": [{"process": f"llama-server:--port{port}",
+                                "exit_code": 0 if killed else 1,
+                                "stdout": "", "stderr": ""}]}
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                return {"machine": machine_name, "port": int(port),
+                        "killed": False,
+                        "detail": [{"process": f"llama-server:--port{port}",
+                                    "exit_code": 1, "stdout": "",
+                                    "stderr": f"agent error: {e}"}]}
+            print(f"[agent] {machine_name}: llama/stop failed, falling back to SSH: {e}")
+
     def run(cmd, timeout=20):
         if is_local:
             return _run_local(cmd, is_win, timeout)
         try:
             return _ssh_for(machine).run(cmd, timeout=timeout)
-        except SSHError as e:
+        except RuntimeError as e:
             return 255, "", str(e)
 
     port = int(port)
@@ -535,17 +529,32 @@ def stop_llama_server_port(machine_name, port):
     # end (the remote-local launcher renders --port last), leaving VRAM
     # held through every cmdStop (observed on aibox3 group swaps).
     if is_win:
-        ps = ("powershell -NoProfile -Command \""
-              "Get-CimInstance Win32_Process | "
-              f"Where-Object {{ $cl = ' ' + $_.CommandLine + ' '; "
-              f"(($cl -like '* --port {port} *') -or "
-              f"($cl -like '* --port {port}')) -and "
-              "($_.Name -like 'llama-server*') }} | "
-              "ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}\"")
-        code, out, err = run(ps)
-        return {"machine": machine_name, "port": port, "killed": code == 0,
+        ps_kill = (
+            "$c=0; foreach ($x in (Get-CimInstance Win32_Process)) { "
+            f"if ($x.Name -like 'llama-server*' -and "
+            f"((' ' + $x.CommandLine + ' ') -like '* --port {port} *')) "
+            "{ Stop-Process -Id $x.ProcessId -Force; $c++ } }; $c")
+        code, out, err = run('powershell -NoProfile -Command "' + ps_kill + '"')
+        still = True
+        ps_count = (
+            "$c=0; foreach ($x in (Get-CimInstance Win32_Process)) { "
+            f"if ($x.Name -like 'llama-server*' -and "
+            f"((' ' + $x.CommandLine + ' ') -like '* --port {port} *')) "
+            "{ $c++ } }; $c")
+        for _ in range(5):
+            time.sleep(0.3)
+            _vc, vout, _ = run('powershell -NoProfile -Command "' + ps_count + '"')
+            try:
+                count = int((vout or "").strip().splitlines()[-1])
+            except (ValueError, IndexError):
+                count = 0
+            if count == 0:
+                still = False
+                break
+        return {"machine": machine_name, "port": port, "killed": not still,
                 "detail": [{"process": f"llama-server:--port{port}",
-                            "exit_code": code, "stdout": out, "stderr": err}]}
+                            "exit_code": 0 if not still else 1,
+                            "stdout": out, "stderr": err}]}
     user = (machine.get("username") or "").strip()
     uspec = f"-u {user} " if user else ""
     pat = f"llama-[s]erver.*{_port_match_re(port)}"
@@ -649,7 +658,7 @@ def _rpc_state_read(machine, is_local, port=50052):
                f"cat {tmp} 2>/dev/null || true")
     try:
         _, out, _ = _ssh_for(machine).run(cmd, timeout=10)
-    except SSHError:
+    except RuntimeError:
         return ""
     return (out or "").strip()
 
@@ -694,7 +703,7 @@ def _rpc_state_write(machine, is_local, want, port=50052):
                f"> {tmp}")
     try:
         _ssh_for(machine).run(cmd, timeout=10)
-    except SSHError:
+    except RuntimeError:
         pass
 def _expose_args(expose):
     """ggml-rpc-server flags for what to expose. NOTE: ggml-rpc-server
@@ -736,6 +745,38 @@ def start_rpc(machine_name, port=None, expose_override=None, device_list=None,
     is_win = machine.get("os", "linux") == "windows"
     is_local = local_node.is_local(machine)
     want = _rpc_state_want(machine, expose_override, device_list)
+    # Optional agent: the agent owns the start/reuse/stop decision and
+    # writes the same per-port state file as the generated scripts.
+    if not is_local and agent_client.should_use_agent(machine):
+        devices = [] if want in ("", "default") else [
+            d.strip() for d in want.split(",") if d.strip()]
+        try:
+            if not ensure:
+                # explicit start (machine Start button) keeps the legacy
+                # restart semantics; ensure=True (live launch) is allowed
+                # to reuse a matching server.
+                try:
+                    agent_client.rpc_stop(machine, port)
+                except Exception:
+                    pass
+            res = agent_client.rpc_ensure(
+                machine, port, devices, _agent_env_dict(machine))
+            return {
+                "machine": machine_name, "ip": machine["ip"], "port": port,
+                "running": bool(res.get("running")),
+                "reused": bool(res.get("reused")),
+                "exit_code": 0 if res.get("running") else 1,
+                "stderr": res.get("error") or "",
+                "log_tail": res.get("log_tail") or "",
+            }
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                return {
+                    "machine": machine_name, "ip": machine["ip"], "port": port,
+                    "running": False, "reused": False, "exit_code": 1,
+                    "stderr": f"agent error: {e}", "log_tail": "",
+                }
+            print(f"[agent] {machine_name}: rpc/ensure failed, falling back to SSH: {e}")
     if ensure and _port_open(machine, port, is_local):
         have = _rpc_state_read(machine, is_local, port)
         if have == want:
@@ -915,17 +956,12 @@ def _port_open(machine, port, is_local):
     # native-CM peer (rdma+rdma_cm): no TCP listener exists — alive means the
     # rpc-server process for this port is running on the peer.
     if machine.get("rdma") and machine.get("rdma_cm") and not is_local:
-        try:
-            from ssh_manager import SSHManager
-            ssh = SSHManager(machine["ip"], machine["username"],
-                             machine.get("password", ""),
-                             port=machine.get("port", 22))
-            code, out, _ = ssh.run(
-                f"pgrep -f 'ggml-[r]pc-server.*-p {port} ' >/dev/null && echo up",
-                timeout=8)
-            return code == 0 and "up" in (out or "")
-        except Exception:
-            return False
+        if agent_client.should_use_agent(machine):
+            try:
+                return any(int(p.get("port") or 0) == int(port)
+                           for p in agent_client.rpc_list(machine))
+            except Exception:
+                return False
     host = "127.0.0.1" if is_local else machine["ip"]
     import socket
     try:
@@ -935,7 +971,7 @@ def _port_open(machine, port, is_local):
         return False
 
 
-def _tail_log(machine, is_win, is_local, port=50052):
+def _tail_log(machine, is_win, is_local, port=50052, use_agent=True):
     """Last 20 lines of the rpc-server log for `port` on the target machine.
     Per-model ports log to rpc-server-{port}.log; the base port keeps the
     legacy rpc-server.log name."""
@@ -954,14 +990,22 @@ def _tail_log(machine, is_win, is_local, port=50052):
             return proc.stdout
         except (OSError, subprocess.TimeoutExpired):
             return ""
+    if use_agent and not is_local:
+        try:
+            return peer_transport.for_machine(machine).logs_tail(
+                machine, _rpc_log_name(port), 20).get("text", "")
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                return ""
+            print(f"[agent] {machine['name']}: logs/tail failed, falling back to SSH: {e}")
     try:
         _, tail, _ = _ssh_for(machine).run(cmd, timeout=10)
         return tail
-    except SSHError:
+    except RuntimeError:
         return ""
 
 
-def _tail_all_rpc_logs(machine, is_win, is_local):
+def _tail_all_rpc_logs(machine, is_win, is_local, use_agent=True):
     """Last 20 lines of EVERY rpc-server log on the target machine —
     the legacy rpc-server.log (base port) plus all per-model
     rpc-server-{port}.log files. Used by the Flow Visualizer's sched
@@ -982,10 +1026,24 @@ def _tail_all_rpc_logs(machine, is_win, is_local):
             return proc.stdout
         except (OSError, subprocess.TimeoutExpired):
             return ""
+    if use_agent and not is_local and agent_client.should_use_agent(machine):
+        try:
+            names = [n for n in agent_client.logs_list(machine)
+                     if n.startswith("rpc-server")]
+            chunks = []
+            for name in names:
+                text = agent_client.logs_tail(machine, name, 20).get("text", "")
+                if text:
+                    chunks.append(text)
+            return "\n".join(chunks)
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                return ""
+            print(f"[agent] {machine['name']}: logs list failed, falling back to SSH: {e}")
     try:
         _, tail, _ = _ssh_for(machine).run(cmd, timeout=10)
         return tail
-    except SSHError:
+    except RuntimeError:
         return ""
 
 
@@ -1006,8 +1064,8 @@ def _sync_machine_ip(machine):
         return machine
     # sanity: the new IP must actually speak SSH before we switch to it
     try:
-        with socket.create_connection((current_ip, machine.get("port", 22)),
-                                      timeout=3):
+        with socket.create_connection(
+                (current_ip, agent_client.agent_port(machine)), timeout=3):
             pass
     except OSError:
         return machine
@@ -1023,13 +1081,97 @@ def _sync_machine_ip(machine):
     return machine
 
 
-def machine_status(machine_name):
+def has_live_llama(machine_name, use_agent=True):
+    """True if a native llama-server is running on this machine (any port).
+
+    The Launch page's live launch runs llama-server directly — it opens no
+    RPC port, so an RPC-port probe alone reports the machine idle even
+    while a model is serving. Remote peers are asked through the agent.
+    """
+    machine = cfg.machines.require(machine_name)
+    is_local = local_node.is_local(machine)
+    if not is_local and use_agent and agent_client.should_use_agent(machine):
+        try:
+            return bool(agent_client.status(machine).get("llama_running"))
+        except Exception:
+            return False
+    if is_local:
+        import subprocess as _sp
+        if os.name == "nt":
+            try:
+                p = _sp.run(["tasklist", "/FI", "IMAGENAME eq llama-server.exe"],
+                            capture_output=True, text=True, timeout=8)
+                return "llama-server.exe" in (p.stdout or "").lower()
+            except (OSError, _sp.SubprocessError):
+                return False
+        try:
+            if machine.get("os") == "macos":
+                p = _sp.run(["ps", "-axc", "-o", "comm"], capture_output=True,
+                            text=True, timeout=8)
+                return "llama-server" in (p.stdout or "")
+            p = _sp.run(["pgrep", "-f", "llama-[s]erver"], capture_output=True,
+                        timeout=8)
+            return p.returncode == 0
+        except (OSError, _sp.SubprocessError):
+            return False
+    return False
+
+
+def machine_status(machine_name, use_agent=True):
     """Per-machine status. rpc_running is True if ANY ggml-rpc-server is
     running on the box (not just the base port), since per-model ports
     mean the base port may be unused while other models serve.
     On unreachability, tries MAC-based IP healing before reporting down."""
     machine = cfg.machines.require(machine_name)
     is_local = local_node.is_local(machine)
+    if use_agent and not is_local and agent_client.should_use_agent(machine):
+        try:
+            st = agent_client.status(machine)
+            return {
+                "name": machine_name, "ip": machine["ip"],
+                "reachable": True,
+                "rpc_running": bool(st.get("rpc_running")
+                                    or st.get("rpc")),
+                "gpus": st.get("gpus") or [],
+                "is_local": False,
+                "is_master": machine.get("role") == "master",
+                "agent": True,
+                "processes": st,
+            }
+        except Exception as e:
+            # DHCP drift: the agent may now answer at a different IP. MAC
+            # is the stable identity — reconcile from UDP discovery + ARP,
+            # then retry once before reporting the machine down.
+            try:
+                import discovery as _disc
+                _disc.reconcile_machine_ips()
+            except Exception:
+                pass
+            try:
+                machine = _sync_machine_ip(cfg.machines.require(machine_name))
+            except Exception:
+                pass
+            try:
+                st = agent_client.status(machine)
+                return {
+                    "name": machine_name, "ip": machine["ip"],
+                    "reachable": True,
+                    "rpc_running": bool(st.get("rpc_running")
+                                        or st.get("rpc")),
+                    "gpus": st.get("gpus") or [],
+                    "is_local": False,
+                    "is_master": machine.get("role") == "master",
+                    "agent": True,
+                    "processes": st,
+                }
+            except Exception as e2:
+                return {
+                    "name": machine_name, "ip": machine["ip"],
+                    "reachable": False, "rpc_running": False,
+                    "gpus": [], "is_local": False,
+                    "is_master": machine.get("role") == "master",
+                    "error": f"agent error: {e2}",
+                }
     if not is_local:
         ssh = _ssh_for(machine)
         reachable = ssh.is_reachable()
@@ -1156,8 +1298,131 @@ def _any_rpc_running_remote(machine, ssh):
                 return False
         code, _, _ = ssh.run("pgrep -f ggml-[r]pc-server")
         return code == 0
-    except SSHError:
+    except RuntimeError:
         return ssh.check_port(machine.get("rpc_port", 50052))
+
+
+def _parse_etime(text):
+    """'MM:SS' / 'HH:MM:SS' / 'DD-HH:MM:SS' -> seconds (BSD/macOS ps)."""
+    text = (text or "").strip()
+    days = 0
+    if "-" in text:
+        d, text = text.split("-", 1)
+        try:
+            days = int(d)
+        except ValueError:
+            return None
+    try:
+        parts = [int(x) for x in text.split(":")]
+    except ValueError:
+        return None
+    if len(parts) == 3:
+        h, m, sec = parts
+    elif len(parts) == 2:
+        h, m, sec = 0, parts[0], parts[1]
+    elif len(parts) == 1:
+        h, m, sec = 0, 0, parts[0]
+    else:
+        return None
+    return days * 86400 + h * 3600 + m * 60 + sec
+
+
+def list_rpc_servers(machine_name, use_agent=True):
+    """Running ggml-rpc-server processes on a machine.
+
+    Returns [{pid, port, age_s, cmd}]. Used by the orphan reaper; ports are
+    parsed from the process command line (-p N). Best-effort: a failed OS
+    query returns [] (reaper then does nothing for that box)."""
+    machine = cfg.machines.require(machine_name)
+    is_win = machine.get("os", "linux") == "windows"
+    is_local = local_node.is_local(machine)
+    os_type = "windows" if is_win else machine.get("os", "linux")
+    if use_agent and not is_local and agent_client.should_use_agent(machine):
+        try:
+            return agent_client.rpc_list(machine)
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                print(f"[agent] {machine_name}: rpc/list failed: {e}")
+                return []
+            print(f"[agent] {machine_name}: rpc/list failed, falling back to SSH: {e}")
+    out = ""
+    if is_win:
+        ps = (
+            "Get-CimInstance Win32_Process | Where-Object { "
+            "$_.Name -eq 'ggml-rpc-server.exe' } | "
+            "ForEach-Object { [pscustomobject]@{ Pid=$_.ProcessId; "
+            "Age=[int]((Get-Date)-$_.CreationDate).TotalSeconds; "
+            "Cmd=$_.CommandLine } } | ConvertTo-Json -Compress")
+        cmd = 'powershell -NoProfile -Command "' + ps + '"'
+        try:
+            if is_local:
+                code, out, err = _run_local(cmd, True, 20)
+            else:
+                code, out, err = _ssh_for(machine).run(cmd)
+        except Exception:
+            return []
+        if not (out or "").strip():
+            return []
+        try:
+            import json
+            data = json.loads(out)
+        except Exception:
+            return []
+        if isinstance(data, dict):
+            data = [data]
+        servers = []
+        for e in data if isinstance(data, list) else []:
+            try:
+                c = e.get("Cmd") or ""
+                m = re.search(r"(?:^|\s)-p\s+(\d+)", c)
+                if not m:
+                    continue
+                servers.append({
+                    "pid": int(e.get("Pid") or 0),
+                    "port": int(m.group(1)),
+                    "age_s": int(e.get("Age")) if e.get("Age") is not None else None,
+                    "cmd": c,
+                })
+            except Exception:
+                continue
+        return servers
+    if os_type == "macos":
+        cmd = "ps -axo pid=,etime=,command= 2>/dev/null | grep '[g]gml-rpc-server' || true"
+    else:
+        cmd = "ps -eo pid=,etimes=,args= 2>/dev/null | grep '[g]gml-rpc-server' || true"
+    try:
+        if is_local:
+            code, out, err = _run_local(cmd, False, 20)
+        else:
+            code, out, err = _ssh_for(machine).run(cmd)
+    except Exception:
+        return []
+    servers = []
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        if os_type == "macos":
+            age_s = _parse_etime(parts[1])
+        else:
+            try:
+                age_s = int(parts[1])
+            except ValueError:
+                age_s = None
+        cmdline = parts[2]
+        m = re.search(r"(?:^|\s)-p\s+(\d+)", cmdline)
+        if not m:
+            continue
+        servers.append({"pid": pid, "port": int(m.group(1)),
+                        "age_s": age_s, "cmd": cmdline})
+    return servers
 
 
 def _local_gpu_info(machine=None):
@@ -1789,7 +2054,10 @@ def _auto_device_order(master, peers):
     """CUDA devices of the master, then one RPC<N> per remote GPU/RAM
     exposed by each peer (only used when the model config has no
     explicit device_order)."""
-    devices = [d.strip() for d in master.get("gpu", "").split(",") if d.strip()]
+    devices = [
+        "MTL0" if d.strip() == "Metal" else d.strip()
+        for d in master.get("gpu", "").split(",") if d.strip()
+    ]
     n = 0
     for peer in peers:
         gpus = [d.strip() for d in (peer.get("gpu", "") or "").split(",") if d.strip()]
@@ -1820,7 +2088,7 @@ def generate_script(model_cfg, servers, script_path=None):
     with open(script_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(content)
     try:
-        # 0700: scripts drive SSH sessions via $SSH_PASS — owner-only even
+        # 0700: launcher scripts are owner-only even
         # though no secret is baked in anymore (defense in depth)
         os.chmod(script_path, 0o700)
     except OSError:
@@ -1895,6 +2163,58 @@ def _rpc_env_exports(machine):
     return pre
 
 
+def _cmd_to_args(cmd, os_type="linux"):
+    """Split a build_llama_command() string into argv (binary dropped).
+
+    The agent enforces --host/--port itself, so those are stripped here.
+    Windows tokens keep their quoting during shlex(posix=False); strip the
+    outer quotes before handing the list to subprocess.Popen.
+    """
+    import shlex
+    text = (cmd or "").replace(" \\\n  ", " ")
+    tokens = shlex.split(text, posix=(os_type != "windows"))
+    if os_type == "windows":
+        tokens = [t[1:-1] if (len(t) >= 2 and t[0] == '"' and t[-1] == '"')
+                  else t for t in tokens]
+    if tokens:
+        tokens = tokens[1:]  # drop the llama-server binary
+    out = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in ("--host", "--port"):
+            i += 2
+            continue
+        if tok.startswith(("--host=", "--port=")):
+            i += 1
+            continue
+        out.append(tok)
+        i += 1
+    return out
+
+
+def _agent_base_url(machine):
+    ip = (machine.get("ip") or "").strip()
+    return f"http://{ip}:{agent_client.agent_port(machine)}"
+
+
+def _agent_token_var(machine_name):
+    return "AGENT_TOKEN_" + "".join(
+        c if c.isalnum() else "_" for c in str(machine_name or "").upper())
+
+
+def _agent_env_dict(machine):
+    """Parse _rpc_env_exports() space-separated assignments into a dict."""
+    import shlex
+    out = {}
+    for tok in shlex.split(_rpc_env_exports(machine or {})):
+        if "=" in tok:
+            key, value = tok.split("=", 1)
+            if key:
+                out[key] = value
+    return out
+
+
 def _parse_env_exports(env_pre):
     """Parse 'export K=V\\nexport K2=V2' lines into [(key, value)] pairs so
     Windows launchers (PowerShell env) can reuse the same export source."""
@@ -1956,6 +2276,13 @@ def _device_env_exports(master):
 
 def _render_single_node(model_cfg, master):
     """Mirrors start-huihui-35b.sh."""
+    model_cfg = dict(model_cfg)
+    gpus = [d.strip() for d in (master.get("gpu", "") or "").split(",")
+            if d.strip()]
+    if (master.get("os") == "macos" and len(gpus) == 1
+            and gpus[0] in ("Metal", "MTL0")):
+        model_cfg["tensor_split_mode"] = "auto"
+        model_cfg["tensor_split"] = ""
     cmd = build_llama_command(model_cfg, [master["name"]])
     return f"""#!/bin/bash
 {_device_env_exports(master)}
@@ -1976,53 +2303,25 @@ exec {cmd}
 """
 
 
-def render_remote_local_script(model_cfg, master, remote_port,
-                               state_key=None):
-    """launcher script for launch-mode=local with a REMOTE llama-server box.
-
-    Written to the swap scripts_dir and executed by llama-swap's cmd on
-    model load. Over SSH it: (1) short-circuits when the remote port is
-    already serving — llama-swap reloads its config on every push and
-    would otherwise restart a healthy server on each request; (2) clears
-    stale llama processes on that box (pre-launch hygiene, same rule as
-    the live RPC path); (3) starts llama-server ON THAT BOX with ITS OWN
-    GPUs (fit mode distributes by actual free VRAM; no --rpc tokens, no
-    network tensor hops — the entire point of local mode); (4) returns
-    only when the port answers, so llama-swap's proxy comes up against a
-    live upstream. Requires $SSH_PASS (sourced from the sidecar) and the
-    model file readable on the box (store:// alias resolved for the
-    box's OS — the shared CIFS mount covers it).
-
-    ACTUAL-PORT STATE: the launcher may bind a HIGHER port than the
-    config's probe point (`_roll_port_if_busy` — a stale co-served
-    server or any listener pushes it forward). cmdStop is generated
-    with the config port and would then MISS the live server, leaving
-    its VRAM held after a swap unload (observed: group swap between
-    two DAD variants left --dad holding 7+11+8 GB while --DAD loaded).
-    So the script records every port it (re)serves into the per-model
-    state file `.cache/llama-wrapper/swap.port.<model_id>` on the box —
-    written on the REUSE path too, since a previously-rolled port is
-    exactly the one cmdStop must find. swap_manager builds cmdStop as
-    a loop over `cat` of that file PLUS the config port fallback.
-    """
+def _remote_local_model(model_cfg, master):
+    """Normalize a deployment for single-box native execution on `master`."""
     model_cfg = dict(model_cfg)
-    # single-box rewrite (same as launch_model mode="local"): the box's
-    # own accelerators only, fit mode, no RPC split, concrete port (no
-    # ${PORT} macro exists on this path — llama-swap's cmd passes none)
     expose = (model_cfg.get("expose") or {}).get(master["name"]) or {}
     raw_gpus = expose.get("gpus") or master.get("gpu", "") or []
     if isinstance(raw_gpus, str):
         raw_gpus = raw_gpus.split(",")
     gpus = [d.strip() for d in raw_gpus if str(d).strip()]
     model_cfg["device_order"] = ",".join(gpus)
-    # single-box split policy: keep an explicit split the variant asked
-    # for (tensor_split_mode 'split' + non-empty weights — RATIO weights,
-    # layer count irrelevant); only fall back to fit mode otherwise. The
-    # fitter's by-free-VRAM distribution can thrash when a slow big-VRAM
-    # card (P100) fills up and spills layers to CPU (observed: 121 CPU
-    # layers on the 27B dad model = half the model in system RAM).
-    if not (model_cfg.get("tensor_split_mode") == "split"
-            and (model_cfg.get("tensor_split") or "").strip()):
+    # keep an explicit variant split; otherwise fit mode — except a single
+    # Metal device, where fit mode is broken and auto mode is required.
+    is_metal_single = (master.get("os") == "macos"
+                       and len(gpus) == 1
+                       and gpus[0] in ("Metal", "MTL0"))
+    if is_metal_single:
+        model_cfg["tensor_split_mode"] = "auto"
+        model_cfg["tensor_split"] = ""
+    elif not (model_cfg.get("tensor_split_mode") == "split"
+              and (model_cfg.get("tensor_split") or "").strip()):
         model_cfg["tensor_split_mode"] = "fit"
         model_cfg["tensor_split"] = ""
     cmd = build_llama_command(model_cfg, [master["name"]])
@@ -2120,11 +2419,11 @@ set -uo pipefail
 : "${{SSH_PASS:?SSH_PASS is not set — sourced from swap-secrets.env}}"
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=5"
 # reuse guard over the network first: skip upload entirely when serving
-sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+ssh -n $SSH_OPTS "{user}@{ip}" \\
   "powershell -NoProfile -Command \\"try {{ \\$c = New-Object Net.Sockets.TcpClient('127.0.0.1', {remote_port}); \\$c.Close(); exit 0 }} catch {{ exit 1 }}\\"" 2>/dev/null && {{
   echo ">>> {master['name']}:{remote_port} already serving — reusing"
   # stay alive as llama-swap's child until the port closes (see linux note)
-  while sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+  while ssh -n $SSH_OPTS "{user}@{ip}" \\
       "powershell -NoProfile -Command \\"try {{ \\$c = New-Object Net.Sockets.TcpClient('127.0.0.1', {remote_port}); \\$c.Close(); exit 0 }} catch {{ exit 1 }}\\"" 2>/dev/null; do
     sleep 5
   done
@@ -2144,10 +2443,10 @@ echo ">>> starting llama-server on {master['name']}:{remote_port}"
 # the proven shape from the RPC launcher (line ~2221). Single quotes
 # arrive doubled (''C:\...'') and -File rejects them ("path's format
 # is not supported", observed live on winbox).
-sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+ssh -n $SSH_OPTS "{user}@{ip}" \\
   "powershell -NoProfile -ExecutionPolicy Bypass -File \\"%USERPROFILE%\\start-remote-local.ps1\\""
 # stay alive as llama-swap's child until cmdStop closes the port
-while sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+while ssh -n $SSH_OPTS "{user}@{ip}" \\
     "powershell -NoProfile -Command \\"try {{ \\$c = New-Object Net.Sockets.TcpClient('127.0.0.1', {remote_port}); \\$c.Close(); exit 0 }} catch {{ exit 1 }}\\"" 2>/dev/null; do
   sleep 5
 done
@@ -2166,17 +2465,17 @@ SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=5"
 # rolled port otherwise). cmdStop reads it — see the ACTUAL-PORT STATE
 # note in this module's render_remote_local_script docstring.
 _state_write="bash -c 'mkdir -p \\$HOME/.cache/llama-wrapper && echo {remote_port} > \\$HOME/{state_rel}'"
-sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" "$_state_write" 2>/dev/null || true
+ssh -n $SSH_OPTS "{user}@{ip}" "$_state_write" 2>/dev/null || true
 # Reuse probe, retried: on thin links a single dropped SSH probe must
 # never read as "port closed" — that misread would pkill a healthy
 # server below and restart a multi-minute load for nothing.
 for _i in $(seq 1 5); do
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+  ssh -n $SSH_OPTS "{user}@{ip}" \\
     "bash -c 'exec 3<>/dev/tcp/127.0.0.1/{remote_port}'" 2>/dev/null && {{
     echo ">>> {master['name']}:{remote_port} already serving — reusing"
     # STAY ALIVE as llama-swap's child until the port closes (cmdStop's
     # pkill closes it) — exiting would trip 'upstream exited prematurely'
-    while sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+    while ssh -n $SSH_OPTS "{user}@{ip}" \\
         "bash -c 'echo > /dev/tcp/127.0.0.1/{remote_port}'" 2>/dev/null; do
       sleep 5
     done
@@ -2191,29 +2490,29 @@ echo ">>> starting llama-server on {master['name']}:{remote_port}"
 # resets that load to zero on EVERY retry — the reset loop. When a
 # matching server process is already alive but its port isn't open yet,
 # skip the kill AND the start and go straight to waiting on it.
-if sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+if ssh -n $SSH_OPTS "{user}@{ip}" \\
     "pgrep -u {user} -f 'llama-[s]erver.*{port_re}' >/dev/null" 2>/dev/null; then
   echo ">>> {master['name']}:{remote_port} already starting (process alive, port closed) — waiting, no kill"
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" "$_state_write" 2>/dev/null || true
+  ssh -n $SSH_OPTS "{user}@{ip}" "$_state_write" 2>/dev/null || true
 else
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+  ssh -n $SSH_OPTS "{user}@{ip}" \\
     "pkill -u {user} -f 'llama-[s]erver.*{port_re}' 2>/dev/null; true"
   sleep 1
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+  ssh -n $SSH_OPTS "{user}@{ip}" \\
     "{env}; nohup bash -c '{cmd}' </dev/null > \\$HOME/{remote_log} 2>&1 &"
 fi
 # Load/readiness budget: ~2h (2400 polls x ~3s). Thin-link/CIFS farm
 # rule — a slow load must NEVER time out on our end; only a dead
 # server process (fast-fail below) or an explicit evict ends the wait.
 for _i in $(seq 1 2400); do
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+  ssh -n $SSH_OPTS "{user}@{ip}" \\
     "bash -c 'echo > /dev/tcp/127.0.0.1/{remote_port}'" 2>/dev/null && {{
     echo ">>> {master['name']}:{remote_port} is up"
     # STAY ALIVE as llama-swap's child: cmd IS the tracked upstream —
     # exiting here would trip 'upstream exited prematurely'. Hold until
     # the remote port CLOSES (cmdStop's SSH pkill closes it), then exit
     # so llama-swap sees a clean stop.
-    while sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+    while ssh -n $SSH_OPTS "{user}@{ip}" \\
         "bash -c 'echo > /dev/tcp/127.0.0.1/{remote_port}'" 2>/dev/null; do
       sleep 5
     done
@@ -2225,7 +2524,7 @@ for _i in $(seq 1 2400); do
   # ~2h and tripping 'upstream exited prematurely' with no context.
   # (A missing process is a real failure, never a timeout.)
   if [ $((_i % 20)) -eq 0 ]; then
-    sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+    ssh -n $SSH_OPTS "{user}@{ip}" \\
       "pgrep -u {user} -f 'llama-[s]erver.*{port_re}' >/dev/null" 2>/dev/null || {{
       echo "!!! {master['name']}:{remote_port} server process died before opening the port — check ~/{remote_log} there" >&2
       exit 1
@@ -2236,6 +2535,19 @@ done
 echo "!!! {master['name']}:{remote_port} did not come up in ~2h — check ~/{remote_log} there" >&2
 exit 1
 """
+def _case_fn(name, pairs, default=""):
+    """Emit a bash-3.2-safe lookup function: a case over the node TAG.
+
+    macOS /bin/bash is 3.2 and lacks declare -A / associative arrays, so the
+    generated start script uses case functions instead of maps. Missing
+    entries echo the default (empty by default).
+    """
+    lines = [name + "() { case \"$1\" in"]
+    for tag, val in pairs:
+        lines.append('        "' + tag + '") echo "' + val + '" ;;')
+    lines.append('        *) echo "' + default + '" ;;')
+    lines.append("    esac; }")
+    return "\n".join(lines)
 
 
 def _render_rpc(model_cfg, master, peers, cmd=None):
@@ -2294,53 +2606,49 @@ def _render_rpc(model_cfg, master, peers, cmd=None):
     # NOTE: the parametrized .ps1 takes per-node --device via -ExtraArgs,
     # so expose_args is intentionally "" (a baked master --device would
     # duplicate the flag on every Windows peer).
-    # per-server backends, keyed by node TAG (IP, or IP#cpu for the
-    # separate CPU/RAM server); the SAME lists the --device RPC mapping
-    # counts, so numbering can never drift from reality
-    peer_dev_pairs = []
-    for n in nodes:
-        if n["devs"]:
-            peer_dev_pairs.append(f'["{n["tag"]}"]="{",".join(n["devs"])}"')
-    peer_devices_decl = "declare -A PEER_DEVICES" + (
-        "\n" + "\n".join(f"PEER_DEVICES{a}" for a in peer_dev_pairs)
-        if peer_dev_pairs else "")
-    # per-server ports, keyed by node TAG
-    peer_port_pairs = [f'["{n["tag"]}"]="{n["port"]}"' for n in nodes]
-    peer_ports_decl = "declare -A RPC_PORTS\n" + "\n".join(
-        f"RPC_PORTS{a}" for a in peer_port_pairs)
-    # per-server log names, keyed by node TAG
-    peer_log_pairs = [f'["{n["tag"]}"]="{_rpc_log_name(n["port"])}"' for n in nodes]
-    peer_logs_decl = "declare -A RPC_LOGS\n" + "\n".join(
-        f"RPC_LOGS{a}" for a in peer_log_pairs)
-    # per-server rpc-server binary, keyed by TAG: each peer launches from
-    # its OWN bin dir (master layout must never be assumed on a peer —
-    # a Windows master + Linux peer would otherwise bake a bad path).
-    # (pre-expanded: the f-string below can't nest ${..:-..} braces)
+    # Bash-3.2-safe per-server lookups. macOS /bin/bash is 3.2 and lacks
+    # `declare -A` / associative arrays, so the generated script uses case
+    # functions instead of maps. rpc_port_of also honors a runtime
+    # RPC_PORT_OVERRIDE_<key> set by roll_rpc_port when a peer's port is
+    # blocked; rpc_log_of derives its name from rpc_port_of via
+    # rpc_log_for_port (no separate log map).
+    peer_dev_pairs = [(n["tag"], ",".join(n["devs"])) for n in nodes if n["devs"]]
+    peer_port_pairs = [(n["tag"], str(n["port"])) for n in nodes]
     _master_rpc_bin = _bin_subdir(master, "ggml-rpc-server")
-    rpc_bins_bin = "${RPC_BINS[$node]:-" + _master_rpc_bin + "}"
-    peer_bin_pairs = [f'["{n["tag"]}"]="{_bin_subdir(n["machine"], "ggml-rpc-server")}"'
+    peer_bin_pairs = [(n["tag"], _bin_subdir(n["machine"], "ggml-rpc-server"))
                       for n in nodes if n["os"] in ("linux", "macos")]
-    peer_bins_decl = "declare -A RPC_BINS\n" + "\n".join(
-        f"RPC_BINS{a}" for a in peer_bin_pairs)
-    # per-server transport mode: 1 = native rdma_cm (no TCP listener on the
-    # peer, so health checks must NOT use /dev/tcp), empty = classic TCP.
-    peer_cm_pairs = [f'["{n["tag"]}"]="1"' for n in nodes
-                     if n["machine"].get("rdma") and n["machine"].get("rdma_cm")]
-    peer_cm_decl = "declare -A RPC_CM\n" + "\n".join(
-        f"RPC_CM{a}" for a in peer_cm_pairs)
-    # per-server RDMA env for the rpc-server launch, keyed by TAG.
-    # rdma=False -> GGML_RPC_NO_RDMA=1 (TCP only, default); rdma=True ->
-    # optional GGML_RDMA_DEV/GGML_RDMA_GID pinning. NVIDIA peers also carry
-    # CUDA_DEVICE_ORDER=PCI_BUS_ID so --device indexes match nvidia-smi
-    # (see _rpc_env_exports); the fallback below mirrors that default.
-    peer_env_pairs = [f'["{n["tag"]}"]="{_rpc_env_exports(n["machine"]).strip()}"'
-                      for n in nodes]
-    peer_envs_decl = "declare -A RPC_ENVS\n" + "\n".join(
-        f"RPC_ENVS{a}" for a in peer_env_pairs)
-    # display-only labels + RPC legend (never fed to any command)
-    label_pairs = [f'["{n["tag"]}"]="{n["label"]}"' for n in nodes]
-    peer_labels_decl = ("declare -A PEER_LABELS\n" + "\n".join(
-        f"PEER_LABELS{a}" for a in label_pairs))
+    peer_cm_pairs = [(n["tag"], "1")
+                     for n in nodes if n["machine"].get("rdma") and n["machine"].get("rdma_cm")]
+    peer_env_pairs = [(n["tag"], _rpc_env_exports(n["machine"]).strip()) for n in nodes]
+    label_pairs = [(n["tag"], n["label"]) for n in nodes]
+    _rpc_env_default = "GGML_SCHED_DEBUG=3 GGML_RPC_DEBUG=3 CUDA_DEVICE_ORDER=PCI_BUS_ID GGML_RPC_NO_RDMA=1"
+
+    peer_devices_decl = _case_fn("peer_devices", peer_dev_pairs)
+    peer_ports_decl = (
+        "rpc_port_of() {\n"
+        "  local node=\"$1\" key ov\n"
+        '  key="${node//[^A-Za-z0-9_]/_}"\n'
+        '  eval "ov=\\${RPC_PORT_OVERRIDE_$key:-}"\n'
+        "  [[ -n \"$ov\" ]] && { echo \"$ov\"; return; }\n"
+        "  case \"$1\" in"
+        + "".join(f'\n    "{tag}") echo "{port}" ;;' for tag, port in peer_port_pairs)
+        + '\n    *) echo "50052" ;;'
+        + "\n  esac\n}"
+    )
+    peer_logs_decl = (
+        "rpc_log_of() {\n"
+        "  rpc_log_for_port \"$(rpc_port_of \"$1\")\"\n"
+        "}\n"
+    )
+    peer_bins_decl = _case_fn("rpc_bin_of", peer_bin_pairs, default=_master_rpc_bin)
+    peer_cm_decl = _case_fn("rpc_cm_of", peer_cm_pairs)
+    peer_envs_decl = (
+        "rpc_env_of() { case \"$1\" in"
+        + "".join(f'\n    "{tag}") echo "{env}" ;;' for tag, env in peer_env_pairs)
+        + f'\n    *) echo "{_rpc_env_default}" ;;'
+        + "\n  esac; }"
+    )
+    peer_labels_decl = _case_fn("peer_label_of", label_pairs)
     rpc_legend = _rpc_legend(raw_order, master, peers)
     # the .ps1 executes ON Windows peers: its exe path must come from a
     # Windows machine's bin dir. Using master (usually Linux) baked a Linux
@@ -2350,59 +2658,65 @@ def _render_rpc(model_cfg, master, peers, cmd=None):
     ps1_text = _win_launcher(ps1_machine, 50052, expose_args="",
                              parametrized=True)
 
-    # SSH password is NEVER baked into the script (vault-only). It is
-    # supplied at runtime via $SSH_PASS — see scripts/farm-run.sh, which
-    # decrypts the vault entry and execs the generated script. This keeps
-    # generated/*.sh free of plaintext secrets (they are git-ignored but
-    # sit on disk readable).
+    # Agent-only launch script: one ggml-rpc-server per (peer, group) is
+    # started through the peer agent's typed /rpc/ensure, then llama-server
+    # runs in the foreground. No SSH, no passwords, key-based SSH only.
     return f"""#!/bin/bash
 set -uo pipefail
 LINUX_USER="{master['username']}"
 WIN_USER="{win_user}"
-: "${{SSH_PASS:?SSH_PASS is not set — run via scripts/farm-run.sh <machine> <script> (vault decrypts it at runtime, never baked into this file)}}"
 # NODES are per-SERVER entries (tag = IP, or IP#cpu for the separate
 # CPU/RAM server). SSH targets strip the #group suffix.
 LINUX_NODES=({linux_nodes})
 WIN_NODES=({win_nodes})
-ALL_NODES=("${{LINUX_NODES[@]}}" "${{WIN_NODES[@]}}")
+ALL_NODES=("${{LINUX_NODES[@]}}" "${{WIN_NODES[@]-}}")
+AGENT_NODES=("${{LINUX_NODES[@]}}" "${{WIN_NODES[@]-}}")
 node_ip() {{ local t="$1"; echo "${{t%%#*}}"; }}
+agent_base() {{ echo "http://$(node_ip "$1"):${{AGENT_PORT:-8198}}"; }}
 PORT="${{1:-8080}}"
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=5"
 WIN_SSH_OPTS="$SSH_OPTS -o BatchMode=yes"
+# Auth: SSH keys only; the peer agent owns RPC lifecycle control.
+USE_KEY=1
+for _n in "${{LINUX_NODES[@]}}"; do
+  [[ -n "$_n" ]] || continue
+  ssh -n $SSH_OPTS -o BatchMode=yes "$LINUX_USER@$(node_ip "$_n")" true 2>/dev/null || USE_KEY=0
+done
+echo ">>> ssh auth: keys"
 DEVICE_ORDER="{device_order}"
 {peer_devices_decl}
 {peer_ports_decl}
 {peer_logs_decl}
-{peer_envs_decl}
 {peer_bins_decl}
 {peer_cm_decl}
+{peer_envs_decl}
 {peer_labels_decl}
 
     start_rpc_linux() {{
       local node="$1"
-      local port="${{RPC_PORTS[$node]:-50052}}"
-      local log="${{RPC_LOGS[$node]:-rpc-server.log}}"
+      local port="$(rpc_port_of "$node")"
+      local log="$(rpc_log_of "$node")"
       echo ">>> starting rpc-server on $node:$port (linux)"
-      local devs="${{PEER_DEVICES[$node]:-}}"
+      local devs="$(peer_devices "$node")"
       local extra=""
       [[ -n "$devs" ]] && extra=" --device $devs"
-      echo ">>> rpc backends: ${{devs:-default}}  [${{PEER_LABELS[$node]:-}}]"
+      echo ">>> rpc backends: ${{devs:-default}}  [$(peer_label_of "$node")]"
       # Kill only the rpc-server on THIS port (co-served models on other
       # ports must survive), then start a fresh one on this port.
-      sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
+      ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
         "pkill -u $LINUX_USER -f \\"ggml-[r]pc-server.*-p $port \\"" >/dev/null 2>&1 || true
       sleep 1
-      local envs="${{RPC_ENVS[$node]:-GGML_SCHED_DEBUG=3 GGML_RPC_DEBUG=3 CUDA_DEVICE_ORDER=PCI_BUS_ID GGML_RPC_NO_RDMA=1}}"
+      local envs="$(rpc_env_of "$node")"
       # setsid: Linux util-linux. macOS lacks it — fall back to nohup.
       # ($envs already carries GGML_SCHED_DEBUG/RPC_DEBUG + transport flags
       # from the machine config — single source of truth, no hardcoding.)
-      sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
+      ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
          "export $envs; \\
-          setsid \\"{rpc_bins_bin}\\" \\
+          setsid \\"$(rpc_bin_of "$node")\\" \\
            -H 0.0.0.0 -p $port -t \\"$(nproc --all 2>/dev/null || sysctl -n hw.ncpu)\\"$extra \\
            </dev/null > \\"$HOME/$log\\" 2>&1 & \\
          command -v setsid >/dev/null 2>&1 || \\
-         nohup \\"{rpc_bins_bin}\\" \\
+         nohup \\"$(rpc_bin_of "$node")\\" \\
            -H 0.0.0.0 -p $port -t \\"$(nproc --all 2>/dev/null || sysctl -n hw.ncpu)\\"$extra \\
            </dev/null >> \\"$HOME/$log\\" 2>&1 &"
     }}
@@ -2418,17 +2732,17 @@ push_win_launcher() {{
 }}
     start_rpc_win() {{
       local node="$1"
-      local port="${{RPC_PORTS[$node]:-50052}}"
-      local log="${{RPC_LOGS[$node]:-rpc-server.log}}"
+      local port="$(rpc_port_of "$node")"
+      local log="$(rpc_log_of "$node")"
       echo ">>> starting rpc-server on $node:$port (windows)"
-      local devs="${{PEER_DEVICES[$node]:-}}"
+      local devs="$(peer_devices "$node")"
       local args=""
       [[ -n "$devs" ]] && args=" --device $devs"
-      echo ">>> rpc backends: ${{devs:-default}}  [${{PEER_LABELS[$node]:-}}]"
+      echo ">>> rpc backends: ${{devs:-default}}  [$(peer_label_of "$node")]"
       # Kill only the rpc-server on THIS port (CIM filter on command line),
       # leaving co-served models' rpc-servers on other ports running.
       ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" \\
-        "powershell -NoProfile -Command \\"Get-CimInstance Win32_Process | Where-Object {{ (' ' + \$_.CommandLine + ' ') -like '* -p $port *' -and \\$_.Name -like 'ggml-rpc-server*' }} | ForEach-Object {{ Stop-Process -Id \\$_.ProcessId -Force }}\\"" >/dev/null 2>&1 || true
+        "powershell -NoProfile -Command \\"Get-CimInstance Win32_Process | Where-Object {{ \$x = \$_; (' ' + \$_.CommandLine + ' ') -like '* -p $port *' -and \\$_.Name -like 'ggml-rpc-server*' }} | ForEach-Object {{ Stop-Process -Id \\$_.ProcessId -Force; \\$c++ }}\\"" >/dev/null 2>&1 || true
       sleep 1
       push_win_launcher "$node" || {{ echo "!!! could not copy launcher to $node" >&2; return 1; }}
       ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" \\
@@ -2436,23 +2750,24 @@ push_win_launcher() {{
     }}
 stop_node_rpc_linux() {{
   local node="$1"
-  local port="${{RPC_PORTS[$node]:-50052}}"
+  local port="$(rpc_port_of "$node")"
   # ONLY the rpc daemon on this port: llama-server / llama-swap on this
   # box may belong to co-served models and must survive our exit.
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
+  ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
     "pkill -u $LINUX_USER -f \\"ggml-[r]pc-server.*-p $port \\"" >/dev/null 2>&1 || true
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
+  ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
     "rm -f $HOME/.cache/llama-wrapper/rpc.state.$port /tmp/llama-wrapper-rpc.state.$port" >/dev/null 2>&1 || true
   # stale RPC tensor cache (older -c runs): GBs per file, must not starve
   # small peer disks. Safe: purely derived, rebuilt from NAS on demand.
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
+  ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
     "rm -rf $HOME/.cache/llama.cpp/rpc" >/dev/null 2>&1 || true
 }}
-stop_node_rpc_win() {{
+stop_node_rpc_win() {{ agent_stop "$@"; }}
+agent_stop() {{
   local node="$1"
-  local port="${{RPC_PORTS[$node]:-50052}}"
+  local port="$(rpc_port_of "$node")"
   ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" \\
-    "powershell -NoProfile -Command \\"Get-CimInstance Win32_Process | Where-Object {{ (' ' + \$_.CommandLine + ' ') -like '* -p $port *' -and \\$_.Name -like 'ggml-rpc-server*' }} | ForEach-Object {{ Stop-Process -Id \\$_.ProcessId -Force }}\\"" >/dev/null 2>&1 || true
+    "powershell -NoProfile -Command \\"Get-CimInstance Win32_Process | Where-Object {{ \$x = \$_; (' ' + \$_.CommandLine + ' ') -like '* -p $port *' -and \\$_.Name -like 'ggml-rpc-server*' }} | ForEach-Object {{ Stop-Process -Id \\$_.ProcessId -Force; \\$c++ }}\\"" >/dev/null 2>&1 || true
   ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" \\
     "powershell -NoProfile -Command \\"Remove-Item \\$env:USERPROFILE/.cache/llama-wrapper/rpc.state.$port, \\$env:TEMP/llama-wrapper-rpc.state.$port -ErrorAction SilentlyContinue\\"" >/dev/null 2>&1 || true
   # stale RPC tensor cache (older -c runs): must not starve peer disks.
@@ -2469,45 +2784,45 @@ note_started() {{
 stop_started_rpc() {{
   local node
   for node in $STARTED_NODES; do
-    if [[ " ${{WIN_NODES[@]}} " == *" $node "* ]]; then
+    if [[ " ${{WIN_NODES[@]-}} " == *" $node "* ]]; then
       stop_node_rpc_win "$node"
     else
       stop_node_rpc_linux "$node"
     fi
   done
 }}
-rpc_state_linux() {{
+agent_port_open() {{
   local node="$1"
-  local port="${{RPC_PORTS[$node]:-50052}}"
+  local port="$(rpc_port_of "$node")"
   # $HOME first, /tmp fallback (a full home disk must not silently
   # disable reuse -- it would restart the peer on every load)
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
+  ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
     "cat $HOME/.cache/llama-wrapper/rpc.state.$port 2>/dev/null || cat /tmp/llama-wrapper-rpc.state.$port 2>/dev/null || true" || true
 }}
-rpc_state_win() {{
+agent_rpc_listed() {{
   local node="$1"
-  local port="${{RPC_PORTS[$node]:-50052}}"
+  local port="$(rpc_port_of "$node")"
   ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" \\
     "powershell -NoProfile -Command \\"if (Test-Path \\$env:USERPROFILE/.cache/llama-wrapper/rpc.state.$port) {{ Get-Content \\$env:USERPROFILE/.cache/llama-wrapper/rpc.state.$port }} elseif (Test-Path \\$env:TEMP/llama-wrapper-rpc.state.$port) {{ Get-Content \\$env:TEMP/llama-wrapper-rpc.state.$port }}\\"" || true
 }}
 set_rpc_state_linux() {{
   local node="$1" want="$2"
-  local port="${{RPC_PORTS[$node]:-50052}}"
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
+  local port="$(rpc_port_of "$node")"
+  ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
     "mkdir -p $HOME/.cache/llama-wrapper && echo \\"$want\\" > $HOME/.cache/llama-wrapper/rpc.state.$port || echo \\"$want\\" > /tmp/llama-wrapper-rpc.state.$port" >/dev/null 2>&1 || true
 }}
 set_rpc_state_win() {{
   local node="$1" want="$2"
-  local port="${{RPC_PORTS[$node]:-50052}}"
+  local port="$(rpc_port_of "$node")"
   ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" \\
     "powershell -NoProfile -Command \\"New-Item -ItemType Directory -Force \\$env:USERPROFILE/.cache/llama-wrapper -ErrorAction SilentlyContinue | Out-Null; Set-Content \\$env:USERPROFILE/.cache/llama-wrapper/rpc.state.$port -Value \\"$want\\" -ErrorAction SilentlyContinue; if (-not (Test-Path \\$env:USERPROFILE/.cache/llama-wrapper/rpc.state.$port)) {{ Set-Content \\$env:TEMP/llama-wrapper-rpc.state.$port -Value \\"$want\\" }}\\"" >/dev/null 2>&1 || true
 }}
 port_open() {{
   local node="$1" port="${{2:-}}"
-  [[ -z "$port" ]] && port="${{RPC_PORTS[$node]:-50052}}"
-  if [[ -n "${{RPC_CM[$node]:-}}" ]]; then
+  [[ -z "$port" ]] && port="$(rpc_port_of "$node")"
+  if [[ -n "$(rpc_cm_of "$node")" ]]; then
     # native-CM peer: no TCP listener exists — alive == process running
-    sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
+    ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
       "pgrep -f \\"ggml-[r]pc-server.*-p $port \\" >/dev/null" 2>/dev/null
     return $?
   fi
@@ -2544,82 +2859,80 @@ roll_rpc_port() {{
   # live maps, so the peer list, waits, state files and cleanup below
   # all stay consistent on the ports actually serving.
   local node="$1"
-  local port="${{RPC_PORTS[$node]:-50052}}"
+  local port="$(rpc_port_of "$node")"
   local old_port="$port"
   local is_win=0
-  [[ " ${{WIN_NODES[@]}} " == *" $node "* ]] && is_win=1
+  [[ " ${{WIN_NODES[@]-}} " == *" $node "* ]] && is_win=1
   local tries=0
   while (( tries < 25 )); do
     port=$((port + 1))
     if (( is_win )) && win_port_excluded "$port"; then continue; fi
     if ! tcp_probe "$node" "$port"; then
       echo ">>> $node: RPC port $old_port blocked — rolling to $port"
-      RPC_PORTS["$node"]="$port"
-      RPC_LOGS["$node"]="$(rpc_log_for_port "$port")"
+      local key="${{node//[^A-Za-z0-9_]/_}}"
+      eval "RPC_PORT_OVERRIDE_$key=\"$port\""
       return 0
     fi
     tries=$((tries + 1))
   done
-  echo "!!! $node: no free RPC port found" >&2
-  return 1
+  STARTED=()
 }}
 ensure_node() {{
   local node="$1"
-  if [[ " ${{WIN_NODES[@]}} " == *" $node "* ]]; then
+  if [[ " ${{WIN_NODES[@]-}} " == *" $node "* ]]; then
     ensure_rpc_win "$node"
   else
     ensure_rpc_linux "$node"
   fi
 }}
 ensure_rpc_linux() {{
-  # Reuse a running rpc-server on this port whose backends match; restart
-  # only on mismatch. Per-port: co-served models on other ports are never
-  # touched, so they never need to "agree" on backends anymore.
-  local node="$1" want have
-  want="${{PEER_DEVICES[$node]:-}}"
+  # Agent-only ensure: ask the peer agent to start/reuse this model's
+  # rpc-server. No SSH, no passwords, key-based SSH only.
+  local node="$1" want devs dev_json port token_var token
+  want="$(peer_devices "$node")"
+  devs="$(peer_devices "$node")"
   [[ -z "$want" ]] && want="default"
-  if port_open "$node"; then
-    have="$(rpc_state_linux "$node")"
-    if [[ "$have" == "$want" ]]; then
-      echo ">>> reusing rpc-server on $node:${{RPC_PORTS[$node]}} (linux) [$want]"
-      return 0
-    fi
-    echo ">>> rpc-server on $node:${{RPC_PORTS[$node]}} backends mismatch (have '${{have:-none}}' want '$want'), restarting"
-  fi
-  stop_node_rpc_linux "$node"
-  sleep 1
-  start_rpc_linux "$node" || return 1
-  set_rpc_state_linux "$node" "$want"
+  port="$(rpc_port_of "$node")"
+  dev_json="[]"
+  [[ -n "$devs" ]] && dev_json="[$(echo "$devs" | sed 's/,/","/g;s/^/"/;s/$/"/')]"
+  token_var="AGENT_TOKEN_$(echo "$node" | tr '[:lower:]-' '[:upper:]_')"
+  token="${{!token_var:-}}"
+  echo ">>> rpc binary: $(rpc_bin_of "$node")"
+  curl -fsS -H "Authorization: Bearer $token" \
+       -H 'Content-Type: application/json' \
+       -d "{{\"port\":$port,\"devices\":$dev_json,\"env\":{{}}}}" \
+       "$(agent_base "$node")/rpc/ensure" >/dev/null
   note_started "$node"
 }}
 ensure_rpc_win() {{
-  local node="$1" want have
-  want="${{PEER_DEVICES[$node]:-}}"
+  # Agent-only ensure: ask the peer agent to start/reuse this model's
+  # rpc-server. No SSH, no passwords, key-based SSH only.
+  local node="$1" want devs dev_json port token_var token
+  want="$(peer_devices "$node")"
+  devs="$(peer_devices "$node")"
   [[ -z "$want" ]] && want="default"
-  if port_open "$node"; then
-    have="$(rpc_state_win "$node")"
-    if [[ "$have" == "$want" ]]; then
-      echo ">>> reusing rpc-server on $node:${{RPC_PORTS[$node]}} (windows) [$want]"
-      return 0
-    fi
-    echo ">>> rpc-server on $node:${{RPC_PORTS[$node]}} backends mismatch (have '${{have:-none}}' want '$want'), restarting"
-  fi
-  stop_node_rpc_win "$node"
-  sleep 1
-  start_rpc_win "$node" || return 1
-  set_rpc_state_win "$node" "$want"
+  port="$(rpc_port_of "$node")"
+  dev_json="[]"
+  [[ -n "$devs" ]] && dev_json="[$(echo "$devs" | sed 's/,/","/g;s/^/"/;s/$/"/')]"
+  token_var="AGENT_TOKEN_$(echo "$node" | tr '[:lower:]-' '[:upper:]_')"
+  token="${{!token_var:-}}"
+  echo ">>> rpc binary: $(rpc_bin_of "$node")"
+  curl -fsS -H "Authorization: Bearer $token" \
+       -H 'Content-Type: application/json' \
+       -d "{{\"port\":$port,\"devices\":$dev_json,\"env\":{{}}}}" \
+       "$(agent_base "$node")/rpc/ensure" >/dev/null
   note_started "$node"
 }}
 wait_for_rpc() {{
   local node="$1"
   local rolls=0
   while :; do
-  local port="${{RPC_PORTS[$node]:-50052}}"
-  local log="${{RPC_LOGS[$node]:-rpc-server.log}}"
-  if [[ -n "${{RPC_CM[$node]:-}}" ]]; then
+  local port="$(rpc_port_of "$node")"
+  local log="$(rpc_log_of "$node")"
+  if [[ -n "$(rpc_cm_of "$node")" ]]; then
     # native-CM peer: wait for the process + its "listening" line in the log
     for i in $(seq 1 60); do
-      if sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
+      if ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
         "pgrep -f \\"ggml-[r]pc-server.*-p $port \\" >/dev/null && grep -a \\"listening on\\" \\"$HOME/$log\\" 2>/dev/null | grep -q ." 2>/dev/null; then
         echo ">>> $node listening on $port (native RDMA)"
         return 0
@@ -2627,7 +2940,7 @@ wait_for_rpc() {{
       sleep 2
     done
     echo "!!! rpc-server never came up on $node:$port" >&2
-    sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" "tail -20 \\"$HOME/$log\\"" >&2 2>/dev/null || true
+    ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" "tail -20 \\"$HOME/$log\\"" >&2 2>/dev/null || true
     return 1
   fi
   for i in $(seq 1 30); do
@@ -2651,26 +2964,25 @@ wait_for_rpc() {{
   fi
   echo "!!! rpc-server never came up on $node:$port" >&2
   echo "--- last log lines from $node ---" >&2
-  if [[ " ${{WIN_NODES[@]}} " == *" $node "* ]]; then
+  if [[ " ${{WIN_NODES[@]-}} " == *" $node "* ]]; then
     ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" "powershell -NoProfile -Command \\"Get-Content \\$env:USERPROFILE\\$log -Tail 20\\"" >&2 2>/dev/null || true
   else
-    sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" "tail -20 \\"$HOME/$log\\"" >&2 2>/dev/null || true
+    ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" "tail -20 \\"$HOME/$log\\"" >&2 2>/dev/null || true
   fi
   return 1
   done
 }}
 
 for node in "${{LINUX_NODES[@]}}"; do [[ -n "$node" ]] && ensure_rpc_linux "$node"; done
-for node in "${{WIN_NODES[@]}}"; do [[ -n "$node" ]] && {{ ensure_rpc_win "$node" || {{ stop_started_rpc; exit 1; }}; }}; done
+for node in "${{WIN_NODES[@]-}}"; do [[ -n "$node" ]] && {{ ensure_rpc_win "$node" || {{ stop_started_rpc; exit 1; }}; }}; done
 for node in "${{ALL_NODES[@]}}"; do
   [[ -n "$node" ]] || continue
   wait_for_rpc "$node" || {{ stop_started_rpc; exit 1; }}
 done
-trap 'stop_started_rpc' EXIT
 RPC_LIST=""
-for node in "${{ALL_NODES[@]}}"; do
+for node in "${{AGENT_NODES[@]}}"; do
   [[ -n "$node" ]] || continue
-  RPC_LIST="${{RPC_LIST:+$RPC_LIST,}}$node:${{RPC_PORTS[$node]}}"
+  RPC_LIST="${{RPC_LIST:+$RPC_LIST,}}$node:$(rpc_port_of "$node")"
 done
 echo ">>> rpc peers:    $RPC_LIST"
 echo ">>> device order: $DEVICE_ORDER"
@@ -2685,7 +2997,6 @@ STATUS=$?
 wait "$CHILD" 2>/dev/null
 exit $STATUS
 """
-
 
 def _bin_subdir(machine, binary):
     """Bin path for remote commands. ~/ paths become $HOME-relative
@@ -2742,9 +3053,7 @@ def validate_model(model_id):
     # 0. reverse format gate (DEC-07): a model whose downloaded format is
     # outside the ACTIVE engine's downloads vocabulary must not validate.
     # hf (safetensors repo dir) under llama.cpp is a hard error — the
-    # llama-server RPC launch cannot serve it; gguf under vLLM only warns
-    # (llama.cpp GGUF-on-vLLM stays explicitly experimental, ARD §3.4),
-    # so the gate never blocks that combination.
+    # llama-server RPC launch cannot serve it.
     try:
         import engine_registry
         engine = engine_registry.get_engine()
@@ -2756,11 +3065,7 @@ def validate_model(model_id):
         if fmt == "hf" and "hf" not in allowed:
             err(f"model format 'hf' (safetensors repo) is not servable "
                 f"by the {engine.name} engine — llama.cpp serves GGUF "
-                f"files; switch the model to a .gguf or the engine to "
-                f"vLLM")
-        elif fmt == "gguf" and "gguf" not in allowed:
-            warn(f"GGUF under the {engine.name} engine is experimental — "
-                 f"vLLM's supported format is 'hf' (safetensors)")
+                f"files; switch the model to a .gguf")
     except ValueError:
         raise  # invalid engine setting is a real error, not a gate skip
     except Exception:
@@ -2953,13 +3258,6 @@ def _resolve_variant(model, variant_label):
                 base_flags = dict(merged.get("flags") or {})
                 base_flags.update(var["flags"])
                 merged["flags"] = base_flags
-            # vllm (A2): partial override, same semantics as flags — keeps
-            # _resolve_variant (live launch) byte-identical with the swap
-            # plan's variant merge in swap_manager.
-            if var.get("vllm") is not None and isinstance(var["vllm"], dict) and var["vllm"]:
-                base_vllm = dict(merged.get("vllm") or {})
-                base_vllm.update(var["vllm"])
-                merged["vllm"] = base_vllm
             merged["base_path"] = model.get("base_path")
             merged["model_id"] = model.get("model_id")
             merged["name"] = model.get("name") or model.get("model_id")
@@ -2992,9 +3290,16 @@ def _launch_model_remote_local(model, master, peers, port):
     model = dict(model)
     model["device_order"] = ",".join(gpus)
     # same single-box split policy as render_remote_local_script: keep an
-    # explicit variant-provided split, else fit mode
-    if not (model.get("tensor_split_mode") == "split"
-            and (model.get("tensor_split") or "").strip()):
+    # explicit variant-provided split, else fit mode — except a single Metal
+    # device, where fit mode is broken and auto mode is required.
+    is_metal_single = (master.get("os") == "macos"
+                       and len(gpus) == 1
+                       and gpus[0] in ("Metal", "MTL0"))
+    if is_metal_single:
+        model["tensor_split_mode"] = "auto"
+        model["tensor_split"] = ""
+    elif not (model.get("tensor_split_mode") == "split"
+              and (model.get("tensor_split") or "").strip()):
         model["tensor_split_mode"] = "fit"
         model["tensor_split"] = ""
     from steps import run_steps
@@ -3006,7 +3311,7 @@ def _launch_model_remote_local(model, master, peers, port):
               master["name"], port),
              (f"serve:{master['name']}", _start_llama_server,
               model, master, [], port)]
-    report = run_steps(report, steps, catch=(SSHError, ValueError))
+    report = run_steps(report, steps, catch=(RuntimeError, ValueError))
     for st in report.get("steps", []):
         if st.get("step", "").startswith("serve:") and st.get("port"):
             report["port"] = st["port"]
@@ -3084,8 +3389,14 @@ def launch_model(model_id, servers, port=8080, variant=None, master_name=None,
             model["tensor_split_mode"] = "auto"
             model["tensor_split"] = ""
         peers = []
-    report = {"model_id": model_id, "steps": [], "port": port}
-    steps = [(f"stop:{master['name']}", stop_rpc, master["name"])]
+    report = {"model_id": model_id, "steps": [], "port": port,
+              "master": master["name"]}
+    # Clear only THIS model's previous llama-server on the requested live
+    # port. Never call stop_rpc() with no port here: that is the legacy
+    # stop-everything path and kills/disables llama-swap (which then frees
+    # :8080 for llama-server and breaks serving/reboot).
+    steps = [(f"stop:{master['name']}", stop_llama_server_port,
+              master["name"], port)]
     # Per-(model,peer,GROUP) ports — each co-served model gets its own
     # single-client rpc-server per backend GROUP: one server for all
     # selected accelerators, a separate server for the CPU/RAM backend
@@ -3109,7 +3420,7 @@ def launch_model(model_id, servers, port=8080, variant=None, master_name=None,
     steps += rpc_steps
     steps.append((f"serve:{master['name']}", _start_llama_server,
                   model, master, peers, port))
-    report = run_steps(report, steps, catch=(SSHError, ValueError))
+    report = run_steps(report, steps, catch=(RuntimeError, ValueError))
     # surface the ACTUAL bound port (it may have rolled past a busy one)
     for st in report.get("steps", []):
         if st.get("step", "").startswith("serve:") and st.get("port"):
@@ -3135,6 +3446,41 @@ def _start_llama_server(model, master, peers, port):
     # scripts bake these in; live launches need them too or the server
     # runs undebuggable (no sched logs) and possibly misordered GPUs
     env_pre = _device_env_exports(master)
+
+    # Optional agent: native llama-server start on the peer. Only for
+    # non-MLX (the agent launches llama-server, not mlx_lm.server).
+    if (not is_local and (model.get("runtime") or "llama") != "mlx"
+            and agent_client.should_use_agent(master)):
+        try:
+            args = _cmd_to_args(cmd, master.get("os", "linux"))
+            env = dict(_parse_env_exports(env_pre))
+            res = agent_client.llama_start(master, port, args, env)
+            if not (res.get("running") or res.get("loading")
+                    or res.get("reused")):
+                if agent_client.transport(master) == "agent":
+                    return {"running": False, "port": port,
+                            "port_rolled": rolled,
+                            "stderr": res.get("error") or "agent llama/start failed"}
+            else:
+                waited = 0
+                up = bool(res.get("running"))
+                while not up and waited < 120:
+                    time.sleep(2)
+                    waited += 2
+                    up = _port_open(master, port, is_local=False)
+                return {
+                    "running": up, "pid": res.get("pid"), "port": port,
+                    "port_rolled": rolled, "agent": True,
+                    "command": f"{env_pre}\n{cmd}",
+                    **({} if up else {"hint": res.get("log_tail")
+                                      or "check the agent's llama-server log"}),
+                }
+        except Exception as e:
+            if agent_client.transport(master) == "agent":
+                return {"running": False, "port": port,
+                        "port_rolled": rolled,
+                        "stderr": f"agent error: {e}"}
+            print(f"[agent] {master['name']}: llama/start failed, falling back to SSH: {e}")
 
     if is_local:
         import subprocess

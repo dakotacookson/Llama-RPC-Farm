@@ -1,15 +1,9 @@
-"""Script-injection tests: model_id and variant labels reach generated
-artifacts — the start-<model_id>.sh filename, the llama-swap models.cmd
-line and the yaml text (ARD t_76f3d1c0 §7 B3).
-
-The vLLM branch gates model_id through the strict allowlist
-(vllm_manager._require_safe_id) BEFORE any filename or yaml key is
-derived, and swap_manager sanitizes variant labels for filenames.
-llama.cpp emit behavior is intentionally untouched (ARD minimal-diff
-principle) — these tests pin the vLLM surfaces only.
+"""Script-injection tests: attacker-controlled IPs and flag values must
+not break out of the generated RPC/launch shell commands.
 """
 import re
 import types
+from pathlib import Path
 
 import yaml
 
@@ -36,89 +30,16 @@ def _machine(name, ip, **kw):
     m.update(kw)
     return m
 
+import shlex
 
-def _model(mid="qwen3-8b", servers=None, **kw):
-    m = {"model_id": mid, "name": mid, "flags": {},
-         "base_path": "/mnt/store/" + mid,
-         "servers": servers if servers is not None else ["aibox1"]}
-    # DEC-08: launch reads only the native vllm: section; give every model
-    # a minimal non-empty one (cpu_offload_gb 0 emits no flag) unless a
-    # test overrides it via kw.
-    m.setdefault("vllm", {"cpu_offload_gb": 0})
-    m.update(kw)
-    return m
+import pytest
 
+from rpc_manager import _render_rpc, build_llama_command
 
-def _generate(monkeypatch, tmp_path, models, engine_settings):
-    by_name = {"aibox1": _machine("aibox1", "127.0.0.1", role="master")}
-    monkeypatch.setattr(swap_manager, "cfg", types.SimpleNamespace(
-        machines=conftest._FakeMachines(by_name),
-        swap_groups=types.SimpleNamespace(all=lambda: []),
-        list_models=lambda: list(models),
-        # DEC-03: per-machine swap-config override resolution (real
-        # validator; fake machines carry no override keys)
-        machine_swap_config_override=cfg.machine_swap_config_override))
-    # _split_servers resolves machine names through rpc_manager.cfg —
-    # fake it too, or peer lookups would hit the real machine list.
-    monkeypatch.setattr(rpc_manager, "cfg", types.SimpleNamespace(
-        machines=conftest._FakeMachines(by_name)))
-    monkeypatch.setattr(engine_registry, "load_settings",
-                        lambda *a, **k: dict(engine_settings))
-    monkeypatch.setattr(swap_manager, "SWAP_SETTINGS_FILE",
-                        str(tmp_path / "swap-settings.yaml"))
-    return swap_manager.generate(str(tmp_path / "config.yaml"), "aibox1")
-
-
-def test_vllm_script_filename_follows_allowlisted_id(monkeypatch, tmp_path):
-    plan = _generate(monkeypatch, tmp_path, [_model("qwen3-8b")],
-                     {"engine": "vllm", "vllm": VENV_BLOCK})
-    assert plan["scripts"] == ["start-qwen3-8b.sh"]
-    for fname in plan["scripts"]:
-        assert _SCRIPT_NAME.fullmatch(fname)
-    emitted = yaml.safe_load(plan["yaml"])["models"]["qwen3-8b"]
-    assert emitted["cmd"] == (
-        f"/bin/bash {plan['scripts_dir']}/start-qwen3-8b.sh ${{PORT}}")
-
-
-def test_shell_metachar_id_never_reaches_scripts_or_yaml(monkeypatch,
-                                                         tmp_path):
-    hostile = "x;touch /tmp/pwned"
-    plan = _generate(monkeypatch, tmp_path,
-                     [_model(hostile), _model("good-model")],
-                     {"engine": "vllm", "vllm": VENV_BLOCK})
-    assert plan["models"] == ["good-model"]
-    assert plan["scripts"] == ["start-good-model.sh"]
-    assert plan["script_mids"] == ["good-model"]
-    assert "pwned" not in plan["yaml"]
-    for fname in plan["scripts"]:
-        assert _SCRIPT_NAME.fullmatch(fname)
-
-
-def test_dollar_expansion_id_never_reaches_yaml(monkeypatch, tmp_path):
-    plan = _generate(monkeypatch, tmp_path, [_model("a${HOME}b")],
-                     {"engine": "vllm", "vllm": VENV_BLOCK})
-    assert plan["models"] == []
-    assert plan["scripts"] == []
-    assert "a${HOME}b" in plan["skipped"]
-    assert "${HOME}" not in plan["yaml"]
-
-
-def test_variant_label_sanitized_in_script_filename(monkeypatch, tmp_path):
-    model = _model()
-    model["variants"] = [{"label": "evil;id"}]
-    plan = _generate(monkeypatch, tmp_path, [model],
-                     {"engine": "vllm", "vllm": VENV_BLOCK})
-    # ";" sanitized to "-" — the label can never inject into a filename
-    assert "start-qwen3-8b--evil-id.sh" in plan["scripts"]
-    for fname in plan["scripts"]:
-        assert _SCRIPT_NAME.fullmatch(fname)
-    for entry in plan["entries"]:
-        assert _SCRIPT_NAME.fullmatch(f"start-{entry['model_id']}.sh")
-    assert "evil;id" not in plan["yaml"]
 
 # ======================================================================
 # qe-validation-test branch: secrets-vault / installer regression tests
-# (helper names prefixed _qe_ to avoid collision with the vllm-branch helpers above)
+# (helper names prefixed _qe_)
 # ======================================================================
 
 import shlex
@@ -174,9 +95,9 @@ def _qe__model(mid, flags=None, **kw):
     "pass word",  # space
 ])
 def test_render_rpc_password_never_baked_into_script(stub_cfg, bad_password):
-    """Secrets are vault-only: no password ( however metachar-heavy ) may
-    appear anywhere in the generated script. The script requires $SSH_PASS
-    at runtime (scripts/farm-run.sh decrypts the vault and exports it)."""
+    """Generated RPC scripts are agent-only: a machine password must never
+    appear in the script, and the script must not use SSH passwords or
+    sshpass."""
     master = _qe__machine("aibox1", "10.0.0.98", role="master")
     peer = _qe__machine("aibox2", "10.0.0.11", password=bad_password)
     stub_cfg.update({m["name"]: m for m in (master, peer)})
@@ -189,11 +110,26 @@ def test_render_rpc_password_never_baked_into_script(stub_cfg, bad_password):
     assert bad_password not in script, (
         "Plaintext password baked into generated script"
     )
-    assert "SSH_PASS" in script, "Expected runtime $SSH_PASS resolution in script"
-    sshpass_lines = [l for l in script.splitlines() if "sshpass" in l]
-    assert sshpass_lines, "Expected at least one sshpass line in generated script"
-    for line in sshpass_lines:
-        assert '"$SSH_PASS"' in line or "'$SSH_PASS'" in line or "$SSH_PASS" in line
+    assert "SSH_PASS" not in script, (
+        "Generated RPC script must not require or reference SSH_PASS")
+    assert "sshpass" not in script, (
+        "Generated RPC script must not use sshpass")
+
+
+def test_password_ssh_path_uses_runtime_secret():
+    """Pin the repo's existing password-SSH contract: the remote-local
+    launcher resolves SSH_PASS at runtime and never embeds a machine
+    password in generated output."""
+    source = Path(__file__).resolve().parents[1] / "src" / "rpc_manager.py"
+    text = source.read_text(encoding="utf-8")
+
+    assert 'sshpass -p "$SSH_PASS"' in text, (
+        "Existing password-SSH path must use runtime $SSH_PASS")
+
+    for line in text.splitlines():
+        if "sshpass -p" in line:
+            assert "$SSH_PASS" in line, (
+                f"sshpass call does not use runtime SSH_PASS: {line!r}")
 
 
 def _single_quote_escape(s):
