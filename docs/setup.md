@@ -207,7 +207,7 @@ minutes between streamed chunks (prefill, RPC backends, memory pressure).
   vault); generated scripts read it from `swap-secrets.env`.
 - **llama-swap exits and stays down after a kill** — a bare SIGTERM exits
   "cleanly" and `Restart=on-failure` skips respawn; bounce the unit
-  (`systemctl --user restart llama-swap`) — `restart-llama-swap.sh` does
+  (`systemctl --user restart llama-swap`) — `./restart.sh --full` does
   this, then restarts the UI.
 
 More depth: [architecture](architecture.md), [secrets](secrets.md),
