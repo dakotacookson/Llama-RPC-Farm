@@ -1,0 +1,13 @@
+[Unit]
+Description=Llama RPC Farm peer agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/llama-peer-agent/agent.env
+ExecStart=%h/.local/bin/llama-peer-agent --host 0.0.0.0 --port 8198
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

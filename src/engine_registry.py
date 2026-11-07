@@ -20,7 +20,8 @@ import rpc_manager
 import engine_manifest
 from engine_manifest import UiHintsMixin
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from runtime_paths import data_dir
+BASE_DIR = data_dir()
 SETTINGS_FILE = os.path.join(BASE_DIR, "config", "settings.yaml")
 
 VALID_ENGINES = cfg.VALID_ENGINES
@@ -377,8 +378,15 @@ class LlamaCppAdapter(UiHintsMixin):
         "serving"})."""
         port = (machine or {}).get("rpc_port") or 0
         is_local = local_node.is_local(machine or {})
-        ok = bool(port) and rpc_manager._port_open(machine, port, is_local)
-        return {"name": (machine or {}).get("name"), "serving": bool(ok)}
+        rpc = bool(port) and rpc_manager._port_open(machine, port, is_local)
+        live = False
+        try:
+            live = rpc_manager.has_live_llama((machine or {}).get("name"))
+        except Exception:
+            live = False
+        return {"name": (machine or {}).get("name"),
+                "serving": bool(rpc or live), "rpc": bool(rpc),
+                "llama": bool(live)}
 
     # -- acquisition (DEC-07: llama.cpp vocabulary = GGUF) --
 

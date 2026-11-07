@@ -15,6 +15,10 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 | `POST /api/machines/{name}/detect` | Detect hardware (GPUs/cores/RAM) and persist into `detected` |
 | `POST /api/machines/detect-all` | Detect hardware on every machine |
 | `POST /api/machines/probe` | Probe hardware on an unsaved machine (wizard) |
+| `POST /api/machines/agent-check` | Pre-save peer-agent health check for Add/Edit |
+| `GET /api/machines/connections` | Detected transport capability: local/both/ssh/agent/none |
+| `GET /api/machines/{name}/agent-version` | Current vs bundled agent version |
+| `POST /api/machines/{name}/update-agent` | Build/install agent, restart it, verify health |
 | `GET /api/machines/{name}/status` | Reachability + rpc-server running + IP sync. In vllm mode the payload gains `"engine": "vllm"` plus a `vllm` probe: `{"running": bool, "detail": str}` from `GET http://<ip>:<swap_port>/health` (detail strings: `vLLM /health 200`, `vLLM /health 503 (starting)`, `vLLM /health unreachable`, `probe failed: ...`). llama.cpp mode returns the payload exactly as before |
 | `POST /api/machines/{name}/rpc/start` | Start rpc-server(s) on that machine |
 | `POST /api/machines/{name}/rpc/stop` | Stop rpc-server(s); body may carry `port` for per-port stop |
@@ -27,7 +31,7 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 ## Discovery
 
 | `GET /api/discover/subnets` | Candidate subnets for scanning |
-| `POST /api/discover` | Scan a subnet for SSH hosts (fingerprint + OS probe) |
+| `POST /api/discover` | Scan SSH hosts, or peer agents with `agent_only: true` (UDP discovery) |
 | `GET /api/hardware/changes` | Hardware fingerprint diff polling |
 
 ## Groups (machine clusters)

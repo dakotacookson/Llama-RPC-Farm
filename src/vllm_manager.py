@@ -32,6 +32,7 @@ import config_loader as cfg
 import gpu_vendor
 import path_resolver
 import rpc_manager
+import agent_client
 # DEC-02 (AUDIT-T6 §1.5): the UI field manifest protocol + the ui_hints
 # shim live in src/engine_manifest.py — adapters mix in UiHintsMixin for
 # the manifest contract (ui_hints() is derived from ui_manifest()).
@@ -67,7 +68,7 @@ def swap_host_unload(model_id):
     import urllib.error
     req = urllib.request.Request(url, data=b"", method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=60) as r:
             return {"ok": True, "status": r.status,
                     "body": r.read().decode()[:500]}
     except urllib.error.HTTPError as e:
@@ -523,12 +524,67 @@ def _derive_tensor_parallel_size(model_cfg, servers):
         f"{len(servers)} (1 GPU per host)"]
 
 
+def _agent_ray_lines(machine, model_id, ray_bin, ids, num_gpus, ray_port,
+                     log, pidf):
+    """Shell lines that start/stop a Ray worker through the peer agent,
+    """
+    import swap_manager
+    token_var = swap_manager._agent_token_var(machine.get("name"))
+    base = f"http://{machine.get('ip')}:{agent_client.agent_port(machine)}"
+    start_payload = {
+        "ray_bin": ray_bin,
+        "address": f"__MASTER_IP__:{int(ray_port)}",
+        "num_gpus": int(num_gpus),
+        "env": {
+            "PYTORCH_ALLOC_CONF": "expandable_segments:True",
+            **({"CUDA_VISIBLE_DEVICES": ids} if ids else {}),
+        },
+        "master_ip": "__MASTER_IP__",
+        "log": f"__HOME__/{log}",
+        "pid_file": f"__HOME__/{pidf}",
+    }
+    stop_payload = {"ray_bin": ray_bin,
+                    "pid_file": f"__HOME__/{pidf}"}
+    start_file = f"agent-ray-{model_id}-{machine.get('name')}.json"
+    stop_file = f"agent-ray-stop-{model_id}-{machine.get('name')}.json"
+    start = (
+        f'  _agent_ok=0\n'
+        f'  if [ -n "${{{token_var}:-}}" ]; then\n'
+        f'    mkdir -p "$HOME/.cache"\n'
+        f'    cat > "$HOME/.cache/{start_file}" <<\'JSON\'\n'
+        + json.dumps(start_payload, separators=(",", ":")) + '\n'
+        f'JSON\n'
+        f'    sed -i "s|__HOME__|$HOME|g; s|__MASTER_IP__|$MASTER_IP|g" '
+        f'"$HOME/.cache/{start_file}"\n'
+        f'    curl -fsS -m 60 -H "Authorization: Bearer ${{{token_var}}}" '
+        f'-H "Content-Type: application/json" --data-binary '
+        f'@"$HOME/.cache/{start_file}" "{base}/ray/start" && _agent_ok=1\n'
+        f'    rm -f "$HOME/.cache/{start_file}"\n'
+        f'  fi\n'
+        f'  if [ "$_agent_ok" -ne 1 ]; then\n')
+    stop = (
+        f'  _agent_ok=0\n'
+        f'  if [ -n "${{{token_var}:-}}" ]; then\n'
+        f'    mkdir -p "$HOME/.cache"\n'
+        f'    cat > "$HOME/.cache/{stop_file}" <<\'JSON\'\n'
+        + json.dumps(stop_payload, separators=(",", ":")) + '\n'
+        f'JSON\n'
+        f'    sed -i "s|__HOME__|$HOME|g" "$HOME/.cache/{stop_file}"\n'
+        f'    curl -fsS -m 60 -H "Authorization: Bearer ${{{token_var}}}" '
+        f'-H "Content-Type: application/json" --data-binary '
+        f'@"$HOME/.cache/{stop_file}" "{base}/ray/stop" && _agent_ok=1\n'
+        f'    rm -f "$HOME/.cache/{stop_file}"\n'
+        f'  fi\n'
+        f'  if [ "$_agent_ok" -ne 1 ]; then\n')
+    return start, stop
+
+
 def build_vllm_cluster_command(model_cfg, master, peers, vllm_cfg=None):
     """Build the multi-host vLLM start script for one model (Ray cluster).
 
     Per design §1.1 (mirrors vLLM's own multi-node-serving.sh + the
-    repo's _render_rpc pattern): ray workers are ssh'd (sshpass +
-    $SSH_PASS from the sourced swap-secrets.env sidecar) onto every peer,
+    repo's agent pattern): ray workers are started through each peer's
+    /ray/start endpoint,
     the ray head starts on the master, the script polls `ray status`
     until all N nodes are alive (ray_init_timeout, default 300 s) and
     only then execs `vllm serve` with --distributed-executor-backend ray.
@@ -689,34 +745,15 @@ def build_vllm_cluster_command(model_cfg, master, peers, vllm_cfg=None):
         # double-quotes made the outer shell eat $(...) at the wrong
         # time or the peer hit $() reparsing with stripped quotes
         # ("syntax error near unexpected token '('").
+        astart, astop = _agent_ray_lines(
+            p, model_id, ray_bin, ids, num_gpus, ray_port,
+            f"ray-worker-{model_id}.log",
+            f"ray-worker-{model_id}.pid")
         worker_starts.append(
-            f"  sshpass -p \"$SSH_PASS\" ssh -n $SSH_OPTS \"{user}@{ip}\" \\\n"
-            f"    'MIP='\"$MASTER_IP\"'; "
-            f"set -- $(ip route get $MIP 2>/dev/null); "
-            f"while [ $# -gt 1 ]; do [ $1 = dev ] && "
-            f"{{ export GLOO_SOCKET_IFNAME=$2 NCCL_SOCKET_IFNAME=$2; "
-            f"break; }}; shift; done; "
-            f"export PATH={peer_bin_dir}:$PATH; "
-            # PYTORCH_ALLOC_CONF must live HERE (worker-side), not in
-            # ray_env: Ray only copies HF_/NCCL_/VLLM_/etc. prefixes to
-            # workers, so a head-side export never reaches the peer's
-            # vLLM worker process. expandable_segments lets the torch
-            # allocator release reserved-but-unallocated pages — the
-            # FP8 Marlin repack pass (gptq_marlin_repack, one 170MB
-            # chunk per layer) OOM'd on a 12GB Turing card with 491MB
-            # reserved-but-unallocated and only 127MB free. Also
-            # CUDA_DEVICE_ORDER: heterogeneous nodes must map "GPU 0"
-            # deterministically (FASTEST_FIRST default would reorder).
-            + "export PYTORCH_ALLOC_CONF=expandable_segments:True; "
-            + (f"export CUDA_VISIBLE_DEVICES={ids}; " if ids else "")
-            + f"{ray_bin} stop --force >/dev/null 2>&1; "
-            f"{ray_bin} start --address=$MIP:{ray_port} "
-            f"--num-gpus={num_gpus} >> {log} 2>&1 & echo \\$! > {pidf}'")
+            astart + "    echo \"agent ray/start failed\" >&2\n"
+            "    exit 1\n  fi")
         worker_stops.append(
-            f'  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\\n'
-            f"    '[ -f {pidf} ] && kill \"$(cat {pidf})\" >/dev/null "
-            f"2>&1 || true; {ray_bin} stop --force >/dev/null 2>&1 "
-            f"|| true'")
+            astop + "    echo \"agent ray/stop failed\" >&2\n  fi")
         worker_pids.append(ip)
     workers_start = "\n".join(worker_starts)
     workers_stop = "\n".join(worker_stops)

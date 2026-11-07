@@ -10,7 +10,8 @@ import sys
 
 import yaml
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from runtime_paths import data_dir
+BASE_DIR = data_dir()
 STORES_FILE = os.path.join(BASE_DIR, "config", "stores.yaml")
 
 PREFIX = "store://"

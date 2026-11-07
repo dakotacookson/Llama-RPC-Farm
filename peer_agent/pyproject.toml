@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llama-rpc-farm-agent"
+version = "0.3.4"
+description = "Optional token-authenticated peer agent for Llama RPC Farm"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [{name = "Llama RPC Farm contributors"}]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/dakotacookson/Llama-RPC-Farm"
+Issues = "https://github.com/dakotacookson/Llama-RPC-Farm/issues"
+
+[project.scripts]
+llama-peer-agent = "llama_peer_agent.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["llama_peer_agent*"]
+
+[tool.setuptools.package-data]
+llama_peer_agent = ["templates/*"]

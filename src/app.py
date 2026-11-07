@@ -38,22 +38,108 @@ import model_parser
 import path_resolver
 import stats_collector
 import rpc_manager
+import agent_client
 import reaper
 import gguf_inspect
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "ui", "templates"))
+from runtime_paths import asset_dir, data_dir, ensure_runtime_layout
+BASE_DIR = data_dir()
+ASSET_DIR = asset_dir()
+templates = Jinja2Templates(directory=os.path.join(ASSET_DIR, "ui", "templates"))
 templates.env.auto_reload = True  # pick up index.html edits without a restart
 
 app = FastAPI(title="Llama RPC Farm")
 
 
+_GATEWAY_SERVER = None
+
+
+def _port_open(port):
+    try:
+        import socket
+        s = socket.socket()
+        s.settimeout(0.3)
+        try:
+            return s.connect_ex(("127.0.0.1", int(port))) == 0
+        finally:
+            s.close()
+    except Exception:
+        return False
+
+
+def start_swap_gateway():
+    """Run the view/access-key gateway in-process on :8090.
+
+    Packaged builds have no source checkout to launch src/swap_gateway.py
+    as a separate service, and every client-facing path (README examples,
+    UI Chat/Tests) expects :8090. Embedding it keeps one binary and makes
+    the gateway lifecycle follow the app. If something already answers on
+    the port (legacy systemd gateway), leave it alone.
+    """
+    global _GATEWAY_SERVER
+    if _GATEWAY_SERVER is not None:
+        return
+    if (os.environ.get("FARM_GATEWAY_DISABLE") or "").lower() in (
+            "1", "true", "yes", "on"):
+        return
+    # pytest spins the app up repeatedly; never bind a real port there.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    try:
+        port = int(os.environ.get("GATEWAY_PORT") or 8090)
+    except ValueError:
+        port = 8090
+    if _port_open(port):
+        print(f"[gateway] :{port} already answering — using external gateway")
+        return
+    try:
+        import threading
+        import uvicorn
+        import swap_gateway
+        cfg = uvicorn.Config(
+            swap_gateway.app,
+            host=(os.environ.get("GATEWAY_HOST") or "0.0.0.0"),
+            port=port,
+            log_level="warning",
+            access_log=False,
+        )
+        server = uvicorn.Server(cfg)
+        thread = threading.Thread(target=server.run, daemon=True,
+                                  name="swap-gateway")
+        thread.start()
+        _GATEWAY_SERVER = server
+        print(f"[gateway] embedded swap gateway listening on "
+              f"{cfg.host}:{cfg.port}")
+    except Exception as e:
+        # A gateway failure must never take down the farm UI; clients can
+        # still target llama-swap :8080 directly.
+        print(f"[gateway] failed to start embedded gateway: {e}")
+
+
+@app.on_event("shutdown")
+def stop_swap_gateway():
+    global _GATEWAY_SERVER
+    if _GATEWAY_SERVER is not None:
+        _GATEWAY_SERVER.should_exit = True
+        _GATEWAY_SERVER = None
 
 
 @app.on_event("startup")
 def seed_local_master():
     """The machine running this app is the default master node."""
+    # Frozen/portable builds start with an empty data dir: create config/,
+    # generated/, model/usage dirs and minimal defaults before anything
+    # reads them. Best-effort, never blocks boot.
+    ensure_runtime_layout()
     local_node.ensure_local_master()
+    try:
+        import secrets as _secrets
+        import secrets_vault as _vault
+        if not _vault.farm_agent_token_set():
+            _vault.set_farm_agent_token(_secrets.token_urlsafe(32))
+    except Exception:
+        pass
+    start_swap_gateway()
     # DEC-17: one-time stamp of `engine` on legacy group entries (both
     # collections) so existing groups keep rendering under their engine.
     # Best-effort: a locked/read-only config dir never blocks boot.
@@ -80,6 +166,7 @@ def seed_local_master():
         import access as _access
         with _access.trust_current_thread():
             try:
+                _sm.sync_service_unit()
                 report = _sm.push_scripts()
                 if report.get("error"):
                     print(f"[boot-reconcile] push failed: {report['error']}")
@@ -135,7 +222,7 @@ class NoCacheStaticFiles(StaticFiles):
         resp.headers["Cache-Control"] = "no-cache, must-revalidate"
         return resp
 
-app.mount("/static", NoCacheStaticFiles(directory=os.path.join(BASE_DIR, "ui", "static")), name="static")
+app.mount("/static", NoCacheStaticFiles(directory=os.path.join(ASSET_DIR, "ui", "static")), name="static")
 
 
 # ---------------- client-IP view gate ----------------
@@ -175,7 +262,65 @@ app.add_middleware(IpGateMiddleware)
 # HttpOnly, SameSite=Lax; the API key never needs to be pasted into a
 # browser — logging in IS the key adoption.
 
+def _access_filter_models(models):
+    """Apply the caller's exact-token allowlist to a model list.
+
+    gate_open (trusted console / unrestricted admin) sees everything.
+    A restricted caller with no grants sees NOTHING; a scoped caller sees
+    only granted base ids and granted variants.
+    """
+    if access.gate_open():
+        return models
+    allow = access.view_allow()
+    if not allow:
+        return []
+    from swap_gateway import _mid_allowed
+    out = []
+    for m in models:
+        if not isinstance(m, dict):
+            continue
+        mid = str(m.get("model_id") or m.get("id") or "")
+        variants = m.get("variants") or []
+        keep_vars = [v for v in variants
+                     if _mid_allowed(f"{mid}--{v.get('label')}", allow)]
+        if _mid_allowed(mid, allow) or keep_vars:
+            mm = dict(m)
+            if variants:
+                mm["variants"] = keep_vars
+            out.append(mm)
+    return out
+
+
 LOGIN_COOKIE = "farm_session"
+
+
+def _gateway_url(path=""):
+    """Local :8090 gateway URL; GATEWAY_PORT overrides for isolated tests."""
+    port = (os.environ.get("GATEWAY_PORT") or "8090").strip()
+    return f"http://127.0.0.1:{port}{path}"
+
+
+def _gateway_headers(request=None):
+    """Identity headers for a server-side call to the :8090 gateway.
+
+    The browser's farm session cookie resolves (inside the gateway) to the
+    logged-in user's access key, so usage/grants attribute to them without
+    ever exposing the key to JS. An explicit Bearer key also rides along.
+    """
+    h = {"Content-Type": "application/json", "Accept": "application/json"}
+    try:
+        sid = request.cookies.get(LOGIN_COOKIE) if request is not None else ""
+    except Exception:
+        sid = ""
+    if sid:
+        h["Cookie"] = f"{LOGIN_COOKIE}={sid}"
+    try:
+        tok = access.request_key(request) if request is not None else ""
+    except Exception:
+        tok = ""
+    if tok:
+        h["Authorization"] = f"Bearer {tok}"
+    return h
 
 
 @app.get("/api/auth/me")
@@ -561,7 +706,7 @@ def _asset_version():
     guarantees a fresh URL after every daemon restart, so Firefox can
     never serve a stale cached app.js against a new index.html."""
     try:
-        paths = [os.path.join(BASE_DIR, "ui", "static", f)
+        paths = [os.path.join(ASSET_DIR, "ui", "static", f)
                  for f in ("app.js", "style.css")]
         mt = str(int(max(os.path.getmtime(p) for p in paths)))
     except OSError:
@@ -589,9 +734,12 @@ class ExposeIn(pydantic.BaseModel):
 class MachineIn(pydantic.BaseModel):
     name: str
     ip: str
-    username: str
+    username: str = ""
     password: str = ""
     port: int = 22
+    transport: str = "agent"    # agent-only (kept for config compatibility)
+    agent_port: int = 8198
+    agent_token: str = ""       # write-only; stored in the vault, never YAML
     role: str = "peer"
     os: str = "linux"
     gpu_vendor: str = "nvidia"   # nvidia | amd | cpu
@@ -689,51 +837,96 @@ async def list_machines():
         m["vllm_capable"] = capable
         m["vllm_capability_reason"] = reason
         m["vllm_capability_info"] = info
+        try:
+            import secrets_vault as _vault
+            m["agent_token_set"] = bool(_vault.machine_agent_token_set(m))
+        except Exception:
+            m["agent_token_set"] = False
         m.pop("password", None)
         out.append(m)
     return out
 
 
+def _machine_connection_caps(machine):
+    """Detect usable transport for one machine: local or peer agent."""
+    name = machine.get("name") or machine.get("id") or "?"
+    try:
+        if local_node.is_local(machine):
+            return {"name": name, "mode": "local", "local": True,
+                    "ssh": False, "agent": False}
+    except Exception:
+        pass
+    try:
+        agent_client.health(machine, timeout=3.0)
+        return {"name": name, "mode": "agent", "local": False,
+                "ssh": False, "agent": True}
+    except Exception:
+        return {"name": name, "mode": "none", "local": False,
+                "ssh": False, "agent": False}
+
+@app.get("/api/machines/connections")
+async def machine_connections():
+    machines = cfg.machines.all()
+    def one(m):
+        return m.get("name"), _machine_connection_caps(m)
+    with ThreadPoolExecutor(max_workers=min(32, len(machines) or 1)) as pool:
+        return dict(pool.map(one, machines))
+
+
+class AgentCheckIn(pydantic.BaseModel):
+    ip: str
+    agent_port: int = 8198
+    agent_token: str = ""
+    name: str = ""
+
+
+@app.post("/api/machines/agent-check")
+async def machine_agent_check(p: AgentCheckIn):
+    """Pre-save peer-agent reachability check for the add/edit form."""
+    try:
+        port = int(p.agent_port or 8198)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="agent port must be an integer")
+    if not 1 <= port <= 65535:
+        raise HTTPException(status_code=400, detail="agent port must be in 1..65535")
+    existing = cfg.machines.get(p.name) if p.name else None
+    machine = {"name": p.name or p.ip, "ip": p.ip, "agent_port": port,
+               "transport": "agent",
+               "id": (existing or {}).get("id")}
+    try:
+        out = await run_in_threadpool(
+            agent_client.health, machine, 4.0, p.agent_token or None)
+    except Exception:
+        # Unpaired agent + farm token: enroll automatically, then retry.
+        try:
+            import secrets_vault as _vault
+            farm = _vault.get_farm_agent_token()
+            if farm and not p.agent_token:
+                await run_in_threadpool(agent_client.pair, machine, farm)
+                out = await run_in_threadpool(
+                    agent_client.health, machine, 4.0, farm)
+            else:
+                raise
+        except Exception as e:
+            raise HTTPException(status_code=502,
+                                detail=f"peer agent unreachable: {e}")
+    return {"ok": True, **out}
+
+
 def _ssh_port_guard(machine):
-    """Fail fast with an actionable error when a new (non-local) machine
-    refuses SSH — typically a fresh host with the SSH port closed.
-    Returns None when fine or when the check doesn't apply (local node)."""
+    """Fail fast with an actionable error when a new (non-local) machine's
+    peer agent is unreachable. Agent-only: there is no SSH preflight."""
     try:
         if local_node.is_local(machine):
             return None
     except Exception:
         pass
-    from ssh_manager import SSHManager
-    ssh = SSHManager(
-        machine.get("ip", ""), machine.get("username", ""),
-        machine.get("password", ""), port=machine.get("port", 22),
-    )
-    return ssh.ssh_port_error(timeout=4)
-
-
-class FingerprintIn(pydantic.BaseModel):
-    ip: str
-    port: int = 22
-    username: str = "zazi"
-    os: str = "linux"
-
-
-@app.post("/api/machines/fingerprint")
-async def machine_fingerprint(p: FingerprintIn):
-    """SSH host-key fingerprint WITHOUT login (key exchange is pre-auth).
-    Used by the add-machine wizard so first-time hosts are shown + trusted
-    on first use; returns whether we already know this host."""
-    import ssh_manager
     try:
-        fp = await run_in_threadpool(
-            ssh_manager.host_fingerprint, p.ip, p.port)
+        agent_client.health(machine, timeout=4)
+        return None
     except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    known = ssh_manager.load_known_hosts().get(
-        ssh_manager._host_id(p.ip, p.port))
-    return {**fp, "ip": p.ip, "port": p.port,
-            "known": bool(known),
-            "stored_fingerprint": (known or {}).get("fingerprint")}
+        return f"peer agent unreachable: {e}"
+
 
 
 # DEC-03 (AUDIT-T6 §1.6): validated per-machine swap-config overrides —
@@ -744,19 +937,41 @@ def _validate_machine_swap_config(payload):
         cfg.machine_swap_config_override(payload, engine)
 
 
+def _validate_machine_connection(payload):
+    """Agent-only machines: normalize the agent port and drop legacy SSH
+    transport/password fields so they never land in machines.yaml."""
+    try:
+        agent_port = int(payload.get("agent_port") or 8198)
+    except (TypeError, ValueError) as e:
+        raise ValueError("agent_port must be an integer") from e
+    if not 1 <= agent_port <= 65535:
+        raise ValueError("agent_port must be in 1..65535")
+    payload["transport"] = "agent"
+    payload["agent_port"] = agent_port
+    payload["password"] = ""
+
 @app.post("/api/machines")
 async def add_machine(m: MachineIn):
     try:
         payload = m.model_dump()
+        agent_token = payload.pop("agent_token", "")
+        if agent_token:
+            import uuid
+            payload.setdefault("id", uuid.uuid4().hex[:8])
+            import secrets_vault as _vault
+            _vault.set_machine_agent_token(payload["id"], agent_token)
         if not payload.get("password"):
             # fresh add with key-auth (no password): nothing to fill
             pass
         _validate_machine_swap_config(payload)
+        _validate_machine_connection(payload)
         detail = _ssh_port_guard(payload)
         if detail:
             raise HTTPException(status_code=400, detail=detail)
         saved = cfg.machines.add(payload)
         saved = dict(saved)
+        saved["agent_token_set"] = bool(agent_token) or bool(
+            __import__("secrets_vault").machine_agent_token_set(saved))
         saved.pop("password", None)
         return saved
     except ValueError as e:
@@ -767,6 +982,12 @@ async def add_machine(m: MachineIn):
 async def update_machine(name: str, m: MachineIn):
     try:
         payload = m.model_dump()
+        agent_token = payload.pop("agent_token", "")
+        if agent_token:
+            import secrets_vault as _vault
+            target = cfg.machines.get(name) or {}
+            _vault.set_machine_agent_token(target.get("id") or name,
+                                           agent_token)
         if not payload.get("password"):
             # blank = keep vault password: resolve it for the pre-save
             # SSH guard so edits don't falsely fail auth
@@ -777,12 +998,15 @@ async def update_machine(name: str, m: MachineIn):
             except Exception:
                 pass
         _validate_machine_swap_config(payload)
+        _validate_machine_connection(payload)
         detail = _ssh_port_guard(payload)
         if detail:
             raise HTTPException(status_code=400, detail=detail)
-        saved = cfg.machines.update(name, m.model_dump())
+        saved = cfg.machines.update(name, payload)
         saved = dict(saved)
         saved.pop("password", None)
+        saved["agent_token_set"] = bool(agent_token) or bool(
+            __import__("secrets_vault").machine_agent_token_set(saved))
         return saved
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -880,9 +1104,7 @@ def _detect_rdma_nic(machine, is_local):
             return {}
     else:
         try:
-            from ssh_manager import SSHManager
-            ssh = SSHManager(machine["ip"], machine["username"], machine.get("password", ""), port=machine.get("port", 22))
-            code, out, _ = ssh.run(remote_script, timeout=20)
+            return agent_client.rdma(machine) or {}
         except Exception:
             return {}
     for line in (out or "").splitlines():
@@ -897,32 +1119,52 @@ def _detect_rdma_nic(machine, is_local):
 
 class ProbeIn(pydantic.BaseModel):
     ip: str
-    username: str = "zazi"
-    password: str = ""
-    port: int = 22
     os: str = "linux"
     gpu_vendor: str = "nvidia"
     rpc_port: int = 50052
-
+    agent_port: int = 8198
+    agent_token: str = ""
+    name: str = ""
 
 @app.post("/api/machines/probe")
 async def probe_hardware(p: ProbeIn):
     """Detect hardware from raw form inputs -- works for machines that
     aren't saved yet. Returns gpu list + RAM + detected block; persists
     nothing."""
-    machine = {"name": p.ip, **p.model_dump()}
-    # Explicit SSH-port check first so a fresh host with port 22 closed
-    # gets "SSH rejected: port 22 not open ..." instead of "unreachable".
+    existing = cfg.machines.get(p.name) if p.name else None
+    machine = {"name": p.name or p.ip, "ip": p.ip, "os": p.os,
+               "gpu_vendor": p.gpu_vendor, "rpc_port": p.rpc_port,
+               "agent_port": p.agent_port, "transport": "agent",
+               "id": (existing or {}).get("id")}
+    if local_node.is_local(machine):
+        machine["gpu_vendor"] = ""  # detect the real local vendor
+    if p.agent_token:
+        machine["_agent_token"] = p.agent_token
     detail = _ssh_port_guard(machine)
     if detail:
         raise HTTPException(status_code=503, detail=detail)
 
     def run():
+        if not local_node.is_local(machine):
+            try:
+                agent_client.health(machine, timeout=4)
+            except Exception:
+                try:
+                    import secrets_vault as _vault
+                    farm = _vault.get_farm_agent_token()
+                    if farm:
+                        agent_client.pair(machine, farm)
+                except Exception:
+                    pass
         s = stats_collector.machine_stats(machine)
         if s["status"] != "online":
             return {"online": False}
+        vendor = (s.get("gpu_vendor")
+                  or machine.get("gpu_vendor") or "nvidia")
+        machine["gpu_vendor"] = vendor
         return {
             "online": True,
+            "gpu_vendor": vendor,
             "gpu": ",".join(gpu_vendor.gpu_token(machine, g["index"]) for g in s["gpus"]),
             "ram_total_gb": float(math.floor(s["ram_total_gb"])) if s["ram_total_gb"] else None,
             "cores": s["cores"],
@@ -939,20 +1181,21 @@ async def probe_hardware(p: ProbeIn):
     if not result["online"]:
         raise HTTPException(
             status_code=503,
-            detail=f"{p.ip} is unreachable over SSH (port {p.port} open but "
-                   f"login/command failed) — check username/password and that "
-                   f"'echo ok' works via plain ssh")
+            detail=f"{p.ip} is unreachable over the peer agent "
+                   f"(port {p.agent_port}) — install/start the agent there "
+                   f"and check the token")
     result["detected"] = result.get("detected") or {}
     return result
 
 
 class DiscoverIn(pydantic.BaseModel):
-    subnet: str = ""          # empty = local /24
-    port: int = 22
-    username: str = ""        # empty = try creds from saved machines
-    password: str = ""
     include_known: bool = False  # hide already-added machines by default
-    ping: bool = True         # ICMP sweep: show live hosts without SSH too
+    subnet: str = ""             # accepted for UI compatibility; ignored
+    port: int = 0
+    username: str = ""
+    password: str = ""
+    ping: bool = False
+    agent_only: bool = True
 
 
 @app.get("/api/discover/subnets")
@@ -965,23 +1208,18 @@ async def discover_subnets():
 
 @app.post("/api/discover")
 async def discover_hosts(p: DiscoverIn):
-    """Scan a subnet: ICMP ping for live hosts, TCP sweep for open SSH
-    port, banner-grab the OS pre-auth (no login needed). SSH login is
-    only optional enrichment (hostname/GPUs). Persists nothing."""
+    """Scan the LAN for peer agents (UDP discovery). No SSH scan: peers
+    are agent-installed machines, identified by MAC/hostname."""
     import discovery
 
-    creds = [(p.username, p.password)] if p.username else None
-
     def run():
-        return discovery.discover(
-            subnet=p.subnet or None, port=p.port, credentials=creds,
-            include_known=p.include_known, ping=p.ping)
+        discovery.pair_agents(include_known=True)
+        return discovery.discover_agents(include_known=p.include_known)
 
     result = await run_in_threadpool(run)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
-
 
 @app.post("/api/machines/detect-all")
 async def detect_all():
@@ -995,8 +1233,12 @@ async def detect_all():
             return None
         if stats["status"] != "online":
             return None
-        gpus = [gpu_vendor.gpu_token(m, g["index"]) for g in stats["gpus"]]
+        vendor = (stats.get("gpu_vendor")
+                  or m.get("gpu_vendor") or "nvidia")
+        m2 = dict(m, gpu_vendor=vendor)
+        gpus = [gpu_vendor.gpu_token(m2, g["index"]) for g in stats["gpus"]]
         upd = {
+            "gpu_vendor": vendor,
             "gpu": ",".join(gpus),
             "detected": {
                 "gpu_names": [g["name"] for g in stats["gpus"]],
@@ -1089,6 +1331,17 @@ def hw_watch_once():
 
 def _hw_watcher_loop():
     while _hw_watcher_state["running"]:
+        try:
+            # MAC-based IP healing: the agent's UDP responder reports its
+            # current addresses, so DHCP re-leases fix themselves.
+            import discovery
+            discovery.pair_agents(include_known=True)
+            healed = discovery.reconcile_machine_ips()
+            if healed:
+                print("[ip-sync] updated: " + ", ".join(
+                    f"{n} {o}->{i}" for n, o, i in healed))
+        except Exception as e:
+            print(f"[ip-sync] reconcile failed: {e}")
         try:
             res = hw_watch_once()
             if res["changed"]:
@@ -1541,7 +1794,7 @@ async def list_saved_models(full: bool = False):
         engine = engine_registry.get_engine()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
-    return engine.filter_models(cfg.list_models())
+    return _access_filter_models(engine.filter_models(cfg.list_models()))
 
 
 @app.get("/api/rpc-map")
@@ -2221,7 +2474,7 @@ class ChatIn(pydantic.BaseModel):
 
 
 @app.get("/api/chat/models")
-async def chat_models():
+async def chat_models(request: Request):
     """Models the Chat tab can test: swap-known ids with loaded flags,
     merged with configured (not-yet-pushed) ids — loaded vs will-load,
     same split the old picker showed. Embeddings excluded (they use
@@ -2234,9 +2487,10 @@ async def chat_models():
             def _fetch():
                 import urllib.request
                 import json as _json
-                with urllib.request.urlopen(
-                        f"http://127.0.0.1:{st['port']}/models",
-                        timeout=10) as r:
+                req = urllib.request.Request(
+                    _gateway_url("/models"),
+                    headers=_gateway_headers(request))
+                with urllib.request.urlopen(req, timeout=10) as r:
                     return _json.loads(r.read().decode()).get("data", [])
             data = await run_in_threadpool(_fetch)
             for m in data:
@@ -2250,28 +2504,24 @@ async def chat_models():
             print(f"[chat] swap model list failed: {e}")
     try:
         engine = engine_registry.get_engine()
-        configured = engine.filter_models(cfg.list_models())
+        configured = _access_filter_models(
+            engine.filter_models(cfg.list_models()))
     except ValueError:
-        configured = cfg.list_models()
+        configured = _access_filter_models(cfg.list_models())
     for m in configured:
         mid = m.get("model_id") or ""
         if not mid or "embed" in mid.lower() or mid in out:
             continue
         out.append(mid)
-    # access.py: a `private: true` model is not chattable for restricted
-    # viewers — drop it from the picker AND refuse a direct POST (same
-    # "never existed" semantics as the launch path). The swap-running
-    # list above may still carry the id when the daemon serves it for a
-    # trusted user — the gate below re-checks before streaming. View-
-    # scoped users are ALSO limited to their allowlist tokens (mid or
-    # mid--variant), same filter the models table renders by.
+    # access.py: private + key-allowlist filtering. The gateway list is
+    # already key-filtered; the configured fallback was filtered above.
+    # Re-apply the private gate for the daemon list (defense in depth).
     if not access.gate_open():
         allow = access.view_allow()
         out = [mid for mid in out
                if not _raw_is_private(mid.split("--")[0])]
-        if allow is not None:
-            # EXACT token match — variants are separate grants
-            out = [mid for mid in out if mid in allow]
+        if not allow:
+            out = []
     return {"running": running,
             "models": [{"id": mid, "loaded": mid in loaded} for mid in out]}
 
@@ -2304,7 +2554,7 @@ async def chat_complete(c: ChatIn, request: Request = None):
     # upstream = THE FARM GATEWAY (:8090): every chat crosses key-auth
     # + usage tracking; the caller's identity (cookie/Bearer) forwards
     # so the usage row attributes to THEM, not "console"
-    base = "http://127.0.0.1:8090"
+    base = _gateway_url("")
     import httpx as _httpx
     msgs = ([{"role": "system", "content": c.system_prompt}]
             if (c.system_prompt or "").strip() else []) + (c.messages or [])
@@ -3536,8 +3786,10 @@ async def get_settings():
     try:
         import secrets_vault as _vault
         defaults["hf_token_set"] = _vault.hf_token_set() or bool(token.strip())
+        defaults["farm_agent_token_set"] = _vault.farm_agent_token_set()
     except Exception:
         defaults["hf_token_set"] = bool(token.strip())
+        defaults["farm_agent_token_set"] = False
     # UI field manifest (AUDIT-T6 §1.5, DEC-02) — the complete
     # engine-owned inventory the frontend renders from. The legacy
     # ui_hints view rides along DEPRECATED (its last JS consumer is the
@@ -3558,6 +3810,8 @@ class AppSettingsIn(pydantic.BaseModel):
     theme_mode: str = "dark"
     hf_token: str | None = None  # only a non-empty value updates the stored token
     clear_hf_token: bool = False
+    farm_agent_token: str | None = None  # shared by all agents when set
+    clear_farm_agent_token: bool = False
     engine: str | None = None  # llama_cpp | vllm — None leaves the stored value
     vllm: dict | None = None  # partial block; merged over the stored one
 
@@ -3654,7 +3908,9 @@ async def save_settings(s: AppSettingsIn, r: Request):
         or access.is_admin(None)
     _key_name_for_ui = access.key_display_name()
     if not _control_identity and (s.engine is not None or s.vllm is not None
-                                  or s.hf_token or s.clear_hf_token):
+                                  or s.hf_token or s.clear_hf_token
+                                  or s.farm_agent_token
+                                  or s.clear_farm_agent_token):
         raise HTTPException(404, "not found")
     # merge over the CURRENT FILE so unknown/future keys survive the write;
     # loaded via the comment-preserving persister (B9c) — a plain
@@ -3664,6 +3920,8 @@ async def save_settings(s: AppSettingsIn, r: Request):
     update = s.model_dump()
     tok = (update.pop("hf_token", None) or "").strip()
     clear_tok = update.pop("clear_hf_token", False)
+    farm_tok = (update.pop("farm_agent_token", None) or "").strip()
+    clear_farm_tok = update.pop("clear_farm_agent_token", False)
     engine = update.pop("engine", None)
     vllm_in = update.pop("vllm", None)
     # per-key UI state: scoped identities write theme_family/theme_mode
@@ -3729,6 +3987,10 @@ async def save_settings(s: AppSettingsIn, r: Request):
         _vault.set_hf_token("")
     elif tok:
         _vault.set_hf_token(tok)
+    if clear_farm_tok:
+        _vault.set_farm_agent_token("")
+    elif farm_tok:
+        _vault.set_farm_agent_token(farm_tok)
     # don't echo the raw token back; write via the comment-preserving
     # persister (B9c) so unrelated keys, key order, and all comments
     # survive — never a wholesale rewrite from the request dict
@@ -3743,6 +4005,7 @@ async def save_settings(s: AppSettingsIn, r: Request):
     out = dict(current)
     out.pop("hf_token", None)  # response-only: never echoed
     out["hf_token_set"] = _vault.hf_token_set()
+    out["farm_agent_token_set"] = _vault.farm_agent_token_set()
     if engine_changed:
         # Engine flip: the running daemons still serve the OLD engine's
         # configs/scripts. Full restart (same as /api/restart) — but the
@@ -3987,17 +4250,14 @@ async def install_llama_cpp():
 
 def _detect_bin_on_machine(machine):
     """Check if llama.cpp bin already exists on a machine. Returns
-    (found:bool, bin_path:str|None, detail:str). Never installs — just
-    probes, so existing working systems are untouched."""
-    import subprocess as _sp
+    (found:bool, bin_path:str|None, detail:str). Never installs.
+    Remote machines are probed through the peer agent's /files/stat."""
     from pathlib import Path as _Path
     is_win = (machine.get("os", "linux") == "windows")
     is_local = local_node.is_local(machine)
-    # candidate bin paths to probe — configured + defaults
     candidates = []
     configured = (machine.get("llama_bin") or "").strip()
     if configured:
-        # configured may be a dir or full bin path
         if configured.endswith("llama-server") or configured.endswith("llama-server.exe"):
             candidates.append(configured)
         else:
@@ -4006,8 +4266,6 @@ def _detect_bin_on_machine(machine):
         candidates += [
             "%USERPROFILE%\\llama.cpp\\build\\bin\\llama-server.exe",
             "%USERPROFILE%\\llama.cpp\\llama-server.exe",
-            "%USERPROFILE%/llama.cpp/build/bin/llama-server.exe",
-            "%USERPROFILE%/llama.cpp/llama-server.exe",
             "~/llama.cpp/build/bin/llama-server.exe",
             "~/llama.cpp/llama-server.exe",
         ]
@@ -4017,46 +4275,30 @@ def _detect_bin_on_machine(machine):
             "/usr/local/bin/llama-server",
             "/usr/bin/llama-server",
         ]
-    # dedupe preserving order
-    seen = set()
-    uniq = []
+    seen, uniq = set(), []
     for c in candidates:
         if c not in seen:
             seen.add(c)
             uniq.append(c)
-    for cand in uniq:
-        # expand for local check
-        if is_local:
+    if is_local:
+        for cand in uniq:
             try:
-                if is_win:
-                    expanded = os.path.expandvars(os.path.expanduser(cand))
-                    if _Path(expanded).exists():
-                        return True, cand, f"found at {cand}"
-                else:
-                    expanded = os.path.expanduser(cand)
-                    if _Path(expanded).exists():
-                        return True, cand, f"found at {cand}"
+                expanded = (os.path.expandvars(os.path.expanduser(cand))
+                            if is_win else os.path.expanduser(cand))
+                if _Path(expanded).exists():
+                    return True, cand, f"found at {cand}"
             except Exception:
                 continue
-        else:
-            # remote probe via SSH
-            try:
-                from ssh_manager import SSHManager
-                ssh = SSHManager(machine["ip"], machine["username"], machine["password"], port=machine.get("port", 22))
-                if is_win:
-                    # PowerShell Test-Path, handles %USERPROFILE% and ~
-                    ps = f'powershell -NoProfile -Command "if (Test-Path \\"{cand}\\") {{ echo FOUND }} else {{ echo MISSING }}"'
-                    code, out, _ = ssh.run(ps, timeout=15)
-                else:
-                    # expand ~ on remote side
-                    code, out, _ = ssh.run(f'test -f {cand} && echo FOUND || echo MISSING', timeout=15)
-                if "FOUND" in (out or ""):
-                    return True, cand, f"found at {cand}"
-            except Exception as e:
-                # treat SSH failure as not found but surface in detail
-                continue
+        return False, None, "no bin found (checked: " + ", ".join(uniq) + ")"
+    for cand in uniq:
+        probe = cand.replace("%USERPROFILE%", "~")
+        try:
+            st = agent_client.file_stat(machine, probe)
+            if st.get("exists") and st.get("is_file"):
+                return True, cand, f"found at {cand}"
+        except Exception as e:
+            return False, None, f"agent bin probe failed: {e}"
     return False, None, "no bin found (checked: " + ", ".join(uniq) + ")"
-
 
 class InstallAllIn(pydantic.BaseModel):
     install_missing: bool = False  # actually install on missing nodes
@@ -4087,9 +4329,8 @@ async def install_llama_cpp_all(p: InstallAllIn | None = None):
         # quick reachability for remote
         if not is_local:
             try:
-                from ssh_manager import SSHManager
-                ssh = SSHManager(m["ip"], m["username"], m["password"], port=m.get("port", 22))
-                reachable = ssh.is_reachable()
+                agent_client.health(m, timeout=4)
+                reachable = True
             except Exception:
                 reachable = False
             if not reachable:
@@ -4185,6 +4426,23 @@ def _llama_version_on(machine):
     if not lb:
         return None
     is_win = machine.get("os", "linux") == "windows"
+    if (not local_node.is_local(machine)
+            and agent_client.should_use_agent(machine)):
+        try:
+            path = (f"{lb}\\llama-server.exe" if is_win
+                    else f"{lb}/llama-server")
+            res = agent_client.install_verify(
+                machine, path, ["--version"], timeout=35)
+            out = res.get("output") or ""
+            for line in out.splitlines():
+                if line.strip():
+                    return line.strip()
+            return None
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                return None
+            print(f"[agent] {machine.get('name')}: version probe failed, "
+                  f"falling back to SSH: {e}")
     try:
         from llamacpp_installer import _machine_run
         run, _ = _machine_run(machine)
@@ -4261,6 +4519,141 @@ async def llama_cpp_version_machine(name: str):
     machine grid can re-ask on every render without hammering anything."""
     machine = cfg.machines.require(name)
     return await run_in_threadpool(_llama_version_payload, machine)
+
+
+
+_AGENT_WHEEL_LOCK = threading.Lock()
+
+
+def _agent_wheel_path():
+    """Build/cache the current peer-agent wheel from this checkout."""
+    import glob
+    if getattr(sys, "frozen", False):
+        wheels = sorted(glob.glob(os.path.join(
+            ASSET_DIR, "agent-wheel", "llama_rpc_farm_agent-*.whl")),
+            key=os.path.getmtime, reverse=True)
+        if wheels:
+            return wheels[0]
+        raise RuntimeError("bundled agent wheel is missing from this build")
+    src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "peer_agent")
+    out = os.path.join(rpc_manager.GENERATED_DIR, "agent-wheel")
+    os.makedirs(out, exist_ok=True)
+    with _AGENT_WHEEL_LOCK:
+        wheels = sorted(glob.glob(os.path.join(out, "llama_rpc_farm_agent-*.whl")),
+                        key=os.path.getmtime, reverse=True)
+        newest_src = 0.0
+        for root, _dirs, names in os.walk(src):
+            if "build" in root.split(os.sep) or "__pycache__" in root:
+                continue
+            for n in names:
+                try:
+                    newest_src = max(newest_src, os.path.getmtime(os.path.join(root, n)))
+                except OSError:
+                    pass
+        if wheels and os.path.getmtime(wheels[0]) >= newest_src:
+            return wheels[0]
+        proc = subprocess.run(
+            [sys.executable, "-m", "pip", "wheel", "--no-deps", "-w", out, src],
+            capture_output=True, text=True, timeout=180)
+        if proc.returncode != 0:
+            raise RuntimeError(f"could not build agent wheel: {(proc.stderr or proc.stdout)[-500:]}")
+        wheels = sorted(glob.glob(os.path.join(out, "llama_rpc_farm_agent-*.whl")),
+                        key=os.path.getmtime, reverse=True)
+        if not wheels:
+            raise RuntimeError("agent wheel build produced no wheel")
+        return wheels[0]
+
+
+def _agent_latest_version():
+    if getattr(sys, "frozen", False):
+        import glob
+        wheels = sorted(glob.glob(os.path.join(
+            ASSET_DIR, "agent-wheel", "llama_rpc_farm_agent-*.whl")))
+        if wheels:
+            base = os.path.basename(wheels[-1])
+            m = re.match(r"llama_rpc_farm_agent-([^-]+)-", base)
+            return m.group(1) if m else None
+        return None
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "peer_agent", "pyproject.toml")
+    try:
+        text = open(path, encoding="utf-8").read()
+        m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def _agent_version_payload(machine):
+    latest = _agent_latest_version()
+    if local_node.is_local(machine):
+        return {"current": None, "latest": latest, "on_latest": True,
+                "local": True}
+    current = None
+    try:
+        current = agent_client.version(machine, timeout=4).get("agent_version")
+    except Exception:
+        current = None
+    return {"current": current, "latest": latest,
+            "on_latest": bool(current and latest and current == latest)}
+
+
+def _update_agent_remote(machine):
+    """Install/update the agent through its in-place /agent/update endpoint."""
+    name = machine.get("name") or machine.get("id") or "?"
+    if local_node.is_local(machine):
+        return {"ok": True, "machine": name, "skipped": True, "local": True,
+                "detail": "local master uses the app directly; no peer agent"}
+    wheel = _agent_wheel_path()
+    version = _agent_latest_version()
+    if True:
+        try:
+            with open(wheel, "rb") as f:
+                blob = f.read()
+            res = agent_client.agent_update(machine, blob, version or "")
+            if res.get("ok"):
+                for _ in range(15):
+                    import time as _t
+                    _t.sleep(1)
+                    try:
+                        h = agent_client.health(machine, timeout=3)
+                        if h.get("agent_version") == version:
+                            return {"ok": True, "machine": name,
+                                    "wheel": os.path.basename(wheel),
+                                    "agent_version": h.get("agent_version"),
+                                    "protocol_version": h.get("protocol_version"),
+                                    "method": "agent"}
+                    except Exception:
+                        continue
+                return {"ok": False, "machine": name,
+                        "wheel": os.path.basename(wheel),
+                        "method": "agent",
+                        "detail": "agent accepted update but did not come back healthy"}
+        except Exception as e:
+            return {"ok": False, "machine": name,
+                    "wheel": os.path.basename(wheel),
+                    "method": "agent",
+                    "detail": f"agent update failed: {e}"}
+
+@app.get("/api/machines/{name}/agent-version")
+async def agent_version_machine(name: str):
+    machine = cfg.machines.require(name)
+    return await run_in_threadpool(_agent_version_payload, machine)
+
+
+@app.post("/api/machines/{name}/update-agent")
+async def update_agent_machine(name: str):
+    """Build current agent, install it over SSH bootstrap, restart it."""
+    machine = cfg.machines.require(name)
+    try:
+        res = await run_in_threadpool(_update_agent_remote, machine)
+    except Exception as e:
+        raise HTTPException(status_code=502,
+                            detail=f"agent update failed: {e}")
+    if not res.get("ok"):
+        raise HTTPException(status_code=502, detail=res.get("detail") or "agent update failed")
+    return res
 
 
 @app.post("/api/machines/{name}/update-llama-cpp")
@@ -4512,8 +4905,8 @@ async def vllm_plan_machine(name: str):
 # Unified installer endpoints (UX-1): probe/plan/execute layer in app
 # ---------------------------------------------------------------------------
 # Wraps src/installer/{probe,execute}.py. Remote machines run the probe
-# ladder + executor over an SSHManager-backed RunCmd; local machines run
-# RealRunCmd locally. NO GPU drivers are ever installed (executor refuses);
+# ladder + executor; remote probing is agent-only (local RunCmd here).
+# NO GPU drivers are ever installed (executor refuses);
 # llama.cpp serving behavior is untouched (this only adds new endpoints).
 
 
@@ -4544,31 +4937,11 @@ def _machine_env(machine):
         from installer.env import RealRunCmd as _RRC
         run = _RRC()
     else:
-        from ssh_manager import SSHManager
-
-        class _SSHRunCmd:
-            """RunCmd adapter: SSHManager.run -> (code, out, err) ->
-            RunResult. Windows peers get a PowerShell wrapper so the
-            probe ladder's shell syntax parses (cmd.exe default shell)."""
-
-            def __init__(self, m):
-                self._ssh = SSHManager(m["ip"], m.get("username", ""),
-                                       m.get("password", ""),
-                                       port=m.get("port", 22))
-                self._win = os_type == "windows"
-
-            def run(self, cmd, timeout=30.0):
-                real = cmd
-                if self._win:
-                    real = ('powershell -NoProfile -Command "'
-                            + cmd.replace('"', '\\"') + '"')
-                try:
-                    code, out, err = self._ssh.run(real, timeout=timeout)
-                except Exception as e:
-                    return RunResult(cmd, 255, "", f"ssh error: {e}")
-                return RunResult(cmd, code, out or "", err or "")
-
-        run = _SSHRunCmd(machine)
+        raise HTTPException(
+            status_code=400,
+            detail="remote installer probes are agent-only; install via the "
+                   "peer agent's /install/* endpoints or run the installer on "
+                   "that machine")
 
     # detect the rest of SystemInfo with the shared probe ladder (cheap,
     # read-only; same code path bootstrap.py uses locally)
@@ -4972,8 +5345,8 @@ async def restart_app():
             # manual start. Poll for the port going free BEFORE setsid, so
             # the handoff never races (max 15s).
             "for i in $(seq 0 30); do "
-            "  python3 -c \"import socket;s=socket.socket();\\"
-            "s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);\\"
+            "  python3 -c \"import socket;s=socket.socket();"
+            "s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);"
             "s.bind(('0.0.0.0',8199));s.close()\" 2>/dev/null && break; "
             "  sleep 0.5; "
             "done; "
@@ -5060,132 +5433,51 @@ def _fs_list_local(raw_path, show_hidden=False):
     return {"path": raw_path, "alias": alias, "display_path": disp_path, "parent": parent, "exists": exists, "is_dir": is_dir, "os": "windows" if os.name == "nt" else "macos" if sys.platform == "darwin" else "linux", "entries": entries}
 
 
-def _fs_list_remote(machine, raw_path, show_hidden=False):
-    from ssh_manager import SSHManager, SSHError
+def _fs_list_agent(machine, raw_path, show_hidden=False):
+    import ntpath
     is_win = machine.get("os", "linux") == "windows"
+    join = ntpath.join if is_win else os.path.join
+    dirname = ntpath.dirname if is_win else os.path.dirname
     if not raw_path or raw_path.strip() == "":
-        raw_path = "~" if not is_win else "%USERPROFILE%"
-    # store:// on remote: resolve for that machine's OS (best-effort: use local stores.yaml)
+        raw_path = "~"
     if raw_path.startswith(path_resolver.PREFIX):
         try:
             raw_path = path_resolver.resolve_for(raw_path, machine.get("os", "linux"))
         except Exception:
             pass
-    ssh = SSHManager(machine["ip"], machine["username"], machine["password"], port=machine.get("port", 22))
-    if not is_win:
-        # Use python if available for robust listing, else fallback to ls
-        exp_path = raw_path
-        # embed path as python repr to avoid argv/-- confusion and space handling
-        import json as _json_local
-        repr_path = repr(exp_path)
-        code, out, err = ssh.run(f'python3 -c "import os, json; p=os.path.expanduser({repr_path}); print(json.dumps({{\'exists\': os.path.exists(p), \'is_dir\': os.path.isdir(p), \'parent\': os.path.dirname(os.path.abspath(p)), \'real\': p}}))"', timeout=15)
-        meta = None
-        if code == 0 and out.strip():
-            try:
-                import json as _json
-                meta = _json.loads(out.strip().splitlines()[-1])
-            except Exception:
-                meta = None
-        if meta and meta.get("exists"):
-            real = meta["real"]
-            parent = meta["parent"]
-            is_dir = meta["is_dir"]
-            if not is_dir:
-                real = parent
-                is_dir = True
-                repr_real = repr(real)
-                code, out, _ = ssh.run(f'python3 -c "import os; print(os.path.dirname(os.path.abspath(os.path.expanduser({repr_real}))))"', timeout=10)
-                parent = out.strip().splitlines()[-1] if code == 0 else os.path.dirname(real)
-            # list entries — try python json, else ls -p fallback
-            repr_real2 = repr(real)
-            code, out, _ = ssh.run(f'python3 -c "import os, json; p={repr_real2}; print(json.dumps([{{\'name\': n, \'is_dir\': os.path.isdir(os.path.join(p,n))}} for n in os.listdir(p) if not n.startswith(\".\") or {str(show_hidden).lower()}]))" 2>/dev/null || ls -1 -p "{real}"', timeout=15)
-            entries = []
-            if code == 0 and out.strip():
-                # try json first
-                try:
-                    import json as _json
-                    parsed = _json.loads(out.strip().splitlines()[-1])
-                    if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
-                        for e in parsed:
-                            entries.append({"name": e["name"], "path": os.path.join(real, e["name"]), "is_dir": bool(e["is_dir"])})
-                    else:
-                        raise ValueError()
-                except Exception:
-                    # ls -p fallback
-                    for line in out.splitlines():
-                        name = line.strip()
-                        if not name:
-                            continue
-                        if name.startswith(".") and not show_hidden:
-                            continue
-                        is_d = name.endswith("/")
-                        clean = name.rstrip("/")
-                        entries.append({"name": clean, "path": os.path.join(real, clean), "is_dir": is_d})
-                entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
-            try:
-                alias = path_resolver.to_alias(real)
-            except Exception:
-                alias = real
-            return {"path": real, "alias": alias, "parent": parent, "exists": True, "is_dir": True, "os": "linux", "entries": entries}
-        # fallback: try ls directly
-        code, out, _ = ssh.run(f'ls -ld "{exp_path}" 2>&1', timeout=10)
-        if code != 0:
-            raise HTTPException(status_code=404, detail=f"path not found or unreachable: {raw_path}")
-        # expand via echo
-        code, out, _ = ssh.run(f'echo "{exp_path}"', timeout=10)
-        real = out.strip() or exp_path
-        try:
-            alias = path_resolver.to_alias(real)
-        except Exception:
-            alias = real
-        return {"path": real, "alias": alias, "parent": os.path.dirname(real), "exists": True, "is_dir": True, "os": "linux", "entries": []}
-    else:
-        # windows remote via powershell
-        # normalize slashes
-        ps_path = raw_path.replace("'", "''")
-        # if empty or ~, use $env:USERPROFILE
-        if raw_path.strip() in ("~", "%USERPROFILE%", "$env:USERPROFILE"):
-            ps_path = "$env:USERPROFILE"
-        code, out, err = ssh.run(f'powershell -NoProfile -Command "$p=\\"{ps_path}\\"; $e=Test-Path $p; $isDir=(Test-Path $p -PathType Container); $real=(Resolve-Path $p -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path -ErrorAction SilentlyContinue); if (-not $real) {{ $real=$p }}; $parent=Split-Path $real -Parent; if (-not $parent) {{ $parent=$real }}; Write-Output (@{{exists=$e; isDir=$isDir; real=$real; parent=$parent}} | ConvertTo-Json -Compress)"', timeout=15)
-        if code != 0 or not out.strip():
-            raise HTTPException(status_code=500, detail=f"windows browse failed: {err or out}")
-        import json as _json
-        try:
-            meta = _json.loads(out.strip().splitlines()[-1])
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"parse failed: {e} – {out}")
-        exists = bool(meta.get("exists"))
-        is_dir = bool(meta.get("isDir"))
-        real = meta.get("real") or raw_path
-        parent = meta.get("parent") or os.path.dirname(real)
-        if not exists:
-            raise HTTPException(status_code=404, detail=f"path not found: {raw_path}")
-        if not is_dir:
-            real = parent
-        # list
-        code, out, err = ssh.run(f'powershell -NoProfile -Command "Get-ChildItem -Force -Path \\"{ps_path}\\" | Select-Object Name,FullName,PSIsContainer | ConvertTo-Json -Compress"', timeout=15)
-        entries = []
-        if code == 0 and out.strip():
-            try:
-                data = _json.loads(out.strip())
-                if isinstance(data, dict):
-                    data = [data]
-                for e in data or []:
-                    name = e.get("Name")
-                    if not name:
-                        continue
-                    if name.startswith(".") and not show_hidden:
-                        continue
-                    entries.append({"name": name, "path": e.get("FullName") or os.path.join(real, name), "is_dir": bool(e.get("PSIsContainer"))})
-                entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
-            except Exception:
-                pass
-        try:
-            alias = path_resolver.to_alias(real)
-        except Exception:
-            alias = real
-        return {"path": real, "alias": alias, "parent": parent, "exists": exists, "is_dir": is_dir, "os": "windows", "entries": entries}
+    stat = agent_client.file_stat(machine, raw_path)
+    if not stat.get("exists"):
+        raise HTTPException(status_code=404,
+                            detail=f"path not found or unreachable: {raw_path}")
+    real = stat["path"]
+    is_dir = bool(stat.get("is_dir"))
+    parent = dirname(real)
+    if not is_dir:
+        real = parent
+        is_dir = True
+    listing = agent_client.file_list(machine, real, show_hidden)
+    entries = [{"name": e["name"], "path": join(real, e["name"]),
+                "is_dir": bool(e.get("is_dir"))}
+               for e in listing.get("entries", [])]
+    entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
+    try:
+        alias = path_resolver.to_alias(real)
+    except Exception:
+        alias = real
+    return {"path": real, "alias": alias, "parent": parent,
+            "exists": True, "is_dir": is_dir,
+            "os": "windows" if is_win else
+                  "macos" if machine.get("os") == "macos" else "linux",
+            "entries": entries}
 
+
+def _fs_list_remote(machine, raw_path, show_hidden=False):
+    try:
+        return _fs_list_agent(machine, raw_path, show_hidden)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"agent browse failed: {e}")
 
 @app.get("/api/fs/browse")
 async def fs_browse(path: str = "", machine: str = "", show_hidden: bool = False):
@@ -5419,20 +5711,13 @@ def _save_speed_cache(cache):
         pass
 
 
-def _measure_ssh_speed(ssh, mb=50):
-    """Measure real throughput over the existing SSH connection by having the
-    remote stream `mb` MB to stdout and timing the read. Returns Mb/s."""
-    import time as _t
-    start = _t.time()
+
+
+def _measure_agent_speed(machine, mb=50):
     try:
-        code, out, _ = ssh.run(f"dd if=/dev/zero bs=1M count={mb} 2>/dev/null",
-                               timeout=60)
+        return agent_client.speedtest(machine, mb=mb)
     except Exception:
         return None
-    elapsed = _t.time() - start
-    if elapsed <= 0 or code != 0:
-        return None
-    return round(mb * 8 / elapsed)
 
 
 @app.get("/api/machines/{name}/detail")
@@ -5447,30 +5732,11 @@ async def machine_detail(name: str):
     is_local = local_node.is_local(machine)
     machine_os = machine.get("os", "linux")
 
-    # reuse ONE SSH connection for all commands (opening one per command was
-    # slow — each handshake is ~1s+). Local runs use subprocess directly.
-    ssh = None
-    if not is_local:
-        try:
-            from ssh_manager import SSHManager
-            ssh = SSHManager(machine["ip"], machine["username"],
-                             machine["password"], port=machine.get("port", 22))
-        except Exception:
-            ssh = None
-
     def _run(cmd, timeout=20):
-        if is_local:
-            try:
-                p = subprocess.run(cmd, shell=True, capture_output=True,
-                                   text=True, timeout=timeout)
-                return p.stdout.strip()
-            except Exception:
-                return ""
-        if ssh is None:
-            return ""
         try:
-            code, out, _ = ssh.run(cmd, timeout=timeout)
-            return out.strip() if code == 0 else ""
+            p = subprocess.run(cmd, shell=True, capture_output=True,
+                               text=True, timeout=timeout)
+            return p.stdout.strip()
         except Exception:
             return ""
 
@@ -5479,7 +5745,12 @@ async def machine_detail(name: str):
               "gpu_vendor": machine.get("gpu_vendor", "nvidia"),
               "rpc_port": machine.get("rpc_port", 50052),
               "llama_bin": machine.get("llama_bin", ""),
-              "mac": (machine.get("mac") or "")}
+              "mac": (machine.get("mac") or ""),
+              "transport": machine.get("transport") or "auto",
+              "agent_port": machine.get("agent_port") or 8198,
+              "connection": ("local" if is_local else
+                             "agent" if agent_client.should_use_agent(machine)
+                             else "ssh")}
 
     # ---- combine all detail queries into ONE round-trip per OS ----
     detail["net"] = {"ip": "", "speed": ""}
@@ -5495,118 +5766,137 @@ async def machine_detail(name: str):
         "gid": machine.get("rdma_gid", ""),
     }
     detail["disk"] = {"free": "", "mount": ""}
-    if machine_os == "windows":
-        blob = _run(
-            "powershell -NoProfile -Command \""
-            "$o=@{};"
-            "$o.kernel=(ver);"
-            "$o.cpu=(Get-CimInstance Win32_Processor).Name;"
-            "$o.uptime=((Get-Date)-(Get-CimInstance Win32_OperatingSystem).LastBootUpTime).ToString();"
-            "$o.ip=((Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*'} | Select-Object -First 1).IPAddress);"
-            "$o.speed=((Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object -First 1).LinkSpeed);"
-            "$o.disk=(Get-PSDrive -PSProvider FileSystem | Where-Object {$_.Free -gt 0} | Select-Object Name,Free,Used | ConvertTo-Json -Compress);"
-            "$o.cores=(Get-CimInstance Win32_Processor | Measure-Object -Sum NumberOfLogicalProcessors).Sum;"
-            "$o.coreload=(Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor | Where-Object {$_.Name -ne '_Total'} | Select-Object -ExpandProperty PercentProcessorTime | ForEach-Object {[math]::Round($_,1)} | ConvertTo-Json -Compress);"
-            "$o.llama=((& (Join-Path $env:USERPROFILE 'llama.cpp\\bin\\llama-server.exe') --version 2>&1 | Select-String 'version:' | Select-Object -First 1).ToString());"
-            "if (-not $o.llama) { $o.llama=((& (Join-Path $env:USERPROFILE 'llama.cpp\\llama-server.exe') --version 2>&1 | Select-String 'version:' | Select-Object -First 1).ToString()); }"
-            "$o | ConvertTo-Json -Compress\"", timeout=30)
-        try:
-            o = json.loads(blob)
-            detail["kernel"] = o.get("kernel", "")
-            detail["cpu_model"] = o.get("cpu", "")
-            detail["uptime"] = o.get("uptime", "")
-            detail["net"]["ip"] = o.get("ip", "")
-            detail["net"]["speed"] = o.get("speed", "")
-            detail["disk"]["free"], detail["disk"]["total"] = _parse_win_disk(o.get("disk", ""))
-            detail["llama_version"] = o.get("llama", "")
-            # coreload comes back as a JSON string; parse it into a list
-            cl = o.get("coreload")
-            if isinstance(cl, str):
-                try:
-                    detail["cpu_cores"] = json.loads(cl)
-                except Exception:
-                    detail["cpu_cores"] = []
-            else:
-                detail["cpu_cores"] = cl or []
-            detail["cores"] = o.get("cores", "")
-        except Exception:
-            pass
-    elif machine_os == "macos":
-        blob = _run(
-            "echo \"K:$(uname -a)\";"
-            "echo \"C:$(sysctl -n machdep.cpu.brand_string)\";"
-            "echo \"U:$(uptime)\";"
-            "echo \"I:$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)\";"
-            "echo \"S:$(networksetup -getmedia en0 2>/dev/null | grep -i 'current' | sed 's/.*: //')\";"
-            "echo \"D:$(df -k / | awk 'NR==2 {print $4}')\";"
-            "echo \"DT:$(df -k / | awk 'NR==2 {print $2}')\";"
-            "echo \"L:$(\\\"{bin}/llama-server\\\" --version 2>&1 || "
-            "\\\"{bin}/llama-cli\\\" --version 2>&1)\"".format(
-                bin=machine.get('llama_bin', '') or '.'), timeout=30)
-        _parse_posix_blob(detail, blob)
-    else:
-        _bin = machine.get('llama_bin', '')
-        blob = _run(
-            f"K=$(uname -a); "
-            f"C=$(lscpu | grep 'Model name' | cut -d: -f2 | sed 's/^ *//'); "
-            f"U=$(uptime -p); "
-            f"I=$(hostname -I 2>/dev/null | grep -oF '{machine['ip']}' | head -n1); "
-            f"S=$(for i in $(ls /sys/class/net | grep -v '^lo'); do "
-            f"d=$(readlink /sys/class/net/$i/device/driver 2>/dev/null); "
-            f"case \"$i\" in veth*|br-*|docker*|virbr*|tailscale*) continue;; esac; "
-            f"case \"$d\" in *bridge*|*veth|*tun|*tap) continue;; esac; "
-            f"s=$(cat /sys/class/net/$i/speed 2>/dev/null); "
-            f"if [ -n \"$s\" ] && [ \"$s\" != \"-1\" ] && [ \"$s\" -gt 0 ]; then "
-            f"if [ \"$s\" -ge 1000 ]; then echo \"$((s/1000)) Gb/s\"; "
-            f"else echo \"${{s}} Mb/s\"; fi; break; fi; "
-            f"e=$(ethtool $i 2>/dev/null | grep -i speed | sed 's/.*: *//;s/ *$//'); "
-            f"if [ -n \"$e\" ] && [ \"$e\" != \"Unknown!\" ]; then echo \"$e\"; break; fi; "
-            f"case \"$d\" in *virtio*) echo \"virtio (speed n/a)\"; break;; esac; done); "
-            f"D=$(df -k / | tail -n1 | awk '{{print $4}}'); "
-            f"DT=$(df -k / | tail -n1 | awk '{{print $2}}'); "
-            f"L=$(\"{_bin}/llama-server\" --version 2>&1 || \"{_bin}/llama-cli\" --version 2>&1); "
-            f"echo \"K:$K\"; echo \"C:$C\"; echo \"U:$U\"; echo \"I:$I\"; "
-            f"echo \"S:$S\"; echo \"D:$D\"; echo \"DT:$DT\"; echo \"L:$L\"", timeout=30)
-        _parse_posix_blob(detail, blob)
+    try:
+        detail.update(_machine_connection_caps(machine))
+    except Exception:
+        pass
 
-    # ---- real throughput over SSH (cached 1h) ----
-    # virtio/virtual NICs don't report a link speed, so measure what the
-    # machine can actually push to the cluster over its SSH link. For the
-    # local machine, measure to the first reachable peer.
-    speed_ssh = None
-    if not is_local and ssh is not None:
-        speed_ssh = ssh
-    elif is_local:
-        for peer in cfg.machines.all():
-            if peer.get("name") == name or local_node.is_local(peer):
-                continue
+    # Remote machines: the agent's /system/detail is the single source of
+    # truth (same fields the local command ladder produces).
+    if not is_local:
+        try:
+            sd = agent_client.system_detail(machine) or {}
+        except Exception as e:
+            raise HTTPException(status_code=502,
+                                detail=f"agent detail failed: {e}")
+        detail.update(sd)
+        detail.setdefault("net", {"ip": machine.get("ip", ""), "speed": ""})
+        detail.setdefault("disk", {"free": "", "mount": ""})
+        try:
+            detail["stats"] = stats_collector.machine_stats(machine)
+        except Exception:
+            detail["stats"] = None
+        return detail
+    agent_detail = None
+    if not is_local and agent_client.should_use_agent(machine):
+        try:
+            agent_detail = agent_client.system_detail(machine)
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                agent_detail = {}
+            else:
+                print(f"[agent] {machine['name']}: detail failed, falling back to SSH: {e}")
+    if agent_detail is not None:
+        detail.update(agent_detail)
+    else:
+        if machine_os == "windows":
+            blob = _run(
+                "powershell -NoProfile -Command \""
+                "$o=@{};"
+                "$o.kernel=(ver);"
+                "$o.cpu=(Get-CimInstance Win32_Processor).Name;"
+                "$o.uptime=((Get-Date)-(Get-CimInstance Win32_OperatingSystem).LastBootUpTime).ToString();"
+                "$o.ip=((Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*'} | Select-Object -First 1).IPAddress);"
+                "$o.speed=((Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object -First 1).LinkSpeed);"
+                "$o.disk=(Get-PSDrive -PSProvider FileSystem | Where-Object {$_.Free -gt 0} | Select-Object Name,Free,Used | ConvertTo-Json -Compress);"
+                "$o.cores=(Get-CimInstance Win32_Processor | Measure-Object -Sum NumberOfLogicalProcessors).Sum;"
+                "$o.coreload=(Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor | Where-Object {$_.Name -ne '_Total'} | Select-Object -ExpandProperty PercentProcessorTime | ForEach-Object {[math]::Round($_,1)} | ConvertTo-Json -Compress);"
+                "$o.llama=((& (Join-Path $env:USERPROFILE 'llama.cpp\\bin\\llama-server.exe') --version 2>&1 | Select-String 'version:' | Select-Object -First 1).ToString());"
+                "if (-not $o.llama) { $o.llama=((& (Join-Path $env:USERPROFILE 'llama.cpp\\llama-server.exe') --version 2>&1 | Select-String 'version:' | Select-Object -First 1).ToString()); }"
+                "$o | ConvertTo-Json -Compress\"", timeout=30)
             try:
-                from ssh_manager import SSHManager
-                speed_ssh = SSHManager(peer["ip"], peer["username"],
-                                        peer["password"],
-                                        port=peer.get("port", 22))
-                break
+                o = json.loads(blob)
+                detail["kernel"] = o.get("kernel", "")
+                detail["cpu_model"] = o.get("cpu", "")
+                detail["uptime"] = o.get("uptime", "")
+                detail["net"]["ip"] = o.get("ip", "")
+                detail["net"]["speed"] = o.get("speed", "")
+                detail["disk"]["free"], detail["disk"]["total"] = _parse_win_disk(o.get("disk", ""))
+                detail["llama_version"] = o.get("llama", "")
+                # coreload comes back as a JSON string; parse it into a list
+                cl = o.get("coreload")
+                if isinstance(cl, str):
+                    try:
+                        detail["cpu_cores"] = json.loads(cl)
+                    except Exception:
+                        detail["cpu_cores"] = []
+                else:
+                    detail["cpu_cores"] = cl or []
+                detail["cores"] = o.get("cores", "")
             except Exception:
-                continue
-    # only measure over SSH when the reported link speed is missing/unknown
-    # (virtio/virtual NICs). Machines with a real reported speed keep it.
+                pass
+        elif machine_os == "macos":
+            blob = _run(
+                "echo \"K:$(uname -a)\";"
+                "echo \"C:$(sysctl -n machdep.cpu.brand_string)\";"
+                "echo \"U:$(uptime)\";"
+                "echo \"I:$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)\";"
+                "echo \"S:$(networksetup -getmedia en0 2>/dev/null | grep -i 'current' | sed 's/.*: //')\";"
+                "echo \"D:$(df -k / | awk 'NR==2 {print $4}')\";"
+                "echo \"DT:$(df -k / | awk 'NR==2 {print $2}')\";"
+                "echo \"L:$(\\\"{bin}/llama-server\\\" --version 2>&1 || "
+                "\\\"{bin}/llama-cli\\\" --version 2>&1)\"".format(
+                    bin=machine.get('llama_bin', '') or '.'), timeout=30)
+            _parse_posix_blob(detail, blob)
+        else:
+            _bin = machine.get('llama_bin', '')
+            blob = _run(
+                f"K=$(uname -a); "
+                f"C=$(lscpu | grep 'Model name' | cut -d: -f2 | sed 's/^ *//'); "
+                f"U=$(uptime -p); "
+                f"I=$(hostname -I 2>/dev/null | grep -oF '{machine['ip']}' | head -n1); "
+                f"S=$(for i in $(ls /sys/class/net | grep -v '^lo'); do "
+                f"d=$(readlink /sys/class/net/$i/device/driver 2>/dev/null); "
+                f"case \"$i\" in veth*|br-*|docker*|virbr*|tailscale*) continue;; esac; "
+                f"case \"$d\" in *bridge*|*veth|*tun|*tap) continue;; esac; "
+                f"s=$(cat /sys/class/net/$i/speed 2>/dev/null); "
+                f"if [ -n \"$s\" ] && [ \"$s\" != \"-1\" ] && [ \"$s\" -gt 0 ]; then "
+                f"if [ \"$s\" -ge 1000 ]; then echo \"$((s/1000)) Gb/s\"; "
+                f"else echo \"${{s}} Mb/s\"; fi; break; fi; "
+                f"e=$(ethtool $i 2>/dev/null | grep -i speed | sed 's/.*: *//;s/ *$//'); "
+                f"if [ -n \"$e\" ] && [ \"$e\" != \"Unknown!\" ]; then echo \"$e\"; break; fi; "
+                f"case \"$d\" in *virtio*) echo \"virtio (speed n/a)\"; break;; esac; done); "
+                f"D=$(df -k / | tail -n1 | awk '{{print $4}}'); "
+                f"DT=$(df -k / | tail -n1 | awk '{{print $2}}'); "
+                f"L=$(\"{_bin}/llama-server\" --version 2>&1 || \"{_bin}/llama-cli\" --version 2>&1); "
+                f"echo \"K:$K\"; echo \"C:$C\"; echo \"U:$U\"; echo \"I:$I\"; "
+                f"echo \"S:$S\"; echo \"D:$D\"; echo \"DT:$DT\"; echo \"L:$L\"", timeout=30)
+            _parse_posix_blob(detail, blob)
+
+    # ---- real throughput over the peer agent (cached 1h) ----
+    speed_agent = None
+    for peer in cfg.machines.all():
+        if peer.get("name") == name or local_node.is_local(peer):
+            continue
+        speed_agent = peer
+        break
     reported = str(detail["net"].get("speed") or "").strip()
     need_measure = (not reported or "n/a" in reported.lower()
                     or "unknown" in reported.lower())
-    if need_measure and speed_ssh is not None:
+    if need_measure and speed_agent is not None:
         cache = _load_speed_cache()
         ent = cache.get(name)
         now = time.time()
         if ent and now - ent.get("ts", 0) < _SPEED_CACHE_TTL:
             detail["net"]["speed"] = ent.get("mbps")
         else:
-            mbps = _measure_ssh_speed(speed_ssh)
+            mbps = _measure_agent_speed(speed_agent)
             if mbps:
                 detail["net"]["speed"] = mbps
                 cache[name] = {"mbps": mbps, "ts": now}
                 _save_speed_cache(cache)
         if detail["net"]["speed"]:
-            detail["net"]["speed"] = f"{detail['net']['speed']} Mb/s (SSH)"
+            detail["net"]["speed"] = f"{detail['net']['speed']} Mb/s (agent)"
 
     # live stats ride along so the modal shows current numbers
     try:
@@ -5943,7 +6233,8 @@ async def stop_launch(l: LaunchIn):
     if not engine.capable("rpc_cluster"):
         try:
             return await run_in_threadpool(
-                engine.stop_model, l.model_id, l.servers, l.variant)
+                engine.stop_model, l.model_id, l.servers, l.variant,
+                None, l.port)
         except vllm_manager.SwapDownError as e:
             raise HTTPException(status_code=503, detail=str(e)) from None
     valid = {m["name"] for m in cfg.machines.all()}
@@ -5958,15 +6249,24 @@ async def stop_launch(l: LaunchIn):
     # stop actually unloads it and the serve group frees the box.
     # Swap down -> 503, same as the Swap tab's Evict. Unknown ids keep
     # the legacy path.
+    # Stop BOTH possible owners: a live launch (llama-server on the
+    # requested port) and, when the same deployment is served by
+    # llama-swap, its remote-proxy entry. A live launch on a remote box is
+    # indistinguishable by model id alone, so do the live port-targeted
+    # stop first, then best-effort unload the swap entry.
+    res = await run_in_threadpool(rpc_manager.stop_model, l.servers,
+                                  l.model_id, l.variant, l.master_name,
+                                  l.port)
     try:
         verdict = swap_manager.deployment_launch_mode(l.model_id, l.variant)
     except ValueError:
         verdict = None
     if verdict and verdict["mode"] == "local" and verdict["box"]:
-        return await _proxy_swap_unload(verdict["swap_key"])
-    return await run_in_threadpool(rpc_manager.stop_model, l.servers,
-                                   l.model_id, l.variant, l.master_name,
-                                   l.model_id)
+        try:
+            await _proxy_swap_unload(verdict["swap_key"])
+        except Exception:
+            pass
+    return res
 
 
 @app.get("/api/launch/active")
@@ -6151,9 +6451,9 @@ async def flow_vllm_metrics():
 
     def fetch():
         import urllib.request, json as _json
-        base = (f"http://127.0.0.1:{st['port']}"
-                if local_node.is_local(cfg.machines.require(st["host"]))
-                else f"http://{st.get('host_ip')}:{st['port']}")
+        # Go through the farm gateway (:8090) with the logged-in user's
+        # identity (session cookie → access key), exactly like API clients.
+        base = _gateway_url("")
         with urllib.request.urlopen(base + "/v1/models", timeout=5) as r:
             models = _json.load(r).get("data", [])
         loaded = [m["id"] for m in models
@@ -6254,7 +6554,7 @@ _FLOW_VLLM_METRICS_PREV = None
 
 
 @app.post("/api/swap/load/{model_id}")
-async def swap_load_model(model_id: str):
+async def swap_load_model(model_id: str, request: Request):
     """Load one model through the running swap daemon: vLLM models load
     on first request, so this fires a minimal warmup completion
     (max_tokens=1) at the daemon and waits for it. First load takes
@@ -6270,27 +6570,55 @@ async def swap_load_model(model_id: str):
 
     def warmup():
         import urllib.request, urllib.error, json as _json
-        base = (f"http://127.0.0.1:{st['port']}"
-                if local_node.is_local(cfg.machines.require(st["host"]))
-                else f"http://{st.get('host_ip')}:{st['port']}")
-        payload = _json.dumps(
-            {"model": model_id,
-             "messages": [{"role": "user", "content": "hi"}],
-             "max_tokens": 1}).encode()
-        req = urllib.request.Request(
-            base + "/v1/chat/completions", data=payload,
-            headers={"Content-Type": "application/json"}, method="POST")
-        t0 = _time.time()
+        # Go through the farm gateway (:8090) with the logged-in user's
+        # identity (session cookie → access key), exactly like API clients.
+        base = _gateway_url("")
+        is_embed = False
         try:
-            with urllib.request.urlopen(req, timeout=600) as r:
-                body = _json.load(r)
-        except urllib.error.HTTPError as e:
-            raise RuntimeError(f"daemon refused load: HTTP {e.code} "
-                               f"{e.read(300).decode('utf-8', 'replace')}")
+            engine = engine_registry.get_engine()
+            emb_ids = {m.get("model_id") for m in
+                       (engine.filter_embedding_models(cfg.list_models()) or [])}
+            is_embed = model_id.split("--")[0] in emb_ids
+        except Exception:
+            pass
+        if is_embed:
+            payload = _json.dumps(
+                {"model": model_id, "input": "hi"}).encode()
+            path = "/v1/embeddings"
+        else:
+            payload = _json.dumps(
+                {"model": model_id,
+                 "messages": [{"role": "user", "content": "hi"}],
+                 "max_tokens": 1}).encode()
+            path = "/v1/chat/completions"
+        req = urllib.request.Request(
+            base + path, data=payload,
+            headers=_gateway_headers(request), method="POST")
+        t0 = _time.time()
+        body = None
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=600) as r:
+                    body = _json.load(r)
+                break
+            except urllib.error.HTTPError as e:
+                detail = e.read(300).decode("utf-8", "replace")
+                # App startup reloads llama-swap (stop+start); a load that
+                # lands in that window gets a transient 5xx. Retry briefly.
+                if e.code in (500, 502, 503) and attempt < 2:
+                    _time.sleep(2)
+                    continue
+                raise RuntimeError(
+                    f"daemon refused load: HTTP {e.code} {detail}")
+        if body is None:
+            raise RuntimeError("daemon refused load: no response")
         choice = ((body.get("choices") or [{}])[0].get("message") or {})
+        preview = (choice.get("content") or "")
+        if not preview and body.get("data"):
+            preview = "(embedding ok)"
         return {"ok": True, "model": model_id,
                 "elapsed_s": round(_time.time() - t0, 1),
-                "preview": (choice.get("content") or "")[:120]}
+                "preview": preview[:120]}
     try:
         return await run_in_threadpool(warmup)
     except RuntimeError as e:
@@ -6392,7 +6720,8 @@ async def list_embedding_models():
     # with the known embedding families (bge/nomic/gte/…) + config.json
     # architectures. Same shape both ways.
     engine = engine_registry.get_engine()
-    return engine.filter_embedding_models(cfg.list_models())
+    return _access_filter_models(
+        engine.filter_embedding_models(cfg.list_models()))
 
 
 class EmbedIn(pydantic.BaseModel):
@@ -6402,17 +6731,19 @@ class EmbedIn(pydantic.BaseModel):
 
 
 @app.post("/api/embeddings")
-async def create_embeddings(e: EmbedIn):
+async def create_embeddings(e: EmbedIn, request: Request):
     st = swap_manager.status()
     if not st.get("running"):
         raise HTTPException(status_code=503, detail="swap not running — Launch All first")
     host = cfg.machines.require(st["host"])
     is_local = local_node.is_local(host)
-    url = "http://127.0.0.1:8090/v1/embeddings"  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
+    url = _gateway_url("/v1/embeddings")  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
     def do():
         import urllib.request, json as _json, urllib.error
         payload = _json.dumps({"model": e.model, "input": e.input}).encode()
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+        req = urllib.request.Request(url, data=payload,
+                                     headers=_gateway_headers(request),
+                                     method="POST")
         try:
             with urllib.request.urlopen(req, timeout=7200) as r:
                 body = r.read().decode()
@@ -6438,7 +6769,8 @@ async def create_embeddings(e: EmbedIn):
 async def list_audio_models():
     # capability detection is the engine adapter's vocabulary (G-8)
     engine = engine_registry.get_engine()
-    return engine.filter_audio_models(cfg.list_models())
+    return _access_filter_models(
+        engine.filter_audio_models(cfg.list_models()))
 
 
 @app.get("/api/decision/models")
@@ -6448,7 +6780,8 @@ async def list_decision_models():
     via the engine adapter, so a future engine just filters its own
     vocabulary."""
     engine = engine_registry.get_engine()
-    return engine.filter_decision_models(cfg.list_models())
+    return _access_filter_models(
+        engine.filter_decision_models(cfg.list_models()))
 
 
 class AudioIn(pydantic.BaseModel):
@@ -6458,7 +6791,7 @@ class AudioIn(pydantic.BaseModel):
 
 
 @app.post("/api/audio")
-async def audio_test(v: AudioIn):
+async def audio_test(v: AudioIn, request: Request):
     """Transcribe browser-captured audio via OpenAI-style input_audio
     (base64 data URI) in a chat completion. Audio never touches disk."""
     st = swap_manager.status()
@@ -6466,7 +6799,7 @@ async def audio_test(v: AudioIn):
         raise HTTPException(status_code=503, detail="swap not running — Launch All first")
     host = cfg.machines.require(st["host"])
     is_local = local_node.is_local(host)
-    url = "http://127.0.0.1:8090/v1/chat/completions"  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
+    url = _gateway_url("/v1/chat/completions")  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
     def do():
         import urllib.request, json as _json, urllib.error
         msgs = []
@@ -6483,7 +6816,9 @@ async def audio_test(v: AudioIn):
             {"type": "input_audio", "input_audio": {"data": v.audio, "format": "wav"}},
         ]})
         payload = _json.dumps({"model": v.model, "messages": msgs}).encode()
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+        req = urllib.request.Request(url, data=payload,
+                                     headers=_gateway_headers(request),
+                                     method="POST")
         try:
             with urllib.request.urlopen(req, timeout=7200) as r:
                 resp = _json.loads(r.read().decode())
@@ -6521,7 +6856,8 @@ async def list_vision_models():
     # are HF-format (no mmproj) and are detected from config.json
     # vision_config / architectures + known vision families.
     engine = engine_registry.get_engine()
-    return engine.filter_vision_models(cfg.list_models())
+    return _access_filter_models(
+        engine.filter_vision_models(cfg.list_models()))
 
 
 class VisionIn(pydantic.BaseModel):
@@ -6531,13 +6867,13 @@ class VisionIn(pydantic.BaseModel):
 
 
 @app.post("/api/vision")
-async def vision_test(v: VisionIn):
+async def vision_test(v: VisionIn, request: Request):
     st = swap_manager.status()
     if not st.get("running"):
         raise HTTPException(status_code=503, detail="swap not running — Launch All first")
     host = cfg.machines.require(st["host"])
     is_local = local_node.is_local(host)
-    url = "http://127.0.0.1:8090/v1/chat/completions"  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
+    url = _gateway_url("/v1/chat/completions")  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
     def do():
         import urllib.request, json as _json, urllib.error
         payload = _json.dumps({
@@ -6547,7 +6883,9 @@ async def vision_test(v: VisionIn):
                 {"type": "image_url", "image_url": {"url": v.image}},
             ]}],
         }).encode()
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+        req = urllib.request.Request(url, data=payload,
+                                     headers=_gateway_headers(request),
+                                     method="POST")
         try:
             with urllib.request.urlopen(req, timeout=7200) as r:
                 resp = _json.loads(r.read().decode())

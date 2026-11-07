@@ -226,7 +226,8 @@ def test_launch_stop_llama_cpp_unchanged(client, settings_file, monkeypatch):
 
     def fake_stop(servers, model_id=None, variant=None, master_name=None,
                   launch_port=None):
-        calls["args"] = (servers, model_id, variant, master_name)
+        calls["args"] = (servers, model_id, variant, master_name,
+                         launch_port)
         return [{"machine": servers[0], "stopped": True}]
 
     monkeypatch.setattr(app_module.rpc_manager, "stop_model", fake_stop)
@@ -237,7 +238,7 @@ def test_launch_stop_llama_cpp_unchanged(client, settings_file, monkeypatch):
                     json={"model_id": "Qwen3-8B", "servers": ["aibox1"],
                           "port": 8080})
     assert r.status_code == 200, r.text
-    assert calls["args"] == (["aibox1"], "Qwen3-8B", None, None)
+    assert calls["args"] == (["aibox1"], "Qwen3-8B", None, None, 8080)
 
 
 def test_launch_stop_remote_proxy_unloads_via_swap(client, settings_file,
@@ -252,9 +253,9 @@ def test_launch_stop_remote_proxy_unloads_via_swap(client, settings_file,
         lambda mid, variant=None, host_name=None: {
             "mode": "local", "box": "aibox3", "peers": ["aibox3"],
             "swap_key": "qwen3-8b--DAD"})
+    stopped = []
     monkeypatch.setattr(app_module.rpc_manager, "stop_model",
-                        lambda *a, **k: (_ for _ in ()).throw(
-                            AssertionError("remote-proxy stop must proxy")))
+                        lambda *a, **k: stopped.append((a, k)) or [])
 
     async def fake_unload(model_id):
         proxied.append(model_id)
@@ -266,6 +267,7 @@ def test_launch_stop_remote_proxy_unloads_via_swap(client, settings_file,
                     json={"model_id": "qwen3-8b", "servers": ["aibox3"],
                           "port": 8080})
     assert r.status_code == 200, r.text
+    assert stopped, "live-port stop must run first"
     assert proxied == ["qwen3-8b--DAD"]
 
 
@@ -392,7 +394,7 @@ def test_swap_load_warmup_contract(client, settings_file, monkeypatch):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is True and body["model"] == "Qwen3-8B"
-    assert seen["url"] == "http://127.0.0.1:8080/v1/chat/completions"
+    assert seen["url"] == "http://127.0.0.1:8090/v1/chat/completions"
     assert seen["body"]["max_tokens"] == 1
 
 

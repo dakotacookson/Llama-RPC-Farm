@@ -10,6 +10,7 @@ from datetime import datetime
 import yaml
 
 import path_resolver
+from runtime_paths import data_dir
 import gguf_inspect
 
 # Cache for MTP detection results keyed by resolved absolute path to avoid re-reading GGUF files
@@ -56,7 +57,7 @@ def _get_decision_type(gguf_path):
     _decision_cache[gguf_path] = result
     return result
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = data_dir()
 CONFIG_DIR = os.path.join(BASE_DIR, "config")
 MODELS_DIR = os.path.join(CONFIG_DIR, "models")
 
@@ -274,6 +275,10 @@ MACHINE_DEFAULTS = {
     "rdma_cm": False,        # use rdma_cm QP path resolution (mlx4/CX3); else raw path
     "swap_config_path": "",       # DEC-03: per-machine llama.cpp swap-config file ("" = inherit)
     "swap_config_path_vllm": "",  # DEC-03: per-machine vllm swap-config file ("" = inherit)
+    # Optional peer agent (docs/peer-agent.md). auto = probe agent, fall
+    # back to SSH; ssh = never use the agent; agent = require it.
+    "transport": "auto",
+    "agent_port": 8198,
 }
 GROUP_DEFAULTS = {
     "description": "",

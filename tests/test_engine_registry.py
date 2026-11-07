@@ -296,4 +296,12 @@ def test_settings_file_default_points_at_repo_config(monkeypatch):
     assert er.SETTINGS_FILE.endswith(
         os.path.join("config", "settings.yaml")
     )
-    assert os.path.exists(er.SETTINGS_FILE)
+    # config/settings.yaml is per-install user data (gitignored) and is
+    # written by runtime_paths.ensure_runtime_layout() on first run, so a
+    # clean checkout has only the tracked template at that location.
+    import runtime_paths
+
+    assert "config/settings.yaml" in runtime_paths._DEFAULT_CONFIG_FILES
+    assert os.path.exists(
+        os.path.join(repo_root, "config", "settings.example.yaml")
+    )

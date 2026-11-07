@@ -450,58 +450,6 @@ def test_render_ps1_no_baked_device(stub_cfg):
     assert "--device" not in ps1.split("-ExtraArgs")[0]
 
 
-def test_render_password_with_quote_stays_valid(stub_cfg):
-    """A single-quote in the machine password must not break the
-    generated script — passwords are vault-only now (never baked in),
-    so even hostile values can't affect script syntax. The script stays
-    valid bash and requires $SSH_PASS at runtime."""
-    from rpc_manager import _render_rpc
-    model = {"model_id": "q", "flags": {},
-             "base_path": "store://llm-models/x.gguf", "device_order": "",
-             "device_order_policy": "as-selected", "expose": {}}
-    master = {"name": "aibox1", "ip": "10.0.0.104", "username": "u",
-              "password": "p@ss'word", "os": "linux", "rpc_port": 50052,
-              "gpu": "CUDA0", "role": "master",
-              "detected": {"gpu_names": [], "vram_total_gb": 0,
-                           "ram_total_gb": 16, "cores": 8}}
-    p1 = dict(master, name="aibox3", ip="10.0.0.98", role="peer")
-    stub_cfg.update({m["name"]: m for m in (master, p1)})
-    script = _render_rpc(model, master, [p1])
-    assert "p@ss'word" not in script
-    assert "SSH_PASS:?" in script
-    import subprocess as _sp
-    import tempfile, os
-    with tempfile.NamedTemporaryFile("w", suffix=".sh",
-                                     delete=False) as f:
-        f.write(script)
-        path = f.name
-    try:
-        r = _sp.run(["bash", "-n", path], capture_output=True, text=True)
-        assert r.returncode == 0, r.stderr
-    finally:
-        os.unlink(path)
-
-
-def test_stop_rpc_port_pattern_anchored(monkeypatch, stub_cfg):
-    """Live stop_rpc patterns must anchor the port too."""
-    import subprocess as _sp
-    captured = []
-
-    def fake_run(cmd, is_win=False, timeout=20):
-        captured.append(cmd if isinstance(cmd, str) else " ".join(cmd))
-        return 1, "", ""
-
-    monkeypatch.setattr(rpc_manager, "_run_local", fake_run)
-    monkeypatch.setattr(rpc_manager, "local_node",
-                        __import__("types").SimpleNamespace(
-                            is_local=lambda m: True))
-    m = {"name": "aibox1", "ip": "127.0.0.1", "os": "linux",
-         "username": "zazi", "rpc_port": 50052}
-    stub_cfg["aibox1"] = m
-    rpc_manager.stop_rpc("aibox1", port=51096)
-    assert any("-p 51096 " in c for c in captured), captured
-
-
 def test_stop_llama_server_port_pattern_anchored(monkeypatch, stub_cfg):
     """Serve-group-safe stop must anchor the port (trailing space) and
     match ONLY llama-server — never rpc-servers, never 8080-in-80808."""

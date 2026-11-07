@@ -29,7 +29,10 @@ libcudart/libcublas .so files).
 """
 import json
 import os
+import agent_client
+import local_node
 import urllib.request
+
 
 GITHUB_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases"
 GITHUB_LATEST_DL = "https://github.com/ggml-org/llama.cpp/releases/latest/download"
@@ -139,10 +142,14 @@ def _fetch_latest_assets(limit=30):
     'releases/latest/download' shortcut resolves to the newest SEMVER tag
     (e.g. v0.4.1, which carries no bin assets), NOT the newest release
     with binaries, so it must never be used for bin downloads."""
+    _hdrs = {"Accept": "application/vnd.github+json",
+             "User-Agent": "llama-rpc-farm"}
+    _tok = (os.environ.get("GITHUB_TOKEN")
+            or os.environ.get("GH_TOKEN") or "").strip()
+    if _tok:
+        _hdrs["Authorization"] = f"Bearer {_tok}"
     req = urllib.request.Request(
-        f"{GITHUB_API}?per_page={limit}",
-        headers={"Accept": "application/vnd.github+json",
-                 "User-Agent": "llama-rpc-farm"})
+        f"{GITHUB_API}?per_page={limit}", headers=_hdrs)
     with urllib.request.urlopen(req, timeout=30) as r:
         releases = json.loads(r.read().decode())
     for rel in releases:
@@ -155,6 +162,15 @@ def _fetch_latest_assets(limit=30):
             base = f"https://github.com/ggml-org/llama.cpp/releases/download/{rel['tag_name']}"
             return rel["tag_name"], names, base
     return None, [], GITHUB_LATEST_DL
+
+
+def _glibc_from_text(text):
+    import re
+    m = re.search(r"(\d+)\.(\d+)", str(text or ""))
+    try:
+        return (int(m.group(1)), int(m.group(2))) if m else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _glibc_version(cmd_prefix, run):
@@ -258,7 +274,6 @@ def install_on(machine, log=lambda m: None):
     """Install the right prebuilt on a machine (local or via SSH).
     Returns dict {ok, machine, bin, detail}."""
     import config_loader as cfg
-    from ssh_manager import SSHManager, SSHError
     import local_node
     import subprocess   # TimeoutExpired is a SubprocessError, NOT an OSError
 
@@ -279,25 +294,19 @@ def install_on(machine, log=lambda m: None):
         return proc.returncode, proc.stdout + proc.stderr
 
     def run_remote(cmd, timeout=600):
-        ssh = SSHManager(machine["ip"], machine["username"],
-                         machine["password"], port=machine.get("port", 22))
-        if is_win:
-            # Windows peers' OpenSSH default shell is cmd.exe — a raw
-            # PowerShell body dies there ('$ErrorActionPreference' is not
-            # recognized...). Hand it to cmd as a 'powershell -NoProfile
-            # -Command' wrapper, same escaping as rpc_manager (AGENTS.md
-            # OS coverage): embedded double quotes become \" so PS parses
-            # them as literals inside the outer quoted command.
-            cmd = ('powershell -NoProfile -Command "'
-                   + cmd.replace('"', '\\"') + '"')
-        code, out, err = ssh.run(cmd, timeout=timeout)
-        return code, out + err
+        raise RuntimeError("remote install is agent-only; use the peer agent")
 
     run = run_local if is_local else run_remote
     try:
         # arch matters for asset choice; probe it when not detected yet
         if not ((machine.get("detected") or {}).get("arch")):
-            if is_win:
+            if not is_local:
+                try:
+                    arch = (agent_client.info(machine) or {}).get("arch")
+                except Exception:
+                    arch = None
+                machine.setdefault("detected", {})["arch"] = arch or "x86_64"
+            elif is_win:
                 code, out = run("echo $env:PROCESSOR_ARCHITECTURE")
                 a = (out or "").strip().lower()
                 machine.setdefault("detected", {})["arch"] = \
@@ -312,11 +321,20 @@ def install_on(machine, log=lambda m: None):
                 _cfg.machines.update(name, {"detected": machine["detected"]})
             except Exception:
                 pass
-    except (SSHError, OSError, subprocess.TimeoutExpired) as e:
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
         return {"ok": False, "machine": name, "detail": f"probe failed: {e}"}
     try:
         tag, assets, base = _fetch_latest_assets()
-        glibc = None if is_win else _glibc_version(None, run)
+        if is_win:
+            glibc = None
+        elif is_local:
+            glibc = _glibc_version(None, run)
+        else:
+            try:
+                sd = agent_client.system_detail(machine) or {}
+                glibc = _glibc_from_text(sd.get("glibc"))
+            except Exception:
+                glibc = None
         names, dest, note, _zip = _pick_assets(machine, tag, assets, glibc)
         plan_info = {"ok": True, "tag": tag, "assets": names, "dest": dest,
                      "backend": note,
@@ -331,6 +349,33 @@ def install_on(machine, log=lambda m: None):
                 "detail": "release assets not found upstream: "
                           + ", ".join(plan_info["missing"])}
     urls = [f"{base}/{n}" for n in plan_info["assets"]]
+    if not is_local and agent_client.should_use_agent(machine):
+        try:
+            dest = "~/llama.cpp/bin"
+            agent_client.install_artifact(
+                machine, urls, dest,
+                archive="zip" if is_win else "tar.gz",
+                strip_components=1, mode=None if is_win else 0o755)
+            bin_name = "llama-server.exe" if is_win else "llama-server"
+            v = agent_client.install_verify(machine, f"{dest}/{bin_name}")
+            if v.get("returncode") == 0:
+                bin_path = f"{dest}/{bin_name}"
+                try:
+                    cfg.machines.update(name, {"llama_bin": dest})
+                except Exception:
+                    pass
+                return {"ok": True, "machine": name, "bin": bin_path,
+                        "backend": plan_info["backend"],
+                        "detail": f"installed {', '.join(plan_info['assets'])} "
+                                  f"({plan_info['tag']}) to {dest}"}
+            return {"ok": False, "machine": name,
+                    "detail": f"installed but verify failed: "
+                              f"{v.get('output', '')[-300:]}"}
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                return {"ok": False, "machine": name,
+                        "detail": f"agent install failed: {e}"}
+            print(f"[agent] {name}: install failed, falling back to SSH: {e}")
     # download+extract budget: CUDA+cuDART archives are ~1 GB total; a
     # flat 600s was tight on slow uplinks and killed the run mid-download
     # (fixed 2026-10-31). 20 min per asset set, verify keeps its own.
@@ -377,7 +422,7 @@ def install_on(machine, log=lambda m: None):
         if code != 0:
             return {"ok": False, "machine": name,
                     "detail": f"install failed (exit {code}): {out[-500:]}"}
-    except (SSHError, OSError, subprocess.TimeoutExpired) as e:
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
         return {"ok": False, "machine": name, "detail": f"transfer failed: {e}"}
 
     # post-install verify: the server binary must at least start — a
@@ -389,7 +434,7 @@ def install_on(machine, log=lambda m: None):
         vcmd = '"$HOME/llama.cpp/bin/llama-server" --version'
     try:
         vcode, vout = run(vcmd, timeout=120)
-    except (SSHError, OSError, subprocess.TimeoutExpired) as e:
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
         vcode, vout = 1, f"verify crashed: {e}"
     if vcode != 0:
         return {"ok": False, "machine": name,
@@ -439,7 +484,6 @@ def _machine_run(machine):
     """(run, is_local) for a machine — bash -c locally, raw SSH
     remotely (POSIX; Windows peers never take the source path)."""
     import local_node
-    from ssh_manager import SSHManager
     is_local = local_node.is_local(machine)
 
     def run_local(cmd, timeout=7200):
@@ -449,10 +493,7 @@ def _machine_run(machine):
         return proc.returncode, proc.stdout + proc.stderr
 
     def run_remote(cmd, timeout=7200):
-        ssh = SSHManager(machine["ip"], machine["username"],
-                         machine["password"], port=machine.get("port", 22))
-        code, out, err = ssh.run(cmd, timeout=timeout)
-        return code, out + err
+        raise RuntimeError("remote install is agent-only; use the peer agent")
 
     return (run_local if is_local else run_remote), is_local
 
@@ -477,6 +518,18 @@ def probe_setup(machine, log=lambda m: None):
            "kind": "prebuilt", "llama_bin": None,
            "build_dir": None, "src_root": None, "flags": {}}
     lb = (machine.get("llama_bin") or "").strip()
+    if (lb and not local_node.is_local(machine)
+            and agent_client.should_use_agent(machine)):
+        try:
+            res = agent_client.build_probe(machine, lb)
+            res["machine"] = machine.get("name", "?")
+            return res
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                out["machine"] = machine.get("name", "?")
+                return out
+            print(f"[agent] {machine.get('name')}: build probe failed, "
+                  f"falling back to SSH: {e}")
     if not lb or machine.get("os", "linux") == "windows":
         # Windows can't remote-source-build (no MSVC toolchain
         # assumption) and an empty llama_bin just needs a prebuilt.
@@ -563,6 +616,24 @@ def update_source_on(machine, probe=None, log=lambda m: None):
                           f"{probe.get('llama_bin') or machine.get('llama_bin')}"}
     build_dir = probe["build_dir"]
     src_root = probe["src_root"]
+    if (not local_node.is_local(machine)
+            and agent_client.should_use_agent(machine)):
+        try:
+            bin_path = (f"{probe.get('llama_bin') or build_dir + '/bin'}"
+                        f"/llama-server")
+            res = agent_client.build_update(
+                machine, src_root, build_dir, bin_path)
+            if res.get("ok"):
+                return {"ok": True, "machine": name, "bin": bin_path,
+                        "detail": f"source build updated to "
+                                  f"{res.get('version', '')}"}
+            return {"ok": False, "machine": name,
+                    "detail": res.get("error") or "source update failed"}
+        except Exception as e:
+            if agent_client.transport(machine) == "agent":
+                return {"ok": False, "machine": name,
+                        "detail": f"agent source update failed: {e}"}
+            print(f"[agent] {name}: source update failed, falling back to SSH: {e}")
     run, _is_local = _machine_run(machine)
 
     try:

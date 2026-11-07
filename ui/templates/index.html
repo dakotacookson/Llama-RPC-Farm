@@ -171,15 +171,20 @@
         </ol>
         <div id="wiz-step-1">
           <fieldset>
-            <legend>Scan the network <small class="hint">ping + SSH banner — OS detected without login; enrichment uses the username below (default zazi), editable in step 3</small></legend>
+            <legend>Discover peer agents <small class="hint">UDP discovery on port 8199 — no credentials, no SSH</small></legend>
             <div class="row">
-              <label>Network
+              <label>Discovery
+                <select id="d-mode">
+                  <option value="peer" selected>Peer agents (auto discovery)</option>
+                </select>
+              </label>
+              <label id="d-subnet-label" hidden>Network
                 <select id="d-subnet"></select>
               </label>
-              <label>SSH port <input id="d-port" type="number" value="22"></label>
+              <label id="d-port-label" hidden>Port <input id="d-port" type="number" value="0"></label>
               <button type="button" id="d-scan" style="align-self:end">Scan</button>
             </div>
-            <p class="hint" id="wiz-scan-hint">Hit Scan to ping the network and fingerprint SSH hosts. Already know the IP? Just Continue — you can enter it manually in step 2.</p>
+            <p class="hint" id="wiz-scan-hint">Hit Scan to discover peers advertising the Llama RPC Farm agent (UDP 8199). Already know the IP? Just Continue — enter it manually in step 2.</p>
           </fieldset>
         </div>
         <div id="wiz-step-2" hidden>
@@ -198,11 +203,14 @@
           <label>IP <input id="m-ip" required list="discovered-ips" placeholder="type to pick a discovered host">
             <datalist id="discovered-ips"></datalist>
           </label>
-          <label>Username <input id="m-username" required value="zazi"></label>
-          <label>Password <input id="m-password" type="password"><small id="m-password-hint" class="hint"></small></label>
         </div>
         <div class="row">
-          <label>SSH port <input id="m-port" type="number" value="22"></label>
+          <label id="m-username-label" hidden>Username <input id="m-username" value=""></label>
+          <label id="m-password-label" hidden>Password <input id="m-password" type="password"><small id="m-password-hint" class="hint"></small></label>
+          <label id="m-port-label" hidden>Port <input id="m-port" type="number" value="1"></label>
+          <label id="m-transport-label" hidden>Connection <input id="m-transport" value="agent"></label>
+          <label id="m-agent-port-label">Agent port <input id="m-agent-port" type="number" value="8198" min="1" max="65535"></label>
+          <label id="m-agent-token-label">Agent token <input id="m-agent-token" type="password" autocomplete="new-password"><small id="m-agent-token-hint" class="hint"></small></label>
           <label>Role
             <select id="m-role">
               <option value="peer">peer</option>
@@ -259,27 +267,32 @@
         <fieldset>
           <legend>RDMA transport (llama.cpp RPC)</legend>
           <div class="row">
-            <label style="display:flex;gap:8px;align-items:center;white-space:nowrap">
-              <input type="checkbox" id="m-rdma" style="width:auto">
-              Use RDMA (RoCE) for RPC
-            </label>
-            <label class="wide">RDMA NIC IP (RoCE v2 address, must be in the NIC's GID table)
-              <input id="m-rdma-ip" placeholder="e.g. 10.0.0.105" disabled>
-            </label>
+            <input type="checkbox" id="m-rdma" hidden>
+            <button type="button" id="m-rdma-toggle" class="chip-switch" aria-pressed="false" title="Enable or disable RDMA transport">
+              <span class="chip-knob"><i class="fa-solid fa-bolt"></i></span>
+              <span class="chip-label" id="m-rdma-label">RDMA off</span>
+            </button>
           </div>
-          <div class="row">
-            <label>ibverbs device (pin; empty = auto-detect)
-              <input id="m-rdma-dev" placeholder="e.g. rocep4s0" disabled>
-            </label>
-            <label>GID index (pin; empty = auto-detect)
-              <input id="m-rdma-gid" placeholder="e.g. 4" disabled>
-            </label>
-            <label style="display:flex;gap:8px;align-items:center;white-space:nowrap">
-              <input type="checkbox" id="m-rdma-cm" style="width:auto" disabled>
-              Use rdma_cm QP setup (ConnectX-3/mlx4)
-            </label>
+          <div id="m-rdma-options" hidden>
+            <div class="row">
+              <label class="wide">RDMA NIC IP (RoCE v2 address, must be in the NIC's GID table)
+                <input id="m-rdma-ip" placeholder="e.g. 10.0.0.105" disabled>
+              </label>
+            </div>
+            <div class="row">
+              <label>ibverbs device (pin; empty = auto-detect)
+                <input id="m-rdma-dev" placeholder="e.g. rocep4s0" disabled>
+              </label>
+              <label>GID index (pin; empty = auto-detect)
+                <input id="m-rdma-gid" placeholder="e.g. 4" disabled>
+              </label>
+              <label style="display:flex;gap:8px;align-items:center;white-space:nowrap">
+                <input type="checkbox" id="m-rdma-cm" style="width:auto" disabled>
+                Use rdma_cm QP setup (ConnectX-3/mlx4)
+              </label>
+            </div>
+            <small class="hint">Off forces TCP RPC — stable under heavy load. On: RDMA inference (~3.5µs latency, 9+ Gb/s) with automatic pacing + flow control. "rdma_cm" is required for ConnectX-3/mlx4 cards; leave off for mlx5/E810+.</small>
           </div>
-          <small class="hint">Off (default) forces TCP RPC — stable under heavy load. On: RDMA inference (~3.5µs latency, 9+ Gb/s) with automatic pacing + flow control. "rdma_cm" is required for ConnectX-3/mlx4 cards; leave off for mlx5/E810+.</small>
         </fieldset>
         </div><!-- /wiz-step-3 -->
         <div class="actions" id="wiz-nav">
@@ -296,6 +309,7 @@
       </form>
       <div class="row">
         <button type="button" id="detect-all-btn">Detect Hardware (all machines)</button>
+        <button type="button" id="detect-connections-btn">Detect Connections</button>
       </div>
       <div id="machines-list"></div>
     </section>
@@ -942,7 +956,7 @@ technical | bugs, errors, login problems</textarea></label>
     </section>
     <!-- Launch -->
     <section id="tab-launch" class="tab">
-      <h2>Live Launch</h2>
+      <h2>Launch (via llama-swap API)</h2>
       <div class="card" id="swap-card">
         <h3>Launch All via llama-swap <span id="swap-status" class="serving-ind">…</span></h3>
         <p class="hint"><span data-launch-view="rpc_cluster">Generates llama-swap's config.yaml from all model configs, pushes it to the host (<span id="swap-host">…</span>), starts <span data-engine-label="peers">RPC peers</span>, then starts the llama-swap daemon. Models load on first request. Linux hosts get per-model .sh wrappers (proven start-rpc-qwen.sh shape); Windows hosts get direct commands.</span><span data-launch-view="swap_only">Generates the vLLM engine's config.vllm.yaml from all model configs, pushes it to the host (<span id="swap-host">…</span>), then starts the llama-swap daemon — vLLM serves one host per model, so there are no RPC peers to start in this mode. Models load on first request through llama-swap.</span></p>
@@ -968,7 +982,7 @@ technical | bugs, errors, login problems</textarea></label>
           <button class="small danger" id="evict-all">Evict all</button>
         </div>
       </div>
-      <p class="hint" data-panel="rpc_launch">Or start a single model directly — no scripts. Heterogeneous parallel: disjoint hardware sets can run concurrently — launching a model only stops its own servers (not all). Stops old instances on its servers, starts <span data-engine-label="peers">RPC peers</span>, launches <span data-engine-label="server">llama-server</span>.</p>
+      <p class="hint" data-panel="rpc_launch">Load and Evict call the same llama-swap API path as clients — no per-model port, host, or launch mode to configure. Servers and flags come from the model config.</p>
       <div class="launch-grid" id="launch-grid" data-panel="rpc_launch"></div>
       <div id="disabled-models-strip" data-panel="rpc_launch"></div>
       <div class="card" id="vllm-launch-view" data-launch-view="swap_only" hidden>
@@ -1236,7 +1250,17 @@ technical | bugs, errors, login problems</textarea></label>
               <small class="hint" id="set-hf-token-hint">Not set — gated downloads will 401.</small>
             </label>
           </div>
-          <p class="hint" style="margin:-8px 0 10px">Saved to <code>config/settings.yaml</code> as <code>hf_token</code> (or set <code>HF_TOKEN</code> env). Needed only after you've clicked “Agree and access repository” on the gated HF page.</p>
+          <p class="hint" style="margin:-8px 0 10px">Saved to <code>config/settings.yaml</code> as <code>hf_token</code> (or set <code>HF_TOKEN</code> env). Needed only after you've clicked “Agree and access repository” on the gated HF page.</p>          <div class="row">
+            <label class="wide">Farm agent token (shared by all peers)
+              <div style="display:flex;gap:6px;align-items:center">
+                <input id="set-farm-agent-token" type="password" placeholder="one token for every agent" autocomplete="off">
+                <button type="button" class="small" id="set-farm-agent-token-toggle" title="Show/hide token"><i class="fa-solid fa-eye"></i></button>
+                <button type="button" class="small danger" id="set-farm-agent-token-clear" title="Remove the saved farm token">Clear</button>
+              </div>
+              <small class="hint" id="set-farm-agent-token-hint">Not set — per-machine tokens are used.</small>
+            </label>
+          </div>
+          <p class="hint" style="margin:-8px 0 10px">When set, every discovered/new agent verifies automatically if it uses the same token. Stored encrypted in the vault, never in YAML.</p>
         <div data-engine="llama_cpp">
         <div class="row" style="margin-top:12px">
           <button id="install-open-modal" class="small" style="width:100%;background:var(--accent-dim);color:var(--accent);border:2px solid var(--accent);padding:8px;font-size:13px;font-weight:550;border-radius:var(--r-md);"><i class="fa-solid fa-download" style="margin-right:6px"></i>Run installer…</button>
