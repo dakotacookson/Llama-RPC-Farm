@@ -5717,9 +5717,21 @@ async def stop_launch(l: LaunchIn):
             raise HTTPException(status_code=404,
                                 detail=f"model '{lmid}' not found")
         allow = access.view_allow()
+        # STRICT posture: unknown/unresolvable key = restricted, allow
+        # None — may stop nothing (same rule as /api/launch).
         if allow is None or lmid not in allow:
             raise HTTPException(status_code=404,
                                 detail=f"model '{lmid}' not found")
+    try:
+        engine = engine_registry.get_engine()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    if not engine.capable("rpc_cluster"):
+        try:
+            return await run_in_threadpool(
+                engine.stop_model, l.model_id, l.servers, l.variant)
+        except vllm_manager.SwapDownError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from None
     valid = {m["name"] for m in cfg.machines.all()}
     unknown = [s for s in l.servers if s not in valid]
     if unknown:

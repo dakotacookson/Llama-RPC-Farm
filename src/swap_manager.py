@@ -1000,7 +1000,63 @@ def launch_plan(config_path=None, host_name=None):
                 f"{mid_for_key}: MLX runtime ignores RPC peers "
                 f"(single machine only)")
             peer_objs = []
-        if host_os in ("linux", "macos"):
+        if engine == "vllm":
+            # ARD §3.5 — the ONE vLLM branch: entry-emit time only. The
+            # llama-swap entry carries the vllm command (thin script on
+            # linux; no RPC fan-out, no sshpass block, no device env
+            # exports — pinning travels inside cmd via
+            # CUDA_VISIBLE_DEVICES or docker -e). Multi-host: peer_objs
+            # pass through to swap_entry_parts, which turns the cmd into
+            # the Ray cluster script (multi-host TP/PP).
+            import vllm_manager
+            try:
+                parts = vllm_manager.swap_entry_parts(
+                    deploy_model, master, vllm_cfg, peers=peer_objs)
+            except (ValueError, KeyError) as e:
+                skipped.append(mid_for_key)
+                warnings.append(f"{mid_for_key}: {e}, skipped")
+                return
+            # DEC-08: the launch path reads only the per-model `vllm:`
+            # section; the t_90def951 flags bridge and its warnings
+            # fan-out are retired (legacy configs fail loudly in
+            # build_vllm_command instead).
+            if host_os == "linux":
+                script_name = f"start-{mid_for_key}.sh"
+                # DEC-15: venv root comes from the generate()-time
+                # vllm_cfg (engine_registry settings read) — the script
+                # renderer no longer re-reads swap.yaml's unrelated
+                # settings file for the vllm: block it doesn't contain
+                # (that dead read fell back to the hardcoded default for
+                # every non-default venv_bin).
+                scripts[script_name] = _vllm_script(parts["cmd"], vllm_cfg)
+                script_mids.add(mid_for_key)
+                if peer_objs:
+                    # multi-host (Ray cluster): worker nodes need sshpass
+                    # via $SSH_PASS — same swap-secrets.env sidecar wrap
+                    # the llama.cpp branch uses (single-node vLLM scripts
+                    # need no SSH and skip the wrap, keeping the thin cmd).
+                    models[key] = {
+                        "cmd": f"/bin/bash -c 'source \"{scripts_dir}/swap-secrets.env\" 2>/dev/null; exec /bin/bash \"{scripts_dir}/{script_name}\" \"${{PORT}}\"'"}
+                else:
+                    models[key] = {
+                        "cmd": f"/bin/bash {scripts_dir}/{script_name} ${{PORT}}"}
+            else:
+                vcmd = parts["cmd"].replace('"$PORT"', "${PORT}")
+                if host_os == "windows":
+                    models[key] = {"cmd": vcmd.replace(" \\\n  ", " ")}
+                else:
+                    models[key] = {"cmd": _LiteralStr(vcmd)}
+            models[key]["cmdStop"] = parts["cmdStop"]
+            models[key]["checkEndpoint"] = parts["checkEndpoint"]
+            # llama-swap's per-model env is a LIST of "K=V" strings — a dict
+            # here makes the whole config fail to load (`cannot unmarshal
+            # !!map into []string`, daemon crash-loops). Convert; omit when
+            # empty (vLLM entries carry env inside cmd by design).
+            _entry_env = parts.get("env") or {}
+            if _entry_env:
+                models[key]["env"] = [
+                    f"{k}={v}" for k, v in _entry_env.items()]
+        elif host_os in ("linux", "macos"):
             script_name = f"start-{mid_for_key}.sh"
             if peer_objs:
                 scripts[script_name] = rpc_manager._render_rpc(

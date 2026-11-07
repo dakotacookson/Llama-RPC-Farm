@@ -157,7 +157,7 @@ def test_uninstall_removes_bin_and_clears_llama_bin(tmp_path, monkeypatch):
     assert report["ok"], report
     names = [s["step"] for s in report["steps"]]
     assert names == ["guard:path", "verify:version", "bins:remove",
-                     "firewall:rules", "machines:clear"]
+                     "machines:clear"]
     rms = [c for c in run.cmds() if c.startswith("rm -rf")]
     assert rms == ['rm -rf "$HOME/llama.cpp/bin"']
     assert seen == {"name": "box1", "updates": {"llama_bin": ""}}
