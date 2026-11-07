@@ -212,5 +212,3 @@ def test_resolve_variant_unknown_raises():
         rpc_manager._resolve_variant({"model_id": "m", "variants": []},
                                      "nope")
 
-
-# ---------------- variant vllm overrides (A2) -------------------------------

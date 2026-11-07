@@ -10,7 +10,7 @@ SSH.
 - `GET /health`, `GET /version`, `GET /capabilities`, `GET /info`
 - `GET /status`, `GET /processes`, `GET /metrics`
 - `GET /system/detail`, `GET /system/rdma`, `GET /speedtest?mb=N`
-- `POST /ray/start|stop`, `POST /install/artifact|verify|vllm`
+- `POST /install/artifact|verify`
 - `POST /custom/start|stop` — typed custom Windows `.bat` runtime
 - `POST /agent/update` — in-place wheel upgrade + self-restart
 - `GET /build/probe`, `POST /build/update`

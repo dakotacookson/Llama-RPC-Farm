@@ -111,10 +111,10 @@ def _engine_llcpp(monkeypatch):
             return rpc_manager.stop_model(servers, model_id, variant,
                                           master_name, port)
 
-        def apply_model_section(self, data, where="vllm"):
+        def apply_model_section(self, data, where="model"):
             return data
 
-        def sanitize_model_section(self, raw, where="vllm"):
+        def sanitize_model_section(self, raw, where="model"):
             return None if raw is None else dict(raw)
     import engine_registry
     monkeypatch.setattr(engine_registry, "get_engine",

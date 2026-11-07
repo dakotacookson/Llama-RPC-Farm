@@ -53,7 +53,8 @@ For a human walkthrough see `docs/setup.md`; the agent-relevant facts:
 ./install.sh          # Linux/macOS — idempotent: venv + requirements.txt
 install.bat           # Windows equivalent (cmd.exe)
 ./run.sh              # start UI detached on :8199 (Linux/macOS); run.bat on Windows
-fuser -k 8199/tcp     # stop the UI (Linux) — then ./run.sh to restart
+./restart.sh --ui     # restart ONLY the web UI (models/VRAM untouched)
+./restart.sh          # FULL restart: stop llama-swap + all farm llama/RPC on every machine, restart daemon + UI
 ```
 
 - First run needs NOTHING pre-existing except Python 3.11+ (install.sh
@@ -91,9 +92,12 @@ fuser -k 8199/tcp     # stop the UI (Linux) — then ./run.sh to restart
   stop them via the swap/UI lifecycle paths — llama-server processes hold
   model state a user may be serving from right now.
 - The app does NOT hot-reload (see below): after any `src/*.py` edit an
-  agent MUST restart the daemon (`run.sh` re-starts only :8199; full
-  swap+UI restart = `./restart-llama-swap.sh`; systemd unit owners:
-  `systemctl --user restart llama-swap`, `sudo systemctl restart swap-gateway`).
+  agent MUST restart. Use `./restart.sh` (full: stops llama-swap + every
+  farm llama/RPC process on all machines, restarts daemon + UI) or
+  `./restart.sh --ui` (web app only; leaves models/VRAM running).
+  `run.sh` only starts the UI when it is not already running. systemd unit
+  owners can also: `systemctl --user restart llama-swap`,
+  `sudo systemctl restart swap-gateway`.
 
 ## Commands
 
@@ -101,7 +105,9 @@ fuser -k 8199/tcp     # stop the UI (Linux) — then ./run.sh to restart
 .venv/bin/python src/app.py                 # run the app (http://localhost:8199)
 .venv/bin/python -m pytest tests            # all tests (fast, fully stubbed, ~3s)
 .venv/bin/python -m pytest tests/test_swap_manager.py::test_stop_targets_correct_machine  # single test
-./restart-llama-swap.sh                     # kills llama-swap/llama-server + old app, restarts UI
+./restart.sh                               # FULL: kills llama-swap + all farm llama/RPC on every machine, restarts daemon + UI
+./restart.sh --ui                          # UI-only restart (models/VRAM untouched)
+./restart-llama-swap.sh                    # backwards-compatible alias for ./restart.sh --full
 ./run.sh                                    # (or run.bat) start UI without killing llama processes
 ```
 

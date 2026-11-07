@@ -21,7 +21,7 @@ hardware facts:
 - per-GPU bandwidth table predicts decode tok/s and identifies the
   pipeline straggler (decode is bandwidth-bound)
 
-Mirrors vLLM `--max-model-len` auto / Ollama fit-vram logic. Exposed at
+Mirrors Ollama fit-vram logic. Exposed at
 `GET /api/safe-defaults` and the Tune estimate endpoints.
 
 ## Phase 2 — staged live search

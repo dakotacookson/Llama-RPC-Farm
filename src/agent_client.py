@@ -279,22 +279,6 @@ def file_list(machine, path, hidden=False, timeout=8.0) -> dict:
     return _request(machine, "GET", f"/files/list?{query}", timeout=timeout)
 
 
-def ray_start(machine, ray_bin, address, num_gpus=0, env=None,
-              master_ip="", log=None, pid_file=None, workdir=None,
-              timeout=60.0) -> dict:
-    return _request(machine, "POST", "/ray/start", {
-        "ray_bin": ray_bin, "address": address, "num_gpus": int(num_gpus),
-        "env": dict(env or {}), "master_ip": master_ip, "log": log,
-        "pid_file": pid_file, "workdir": workdir,
-    }, timeout=timeout)
-
-
-def ray_stop(machine, ray_bin, pid_file=None, timeout=40.0) -> dict:
-    return _request(machine, "POST", "/ray/stop", {
-        "ray_bin": ray_bin, "pid_file": pid_file,
-    }, timeout=timeout)
-
-
 def install_artifact(machine, urls, dest, archive="tar.gz",
                      strip_components=0, member="", mode=None,
                      timeout=1800.0) -> dict:
@@ -311,14 +295,6 @@ def install_artifact(machine, urls, dest, archive="tar.gz",
 def install_verify(machine, path, args=None, timeout=130.0) -> dict:
     return _request(machine, "POST", "/install/verify", {
         "path": path, "args": args or ["--version"],
-    }, timeout=timeout)
-
-
-def vllm_install(machine, python="python3", venv_root="~/vllm-env",
-                 version="0.30.0", rocm=False, timeout=2000.0) -> dict:
-    return _request(machine, "POST", "/install/vllm", {
-        "python": python, "venv_root": venv_root,
-        "version": version, "rocm": bool(rocm),
     }, timeout=timeout)
 
 

@@ -289,7 +289,7 @@ def write_config(work, host, llama_dir, swap_bin, model_path):
         "device_order": "", "device_order_policy": "as-selected",
         "expose": {},
         "flags": {"ctx-size": 2048, "n-gpu-layers": 0, "parallel": 1},
-        "vllm": None, "reset": False, "variants": [],
+        "reset": False, "variants": [],
     }
     (cfg_dir / "models" / "e2e-tiny.yaml").write_text(
         yaml.safe_dump(model, sort_keys=False), encoding="utf-8")

@@ -4,9 +4,8 @@ schema (ARD §2). Pure logic: no network, no real machines.
 Covers the B1 checkpoint:
 - default engine injected when the settings key is missing
 - invalid engine -> startup ValueError listing valid values (no silent fallback)
-- vllm block normalization/validation (defaults, unknown keys, delivery, gmu)
 - LlamaCppAdapter delegation to rpc_manager/swap_manager (zero behavior change)
-- get_engine() seam: unknown-but-valid engine names rejected until registered
+- get_engine() seam resolves the llama.cpp adapter
 """
 import os
 
@@ -40,15 +39,11 @@ def _write_settings(path, data):
 
 def test_default_engine_injected_when_missing(settings_file):
     """Existing installs have no engine key — the default must be
-    injected. DEC-01 (engine-qualified blocks): llama_cpp mode materializes
-    NO vllm vocabulary — a llama.cpp settings file carries only shared
-    farm keys (spec §1.4/§3)."""
+    injected."""
     _write_settings(settings_file, {"model_dir": "store://llm-models",
                                     "llama_bin": "~/llama.cpp/build/bin"})
     out = load_settings(settings_file)
     assert out["engine"] == DEFAULT_ENGINE == "llama_cpp"
-    # engine-qualified: NO vllm block in llama_cpp mode
-    assert "vllm" not in out
     # unrelated keys survive untouched
     assert out["llama_bin"] == "~/llama.cpp/build/bin"
 
@@ -56,7 +51,6 @@ def test_default_engine_injected_when_missing(settings_file):
 def test_missing_settings_file_behaves_like_empty(settings_file):
     out = load_settings(settings_file)  # file never written
     assert out["engine"] == "llama_cpp"
-    assert "vllm" not in out
 
 
 def test_engine_llama_cpp_round_trips(settings_file):
@@ -67,7 +61,7 @@ def test_engine_llama_cpp_round_trips(settings_file):
 
 # ---------------- invalid engine -> startup error, no fallback ------------
 
-@pytest.mark.parametrize("bad", ["vllm ", "llama-cpp", "VLLM", "llama",
+@pytest.mark.parametrize("bad", ["bogus", "llama-cpp", "LLAMA_CPP", "llama",
                                  "engine_x", ""])
 def test_invalid_engine_raises_listing_valid_values(settings_file, bad):
     """A typo must be a startup error listing valid values — never a
@@ -77,30 +71,21 @@ def test_invalid_engine_raises_listing_valid_values(settings_file, bad):
         load_settings(settings_file)
     msg = str(ei.value)
     assert bad in msg
-    assert "llama_cpp" in msg and "vllm" in msg
+    assert "llama_cpp" in msg
 
 
 def test_invalid_engine_raises_even_via_get_engine(settings_file):
-    _write_settings(settings_file, {"engine": "vllmm"})
+    _write_settings(settings_file, {"engine": "bogus"})
     with pytest.raises(ValueError):
         load_settings(settings_file)
-
-
-# ---------------- vllm block validation ----------------
-
-
-
-
-
 
 
 # ---------------- config_loader helpers (schema vocabulary) ----------------
 
 def test_validate_engine_accepts_enum_and_rejects_typo():
     assert cfg.validate_engine("llama_cpp") == "llama_cpp"
-    assert cfg.validate_engine("vllm") == "vllm"
     with pytest.raises(ValueError):
-        cfg.validate_engine("vllam")
+        cfg.validate_engine("bogus")
 
 
 def test_inject_engine_defaults_mutates_and_returns():
@@ -108,7 +93,6 @@ def test_inject_engine_defaults_mutates_and_returns():
     out = cfg.inject_engine_defaults(s)
     assert out is s
     assert s["engine"] == "llama_cpp"
-    # engine-qualified: llama_cpp injects no vllm block (DEC-01)
 
 
 
@@ -140,24 +124,6 @@ def test_get_engine_rejects_invalid_engine_value():
     with pytest.raises(ValueError):
         get_engine({"engine": "llama_cpppp"})
 
-
-
-def test_get_engine_rejects_unknown_engine_with_options():
-    """A name passing the enum but missing from _REGISTRY (defensive: only
-    possible if a config names an engine the checkout lacks the module
-    for) must error listing the registered options — never silently
-    fall back to llama_cpp."""
-    import engine_registry
-
-    saved = engine_registry._REGISTRY.pop("vllm", None)
-    try:
-        with pytest.raises(ValueError) as ei:
-            get_engine({"engine": "vllm"})
-        assert "no adapter" in str(ei.value)
-        assert "options:" in str(ei.value)
-    finally:
-        if saved is not None:
-            engine_registry._REGISTRY["vllm"] = saved
 
 
 # ---------------- LlamaCppAdapter delegation (zero behavior change) --------

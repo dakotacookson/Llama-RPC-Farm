@@ -12,9 +12,7 @@ One YAML file per model in `config/models/`. Key fields:
 - `runtime: llama` (GGUF) or `mlx` (Apple Silicon; base_path is an HF
   repo id, served via `python -m mlx_lm server`, no RPC/--device).
 - `servers` — machines this model deploys across; first is the master
-  for this model (llama-server host), rest are RPC peers. In vllm mode
-  exactly ONE machine (multi-machine serving is llama.cpp RPC only;
-  multi-GPU is tensor-parallel within the host).
+  for this model (llama-server host), rest are RPC peers.
 
 ## Model formats (GGUF vs HF/safetensors)
 
@@ -23,42 +21,16 @@ The scanner (`model_parser.py`) recognizes both:
 - **GGUF** — a file (or shard set `model-00001-of-00003.gguf` / `part 01
   of 03`) is ONE model entry; llama.cpp serves the file.
 - **HF/safetensors** — a directory containing `config.json` plus at
-  least one `*.safetensors` is ONE model: `vllm serve <directory>`
-  takes the directory itself as base_path. Its
+  least one `*.safetensors` is ONE catalog entry. Its
   `-000XX-of-000YY.safetensors` shards collapse into that single entry
   (same shard pattern as GGUF splits); stray safetensors files
   (`adapter_model.safetensors`) are not weight shards and are left out.
-  A safetensors file alone is not identifiable — vLLM reads the
-  architecture from `config.json`.
+  A safetensors file alone is not identifiable — the architecture comes
+  from `config.json`.
 
-Every scanned entry carries `format`: `"gguf"` | `"hf"`, so
-engine-aware surfaces (model wizard, vLLM validation) can treat
-GGUF-on-vLLM as experimental without re-statting the path.
-
-**GGUF on vLLM is experimental** (vllm-gguf-plugin, opt-in — the
-installer never auto-installs it): `vllm serve model.gguf` without a
-tokenizer fails at load, so a GGUF base_path requires
-`vllm.tokenizer` pointing at the base HF model directory — missing it
-is a validation **error**; with it set, validation still warns
-"experimental — expect limited support". HF/safetensors models need
-none of that and are the native vLLM path.
-
-## Per-model vllm section (engine: vllm)
-
-Each model config may carry a `vllm:` section next to `flags:` — same
-vocabulary validated by `apply_vllm_section`
-(`max_model_len`, `max_num_seqs`, `tensor_parallel_size`,
-`pipeline_parallel_size`,
-`kv_cache_dtype` (auto|fp8), `cpu_offload_gb`, `quantization`,
-`tokenizer`, `extra_args`); unknown keys are rejected on save. See
-configuration.md for the full key table. Device chips behave the same
-as in llama.cpp mode — in vllm mode they map to
-`CUDA_VISIBLE_DEVICES` index lists (RAM chips have no effect; use
-`cpu_offload_gb` instead) and `tensor_parallel_size` is cross-checked
-against the number of GPUs the host actually exposes (world size is
-`tensor_parallel_size × pipeline_parallel_size`). Ray and other
-distributed-executor backends are not schema keys — pass them via
-`extra_args` (see configuration.md).
+Every scanned entry carries `format`: `"gguf"` | `"hf"`. llama.cpp
+serves GGUF only; HF-format entries are not launchable and are hidden
+from the Models table.
 
 Explicit chip order: `<machine>-<token>` comma-joined, e.g.
 `aibox1-CUDA0,aibox1-CUDA1,aibox1-CUDA2,aibox3-CUDA0,aibox3-CUDA1`.

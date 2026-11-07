@@ -1,9 +1,7 @@
 """Unit tests for gpu_vendor capability helpers.
 
-What the vLLM community actually does for the bf16 problem (upstream
-PRs #1901/#17265, cuda.py `supported_dtypes`): check the DEVICE's
-compute capability — `torch.cuda.get_device_capability()[0] < 8` — or
-equivalently `nvidia-smi --query-gpu=compute_cap`. Product-name tables
+The bf16 problem: check the DEVICE's compute capability — e.g.
+`nvidia-smi --query-gpu=compute_cap`. Product-name tables
 rot every generation; the driver-reported sm never does. Unknown /
 missing data -> None (no claim, never an error).
 """

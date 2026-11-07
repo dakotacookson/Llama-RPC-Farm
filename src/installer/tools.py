@@ -10,7 +10,7 @@
 #
 # Convergence rules honored here (design §5):
 #   - downloads land in a temp path first, then ATOMIC os.replace into place
-#   - fixed per-tool destinations (~/llama.cpp/bin, ~/.local/bin, ~/vllm-env)
+#   - fixed per-tool destinations (~/llama.cpp/bin, ~/.local/bin)
 #   - never installs GPU drivers (design §4 hard rule): executors touch only
 #     the artifacts named in their plan step
 #   - tag-NUMBER asset naming for llama-swap (v256 -> llama-swap_256_...),
@@ -46,7 +46,6 @@ LLCPP_ASSETS = {
     "win-cpu":   ("llama-{tag}-bin-win-cpu-{arch}.zip", None),
 }
 
-VLLM_ROCM_INDEX = "https://wheels.vllm.ai/rocm/"
 UV_INSTALL_URL = "https://astral.sh/uv/install.sh"   # versioned fetch upstream
 
 
@@ -160,103 +159,9 @@ def install_llcpp(step, downloader, run, log, os_name, arch):
             "backend": step.backend, "dest": dest}
 
 
-# ---------------------------------------------------------------------------
-# vLLM + ray: uv venv + pinned wheels into the dedicated venv
-# ---------------------------------------------------------------------------
-
 def _has_uv(run):
     return run("command -v uv >/dev/null 2>&1 && echo yes || echo no").stdout \
         .strip() == "yes"
-
-
-def install_vllm(step, downloader, run, log, offline=False, os_name="linux"):
-    """uv venv ~/vllm-env + `uv pip install vllm==<pin>`.
-
-    rocm: wheels.vllm.ai index + py3.12-only guard (silent-CUDA-fallback
-    probe after install). windows: refuse with WSL guidance (design §2) —
-    probe normally refuses first; this is the executor-side hard gate."""
-    if os_name == "windows":
-        raise RuntimeError(
-            "vLLM has no native Windows support — use WSL2 "
-            "(docs.vllm.ai: install the Windows driver, run the Linux "
-            "flow inside WSL)")
-    venv = (step.dest or "~/vllm-env")
-    if venv.endswith("/bin/vllm"):
-        # RepairTool dest is the broken vllm binary; venv root is its parent
-        venv = venv.rsplit("/bin/", 1)[0]
-    extra = step.extra or {}
-    python = extra.get("python", "3.12")
-    if not _has_uv(run):
-        raise RuntimeError(
-            f"uv not found — install it first: {UV_INSTALL_URL} "
-            "(the bootstrap entry does this before reaching here)")
-    r = run(f"uv venv --python {python} --seed {shlex.quote(venv)}")
-    if r.exit_code != 0:
-        raise RuntimeError(f"venv creation failed: {(r.stderr or r.stdout)[-300:]}")
-    index = ""
-    if extra.get("index_url"):
-        index = f" --index-url {extra['index_url']}"
-    torch_backend = " --torch-backend=auto" \
-        if extra.get("torch_backend") == "auto" else ""
-    if offline:
-        # --offline wheelhouse mode (design §1): local wheelhouse only.
-        index = " --no-index --find-links wheelhouse/"
-        if not os.path.isdir("wheelhouse"):
-            raise RuntimeError(
-                "--offline: wheelhouse/ not found next to bootstrap.py — "
-                "the offline bundle ships it; download the installer "
-                "bundle (design §1 fallback) or install online")
-    spec = f"vllm=={step.version}"
-    cmd = (f"uv pip install --python {shlex.quote(venv + '/bin/python')} "
-           f"{spec}{torch_backend}{index}")
-    log(f"vllm: {cmd}")
-    r = run(cmd)
-    if r.exit_code != 0:
-        raise RuntimeError(f"vllm install failed: {(r.stderr or r.stdout)[-400:]}")
-    vbin = venv + "/bin/vllm"
-    r = run(f"{shlex.quote(os.path.expanduser(vbin))} --version")
-    out = (r.stdout or "").strip()
-    if r.exit_code != 0 or not out:
-        raise RuntimeError("`vllm --version` failed after install")
-    if extra.get("index_url"):
-        # ROCm silent-CUDA-fallback guard: torch.version.hip must be set.
-        probe = ('import vllm, torch; print("HIP" if '
-                 'getattr(torch.version, "hip", None) else "CUDA")')
-        r = run(f"{shlex.quote(venv + '/bin/python')} -c {shlex.quote(probe)}")
-        if "HIP" not in (r.stdout or ""):
-            raise RuntimeError("silent CUDA fallback: the ROCm wheel did not "
-                               "install (needs python 3.12 + rocm index)")
-    log(f"vllm: {out.splitlines()[-1]} in {venv}")
-    return {"version": step.version, "venv": venv,
-            "index": "rocm" if extra.get("index_url") else "pypi"}
-
-
-def install_ray(step, downloader, run, log, offline=False):
-    """ray[default] into the SAME venv as vLLM (design §2; ray ROCm = CPU
-    wheel, never a separate torch)."""
-    venv = step.dest or "~/vllm-env"
-    if not _has_uv(run):
-        raise RuntimeError(f"uv not found — see {UV_INSTALL_URL}")
-    if offline:
-        index = " --no-index --find-links wheelhouse/"
-        if not os.path.isdir("wheelhouse"):
-            raise RuntimeError(
-                "--offline: wheelhouse/ not found next to bootstrap.py — "
-                "the offline bundle ships it; download the installer "
-                "bundle (design §1 fallback) or install online")
-    else:
-        index = ""
-    cmd = (f"uv pip install --python {shlex.quote(venv + '/bin/python')} "
-           f'"ray[default]"{index}')
-    log(f"ray: {cmd}")
-    r = run(cmd)
-    if r.exit_code != 0:
-        raise RuntimeError(f"ray install failed: {(r.stderr or r.stdout)[-400:]}")
-    r = run(f"{shlex.quote(venv + '/bin/python')} -c "
-            f"{shlex.quote('import ray; print(ray.__version__)')}")
-    ver = (r.stdout or "").strip() or step.version
-    log(f"ray: {ver}")
-    return {"version": ver, "venv": venv}
 
 
 def ensure_uv(run, log, downloader):
@@ -282,11 +187,6 @@ def install_tool(step, downloader, run, log, info, offline=False):
         return install_swap(step, downloader, run, log, info.os, info.arch)
     if name == "llama.cpp":
         return install_llcpp(step, downloader, run, log, info.os, info.arch)
-    if name == "vllm":
-        return install_vllm(step, downloader, run, log,
-                            offline=offline, os_name=info.os)
-    if name == "ray":
-        return install_ray(step, downloader, run, log, offline=offline)
     if name == "uv":
         return ensure_uv(run, log, downloader)
     raise ValueError(f"no executor for tool: {name}")

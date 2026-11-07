@@ -2631,9 +2631,7 @@ def validate_model(model_id):
     # 0. reverse format gate (DEC-07): a model whose downloaded format is
     # outside the ACTIVE engine's downloads vocabulary must not validate.
     # hf (safetensors repo dir) under llama.cpp is a hard error — the
-    # llama-server RPC launch cannot serve it; gguf under vLLM only warns
-    # (llama.cpp GGUF-on-vLLM stays explicitly experimental, ARD §3.4),
-    # so the gate never blocks that combination.
+    # llama-server RPC launch cannot serve it.
     try:
         import engine_registry
         engine = engine_registry.get_engine()
@@ -2645,11 +2643,7 @@ def validate_model(model_id):
         if fmt == "hf" and "hf" not in allowed:
             err(f"model format 'hf' (safetensors repo) is not servable "
                 f"by the {engine.name} engine — llama.cpp serves GGUF "
-                f"files; switch the model to a .gguf or the engine to "
-                f"vLLM")
-        elif fmt == "gguf" and "gguf" not in allowed:
-            warn(f"GGUF under the {engine.name} engine is experimental — "
-                 f"vLLM's supported format is 'hf' (safetensors)")
+                f"files; switch the model to a .gguf")
     except ValueError:
         raise  # invalid engine setting is a real error, not a gate skip
     except Exception:
@@ -2842,13 +2836,6 @@ def _resolve_variant(model, variant_label):
                 base_flags = dict(merged.get("flags") or {})
                 base_flags.update(var["flags"])
                 merged["flags"] = base_flags
-            # vllm (A2): partial override, same semantics as flags — keeps
-            # _resolve_variant (live launch) byte-identical with the swap
-            # plan's variant merge in swap_manager.
-            if var.get("vllm") is not None and isinstance(var["vllm"], dict) and var["vllm"]:
-                base_vllm = dict(merged.get("vllm") or {})
-                base_vllm.update(var["vllm"])
-                merged["vllm"] = base_vllm
             merged["base_path"] = model.get("base_path")
             merged["model_id"] = model.get("model_id")
             merged["name"] = model.get("name") or model.get("model_id")

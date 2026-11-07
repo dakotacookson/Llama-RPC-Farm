@@ -5,7 +5,6 @@ launch semantics (ui_manifest.launch.mode, DEC-06) instead of engine-name
 gates:
 
 * rpc_cluster  — llama.cpp's own copy (RPC peers prose + per-model grid)
-* swap_only    — vLLM's own view (daemon-only prose; no RPC grid)
 
 The frontend has no harness, so these tests pin the greppable contract:
 the template carries data-launch-view spans/cards keyed by launch.mode,
@@ -24,16 +23,12 @@ def _src(rel):
 
 
 def test_template_has_launch_view_nodes():
-    """Both engines' Launch-tab views exist in the template, keyed by
-    launch.mode (rpc_cluster / swap_only) — the same vocabulary the
-    adapters' ui_manifest.launch.mode emits."""
+    """The Launch-tab view exists in the template, keyed by launch.mode
+    (rpc_cluster) — the same vocabulary the adapter's
+    ui_manifest.launch.mode emits."""
     tpl = _src(os.path.join("ui", "templates", "index.html"))
     views = [l for l in tpl.splitlines() if "data-launch-view=" in l]
     assert any('data-launch-view="rpc_cluster"' in l for l in views), views
-    assert any('data-launch-view="swap_only"' in l for l in views), views
-    # the vLLM view is its own card (engine-native view, not a relabel)
-    assert any('id="vllm-launch-view"' in l
-               and 'data-launch-view="swap_only"' in l for l in views), views
 
 
 def test_apply_engine_hints_renders_launch_views_from_manifest_mode():

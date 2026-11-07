@@ -1,10 +1,10 @@
 """DEC-11 (engine-aware downloads + models list UI, closes T4-G5/G6):
 
 - GET /api/models: the Models table lists only models the ACTIVE engine
-  serves — llama_cpp hides 'hf' (safetensors repo) models, vllm hides
-  'gguf' models. Format inference mirrors rpc_manager.validate_model's
-  reverse gate (no explicit `format` -> gguf iff base_path ends .gguf).
-- Adapter filter_models members: llama.cpp keeps gguf, vllm keeps hf.
+  serves — llama_cpp hides 'hf' (safetensors repo) models. Format
+  inference mirrors rpc_manager.validate_model's reverse gate (no
+  explicit `format` -> gguf iff base_path ends .gguf).
+- Adapter filter_models member: llama.cpp keeps gguf.
 - UI pane rendering (node-level contract tested at applyEngineHints'
   source level is not possible here; the backend manifest drives it —
   the /api/settings ui_manifest.downloads.formats list is what the

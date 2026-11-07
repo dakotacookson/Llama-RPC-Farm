@@ -4,11 +4,8 @@
 # the injected state (SystemInfo + FS + RunCmd results). This module answers:
 # "given what we observed, what SHOULD the installer do?" — one step per tool.
 #
-# Backend parity rule (operator clarification): BOTH engines (llama.cpp AND
-# vLLM) must be planned on every backend — CUDA, ROCm, MLX/vLLM-Metal, Vulkan,
-# CPU. No plan may silently omit one engine on a backend where it is viable.
-# Where a backend genuinely cannot host an engine (e.g. native Windows + vLLM),
-# the plan emits an explicit PlanNote (refusal + documented path), never silence.
+# Backend parity rule: llama.cpp must be planned on every backend — CUDA,
+# ROCm, MLX/Metal, Vulkan, CPU.
 
 from __future__ import annotations
 
@@ -36,7 +33,7 @@ class InstallTool:
     name: str
     source: str                      # asset name / url / pip spec
     version: str
-    backend: Optional[str] = None    # e.g. 'cuda-13.3', 'rocm-10.0', 'vllm-metal'
+    backend: Optional[str] = None    # e.g. 'cuda-13.3', 'rocm-10.0', 'metal'
     dest: Optional[str] = None
     extra: Dict = field(default_factory=dict)   # e.g. {'index_url': rocm index}
 
@@ -76,16 +73,6 @@ Plan = List[object]
 # Pinned requirements (mirrors design §2/§5; single source here)
 # ---------------------------------------------------------------------------
 
-# Engine backends per OS/vendor: the parity matrix. vLLM entries name how.
-VLLM_BACKEND = {
-    ("linux", "nvidia"):  {"offered": True,  "how": "pypi", "note": None},
-    ("linux", "amd"):     {"offered": True,  "how": "rocm-index", "note": "py3.12-only wheels; torch.version.hip guard"},
-    ("linux", "none"):    {"offered": True,  "how": "cpu", "note": "heavyweight on pure CPU; opt-in"},
-    ("linux", "intel"):   {"offered": False, "how": None, "note": "vLLM XPU farm-unvalidated"},
-    ("windows", "nvidia"):{"offered": False, "how": None, "note": "no native Windows; WSL2 is the documented path"},
-    ("macos", "apple"):   {"offered": True,  "how": "vllm-metal", "note": "community vLLM-Metal plugin; explicit opt-in --with-vllm-metal"},
-}
-
 LLCPP_BACKEND = {
     ("linux", "nvidia"):  "cuda-13.3",
     ("linux", "amd"):     "rocm-10.0",
@@ -108,14 +95,6 @@ ENGINE_DEFAULTS = {
                        "macos": {"apple": None},     # Metal: no device env
                        "windows": {"nvidia": "CUDA_VISIBLE_DEVICES"}},
     },
-    "vllm": {
-        "universal_flags": ["--gpu-memory-utilization", "--max-model-len"],
-        "cuda_only_flags": ["--enable-auto-tool-choice", "--tool-call-parser"],
-        "device_env": {"linux": {"nvidia": "CUDA_VISIBLE_DEVICES",
-                                 "amd": "HIP_VISIBLE_DEVICES"},
-                       "macos": {"apple": None},     # vLLM-Metal: no util concept
-                       "windows": {}},
-    },
 }
 
 
@@ -133,7 +112,6 @@ def tool_defaults(engine: str, info: SystemInfo) -> Dict:
 
 SETTINGS_KEYS = {
     "llama.cpp": ("config/settings.yaml", "llama_bin"),
-    "vllm":      ("config/settings.yaml", "vllm.venv_bin"),
     "llama-swap": ("config/swap.yaml", "binary"),
 }
 
@@ -148,7 +126,7 @@ def _settings_merge_step(tool, found_path, current_value, fs, force=False):
         reason = "force"
     elif not current_value:
         reason = "empty"
-    elif not (fs.exists(current_value) if key != "vllm.venv_bin" else fs.exists(current_value)):
+    elif not fs.exists(current_value):
         reason = "stale"
     else:
         return None       # user-set value pointing at a valid binary — kept
@@ -213,15 +191,6 @@ def probe_swap(fs, run) -> Tuple[Optional[str], Optional[str]]:
     return None, None
 
 
-def probe_vllm(fs, run) -> Tuple[Optional[str], Optional[str]]:
-    for c in ["~/vllm-env/bin/vllm", "~/.local/bin/vllm"]:
-        if fs.isfile(fs.expanduser(c)):
-            r = fs.file_exists_and_runs(c)
-            if r.ok:
-                return c, _version_from_output(r.stdout + " " + r.stderr)
-            return c, None
-    return None, None
-
 
 # ---------------------------------------------------------------------------
 # The one entrypoint
@@ -229,7 +198,6 @@ def probe_vllm(fs, run) -> Tuple[Optional[str], Optional[str]]:
 
 def probe(info: SystemInfo, fs: FS, run: RunCmd,
           role: str = "main", pinned: Optional[Dict] = None,
-          with_vllm: bool = True, with_vllm_metal: bool = False,
           force_settings: bool = False,
           manifest: Optional[Dict] = None) -> Plan:
     """Pure: decide skip/install/repair per tool + settings prefill steps."""
@@ -285,39 +253,6 @@ def probe(info: SystemInfo, fs: FS, run: RunCmd,
             plan.append(InstallTool("llama-swap", "prebuilt", need_swap,
                                     dest="~/.local/bin"))
         plan.append(ManifestUpdate("llama-swap", {"version": ver or need_swap}))
-
-    # --- vLLM (parity: planned on every backend where viable) --------------
-    v = VLLM_BACKEND.get((info.os, info.gpu_vendor))
-    if not with_vllm:
-        pass
-    elif v and v["offered"]:
-        how = v["how"]
-        if how == "vllm-metal" and not with_vllm_metal:
-            plan.append(SkipTool("vllm", "backend-refused-optin",
-                                 note_msg := v["note"]))
-        else:
-            need_vllm = pinned.get("vllm", {}).get("version", "0.30.0")
-            found, ver = probe_vllm(fs, run)
-            if found and ver and version_cmp(ver, need_vllm):
-                plan.append(SkipTool("vllm", "present-current", found, ver))
-            elif found and not ver:
-                plan.append(RepairTool("vllm", f"venv:{how}", need_vllm,
-                                       dest=found, broken_version=ver))
-            else:
-                extra = {}
-                if how == "rocm-index":
-                    extra = {"index_url": "https://wheels.vllm.ai/rocm/",
-                             "python": "3.12"}
-                plan.append(InstallTool("vllm", f"venv:{how}", need_vllm,
-                                        backend=how, dest="~/vllm-env",
-                                        extra=extra))
-            plan.append(ManifestUpdate("vllm", {"version": ver or need_vllm,
-                                                "index": how}))
-    elif v and not v["offered"]:
-        plan.append(PlanNote("refused", "vllm", v["note"]))
-    else:
-        plan.append(PlanNote("refused", "vllm",
-                             "backend not in parity matrix — treat as manual"))
 
     # --- settings prefill (§6): discovered path wins; user values kept -----
     if role == "main":

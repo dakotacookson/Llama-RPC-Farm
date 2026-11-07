@@ -1,7 +1,7 @@
-"""B5a1: settings engine+vllm round-trip through /api/settings.
+"""B5a1: settings engine round-trip through /api/settings.
 
 Covers ARD §2 / §4: GET returns the engine schema (defaults injected,
-ui_hints attached), POST persists engine + vllm block and returns the
+ui_hints attached), POST persists engine and returns the
 normalized dict, and validation failures surface as 400 — never silent
 fallbacks. Uses the REAL config_loader (inject_engine_defaults /
 validate_engine) against a temp settings file; the repo's own
@@ -72,17 +72,13 @@ def _write(path, data):
 def test_get_injects_engine_defaults(settings_file, client):
     """A settings file with no engine keys gets the default engine +
     ui_manifest (DEC-02: the engine-owned field inventory the frontend
-    renders from) + the deprecated ui_hints projection (DEC-01: the
-    vllm: block is engine-qualified — a llama_cpp settings file carries
-    NO vllm vocabulary at all; spec §1.4/§3)."""
+    renders from) + the deprecated ui_hints projection (DEC-01)."""
     _write(settings_file, {"model_dir": "store://llm-models",
                            "llama_bin": "~/llama.cpp/build/bin"})
     r = client.get("/api/settings")
     assert r.status_code == 200
     body = r.json()
     assert body["engine"] == "llama_cpp"
-    # vllm: block is engine-qualified: absent in llama_cpp mode
-    assert "vllm" not in body
     assert body["model_dir"] == "store://llm-models"
     assert body["hf_token_set"] is False
     man = body["ui_manifest"]
@@ -104,7 +100,7 @@ def test_get_rejects_bad_engine_in_file(settings_file, client):
     r = client.get("/api/settings")
     assert r.status_code == 400
     assert "villm" in r.json()["detail"]
-    assert "llama_cpp, vllm" in r.json()["detail"]
+    assert "llama_cpp" in r.json()["detail"]
 
 
 
@@ -116,7 +112,7 @@ def test_post_bad_engine_400_file_untouched(settings_file, client):
     _write(settings_file, {"model_dir": "keep"})
     r = client.post("/api/settings", json={"engine": "llamacpp"})
     assert r.status_code == 400
-    assert "llama_cpp, vllm" in r.json()["detail"]
+    assert "llama_cpp" in r.json()["detail"]
     assert _read(settings_file) == {"model_dir": "keep"}
 
 
