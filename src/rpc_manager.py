@@ -1,12 +1,16 @@
-"""Starts/stops ggml-rpc-server processes across machines via SSH.
+"""Starts/stops ggml-rpc-server processes across machines via the peer agent.
 
-Faithful port of the user's existing .sh scripts on 10.0.0.104:
-  - ggml-rpc-server via setsid with -H/-p/-t flags (-c disk cache removed:
-    peers stream from NAS, small VM disks must not fill)
-  - user-scoped pkill
-  - /dev/tcp port wait with log tail on failure
+Remote lifecycle uses the agent's typed endpoints (`/rpc/ensure`,
+`/rpc/stop`, `/rpc/list`, `/port/open`); `_ssh_for()` is only a hard guard
+that raises if legacy code ever tries SSH. Local machines run the same
+process logic through `bash`.
+
+Generated scripts preserve the proven behaviors:
+  - ggml-rpc-server via the agent with -H/-p/-t flags (-c disk cache
+    removed: peers stream from NAS, small VM disks must not fill)
+  - per-port start/stop so co-served models never collide
+  - agent port-open/list wait with per-port log tail on failure
   - trap-based cleanup on exit
-Generated scripts mirror start-huihui-35b-rpc.sh / start-rpc-qwen.sh.
 This module NEVER touches files outside its own folder.
 """
 import os

@@ -1,8 +1,9 @@
-"""Client for the optional peer agent.
+"""Client for the peer agent — the ONLY runtime transport to peers.
 
-The agent is a SEPARATE, optional service on peers. SSH remains the
-default and permanent fallback: machine `transport` is `auto` (probe the
-agent, else SSH), `ssh` (never use the agent), or `agent` (require it).
+The agent runs on every configured peer. `transport()` always returns
+"agent" and `should_use_agent()` always returns true; the legacy
+`transport:` values (`auto`/`ssh`/`agent`) are accepted for config
+compatibility but no longer change behaviour. There is no SSH fallback.
 
 Protocol v1 endpoints (see docs/peer-agent.md):
   GET  /health, /version, /capabilities, /info, /status, /processes,
