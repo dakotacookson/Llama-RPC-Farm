@@ -2054,7 +2054,10 @@ def _auto_device_order(master, peers):
     """CUDA devices of the master, then one RPC<N> per remote GPU/RAM
     exposed by each peer (only used when the model config has no
     explicit device_order)."""
-    devices = [d.strip() for d in master.get("gpu", "").split(",") if d.strip()]
+    devices = [
+        "MTL0" if d.strip() == "Metal" else d.strip()
+        for d in master.get("gpu", "").split(",") if d.strip()
+    ]
     n = 0
     for peer in peers:
         gpus = [d.strip() for d in (peer.get("gpu", "") or "").split(",") if d.strip()]
