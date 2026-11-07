@@ -4842,6 +4842,17 @@ async def restart_app():
     ]
     py = next((c for c in candidates if c and os.path.exists(c)), sys.executable)
     log = os.path.join(tempfile.gettempdir(), "llama-web.log")
+    # POSIX: one code path for CLI and dashboard — restart.sh --full stops
+    # llama-swap + every farm-managed llama/RPC process on all machines, then
+    # restarts the daemon and this UI. Windows has no bash; the PowerShell
+    # branch below remains the fallback (and covers installs without restart.sh).
+    script = os.path.join(project_root, "restart.sh")
+    if os.name != "nt" and os.path.exists(script):
+        _sp.Popen(["/bin/bash", script, "--full"], start_new_session=True,
+                  close_fds=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        return {"status": "restarting",
+                "message": "Full restart started (llama-swap + all machines). "
+                           "It will be back in ~5s at http://127.0.0.1:8199"}
     if os.name == "nt":
         # Windows: PowerShell — kill daemons + port owner, then start
         # detached (Start-Process survives the parent).
