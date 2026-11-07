@@ -2439,14 +2439,21 @@ _LOAD_FAULT_RULES = (
         re.IGNORECASE),
      "Model file is missing or unreadable at the configured store path."),
     ("mtp", re.compile(
-        r"failed to create MTP context|doesn't contain MTP layers|"
-        r"MTP context|failed to load MTP|failed to create MTP",
+        r"failed to (?:create|load) (?:the )?MTP(?: context)?|"
+        r"doesn't contain MTP layers|"
+        r"\bMTP\b[^\n]{0,80}\b(?:fail(?:ed|ure)?|error)\b|"
+        r"\b(?:fail(?:ed|ure)?|error)\b[^\n]{0,80}\bMTP\b",
         re.IGNORECASE),
      "MTP/speculative context failed. Disable MTP or use a model with MTP layers."),
     ("mmproj", re.compile(
-        r"failed to load.*mmproj|mmproj.*(?:fail|error)|"
-        r"failed to load.*projector|projector.*(?:fail|error)|"
-        r"vision.*(?:fail|error)|clip.*(?:fail|error)",
+        r"failed to (?:load|open) (?:the )?"
+        r"(?:mmproj|clip(?:[ _-]?model)?|projector)(?: model)?|"
+        r"(?:couldn't|could not|unable to) (?:load|open) (?:the )?"
+        r"(?:mmproj|clip(?:[ _-]?model)?|projector)|"
+        r"\b(?:mmproj|clip_model_load|projector)\b[^\n]{0,80}"
+        r"\b(?:fail(?:ed|ure)?|error)\b|"
+        r"\b(?:fail(?:ed|ure)?|error)\b[^\n]{0,80}"
+        r"\b(?:mmproj|clip_model_load|projector)\b",
         re.IGNORECASE),
      "Vision projector (mmproj) failed to load or does not match the model."),
     ("load_error", re.compile(
@@ -2459,6 +2466,15 @@ _LOAD_FAULT_RULES = (
 _WRAPPER_GEN_RE = re.compile(r">>> wrapper-gen:\s*(\S+)")
 _LOAD_MODEL_RE = re.compile(r"load_model: loading model '([^']+)'")
 _START_FAIL_RE = re.compile(r"starting\s+(.+?)\s+failed:\s*(.*)")
+# Load finished cleanly: stop watching this model's output for startup
+# faults (streamed request/response bodies can otherwise look like errors).
+_MODEL_READY_RE = re.compile(
+    r"model loaded|listening on https?://|server is listening", re.IGNORECASE)
+# Request/response chatter (not startup diagnostics). Never treat these as
+# model-load failures — model output is arbitrary text.
+_TRAFFIC_RE = re.compile(
+    r"streamed chunk|\"choices\"|\"object\"\s*:\s*\"(?:chat|list)|"
+    r"^\s*(?:POST|GET) /|\]\s*Request ", re.IGNORECASE)
 
 
 def _parse_load_fault(line):
@@ -2527,7 +2543,9 @@ async def swap_faults_ws(websocket: WebSocket):
     }
     mmap = _load_model_map()
     priming_until = time.time() + 1.5
-    state = {"model": "", "last_emit": {}, "specific": {}, "last_code": {}}
+    state = {"model": "", "loading": False, "loading_model": "",
+             "hint_ts": 0.0, "last_emit": {}, "specific": {},
+             "last_code": {}}
     dead = asyncio.Event()
 
     def _allowed(model):
@@ -2580,7 +2598,15 @@ async def swap_faults_ws(websocket: WebSocket):
                         if m:
                             state["model"] = _resolve_fault_model(
                                 m.group(1), mmap)
+                            state["loading"] = True
+                            state["loading_model"] = state["model"]
+                            state["hint_ts"] = time.time()
                         if time.time() < priming_until:
+                            continue
+                        # Startup finished — everything after this is normal
+                        # serving output (including arbitrary model text).
+                        if _MODEL_READY_RE.search(line):
+                            state["loading"] = False
                             continue
                         # llama-swap's own "starting <model> failed" line
                         sm = _START_FAIL_RE.search(line)
@@ -2594,10 +2620,22 @@ async def swap_faults_ws(websocket: WebSocket):
                                     "Model failed to load (upstream exited prematurely).",
                                     sm.group(2) or line)
                             continue
+                        # Only interpret startup-log lines as load faults, and
+                        # only while the model we saw start is still loading.
+                        # This stops unrelated logs / streamed responses from
+                        # being blamed on whichever model was mentioned last.
+                        if not state["loading"]:
+                            continue
+                        if _TRAFFIC_RE.search(line):
+                            continue
+                        if time.time() - state["hint_ts"] > 900:
+                            state["loading"] = False
+                            continue
                         fault = _parse_load_fault(line)
                         if fault:
                             code, reason = fault
-                            await _emit(state["model"], code, reason, line)
+                            await _emit(state["loading_model"], code, reason,
+                                        line)
                             if dead.is_set():
                                 return
         except Exception:
