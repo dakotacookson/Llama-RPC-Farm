@@ -310,9 +310,12 @@ def uninstall(machine, log=None):
     steps = [("guard:path", lambda: {"detail": f"bin dir {bin_dir} is "
                                                 "farm-managed"}),
              ("verify:version", _version_probe, run, bin_file, is_posix),
-             ("bins:remove", _bin_remove, run, bin_dir, is_posix),
-             ("firewall:rules", _fw_rules_remove, run, is_posix),
-             ("machines:clear", _clear_llama_bin, machine)]
+             ("bins:remove", _bin_remove, run, bin_dir, is_posix)]
+    if not is_posix:
+        # Firewall cleanup is Windows-only installer state; POSIX reports
+        # exactly the removal + record-clear steps.
+        steps.append(("firewall:rules", _fw_rules_remove, run, is_posix))
+    steps.append(("machines:clear", _clear_llama_bin, machine))
     run_steps(report, steps)
     return _finish_uninstall(report)
 

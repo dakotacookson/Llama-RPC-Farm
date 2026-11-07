@@ -222,7 +222,7 @@ _RDMA_SCRIPT = (
 
 
 def rdma():
-    if os.name == "nt" or sys.platform == "darwin":
+    if os.name == "nt":
         return {}
     code, out, _ = _run(_RDMA_SCRIPT, timeout=20)
     if code != 0:

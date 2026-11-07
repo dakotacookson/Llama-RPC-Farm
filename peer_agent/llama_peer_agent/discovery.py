@@ -21,17 +21,8 @@ log = logging.getLogger("llama_peer_agent.discovery")
 _hw_cache = {"ts": 0.0, "data": {}}
 
 
-def _hardware() -> dict:
-    """Lightweight hardware summary for discovery (cached 60s).
-
-    Identity is still MAC/IP; this only lets the master pre-fill the
-    machine form (GPU vendor + device names, RAM, cores) so adding a
-    discovered agent needs no manual hardware entry.
-    """
-    now = time.time()
-    if now - _hw_cache["ts"] < 60:
-        return _hw_cache["data"]
-    data = {}
+def _refresh_hardware():
+    """Collect and cache hardware synchronously."""
     try:
         from . import metrics
         m = metrics.collect()
@@ -58,10 +49,28 @@ def _hardware() -> dict:
             "ram_total_gb": m.get("ram_total_gb"),
             "cores": m.get("cores"),
         }
+        _hw_cache.update({"ts": time.time(), "data": data})
     except Exception:
-        data = {}
-    _hw_cache.update({"ts": now, "data": data})
-    return data
+        _hw_cache.update({"ts": time.time(), "data": {}})
+
+
+def _refresh_hardware_async():
+    """Refresh hardware in the background so discovery replies stay fast."""
+    threading.Thread(target=_refresh_hardware, daemon=True).start()
+
+
+def _hardware() -> dict:
+    """Lightweight hardware summary for discovery (cached 60s).
+
+    Identity is still MAC/IP; this only lets the master pre-fill the
+    machine form (GPU vendor + device names, RAM, cores) so adding a
+    discovered agent needs no manual hardware entry.
+    """
+    now = time.time()
+    if now - _hw_cache["ts"] < 60:
+        return _hw_cache["data"]
+    _refresh_hardware_async()
+    return _hw_cache["data"]
 
 
 def payload(config: AgentConfig) -> dict:
@@ -100,7 +109,22 @@ def serve(config: AgentConfig, sock=None, stop_event=None):
                 break
             if data.strip() != MAGIC:
                 continue
-            reply = json.dumps(payload(config), separators=(",", ":")).encode()
+            try:
+                body = payload(config)
+            except Exception as exc:
+                log.warning("discovery payload failed: %s", exc)
+                body = {
+                    "magic": MAGIC.decode("ascii"),
+                    "protocol_version": PROTOCOL_VERSION,
+                    "agent_version": __version__,
+                    "agent_port": int(config.port),
+                    "hostname": socket.gethostname(),
+                    "machine_id": "",
+                    "addresses": [],
+                    "pairing": not bool((getattr(config, "token", "") or "").strip()),
+                    "hardware": {},
+                }
+            reply = json.dumps(body, separators=(",", ":")).encode()
             try:
                 sock.sendto(reply, addr)
             except OSError:
