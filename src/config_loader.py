@@ -191,7 +191,7 @@ MACHINE_DEFAULTS = {
     "rdma_cm": False,        # use rdma_cm QP path resolution (mlx4/CX3); else raw path
     "swap_config_path": "",       # DEC-03: per-machine llama.cpp swap-config file ("" = inherit)
     # Peer agent (docs/peer-agent.md). Runtime is agent-only; the legacy
-    # auto/ssh/agent value is accepted but no longer changes behaviour.
+    # legacy transport value is accepted but no longer changes behaviour.
     "transport": "auto",
     "agent_port": 8198,
 }
@@ -257,7 +257,7 @@ def _inject_machine_secret(m):
     """In-memory only: resolve the legacy vault password field.
 
     Kept for config/API compatibility; runtime transport is agent-only, so
-    nothing consumes this for SSH. The YAML on disk NEVER holds the secret
+    nothing consumes this as a shell transport. The YAML NEVER holds the secret
     after migration (it stays ""). Nothing here writes to disk.
     """
     try:

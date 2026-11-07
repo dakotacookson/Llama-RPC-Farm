@@ -1,9 +1,8 @@
-"""Per-machine stats collection: GPU util/VRAM, CPU, RAM — mimics
-ssh-watch's cluster overview, reusing our SSHManager.
+"""Per-machine stats collection: GPU util/VRAM, CPU, RAM.
 
-One SSH round-trip per machine using a combined query string (linux)
-or a single PowerShell call (windows), instead of ssh-watch's
-separate query per metric. GPU queries are vendor-aware:
+Local machines run one combined query (linux) or a single PowerShell
+call (windows). Remote machines use the peer agent's /metrics. GPU
+queries are vendor-aware:
 nvidia-smi (NVIDIA) or rocm-smi JSON (AMD), normalized to the same
 csv rows either way.
 """
@@ -149,9 +148,9 @@ def _empty(machine_os):
     }
 
 
-def collect_linux(ssh, machine=None):
+def collect_linux(runner, machine=None):
     try:
-        code, out, _ = ssh.run(_linux_all(machine or {}), timeout=25)
+        code, out, _ = runner.run(_linux_all(machine or {}), timeout=25)
     except Exception:
         return _empty("linux")
     if code != 0:
@@ -185,9 +184,9 @@ def collect_linux(ssh, machine=None):
     return stats
 
 
-def collect_windows(ssh, machine=None):
+def collect_windows(runner, machine=None):
     try:
-        code, out, _ = ssh.run(
+        code, out, _ = runner.run(
             f'powershell -NoProfile -Command "{_win_ps(machine or {})}"',
             timeout=25)
     except Exception:
@@ -213,7 +212,7 @@ def collect_windows(ssh, machine=None):
 
 
 def collect_local(machine_os, machine=None):
-    """Local machine stats without SSH (like ssh-watch's run_local_*)."""
+    """Local machine stats (no network transport)."""
     machine = machine or {}
     if machine_os == "windows":
         try:
@@ -273,7 +272,7 @@ def collect_local(machine_os, machine=None):
     return _empty("linux")
 
 
-def collect_macos(ssh, machine=None):
+def collect_macos(runner, machine=None):
     """macOS stats: sysctl/vm_stat/top (no /proc, no nvidia-smi).
     Apple Silicon GPUs report via system_profiler; util/temp are 0
     (powermetrics needs sudo)."""
@@ -286,8 +285,8 @@ def collect_macos(ssh, machine=None):
         "system_profiler SPDisplaysDataType -json 2>/dev/null | head -c 20000"
     )
     try:
-        if ssh:
-            code, out, _ = ssh.run(MAC_ALL, timeout=40)
+        if runner:
+            code, out, _ = runner.run(MAC_ALL, timeout=40)
         else:
             proc = subprocess.run(["bash", "-c", MAC_ALL],
                                   capture_output=True, text=True, timeout=40)
@@ -432,7 +431,7 @@ def machine_stats(machine):
             "connection": "local" if is_local else "agent"}
 
 def cluster_totals(stats_list):
-    """Aggregate totals across machines, like ssh-watch's compute_totals."""
+    """Aggregate totals across machines."""
     vram_used = vram_total = 0
     ram_used = ram_total = 0
     cpu_weighted = 0.0

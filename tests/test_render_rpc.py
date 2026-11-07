@@ -3,7 +3,7 @@ Windows .ps1 launcher (_win_launcher).
 
 These parse the generated bash/ps1 as strings and assert the per-model-
 port structure: Bash-3.2-safe per-peer lookups (macOS /bin/bash has no
-associative arrays), agent-only lifecycle (no SSH/sshpass), per-port log
+associative arrays), agent-only lifecycle (no shell fallback), per-port log
 names, the --rpc list using per-node ports, and the .ps1 taking
 -Port/-LogName.
 """
@@ -71,7 +71,7 @@ def test_render_per_port_state_and_log(stub_cfg):
     assert "rpc_log_for_port() {" in script
     assert 'rpc_log_of() { rpc_log_for_port "$(rpc_port_of "$1")"; }' in script
     assert "rpc-server-$1.log" in script
-    # agent-only: no SSH/sshpass in generated launchers
+    # agent-only: no shell fallback in generated launchers
     assert "sshpass" not in script
     assert "SSH_PASS" not in script
 

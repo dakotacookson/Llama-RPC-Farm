@@ -15,19 +15,18 @@ import rpc_manager
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize("legacy", [None, "", "auto", "ssh", "agent", "bogus"])
+@pytest.mark.parametrize("legacy", [None, "", "auto", "agent", "legacy", "bogus"])
 def test_every_transport_resolves_to_agent(legacy):
     machine = {"name": "node", "ip": "10.0.0.1", "transport": legacy}
     assert agent_client.transport(machine) == "agent"
     assert agent_client.should_use_agent(machine) is True
 
 
-def test_ssh_runtime_entry_point_is_gone():
-    with pytest.raises(RuntimeError):
-        rpc_manager._ssh_for({"name": "node", "ip": "10.0.0.1"})
+def test_no_remote_shell_transport_helper():
+    assert not hasattr(rpc_manager, "_ssh_for")
 
 
-def test_no_ssh_client_dependency():
+def test_no_remote_shell_client_dependency():
     req = (REPO / "requirements.txt").read_text(encoding="utf-8").lower()
     assert "paramiko" not in req
     assert "sshpass" not in req

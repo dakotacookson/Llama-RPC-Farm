@@ -16,7 +16,7 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 | `POST /api/machines/detect-all` | Detect hardware on every machine |
 | `POST /api/machines/probe` | Probe hardware on an unsaved machine (wizard) |
 | `POST /api/machines/agent-check` | Pre-save peer-agent health check for Add/Edit |
-| `GET /api/machines/connections` | Detected transport capability: local/both/ssh/agent/none |
+| `GET /api/machines/connections` | Detected transport capability: local/agent/none |
 | `GET /api/machines/{name}/agent-version` | Current vs bundled agent version |
 | `POST /api/machines/{name}/update-agent` | Build/install agent, restart it, verify health |
 | `GET /api/machines/{name}/status` | Reachability + rpc-server running + IP sync |
@@ -31,7 +31,7 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 ## Discovery
 
 | `GET /api/discover/subnets` | Candidate subnets for scanning |
-| `POST /api/discover` | Scan SSH hosts, or peer agents with `agent_only: true` (UDP discovery) |
+| `POST /api/discover` | Discover peer agents over UDP (`agent_only: true`) |
 | `GET /api/hardware/changes` | Hardware fingerprint diff polling |
 
 ## Groups (machine clusters)
@@ -115,7 +115,7 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 | `POST /api/install-llama-cpp` | Detect existing local install, configure path |
 | `POST /api/install-llama-cpp/install?name=` | Install the right prebuilt on one machine |
 | `POST /api/install-llama-cpp/all` | Check all machines, optionally install missing |
-| `POST /api/install-llama-swap?name=` | Install llama-swap on a machine if missing (local = no SSH); updates swap settings' binary |
+| `POST /api/install-llama-swap?name=` | Install llama-swap on a machine if missing (local or via the agent); updates swap settings' binary |
 | `POST /api/restart` | Restart this web app (POSIX/Windows aware) |
 
 ## Misc

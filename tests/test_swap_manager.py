@@ -271,7 +271,7 @@ def test_duplicate_swap_claims_ignores_non_swap_and_cross_engine():
 
 def test_windows_single_peer_auto_forces_rpc(monkeypatch, tmp_path):
     """Windows remotes are never local-execution targets (no SMB over
-    SSH-launch sessions): single-peer auto resolves rpc even with all
+    remote-launch sessions): single-peer auto resolves rpc even with all
     chips on the Windows box."""
     peer = _machine("winbox", "10.0.0.124", os="windows")
     model = _model("nomic-1", servers=["aibox1", "winbox"],

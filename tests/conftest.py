@@ -1,8 +1,7 @@
-"""Pytest config: make `src/` importable and stub optional heavy deps.
+"""Pytest config: make `src/` importable.
 
 Most tests target pure logic (port allocation, command building, device
-mapping, script generation) and never touch the network. A few stub the
-SSH layer to assert port-targeted kill/reuse behavior without a real host.
+mapping, script generation) and never touch the network.
 """
 import os
 import sys
@@ -12,21 +11,6 @@ import types
 SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
 if SRC not in sys.path:
     sys.path.insert(0, SRC)
-
-# paramiko / openai / chainlit are optional for the unit tests; the modules
-# under test import paramiko at top of ssh_manager. Stub it so importing
-# rpc_manager doesn't fail when paramiko isn't installed in the test env.
-for _mod in ("paramiko",):
-    if _mod not in sys.modules:
-        try:
-            __import__(_mod)
-        except ImportError:
-            import types
-            stub = types.ModuleType(_mod)
-            stub.SSHException = type("SSHException", (Exception,), {})
-            stub.AutoAddPolicy = type("AutoAddPolicy", (), {})
-            stub.SSHClient = type("SSHClient", (), {})
-            sys.modules[_mod] = stub
 
 import pytest
 

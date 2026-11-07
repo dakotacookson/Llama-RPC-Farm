@@ -147,7 +147,7 @@ def test_agent_client_health_and_transport(live_agent, monkeypatch):
     assert agent_client.should_use_agent(machine) is True
     assert agent_client.health(machine)["ok"] is True
     assert isinstance(agent_client.rpc_list(machine), list)
-    assert agent_client.should_use_agent({**machine, "transport": "ssh"}) is True
+    assert agent_client.should_use_agent({**machine, "transport": "legacy"}) is True
 
 
 def test_agent_client_auto_falls_back_when_down(monkeypatch):

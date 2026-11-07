@@ -1655,8 +1655,8 @@ async function defaultLlamaBin() {
 }
 
 function syncTransportFields() {
-  // Agent-only: SSH fields are retired. Keep the hidden inputs for payload
-  // compatibility but never show or require them.
+  // Agent-only: legacy login fields are retired. Keep the hidden inputs
+  // for payload compatibility but never show or require them.
   for (const id of ["m-username-label", "m-password-label", "m-port-label"]) {
     const el = $("#" + id);
     if (el) el.style.display = "none";
@@ -1813,16 +1813,15 @@ function wizNext() {
   if (h) { discoveredFill(h); return; }  // fills form + advances to 3
   $("#m-ip").value = ip;
   wizShow(3);
-  toast("Verify the details, then Save (Save verifies SSH before storing)", "ok");
+  toast("Verify the details, then Save (Save verifies the peer agent before storing)", "ok");
 }
 on("#wiz-next", "click", wizNext);
 on("#wiz-back", "click", () => { if (!wizEditing() && wizStep > 1) wizShow(wizStep - 1); });
 on("#wiz-cancel", "click", () => { wizClearPick(); machineFormLoad(EMPTY_MACHINE, false); });
 
-/* ---- SSH host-key fingerprint (first-time login handling) ----
-   On entering Configure for a NEW machine, fetch the host key pre-auth
-   and show it. First contact = trusted on first use (stored server-side);
-   later visits show the stored fingerprint and warn on mismatch. */
+/* ---- peer-agent pre-save check ----
+   On entering Configure for a NEW machine, probe the peer agent and show
+   whether it is reachable before the machine is stored. */
 async function showHostFingerprint() {
   const box = $("#m-fingerprint");
   if (!box) return;
@@ -2119,7 +2118,7 @@ async function discoverInit() {
 }
 
 function syncDiscoveryMode() {
-  // Agent-only discovery: UDP peer-agent responder, never an SSH scan.
+  // Agent-only discovery: UDP peer-agent responder, no network sweep.
   const subnet = $("#d-subnet-label");
   const port = $("#d-port-label");
   if (subnet) subnet.style.display = "none";
@@ -2153,18 +2152,16 @@ function connCaps(m) {
 function connectionLabel(m) {
   if (m && m.is_local) return "local";
   const caps = connCaps(m);
-  const c = caps.mode || (m && (m.connection || m.transport)) || "ssh";
-  return c === "both" ? "SSH + agent"
-    : c === "agent" ? "agent only"
-    : c === "ssh" ? "SSH only"
+  const c = caps.mode || (m && (m.connection || m.transport)) || "agent";
+  return c === "agent" ? "agent only"
     : c === "local" ? "local"
     : c === "none" ? "unreachable"
-    : "SSH + agent";
+    : "agent only";
 }
 function connectionBadge(m) {
   const caps = connCaps(m);
   const c = (m && m.is_local) ? "local"
-    : caps.mode || (m && (m.connection || m.transport)) || "ssh";
+    : caps.mode || (m && (m.connection || m.transport)) || "agent";
   const icon = c === "local" ? "fa-house"
     : c === "both" ? "fa-link"
     : c === "agent" ? "fa-plug"
@@ -2275,7 +2272,7 @@ function discoveredFill(h) {
   wizShow(3);
   toast("Review the details, then Save (Save verifies the peer agent before storing)", "ok");
 }
-// IP / SSH port edits change which host we fingerprint — re-check live
+// IP / agent-port edits change which host we probe — re-check live
 on("#m-role", "change", syncRoleFields);
 on("#m-rdma", "change", syncRdmaFields);
 on("#m-rdma-toggle", "click", () => {
@@ -2297,11 +2294,8 @@ on("#m-transport", "change", () => {
 on("#d-scan", "click", async (e) => {
   const btn = e.currentTarget;
   const res = $("#d-results");
-  const peerMode = true;
-  btn.disabled = true; btn.textContent = peerMode ? "discovering agents…" : "scanning… (~1 min)";
-  res.innerHTML = peerMode
-    ? '<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Listening for peer agents on UDP 8199…</p>'
-    : '<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Pinging subnet, sweeping for SSH port, grabbing banners…</p>';
+  btn.disabled = true; btn.textContent = "discovering agents…";
+  res.innerHTML = '<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Listening for peer agents on UDP 8199…</p>';
   let scanned = false;
   try {
     const r = await api("POST", "/api/discover", {
@@ -2312,25 +2306,13 @@ on("#d-scan", "click", async (e) => {
     $("#discovered-ips").innerHTML = r.results.map(h => `<option value="${escHtml(h.ip)}">`).join("");
     scanned = true;
     if (!r.results.length) {
-      res.innerHTML = peerMode
-        ? '<p class="hint">No peer agents answered on UDP 8199. Make sure the agent service is running and discovery is enabled.</p>'
-        : `<p class="hint">Nothing identifiable on ${escHtml(r.subnet)} — ${r.alive || 0} alive, ${r.ssh_hosts || 0} with SSH port ${r.port}${r.unknown ? `, ${r.unknown} without a recognizable banner (hidden)` : ""}.</p>`;
+      res.innerHTML = '<p class="hint">No peer agents answered on UDP 8199. Make sure the agent service is running and discovery is enabled.</p>';
     } else {
-      if (peerMode) {
-        res.innerHTML = `<p class="hint">${r.results.length} peer agent(s) found. Click a row to select it, then Continue — or Select → to jump straight to Configure.</p>` +
-          '<table><thead><tr><th>IP</th><th>Hostname</th><th>OS</th><th>Agent</th><th></th></tr></thead><tbody></tbody></table>';
-      } else {
-        res.innerHTML = `<p class="hint">${escHtml(r.subnet)}: ${r.alive} alive, ${r.ssh_hosts} with SSH port ${r.port} — ${r.results.length} candidate(s)${r.unknown ? `, ${r.unknown} unknown hidden` : ""}. Click a row to select it, then Continue — or Select → to jump straight to Configure.</p>` +
-          '<table><thead><tr><th>IP</th><th>Ping</th><th>SSH</th><th>OS (banner)</th><th>Hostname</th><th>GPUs</th><th></th></tr></thead><tbody></tbody></table>';
-      }
+      res.innerHTML = `<p class="hint">${r.results.length} peer agent(s) found. Click a row to select it, then Continue — or Select → to jump straight to Configure.</p>` +
+        '<table><thead><tr><th>IP</th><th>Hostname</th><th>OS</th><th>Agent</th><th></th></tr></thead><tbody></tbody></table>';
       const tbody = res.querySelector("tbody");
       for (const h of r.results) {
         const tr = document.createElement("tr");
-        const pingTxt = h.ping_alive == null ? "–" : (h.ping_alive ? '<span class="status-ok">alive</span>' : '<span class="status-warn">no reply</span>');
-        const sshTxt = h.ssh_port_open
-          ? (h.ssh_ok ? '<span class="status-ok">login OK</span>'
-             : (h.auth_failed ? '<span class="status-warn">auth failed</span>' : '<span class="status-warn">closed/no auth</span>'))
-          : '<span class="status-warn">no SSH</span>';
         const osTxt = h.os
           ? `${osIcon(h.os)}${escHtml(h.os)}${h.banner ? ` <small class="hint" title="${escHtml(h.banner)}">${escHtml(h.banner.split("$").pop() || "")}</small>` : ""}`
           : '<span class="status-warn">unknown</span>';
@@ -2340,9 +2322,7 @@ on("#d-scan", "click", async (e) => {
         const agentTxt = h.agent
           ? `<span class="status-ok"><i class="fa-solid fa-plug"></i> ${escHtml(h.agent_version || "agent")}:${h.agent_port || 8198}</span>`
           : "—";
-        tr.innerHTML = peerMode
-          ? `<td>${escHtml(h.ip)}</td><td>${escHtml(h.hostname || "-")}</td><td>${osTxt}</td><td>${agentTxt}</td><td>${addCell}</td>`
-          : `<td>${escHtml(h.ip)}</td><td>${pingTxt}</td><td>${sshTxt}</td><td>${osTxt}</td><td>${escHtml(h.hostname || "-")}</td><td>${escHtml((h.gpus || []).join(", ") || "-")}</td><td>${addCell}</td>`;
+        tr.innerHTML = `<td>${escHtml(h.ip)}</td><td>${escHtml(h.hostname || "-")}</td><td>${osTxt}</td><td>${agentTxt}</td><td>${addCell}</td>`;
         const addBtn = tr.querySelector('[data-act="add"]');
         if (addBtn) addBtn.onclick = () => { wizSelection = h.ip; discoveredFill(h); };
         // clicking the row selects it (Continue uses the selection)
@@ -5754,8 +5734,8 @@ on("#aud-record","click", async ()=>{
       <code>media.devices.insecure.enabled</code><br><code>media.getusermedia.insecure.enabled</code><br>
       then <b>fully quit Firefox (all windows)</b> and reopen <code>${escHtml(origin)}</code> — a reload is not enough.<br>
       Also check <code>privacy.resistFingerprinting</code> is <code>false</code> (it hides mediaDevices too).
-      If the prefs reset or still fail, run a local forward: <code>ssh -N -L 8199:10.0.0.104:8199 zazi@10.0.0.104</code> and open <code>http://localhost:8199</code> (localhost is always secure, zero browser hacks).</p>`
-      : `<p class="status-warn"><code>navigator.mediaDevices</code> is unavailable. Chrome/Edge/Brave: <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code> → add <code>${escHtml(origin)}</code> → enable → relaunch. Or use <code>ssh -N -L 8199:10.0.0.104:8199 zazi@10.0.0.104</code> and open <code>http://localhost:8199</code>.</p>`;
+      If the prefs reset or still fail, use your existing VPN/tunnel to expose 8199 locally and open <code>http://localhost:8199</code> (localhost is always secure, zero browser hacks).</p>`
+      : `<p class="status-warn"><code>navigator.mediaDevices</code> is unavailable. Chrome/Edge/Brave: <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code> → add <code>${escHtml(origin)}</code> → enable → relaunch. Or use your VPN/tunnel to expose 8199 locally and open <code>http://localhost:8199</code>.</p>`;
     toast("Mic API hidden by browser — see fix details below", "bad");
     const lv0 = $("#aud-level"); if(lv0) lv0.textContent = "mic API blocked";
     return;
@@ -6987,7 +6967,7 @@ function openFsBrowse(targetInputId, machineName) {
   if (!modal) return;
   const init = $(`#${targetInputId}`)?.value?.trim() || "";
   const hint = $("#fs-machine-hint");
-  if (hint) hint.textContent = fsTargetMachine ? `Browsing on ${fsTargetMachine} via SSH — pick a folder on that machine` : `Browsing on this host (app server) — works on Linux & Windows clients`;
+  if (hint) hint.textContent = fsTargetMachine ? `Browsing on ${fsTargetMachine} via the peer agent — pick a folder on that machine` : `Browsing on this host (app server) — works on Linux & Windows clients`;
   modal.classList.remove("hidden");
   modal.setAttribute("aria-hidden", "false");
   fsLoad(init || "~");
@@ -7039,8 +7019,8 @@ on("#m-llama-bin-browse", "click", () => {
   let machine = null;
   if (orig) machine = orig;
   else if (ip && user) {
-    // unsaved machine — cannot SSH without being saved; fall back to local with hint
-    toast("Save the machine first to browse its own filesystem via SSH — showing this host for now", "info");
+    // unsaved machine — cannot browse remotely until saved; fall back to local with hint
+    toast("Save the machine first to browse its own filesystem through the agent — showing this host for now", "info");
   }
   openFsBrowse("m-llama-bin", machine);
 });

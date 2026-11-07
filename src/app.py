@@ -151,7 +151,7 @@ def seed_local_master():
     # must be regenerated from the CURRENT model configs before anyone
     # points a client at :8080 — otherwise a daemon left over from a
     # previous run keeps serving its stale entries until a manual Launch
-    # All. Best-effort + backgrounded: SSH/config trouble must never
+    # All. Best-effort + backgrounded: agent/config trouble must never
     # block boot (same policy as migrate_group_engines above).
     import threading as _thr
 
@@ -254,7 +254,7 @@ app.add_middleware(IpGateMiddleware)
 # ---------------- web logins (key identity via username/password) ----
 # Secrets in the vault (.env): LOGIN_<NAME>_PASS = salted SHA-256 hash,
 # LOGIN_<NAME>_KEY = Fernet-encrypted access-key token (AES-128-CBC +
-# HMAC-256 under the hood — same machinery as machine SSH passwords),
+# HMAC-256 under the hood — same machinery as machine credentials),
 # WEB_SESSION_<sid> = encrypted "{user}|{created}" records. Sessions
 # live in the vault too, so logins SURVIVE daemon restarts. Cookie is
 # HttpOnly, SameSite=Lax; the API key never needs to be pasted into a
@@ -791,16 +791,16 @@ def _machine_connection_caps(machine):
     try:
         if local_node.is_local(machine):
             return {"name": name, "mode": "local", "local": True,
-                    "ssh": False, "agent": False}
+                    "agent": False}
     except Exception:
         pass
     try:
         agent_client.health(machine, timeout=3.0)
         return {"name": name, "mode": "agent", "local": False,
-                "ssh": False, "agent": True}
+                "agent": True}
     except Exception:
         return {"name": name, "mode": "none", "local": False,
-                "ssh": False, "agent": False}
+                "agent": False}
 
 @app.get("/api/machines/connections")
 async def machine_connections():
@@ -851,9 +851,9 @@ async def machine_agent_check(p: AgentCheckIn):
     return {"ok": True, **out}
 
 
-def _ssh_port_guard(machine):
+def _agent_guard(machine):
     """Fail fast with an actionable error when a new (non-local) machine's
-    peer agent is unreachable. Agent-only: there is no SSH preflight."""
+    peer agent is unreachable. Agent-only: there is no shell preflight."""
     try:
         if local_node.is_local(machine):
             return None
@@ -875,8 +875,8 @@ def _validate_machine_swap_config(payload):
 
 
 def _validate_machine_connection(payload):
-    """Agent-only machines: normalize the agent port and drop legacy SSH
-    transport/password fields so they never land in machines.yaml."""
+    """Agent-only machines: normalize the agent port and clear legacy
+    credential transport fields so they never reach machines.yaml."""
     try:
         agent_port = int(payload.get("agent_port") or 8198)
     except (TypeError, ValueError) as e:
@@ -897,12 +897,9 @@ async def add_machine(m: MachineIn):
             payload.setdefault("id", uuid.uuid4().hex[:8])
             import secrets_vault as _vault
             _vault.set_machine_agent_token(payload["id"], agent_token)
-        if not payload.get("password"):
-            # fresh add with key-auth (no password): nothing to fill
-            pass
         _validate_machine_swap_config(payload)
         _validate_machine_connection(payload)
-        detail = _ssh_port_guard(payload)
+        detail = _agent_guard(payload)
         if detail:
             raise HTTPException(status_code=400, detail=detail)
         saved = cfg.machines.add(payload)
@@ -925,18 +922,9 @@ async def update_machine(name: str, m: MachineIn):
             target = cfg.machines.get(name) or {}
             _vault.set_machine_agent_token(target.get("id") or name,
                                            agent_token)
-        if not payload.get("password"):
-            # blank = keep vault password: resolve it for the pre-save
-            # SSH guard so edits don't falsely fail auth
-            try:
-                import secrets_vault as _vault
-                existing = cfg.machines.get(name) or {}
-                payload["password"] = _vault.get_machine_password(existing)
-            except Exception:
-                pass
         _validate_machine_swap_config(payload)
         _validate_machine_connection(payload)
-        detail = _ssh_port_guard(payload)
+        detail = _agent_guard(payload)
         if detail:
             raise HTTPException(status_code=400, detail=detail)
         saved = cfg.machines.update(name, payload)
@@ -967,11 +955,11 @@ async def detect_hardware(name: str):
     machine = cfg.machines.require(name)
     stats = await run_in_threadpool(stats_collector.machine_stats, machine)
     if stats["status"] != "online":
-        detail = _ssh_port_guard(machine)
+        detail = _agent_guard(machine)
         raise HTTPException(
             status_code=503,
-            detail=detail or f"{name} is offline (SSH port open but "
-                             f"login/command failed — check credentials)")
+            detail=detail or f"{name} is offline (agent port open but the "
+                             f"agent failed to answer)")
     gpus = [gpu_vendor.gpu_token(machine, g["index"]) for g in stats["gpus"]]
     updates = {
         "gpu": ",".join(gpus),
@@ -1013,7 +1001,7 @@ def _detect_rdma_nic(machine, is_local):
     """Discover the machine's RoCE NIC: active ibverbs device, its active
     port, the RoCE v2 GID index on that port that maps to a local IP, and
     that IP. Returns {} when no RDMA device is found.
-    ONE bundled remote command (single SSH round trip) — a shell script
+    ONE bundled remote command (single agent round trip) — a shell script
     scans all devices/ports/GIDs locally and emits "dev|port|gid|ip"."""
     remote_script = (
         'for dev in $(ibv_devices 2>/dev/null | awk "NR>2{print \\$1}"); do '
@@ -1077,7 +1065,7 @@ async def probe_hardware(p: ProbeIn):
         machine["gpu_vendor"] = ""  # detect the real local vendor
     if p.agent_token:
         machine["_agent_token"] = p.agent_token
-    detail = _ssh_port_guard(machine)
+    detail = _agent_guard(machine)
     if detail:
         raise HTTPException(status_code=503, detail=detail)
 
@@ -1145,7 +1133,7 @@ async def discover_subnets():
 
 @app.post("/api/discover")
 async def discover_hosts(p: DiscoverIn):
-    """Scan the LAN for peer agents (UDP discovery). No SSH scan: peers
+    """Scan the LAN for peer agents (UDP discovery). No shell scan: peers
     are agent-installed machines, identified by MAC/hostname."""
     import discovery
 
@@ -1207,7 +1195,7 @@ async def detect_all():
 # Machines page + visualizer without manual "Detect Hardware" clicks, and
 # model configs get reconciled to the new slot layout automatically.
 _hw_watcher_state = {"running": False, "last": {}}
-HW_WATCH_INTERVAL_S = 120  # low frequency: SSH round-trip per machine
+HW_WATCH_INTERVAL_S = 120  # low frequency: agent round-trip per machine
 
 
 def _hw_fingerprint(machine):
@@ -3989,7 +3977,7 @@ async def install_llama_cpp_all(p: InstallAllIn | None = None):
     Existing installs are SKIPPED (not reinstalled) — preserves working
     systems. Missing/offline nodes are reported so the UI can act.
     With install_missing=true, missing nodes get the correct official
-    prebuilt for their machine type installed over SSH."""
+    prebuilt for their machine type installed through the agent."""
     install_missing = bool(p and p.install_missing)
     machines = cfg.machines.all()
     # modal subset: only check/install the ticked machines (None = all)
@@ -4029,12 +4017,12 @@ async def install_llama_cpp_all(p: InstallAllIn | None = None):
             return {"machine": name, "ip": ip, "os": os_type, "status": "missing",
                     "skipped": False, "reason": detail, "bin": None}
 
-    # run checks in parallel (threadpool, since SSH is blocking)
+    # run checks in parallel (threadpool, since agent calls are blocking)
     with ThreadPoolExecutor(max_workers=len(machines) or 1) as pool:
         results = list(pool.map(check_one, machines))
 
     # optionally install the right prebuilt on missing nodes (sequentially;
-    # installs are heavy downloads, and SSH fan-out of 600s curls is risky)
+    # installs are heavy downloads, and agent fan-out of 600s curls is risky)
     if install_missing:
         import llamacpp_installer
         for r in results:
@@ -4061,7 +4049,7 @@ async def install_llama_cpp_all(p: InstallAllIn | None = None):
 @app.post("/api/install-llama-cpp/install")
 async def install_llama_cpp_machine(name: str = ""):
     """Install the right official llama.cpp prebuilt for a machine type
-    (CUDA/ROCm/Metal/CPU, linux/windows/macos) over SSH or locally,
+    (CUDA/ROCm/Metal/CPU, linux/windows/macos) through the agent or locally,
     then point the machine's llama_bin at it."""
     if not name:
         raise HTTPException(status_code=400, detail="machine name required")
@@ -4081,7 +4069,7 @@ async def install_llama_cpp_machine(name: str = ""):
 _LLAMA_UPDATES: dict = {}
 _LLAMA_UPDATES_LOCK = threading.Lock()
 _LATEST_TAG_CACHE = {"tag": None, "ts": 0.0}
-# per-machine llama-server version probe (SSH/bash, ~seconds) — cached
+# per-machine llama-server version probe (agent/bash, ~seconds) — cached
 # so the machine grid can re-ask on every render without hammering
 _LLAMA_VER_CACHE: dict = {}
 _LLAMA_VER_TTL = 600
@@ -4098,7 +4086,7 @@ def _llama_build_no(version_str):
 
 def _llama_version_on(machine):
     """First line of '<llama_bin>/llama-server --version' on a machine
-    (local bash or raw SSH). POSIX: leading ~ expands via $HOME on the
+    (local bash or the peer agent). POSIX: leading ~ expands via $HOME on the
     target; Windows: cmd.exe expands %USERPROFILE% inside the path."""
     lb = (machine.get("llama_bin") or "").strip().rstrip("/\\")
     if not lb:
@@ -4116,11 +4104,8 @@ def _llama_version_on(machine):
                 if line.strip():
                     return line.strip()
             return None
-        except Exception as e:
-            if agent_client.transport(machine) == "agent":
-                return None
-            print(f"[agent] {machine.get('name')}: version probe failed, "
-                  f"falling back to SSH: {e}")
+        except Exception:
+            return None
     try:
         from llamacpp_installer import _machine_run
         run, _ = _machine_run(machine)
@@ -4193,7 +4178,7 @@ async def llama_cpp_latest():
 async def llama_cpp_version_machine(name: str):
     """Current llama-server build on one machine vs the latest upstream
     release — lets the UI swap the Update button for an 'on latest'
-    chip. TTL-cached (SSH probe + GitHub tag are both slow-ish), so the
+    chip. TTL-cached (agent probe + GitHub tag are both slow-ish), so the
     machine grid can re-ask on every render without hammering anything."""
     machine = cfg.machines.require(name)
     return await run_in_threadpool(_llama_version_payload, machine)
@@ -4322,7 +4307,7 @@ async def agent_version_machine(name: str):
 
 @app.post("/api/machines/{name}/update-agent")
 async def update_agent_machine(name: str):
-    """Build current agent, install it over SSH bootstrap, restart it."""
+    """Build current agent, install it through the agent bootstrap, restart it."""
     machine = cfg.machines.require(name)
     try:
         res = await run_in_threadpool(_update_agent_remote, machine)
@@ -4342,7 +4327,7 @@ async def update_llama_cpp_machine(name: str):
     Windows refuses to overwrite locked exes (observed live on winbox),
     and Linux keeps serving the old inode anyway; (2) installs the
     newest prebuilt via llamacpp_installer (auto-detects os / gpu_vendor
-    / arch / glibc, uses the stored SSH credentials); (3) resurrects
+    / arch / glibc, uses the stored machine record); (3) resurrects
     llama-swap if this machine hosts it (stop_rpc's legacy stop-all
     kills it). Poll GET /api/llama-cpp-updates/{job_id} for progress."""
     machine = cfg.machines.require(name)
@@ -4470,7 +4455,7 @@ async def llama_cpp_update_status(job_id: str):
 @app.post("/api/install-llama-swap")
 async def install_llama_swap(name: str = ""):
     """Install the official llama-swap binary on a machine if not already
-    present (local machines run locally — no SSH), then point swap
+    present (local machines run locally — no shell transport), then point swap
     settings' binary at it. Mirrors the llama.cpp installer."""
     if not name:
         raise HTTPException(status_code=400, detail="machine name required")
@@ -4504,7 +4489,7 @@ class ToolsInstallIn(pydantic.BaseModel):
 def _machine_env(machine):
     """(SystemInfo, RunCmd) for a machine record: local machines probe
     locally; remote machines run the same read-only probe ladder over
-    SSH. OS/gpu_vendor come from the machine record (config truth), the
+    the agent. OS/gpu_vendor come from the machine record (config truth), the
     rest from the remote probes."""
     from installer.env import SystemInfo, RealFS, RunResult
     import gpu_vendor as _gv
@@ -4646,7 +4631,7 @@ async def _tools_ndjson(progress):
 
 
 class _RemoteFS:
-    """FS adapter for remote machines: existence/version checks over SSH.
+    """FS adapter for remote machines: existence/version checks through the agent.
     Only what probe.py touches."""
 
     def __init__(self, run, is_win=False):
@@ -4921,7 +4906,7 @@ async def restart_app():
     # remote-proxy llama-servers (launch-mode=local models) run on their
     # own boxes — stop them BEFORE restarting, or they keep serving while
     # the app/swap cycle under them. Fire-and-forget: restart must not
-    # block on SSH; the daemon comes back in ~3s either way.
+    # block on the agent; the daemon comes back in ~3s either way.
     import threading as _th
     def _stop_remote_llama():
         # host EXCLUDED: the restart bash's pkill+setsid brings llama-swap
@@ -5033,7 +5018,7 @@ def _fs_list_remote(machine, raw_path, show_hidden=False):
 
 @app.get("/api/fs/browse")
 async def fs_browse(path: str = "", machine: str = "", show_hidden: bool = False):
-    """Browse filesystem — local host if machine=, else remote via SSH.
+    """Browse filesystem — local host if machine=, else remote via the agent.
     Works on both Linux and Windows (machine.os decides). Query: path, machine (name), show_hidden."""
     if machine:
         m = cfg.machines.get(machine)
@@ -5057,7 +5042,7 @@ async def fs_browse(path: str = "", machine: str = "", show_hidden: bool = False
 
 # ---------------- model scanning ----------------
 
-# short-lived stats cache so the 1s overview poll stays snappy (full SSH
+# short-lived stats cache so the 1s overview poll stays snappy (full agent
 # collection per machine is slow, esp. Windows). The detail modal forces a
 # fresh collection on demand.
 _stats_cache = {}  # key -> {"ts": ..., "data": ...}
@@ -5067,8 +5052,8 @@ _STATS_TTL = 5.0  # seconds
 @app.get("/api/stats")
 async def get_stats(light: bool = False):
     """Get cluster-wide machine stats (GPU, CPU, RAM). Cached briefly so the
-    auto-refresh poll doesn't re-SSH every second. light=true skips the slow
-    full SSH collection and returns reachability + identity instantly (the
+    auto-refresh poll doesn't re-query every second. light=true skips the slow
+    full agent collection and returns reachability + identity instantly (the
     overview uses this; the detail modal does a full collection on demand).
     Cache is keyed by light so the two never overwrite each other."""
     key = "light" if light else "full"
@@ -5096,7 +5081,7 @@ async def get_stats_stream():
     The dashboard consumes this so one slow/offline machine can't drag
     the others: each card paints the moment its own data lands instead
     of waiting for the slowest host (the old /api/stats blocked until
-    every SSH collection finished — 5s+ on Windows blobs, 6s+ on offline
+    every agent collection finished — 5s+ on Windows blobs, 6s+ on offline
     boxes). Same short cache as /api/stats per machine."""
     from fastapi.responses import StreamingResponse
 
@@ -5254,9 +5239,7 @@ async def machine_detail(name: str):
               "mac": (machine.get("mac") or ""),
               "transport": machine.get("transport") or "auto",
               "agent_port": machine.get("agent_port") or 8198,
-              "connection": ("local" if is_local else
-                             "agent" if agent_client.should_use_agent(machine)
-                             else "ssh")}
+              "connection": "local" if is_local else "agent"}
 
     # ---- combine all detail queries into ONE round-trip per OS ----
     detail["net"] = {"ip": "", "speed": ""}
@@ -5297,11 +5280,8 @@ async def machine_detail(name: str):
     if not is_local and agent_client.should_use_agent(machine):
         try:
             agent_detail = agent_client.system_detail(machine)
-        except Exception as e:
-            if agent_client.transport(machine) == "agent":
-                agent_detail = {}
-            else:
-                print(f"[agent] {machine['name']}: detail failed, falling back to SSH: {e}")
+        except Exception:
+            agent_detail = {}
     if agent_detail is not None:
         detail.update(agent_detail)
     else:

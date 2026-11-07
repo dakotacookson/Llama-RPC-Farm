@@ -1,6 +1,6 @@
 """Unit tests for MAC-based machine identity and DHCP IP-drift healing.
 
-All network I/O is faked: SSH runs return canned MAC query output, and the
+All network I/O is faked: remote runs return canned MAC query output, and the
 ARP table comes from a stubbed subprocess. These verify the pieces that
 keep machines reachable across DHCP re-leases:
 
@@ -89,7 +89,7 @@ def _machine(ip="10.0.0.13", mac="de:ad:be:ef:12:34", os="windows"):
 
 
 def test_sync_heals_stale_ip(monkeypatch):
-    """Stored MAC resolves to a new IP with SSH open -> config updated."""
+    """Stored MAC resolves to a new IP with the agent port open -> config updated."""
     m = _machine(ip="10.0.0.13")  # stale
     monkeypatch.setattr(discovery, "resolve_ip_by_mac",
                         lambda mac: "10.0.0.124")
@@ -138,7 +138,7 @@ def test_sync_skips_local_machine(monkeypatch):
     assert rpc_manager._sync_machine_ip(m) is m
 
 def test_sync_new_ip_without_ssh_is_rejected(monkeypatch):
-    """A MAC hit whose IP doesn't speak SSH is NOT adopted (safety)."""
+    """A MAC hit whose IP does not answer on the agent port is NOT adopted."""
     m = _machine(ip="10.0.0.13")
     monkeypatch.setattr(discovery, "resolve_ip_by_mac",
                         lambda mac: "10.0.0.124")

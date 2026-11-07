@@ -8,8 +8,8 @@ that speaks OpenAI.
 
 Real llama.cpp means real features: full CUDA, tensor-split across GPUs,
 spec decoding, KV-cache options, 128k+ contexts — the raw llama-server
-features, wired together across machines for you, instead of fighting SSH
-and hand-rolled startup scripts.
+features, wired together across machines for you, instead of hand-rolled
+startup scripts.
 
 **Nothing outside this folder is ever modified.** Your existing
 `llama.cpp/`, `llama-swap/` configs, and scripts stay untouched.

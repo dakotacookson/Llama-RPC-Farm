@@ -27,7 +27,7 @@ A single FastAPI process (`src/app.py`) that:
 | `llamacpp_installer.py` | Downloads the right llama.cpp prebuilt per OS/vendor/arch/glibc and updates `llama_bin`. |
 | `swap_installer.py` | Downloads the official llama-swap prebuilt per OS/arch, skip-if-present, updates swap settings' binary. Single-host tool — no fleet install. |
 | `stats_collector.py` | GPU/CPU/RAM stats: local or peer-agent; three OS branches (linux `/proc`+nvidia-smi, Windows PowerShell, macOS sysctl/top). |
-| `discovery.py` | LAN identity helpers: UDP peer-agent discovery + ARP/MAC healing. No SSH scan. |
+| `discovery.py` | LAN identity helpers: UDP peer-agent discovery + ARP/MAC healing. No network sweep. |
 | `local_node.py` | Which machine am I? `is_local()` decides master vs peer everywhere. |
 | `gpu_vendor.py` | Vendor normalization + device token prefixes (`CUDA0`, `ROCm0`, `SYCL0`, `Metal`). |
 | `model_parser.py` | Directory scan for GGUF; collapses `-000XX-of-000YY` shards into one model. |

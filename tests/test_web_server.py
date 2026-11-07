@@ -9,8 +9,8 @@ These tests verify:
 - GET / returns HTTP 200 with a non-empty body (the dashboard HTML).
 - The server would bind to port 8199 (the configured port constant).
 
-All heavy external I/O (paramiko, config files, local_node detection) is
-stubbed at the module level before the app is imported.
+All heavy external I/O (config files, local_node detection) is stubbed
+at the module level before the app is imported.
 """
 import os
 import sys
@@ -21,8 +21,8 @@ import pytest
 
 # ---------------------------------------------------------------------------
 # Stub heavy optional dependencies before importing the app.
-# conftest already stubs paramiko; we additionally stub config_loader and
-# local_node so the import doesn't attempt filesystem/network operations.
+# Stub config_loader and local_node so the import doesn't attempt
+# filesystem/network operations.
 # ---------------------------------------------------------------------------
 
 def _make_stub_cfg():

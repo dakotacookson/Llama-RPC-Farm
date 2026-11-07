@@ -2,8 +2,8 @@
 
 The agent runs on every configured peer. `transport()` always returns
 "agent" and `should_use_agent()` always returns true; the legacy
-`transport:` values (`auto`/`ssh`/`agent`) are accepted for config
-compatibility but no longer change behaviour. There is no SSH fallback.
+legacy `transport:` values are accepted for config compatibility but
+no longer change behaviour. There is no remote shell fallback.
 
 Protocol v1 endpoints (see docs/peer-agent.md):
   GET  /health, /version, /capabilities, /info, /status, /processes,
@@ -384,6 +384,6 @@ def _cache_key(machine) -> str:
 
 
 def should_use_agent(machine) -> bool:
-    """Agent-only: always true. SSH is no longer a runtime transport —
+    """Agent-only: always true. There is no remote shell transport —
     agents are installed from their own platform packages."""
     return True

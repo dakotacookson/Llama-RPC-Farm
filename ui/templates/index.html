@@ -171,7 +171,7 @@
         </ol>
         <div id="wiz-step-1">
           <fieldset>
-            <legend>Discover peer agents <small class="hint">UDP discovery on port 8199 — no credentials, no SSH</small></legend>
+            <legend>Discover peer agents <small class="hint">UDP discovery on port 8199 — no credentials</small></legend>
             <div class="row">
               <label>Discovery
                 <select id="d-mode">
@@ -517,7 +517,7 @@
         <div class="row" id="mo-custom-row" hidden>
           <label>Custom kind
             <select id="mo-custom-kind">
-              <option value="winbox-bat">winbox-bat (start a .bat over SSH, proxy to it)</option>
+              <option value="winbox-bat">winbox-bat (start a .bat through the agent, proxy to it)</option>
               <option value="raw">raw (your own swap entry, passed through)</option>
             </select>
           </label>
@@ -812,7 +812,7 @@
     <section id="tab-audio" class="tab">
       <h2>Audio Test (Speech → Text) <span id="aud-status" class="serving-ind">…</span></h2>
       <p class="hint">Test ASR models by speaking into your <b>browser microphone</b>. Click <b>Start recording</b> — the browser will prompt for <b>microphone permission</b>; recording only starts after you allow it (nothing is recorded or stored on the host). Clip goes to the model as base64 <code>input_audio</code>.</p>
-      <p class="hint" style="margin-top:-4px">Browsers hide the mic on plain-http LAN pages by default. <b>Firefox:</b> <code>about:config</code> → <code>media.devices.insecure.enabled</code> AND <code>media.getusermedia.insecure.enabled</code> = true → <b>fully quit and reopen Firefox</b> (reload alone won't do it). <b>Chrome/Edge:</b> <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code> → add this origin → relaunch. Zero-setup alternative: <code>ssh -N -L 8199:10.0.0.104:8199 zazi@10.0.0.104</code> then open <code>http://localhost:8199</code> (localhost is always trusted).</p>
+      <p class="hint" style="margin-top:-4px">Browsers hide the mic on plain-http LAN pages by default. <b>Firefox:</b> <code>about:config</code> → <code>media.devices.insecure.enabled</code> AND <code>media.getusermedia.insecure.enabled</code> = true → <b>fully quit and reopen Firefox</b> (reload alone won't do it). <b>Chrome/Edge:</b> <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code> → add this origin → relaunch. Zero-setup alternative: use your VPN/tunnel to expose 8199 locally, then open <code>http://localhost:8199</code> (localhost is always trusted).</p>
       <div class="card">
         <div class="row">
           <label class="wide">Model <select id="aud-model"><option value="">(no ASR models configured)</option></select></label>

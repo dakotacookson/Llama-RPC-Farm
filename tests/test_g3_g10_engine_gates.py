@@ -8,7 +8,7 @@
 - /api/launch and /api/launch/stop keep their llama.cpp behavior,
   including the remote-proxy swap unload.
 
-Heavy externals (SSH, real process starts) are monkeypatched; the REAL
+Heavy externals (peer transport, real process starts) are monkeypatched; the REAL
 config_loader owns machines.yaml against tmp files.
 """
 import os

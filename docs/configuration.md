@@ -136,7 +136,6 @@ Generated into llama-swap's `groups:` config section on push.
 | `flow_layout.json` | Visualizer node drag positions (per model node) |
 | `model_icons.json` | Model → icon URL cache |
 | `net_speed_cache.json` | Bandwidth probe results (7-day TTL) |
-| `ssh_known_hosts.json` | SSH host key fingerprints (TOFU store) |
 | `swap.yaml` | llama-swap host pointer (`host_name`); never contains secrets |
 
 ## The second copy (on the host)

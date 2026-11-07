@@ -21,34 +21,11 @@ provided you keep the notices below.
 | Google Fonts: Inter + JetBrains Mono (loaded via fonts.googleapis.com in `ui/templates/index.html`) | SIL Open Font License 1.1 | https://fonts.google.com | Remote stylesheet link only. Commercial use allowed. |
 | Font Awesome Free 6.5.2 (loaded via cdnjs in `ui/templates/index.html`) | Icons: CC BY 4.0 · Fonts: SIL OFL 1.1 · Code: MIT — Copyright FortAwesome | https://fontawesome.com/license/free | Remote CSS link only. Commercial use allowed **with attribution** (see below). |
 
-## 1. paramiko — LGPL-2.1 (the only copyleft in this stack)
+## No copyleft runtime dependency
 
-`src/ssh_manager.py` talks to peer machines over SSH via **paramiko**
-(LGPL-2.1, https://github.com/paramiko/paramiko/blob/main/LICENSE).
-LGPL expressly permits linking into non-free / commercial programs, and a
-plain `import paramiko` installed from PyPI (`requirements.txt`) counts as
-dynamic linking — so selling this wrapper is allowed.
-
-To stay compliant you MUST:
-
-1. **Give notice** that paramiko is used and that it is covered by the GNU
-   Lesser General Public License v2.1. Keep this file plus the reference
-   below, and ship a copy of the LGPL-2.1 text with any distribution
-   (see `licenses/LGPL-2.1.txt`, or fetch it from
-   https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt).
-2. **Keep paramiko replaceable.** Ship it as a normal pip dependency
-   (`pip install -r requirements.txt`) so a customer can upgrade/replace
-   the library. Do NOT freeze it invisibly inside a single binary with no
-   way to swap it, and do not forbid reverse engineering for debugging
-   such a replacement (LGPL §6 requires this permission).
-3. **Do not copy paramiko code (including `demos/`) into this repo.**
-   Use it only via `import`. If you ever patch paramiko itself, publish
-   those patches under LGPL-2.1.
-4. Recipients automatically receive their paramiko rights from the
-   original licensors — do not add further restrictions on the library.
-
-Full license text: `licenses/LGPL-2.1.txt`
-Upstream license page: https://github.com/paramiko/paramiko/blob/main/LICENSE
+Remote shell access (paramiko/sshpass) was removed. Peers are reached only
+through the Apache-2.0 peer agent, so this stack has no LGPL runtime
+dependency.
 
 ## Attribution notices (keep these)
 
@@ -84,11 +61,11 @@ commercial use, redistribution, or require registration.
 
 ## Secrets hygiene
 
-`config/machines.yaml` stores SSH passwords in plaintext and
-`config/settings.yaml` may hold a Hugging Face token — by design for local
-use (mirrors existing rpc scripts). Before distributing or selling:
+`config/settings.yaml` holds access keys and may hold a Hugging Face
+token; agent tokens live encrypted in `.env`. Before distributing or
+selling:
 
-- remove / rotate real passwords and tokens,
+- remove / rotate real credentials and tokens,
 - ship configs with placeholders,
 - tell buyers to set their own credentials.
 

@@ -7,7 +7,7 @@ assuming a POSIX branch is fine, grep for `os_type == "macos"` and
 
 ## Remote operations (peer agent)
 
-There is no SSH runtime transport. Every peer operation goes through the
+There is no shell runtime transport. Every peer operation goes through the
 peer agent's typed endpoints (`/rpc/*`, `/llama/*`, `/files/*`,
 `/logs/*`, `/service/*`, `/metrics`, `/system/*`), so the master never
 constructs remote shell commands.
@@ -50,7 +50,7 @@ matches a co-served model on 51096:
 | llama-swap stop | systemctl + pkill | `taskkill /F /IM llama-swap.exe` | `killall` + `ps -axc` kill |
 | daemon start | systemd → setsid fallback | `Win32_Process.Create` via PowerShell | nohup (no systemctl/setsid) |
 | llama-server local | Popen bash detached | Popen shell detached | Popen bash detached |
-| llama-server remote (SSH) | `nohup ... & echo PID=$!` | `Start-Process cmd /c ...` (no nohup/$! on cmd.exe) | same as linux |
+| llama-server remote (agent) | `nohup ... & echo PID=$!` | `Start-Process cmd /c ...` (no nohup/$! on cmd.exe) | same as linux |
 
 ## Paths
 

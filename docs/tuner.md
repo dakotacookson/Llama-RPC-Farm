@@ -46,7 +46,7 @@ tiers) weight split distribution by memory bandwidth, not just VRAM.
 
 ## Safety properties
 
-- Trials run through the peer agent; no SSH password is used.
+- Trials run through the peer agent; no shell transport is used.
 - `cancel_tune` kills the bench server (Windows: deliberately skipped —
   the bench process is killed by timeout instead; documented in code).
 - Trials refuse to run from a Windows master (POSIX scripts required).
@@ -60,7 +60,7 @@ tiers) weight split distribution by memory bandwidth, not just VRAM.
 `probe_link_mbps()` measures throughput between master and each peer
 through the peer agent's `/speedtest` endpoint (7-day cached in
 `config/net_speed_cache.json`). Used by estimates to model RPC hop
-costs. A failed probe degrades gracefully to 0; there is no SSH path.
+costs. A failed probe degrades gracefully to 0; there is no shell path.
 
 ## Where results land
 

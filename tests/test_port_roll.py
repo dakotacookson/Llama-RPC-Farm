@@ -98,7 +98,7 @@ def test_roll_skips_windows_excluded_ranges():
 
 
 def test_roll_remote_uses_ssh_check(monkeypatch):
-    """Remote machines probe via _port_open (SSH/rdma aware), not a
+    """Remote machines probe via _port_open (agent/rdma aware), not a
     local connect."""
     m = {"name": "aibox2", "ip": "10.0.0.11", "os": "linux",
          "username": "zazi", "rpc_port": 50052}

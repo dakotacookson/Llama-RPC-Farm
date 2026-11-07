@@ -48,7 +48,7 @@ single-source-of-truth rules catch most newcomers.
    - frontend: `node --check ui/static/app.js`
    - generated shell: `bash -n <script>`
 3. Run the test suite: `.venv/bin/python -m pytest tests` — it is fully
-   stubbed (no real SSH hosts are contacted) and fast.
+   stubbed (no real hosts are contacted) and fast.
 4. Tests assert exact rendered script/CLI strings; any behavior change in
    script generation usually means updating the test's expected string too.
 5. Open a PR with a short "what + why". Screenshots of the UI are welcome

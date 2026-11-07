@@ -49,7 +49,7 @@ def _redact(text):
     import re
     # KEY=secret / KEY: secret  →  KEY=<redacted>
     text = re.sub(
-        r"((?:ssh_)?pass\w*|hf_token|password)\s*[=:]\s*\S+",
+        r"(pass\w*|hf_token|password)\s*[=:]\s*\S+",
         r"\1=<redacted>", text, flags=re.I)
     # Authorization: Bearer <tok> (or any auth header value)
     text = re.sub(

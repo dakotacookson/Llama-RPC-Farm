@@ -133,7 +133,7 @@ def compute_cap_supports_bf16(compute_cap):
 
 
 def query_compute_caps(runner=None):
-    """Live compute caps via nvidia-smi (local or SSH `runner`). Returns
+    """Live compute caps via nvidia-smi (local `runner`). Returns
     ['7.5', '8.6', ...] in GPU-index order, [] when unavailable
     (non-NVIDIA host, no driver, old nvidia-smi without the field)."""
     import subprocess as _sp
