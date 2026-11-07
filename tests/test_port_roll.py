@@ -357,6 +357,38 @@ def _render_rpc_script(stub_cfg):
     return _render_rpc(model, master, [p1, p2])
 
 
+def test_render_rpc_has_roll_helpers(stub_cfg):
+    """Generated scripts must carry the runtime port roll-forward:
+    helpers + foreign-squatter detection in the wait loop."""
+    script = _render_rpc_script(stub_cfg)
+    for token in ("roll_rpc_port()", "tcp_probe()", "win_port_excluded()",
+                  "rpc_log_for_port()", "ensure_node()",
+                  "held by another process", "rolling to $port"):
+        assert token in script, token
+    import subprocess as _sp
+    import tempfile, os
+    with tempfile.NamedTemporaryFile("w", suffix=".sh",
+                                     delete=False) as f:
+        f.write(script)
+        path = f.name
+    try:
+        r = _sp.run(["bash", "-n", path], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+    finally:
+        os.unlink(path)
+
+
+def test_render_rpc_roll_updates_live_maps(stub_cfg):
+    """A roll must record an RPC_PORT_OVERRIDE so later rpc_port_of
+    lookups -- including the --rpc peer list -- serve the rolled port."""
+    script = _render_rpc_script(stub_cfg)
+    assert "RPC_PORT_OVERRIDE_$key" in script
+    assert "eval" in script
+    assert "RPC_PORT_OVERRIDE_$key:-" in script
+    assert 'rpc_port_of "$node"' in script
+    assert 'rpc_log_for_port "$(rpc_port_of "$1")"' in script
+
+
 def test_render_single_node_has_port_preflight(stub_cfg):
     """Single-node scripts must fail fast with a clear message when a
     foreign process holds llama-swap's assigned port."""
@@ -381,6 +413,30 @@ def test_render_single_node_has_port_preflight(stub_cfg):
         os.unlink(path)
 
 # ---------------- script audit fixes: anchored ports, per-peer bins ----------------
+
+def test_render_kill_patterns_anchored(stub_cfg):
+    """Port-targeted kills must anchor the port (trailing space): a
+    pattern for 5109 must never match a co-served model on 51096."""
+    script = _render_rpc_script(stub_cfg)
+    assert '-p $port \\"' in script
+    # PowerShell match pads the command line with spaces so a port at the
+    # END of the command line (no trailing arg) still matches
+    assert "(' ' + \\$_.CommandLine + ' ') -like '* -p $port *'" in script
+    # no unanchored port match remains in kill/pgrep lines
+    for line in script.splitlines():
+        if ("pkill" in line or "pgrep" in line) and "-p $port" in line:
+            assert "-p $port " in line, line
+        if "-like" in line and "-p $port" in line:
+            assert "-p $port *" in line, line
+
+
+def test_render_per_peer_bin_map(stub_cfg):
+    """Each linux peer launches rpc-server from its OWN bin dir, with
+    the master's layout only as fallback."""
+    script = _render_rpc_script(stub_cfg)
+    assert "rpc_bin_of() {" in script
+    assert 'rpc_bin_of "$node"' in script
+
 
 def test_render_ps1_no_baked_device(stub_cfg):
     """The parametrized .ps1 must not bake a --device flag: per-node

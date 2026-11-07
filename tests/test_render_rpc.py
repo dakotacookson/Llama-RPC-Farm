@@ -37,9 +37,9 @@ def test_render_has_rpc_ports_map(stub_cfg):
     stub_cfg.update({m["name"]: m for m in (master, p1, p2)})
     script = _render_rpc(model, master, [p1, p2])
     ports = _model_rpc_ports(model, [p1, p2])
-    assert "declare -A RPC_PORTS" in script
+    assert "rpc_port_of() {" in script
     for p in (p1, p2):
-        assert f'RPC_PORTS["{p["ip"]}"]="{ports[(p["name"], "all")]}"' in script
+        assert f'"{p["ip"]}") echo "{ports[(p["name"], "all")]}" ;;' in script
 
 
 def test_render_rpc_list_uses_per_node_ports(stub_cfg):
@@ -64,13 +64,15 @@ def test_render_per_port_state_and_log(stub_cfg):
     stub_cfg.update({m["name"]: m for m in (master, p1, p2)})
     script = _render_rpc(model, master, [p1, p2])
     ports = _model_rpc_ports(model, [p1, p2])
-    # per-port log names appear in the RPC_LOGS map
-    assert _rpc_log_name(ports[("aibox2", "all")]) in script
-    assert _rpc_log_name(ports[("winbox", "all")]) in script
-    assert "declare -A RPC_LOGS" in script
-    # agent-only: no SSH/sshpass in generated launchers
-    assert "sshpass" not in script
-    assert "SSH_PASS" not in script
+    # state reads/writes use the per-port $port bash var (rpc.state.$port),
+    # never the legacy bare rpc.state path
+    assert "rpc.state.$port" in script
+    assert "/.cache/llama-wrapper/rpc.state " not in script  # no bare legacy path
+    # per-port log names are derived at runtime from the possibly rolled port
+    assert "rpc_log_of() {" in script
+    assert 'rpc_log_for_port "$(rpc_port_of "$1")"' in script
+    assert "rpc-server-$1.log" in script
+
 
 def test_render_is_valid_bash(stub_cfg):
     """The generated script must parse as bash (syntax check)."""
