@@ -5,17 +5,20 @@ path that executes shell commands has OS branches. The rule: **before
 assuming a POSIX branch is fine, grep for `os_type == "macos"` and
 `os == "windows"`** — most shell-command sites are triple-handled.
 
-## Remote command execution
+## Remote operations (peer agent)
 
-- Windows peers: OpenSSH default shell is **cmd.exe**. Remote commands
-  are either bare cmd commands (`taskkill /F /IM ...`) or
-  `powershell -NoProfile -Command "..."` wrappers. `%USERPROFILE%`
-  expands only under cmd.exe; under PowerShell use `$env:USERPROFILE`.
-- POSIX peers: `tail`, `pgrep`, `pkill`, `setsid`, `ss`, `/dev/tcp`.
-- **macOS has no `pgrep`, `pkill`, `setsid`, or `systemctl`.** Use port
-  probes, `killall` (exact binary name), `ps -axc -o pid,comm` (BSD ps:
-  `-c` shows command basename), and `nohup ... &`. Where a fallback
-  exists it's inside the same command string (`nproc || sysctl -n hw.ncpu`).
+There is no SSH runtime transport. Every peer operation goes through the
+peer agent's typed endpoints (`/rpc/*`, `/llama/*`, `/files/*`,
+`/logs/*`, `/service/*`, `/metrics`, `/system/*`), so the master never
+constructs remote shell commands.
+
+OS differences live inside the agent/process layer:
+
+- Windows agents use PowerShell/CIM for process and service control.
+- POSIX agents use `pkill`/`pgrep`/`ss`/`/dev/tcp`.
+- **macOS has no `pgrep`, `pkill`, `setsid`, or `systemctl`.** Agent code
+  uses port probes, `killall` (exact binary name), `ps -axc -o pid,comm`
+  (BSD ps: `-c` shows command basename), and `nohup ... &`.
 
 ## Local process execution
 
@@ -96,7 +99,7 @@ Flow (mirrors the llama.cpp installer):
 1. **Detect first** — existing installs are always skipped:
    - local machine: `shutil.which` + `~/.local/bin` / `/usr/local/bin` /
      `/usr/bin` (POSIX) or `%USERPROFILE%\llama-swap\llama-swap.exe` (win)
-   - remote: same probe over SSH
+   - remote: same probe through the peer agent
 2. **Install if missing** — official release asset from
    `mostlygeek/llama-swap` (verified against v256):
 
@@ -136,22 +139,24 @@ for it.
 
 Performance rules learned the hard way:
 
-- **Peer-agent paths:** prefer the typed agent endpoints for RPC/native/
-  custom lifecycle on Windows; SSH remains bootstrap/recovery. Windows
-  agents auto-start through the `LlamaPeerAgent` boot Scheduled Task.
-- **Fast-fail offline hosts:** a closed SSH port must be detected with a
-  0.5s socket probe before any paramiko connect (a full connect timeout
-  is ~6s of dead time per offline machine per cycle).
+- **Agent paths only:** all remote lifecycle uses the typed agent
+  endpoints. Windows agents auto-start through the `LlamaPeerAgent` boot
+  Scheduled Task.
+- **Fast-fail offline hosts:** a closed agent port should be detected
+  with a short socket probe before any HTTP call, so one offline machine
+  adds at most one probe to a polling cycle.
 - **Never let one slow host block the dashboard:** `/api/stats` waits
   for every collection; the dashboard uses `/api/stats/stream` (NDJSON,
   per-machine lines as they complete) so each card paints independently.
-- When adding a Windows PS blob, measure it end-to-end over SSH first —
-  individual cmdlets are ~0.1–0.8s but module autoloads inside one
-  session can silently add seconds.
+- When adding a Windows PowerShell blob inside the agent, measure it
+  end-to-end — individual cmdlets are ~0.1–0.8s but module autoloads
+  inside one session can silently add seconds.
 
 ## Testing implications
 
-`tests/conftest.py` stubs SSH entirely, so OS branches are exercised by
-unit tests, not live hosts. When adding an OS branch, add its literal
-command assertions to the matching test file (`test_swap_manager.py`,
-`test_port_roll.py`, `test_render_rpc.py` all assert exact strings).
+`tests/conftest.py` stubs the peer transport and access settings, so OS
+branches are exercised by unit tests, not live hosts — and the suite does
+not read the developer's `config/settings.yaml`. When adding an OS branch,
+add its literal command assertions to the matching test file
+(`test_swap_manager.py`, `test_port_roll.py`, `test_render_rpc.py` all
+assert exact strings).

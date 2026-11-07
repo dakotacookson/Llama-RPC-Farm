@@ -132,13 +132,16 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 | `/ws/flow/upstream` | Token-chunk events (model currently streaming) |
 | `/ws/flow/sched` | Per-tensor backend events from GGML_SCHED_DEBUG logs + peer rpc-server logs |
 | `/ws/logs/stream` | **Raw** proxy+upstream lines for the Logs tab (`{src, line}`), primed ~1.5s |
-| `/ws/socket.io/*` | Chainlit chat (proxied) |
+| `/ws/swap/faults` | Structured model-load failure notices (one per model per cooldown) |
 
 All log-feed WebSockets must tolerate llama-swap's history replay on
 connect — the backend primes silently; clients ignore the first ~1.5s.
 
 ## Auth model
 
-None on the API itself (LAN tool). Secrets never cross it — machine
-passwords appear only as `password_set: true/false`; the HF token as
-`hf_token_set`.
+Identity is the farm access key (`Authorization: Bearer` / `X-Api-Key`)
+or the web-login session cookie, resolved by `src/access.py`; a scoped
+key only sees/stops its granted models. Trusted loopback (the operator
+console) and in-process callers stay open. Secrets never cross the API:
+agent tokens appear only as `agent_token_set`, the HF token as
+`hf_token_set`, and model configs as `private: true/false`-filtered.

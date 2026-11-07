@@ -195,10 +195,9 @@ minutes between streamed chunks (prefill, RPC backends, memory pressure).
 - **UI won't come up** — check the log (`/tmp/llama-web.log` POSIX,
   `%TEMP%\llama-web.log` Windows); free port 8199 and re-run run.sh.
 - **Peer-agent failures** — service/task stopped, token missing/rotated, or
-  firewall blocking TCP 8198/UDP 8199. SSH failures still apply to SSH-mode
-  peers: password changed, OpenSSH not running, or
-  the OS shell trap: Windows peers need PowerShell-wrapped commands
-  (`OpenSSH` default shell is cmd.exe), macOS has no `pgrep`/`pkill`.
+  firewall blocking TCP 8198/UDP 8199. There is no SSH fallback: every
+  configured machine must have a reachable agent, and installing/repairing
+  it is a one-time platform-package step.
 - **Model path not found on a peer** — the `store://` alias lacks a key
   for that machine's OS; add it in `stores.yaml`.
 - **Port 50052 family busy on a peer** — per-model ports roll

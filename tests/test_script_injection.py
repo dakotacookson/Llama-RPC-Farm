@@ -1,35 +1,6 @@
 """Script-injection tests: attacker-controlled IPs and flag values must
 not break out of the generated RPC/launch shell commands.
 """
-import re
-import types
-from pathlib import Path
-
-import yaml
-
-import conftest
-import config_loader as cfg
-import engine_registry
-import rpc_manager
-import swap_manager
-
-VENV_BLOCK = {"delivery": "venv", "venv_bin": "~/vllm-env/bin/vllm",
-              "docker_image": "vllm/vllm-openai:latest",
-              "default_gpu_memory_utilization": 0.9}
-
-# generated script names: start-<id>.sh where <id> is allowlist-safe
-_SCRIPT_NAME = re.compile(r"start-[A-Za-z0-9._-]+\.sh\Z")
-
-
-def _machine(name, ip, **kw):
-    m = {"name": name, "ip": ip, "username": "u", "password": "p",
-         "os": "linux", "rpc_port": 50052, "gpu": "", "role": "peer",
-         "gpu_vendor": "nvidia",
-         "detected": {"gpu_names": ["NVIDIA RTX 3090"],
-                      "vram_total_gb": 24, "ram_total_gb": 64}}
-    m.update(kw)
-    return m
-
 import shlex
 
 import pytest
@@ -80,56 +51,6 @@ def _qe__model(mid, flags=None, **kw):
     }
     m.update(kw)
     return m
-
-
-# ---------------------------------------------------------------------------
-# _render_rpc: password with shell metacharacters must not break sshpass line
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("bad_password", [
-    "p@ss'word",
-    'p"ass"word',
-    "pass;word",
-    "pass$(evil)",
-    "pass`whoami`",
-    "pass word",  # space
-])
-def test_render_rpc_password_never_baked_into_script(stub_cfg, bad_password):
-    """Generated RPC scripts are agent-only: a machine password must never
-    appear in the script, and the script must not use SSH passwords or
-    sshpass."""
-    master = _qe__machine("aibox1", "10.0.0.98", role="master")
-    peer = _qe__machine("aibox2", "10.0.0.11", password=bad_password)
-    stub_cfg.update({m["name"]: m for m in (master, peer)})
-    model = _qe__model(
-        "m",
-        device_order="aibox1-CUDA0,aibox2-CUDA0",
-    )
-    script = _render_rpc(model, master, [peer])
-
-    assert bad_password not in script, (
-        "Plaintext password baked into generated script"
-    )
-    assert "SSH_PASS" not in script, (
-        "Generated RPC script must not require or reference SSH_PASS")
-    assert "sshpass" not in script, (
-        "Generated RPC script must not use sshpass")
-
-
-def test_password_ssh_path_uses_runtime_secret():
-    """Pin the repo's existing password-SSH contract: the remote-local
-    launcher resolves SSH_PASS at runtime and never embeds a machine
-    password in generated output."""
-    source = Path(__file__).resolve().parents[1] / "src" / "rpc_manager.py"
-    text = source.read_text(encoding="utf-8")
-
-    assert 'sshpass -p "$SSH_PASS"' in text, (
-        "Existing password-SSH path must use runtime $SSH_PASS")
-
-    for line in text.splitlines():
-        if "sshpass -p" in line:
-            assert "$SSH_PASS" in line, (
-                f"sshpass call does not use runtime SSH_PASS: {line!r}")
 
 
 def _single_quote_escape(s):

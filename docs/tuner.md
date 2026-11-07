@@ -57,9 +57,10 @@ tiers) weight split distribution by memory bandwidth, not just VRAM.
 
 ## Bandwidth probe
 
-`probe_link_mbps()` measures SSH throughput between master and each peer
-(7-day cached in `config/net_speed_cache.json`). Used by estimates to
-model RPC hop costs. On a Windows master it degrades gracefully to 0.
+`probe_link_mbps()` measures throughput between master and each peer
+through the peer agent's `/speedtest` endpoint (7-day cached in
+`config/net_speed_cache.json`). Used by estimates to model RPC hop
+costs. A failed probe degrades gracefully to 0; there is no SSH path.
 
 ## Where results land
 

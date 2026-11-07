@@ -222,7 +222,9 @@ _RDMA_SCRIPT = (
 
 
 def rdma():
-    if os.name == "nt":
+    if os.name == "nt" or sys.platform == "darwin":
+        # _RDMA_SCRIPT is Linux/netlink-specific; skip it on Windows and
+        # macOS instead of burning a 20s timeout and reporting nothing.
         return {}
     code, out, _ = _run(_RDMA_SCRIPT, timeout=20)
     if code != 0:

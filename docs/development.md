@@ -93,7 +93,9 @@ bash -n restart.sh restart-llama-swap.sh run.sh    # if touched
 
 ## Releases / distribution
 
-No packaging configured — it runs from the checkout. If distributing:
-rotate `.env` secrets, keep `THIRD-PARTY-LICENSES.md` + the LGPL-2.1
-text (paramiko), keep paramiko as a pip dependency (see README legal
-section).
+Rolling releases are built on every `main` push by
+`.github/workflows/rolling-main.yml` (Linux `.deb`, macOS `.pkg`,
+Windows `setup.exe`, plus the peer-agent packages). See
+[release.md](release.md) for versioning, signing, and publishing. Before
+distributing from a checkout, rotate `.env` secrets and keep
+`THIRD-PARTY-LICENSES.md` current.

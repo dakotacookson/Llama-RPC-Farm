@@ -106,8 +106,9 @@ curl http://<master-ip>:8090/v1/models -H "Authorization: Bearer sk-farm-XXXX"
 ```
 
 Admins manage it all from the UI — create/revoke keys, edit who sees
-what, and watch per-key usage. Keys are never stored in plaintext in
-configs (the vault holds them; details in
+what, and watch per-key usage. Access keys live in the per-install,
+git-ignored `config/settings.yaml` (never in git); agent tokens and the
+HF token live only in the encrypted vault (details in
 [docs/secrets.md](docs/secrets.md)).
 
 ## Test every model type before it matters

@@ -75,3 +75,19 @@ def _default_engine_llama_cpp(monkeypatch, tmp_path):
     default = tmp_path / "settings.yaml"
     default.write_text("engine: llama_cpp\n")
     monkeypatch.setattr(engine_registry, "SETTINGS_FILE", str(default))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_access_settings(monkeypatch, tmp_path):
+    """Never let tests read the developer's live config/settings.yaml.
+
+    Access keys, private-model flags, and theme state are per-install
+    data; a test suite that silently changes behavior based on whose
+    machine it runs on is not a test. Empty settings = pre-Access farm
+    (gate open) for every test. A test that needs keys patches this
+    fixture's file or access.access_keys directly."""
+    import access
+    isolated = tmp_path / "access-settings.yaml"
+    isolated.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("FARM_SETTINGS_FILE", str(isolated))
+    monkeypatch.setattr(access, "_settings_path", lambda: str(isolated))

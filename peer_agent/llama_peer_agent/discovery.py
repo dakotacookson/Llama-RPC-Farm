@@ -69,7 +69,13 @@ def _hardware() -> dict:
     now = time.time()
     if now - _hw_cache["ts"] < 60:
         return _hw_cache["data"]
-    _refresh_hardware_async()
+    if _hw_cache["data"]:
+        # Stale cache: answer immediately and refresh in the background.
+        _refresh_hardware_async()
+        return _hw_cache["data"]
+    # First probe (or a previous failure left no data): collect
+    # synchronously so the very first discovery reply is not empty.
+    _refresh_hardware()
     return _hw_cache["data"]
 
 

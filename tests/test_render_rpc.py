@@ -2,12 +2,13 @@
 Windows .ps1 launcher (_win_launcher).
 
 These parse the generated bash/ps1 as strings and assert the per-model-
-port structure: a per-peer RPC_PORTS map, port-targeted pkill (not a
-blanket pkill of all ggml-rpc-server), per-port rpc.state and log names,
-the --rpc list using per-node ports, and the .ps1 taking -Port/-LogName.
+port structure: Bash-3.2-safe per-peer lookups (macOS /bin/bash has no
+associative arrays), agent-only lifecycle (no SSH/sshpass), per-port log
+names, the --rpc list using per-node ports, and the .ps1 taking
+-Port/-LogName.
 """
 import rpc_manager
-from rpc_manager import _render_rpc, _win_launcher, _model_rpc_ports, _rpc_log_name
+from rpc_manager import _render_rpc, _win_launcher, _model_rpc_ports
 
 
 def _machine(name, ip, os="linux", **kw):
@@ -37,9 +38,12 @@ def test_render_has_rpc_ports_map(stub_cfg):
     stub_cfg.update({m["name"]: m for m in (master, p1, p2)})
     script = _render_rpc(model, master, [p1, p2])
     ports = _model_rpc_ports(model, [p1, p2])
+    # Bash 3.2-safe lookup function, not an associative array
     assert "rpc_port_of() {" in script
+    assert "declare -A" not in script
     for p in (p1, p2):
-        assert f'"{p["ip"]}") echo "{ports[(p["name"], "all")]}" ;;' in script
+        assert (f'"{p["ip"]}") echo "{ports[(p["name"], "all")]}" ;;'
+                in script)
 
 
 def test_render_rpc_list_uses_per_node_ports(stub_cfg):
@@ -63,16 +67,13 @@ def test_render_per_port_state_and_log(stub_cfg):
     p2 = _machine("winbox", "10.0.0.13", os="windows")
     stub_cfg.update({m["name"]: m for m in (master, p1, p2)})
     script = _render_rpc(model, master, [p1, p2])
-    ports = _model_rpc_ports(model, [p1, p2])
-    # state reads/writes use the per-port $port bash var (rpc.state.$port),
-    # never the legacy bare rpc.state path
-    assert "rpc.state.$port" in script
-    assert "/.cache/llama-wrapper/rpc.state " not in script  # no bare legacy path
-    # per-port log names are derived at runtime from the possibly rolled port
-    assert "rpc_log_of() {" in script
-    assert 'rpc_log_for_port "$(rpc_port_of "$1")"' in script
+    # per-port log names are derived at runtime from the node's port
+    assert "rpc_log_for_port() {" in script
+    assert 'rpc_log_of() { rpc_log_for_port "$(rpc_port_of "$1")"; }' in script
     assert "rpc-server-$1.log" in script
-
+    # agent-only: no SSH/sshpass in generated launchers
+    assert "sshpass" not in script
+    assert "SSH_PASS" not in script
 
 def test_render_is_valid_bash(stub_cfg):
     """The generated script must parse as bash (syntax check)."""
@@ -88,31 +89,34 @@ def test_render_is_valid_bash(stub_cfg):
     assert proc.returncode == 0, proc.stderr
 
 
-def test_render_no_unbound_var_under_set_u(stub_cfg):
-    """The script uses 'set -u'. PowerShell tokens like $env:USERPROFILE
-    and $_.CommandLine must be escaped (\\$env / \\$_) so bash doesn't try
-    to expand them as bash vars under set -u (which crashed the script:
-    'env: unbound variable'). Assert the raw $env / $_ never appear
-    unescaped in the win SSH command strings."""
-    model = _model("m", device_order="aibox1-CUDA0,winbox-CUDA0")
-    master = _machine("aibox1", "10.0.0.98", role="master")
-    p2 = _machine("winbox", "10.0.0.13", os="windows")
-    stub_cfg.update({m["name"]: m for m in (master, p2)})
-    script = _render_rpc(model, master, [p2])
-    # any line that's a double-quoted ssh powershell command must escape
-    # $env: and $_. (the .ps1 heredoc body is quoted 'PS1' so $env is fine
-    # there — only the inline ssh strings need the escape). Check the
-    # win stop/state functions specifically.
-    for line in script.splitlines():
-        if "powershell -NoProfile -Command" in line and "Get-CimInstance" in line:
-            # PowerShell vars must be escaped so bash leaves them for
-            # PowerShell under `set -u`
-            assert "\\$x" in line, line
-            assert "\\$c" in line, line
-        if "powershell -NoProfile -Command" in line and "Remove-Item" in line:
-            assert "\\$env:USERPROFILE" in line, line
-        if "powershell -NoProfile -Command" in line and "Test-Path" in line and "rpc.state" in line:
-            assert "\\$env:USERPROFILE" in line, line
+def test_render_bash32_safe(stub_cfg):
+    """macOS /bin/bash is 3.2: no associative arrays. The agent-only
+    script must use case lookups and still parse as bash."""
+    model = _model("m", device_order="node1-CUDA0,node2-CUDA0,winnode-CUDA0")
+    master = _machine("node1", "10.0.0.11", role="master")
+    p1 = _machine("node2", "10.0.0.12")
+    p2 = _machine("winnode", "10.0.0.13", os="windows")
+    stub_cfg.update({m["name"]: m for m in (master, p1, p2)})
+    script = _render_rpc(model, master, [p1, p2])
+    assert "declare -A" not in script
+    for fn in ("peer_devices()", "rpc_port_of()", "peer_label_of()",
+               "agent_base_of()", "agent_token_of()", "agent_payload_of()"):
+        assert fn in script, fn
+
+
+def test_render_agent_token_uses_machine_name(stub_cfg):
+    """The sidecar exports AGENT_TOKEN_<MACHINE_NAME>; keying the lookup
+    by node IP (10_0_0_12) would send an empty bearer to /rpc/ensure."""
+    model = _model("m", device_order="node1-CUDA0,node2-CUDA0")
+    master = _machine("node1", "10.0.0.11", role="master")
+    p1 = _machine("node2", "10.0.0.12")
+    stub_cfg.update({m["name"]: m for m in (master, p1)})
+    script = _render_rpc(model, master, [p1])
+    assert "AGENT_TOKEN_NODE2" in script
+    assert "AGENT_TOKEN_10_0_0_12" not in script
+    # per-machine env must travel in the /rpc/ensure payload
+    assert "CUDA_DEVICE_ORDER" in script
+    assert "GGML_RPC_NO_RDMA" in script
 
 
 def test_win_launcher_formats_exe_and_port():
