@@ -2419,11 +2419,11 @@ set -uo pipefail
 : "${{SSH_PASS:?SSH_PASS is not set — sourced from swap-secrets.env}}"
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=5"
 # reuse guard over the network first: skip upload entirely when serving
-sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+ssh -n $SSH_OPTS "{user}@{ip}" \\
   "powershell -NoProfile -Command \\"try {{ \\$c = New-Object Net.Sockets.TcpClient('127.0.0.1', {remote_port}); \\$c.Close(); exit 0 }} catch {{ exit 1 }}\\"" 2>/dev/null && {{
   echo ">>> {master['name']}:{remote_port} already serving — reusing"
   # stay alive as llama-swap's child until the port closes (see linux note)
-  while sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+  while ssh -n $SSH_OPTS "{user}@{ip}" \\
       "powershell -NoProfile -Command \\"try {{ \\$c = New-Object Net.Sockets.TcpClient('127.0.0.1', {remote_port}); \\$c.Close(); exit 0 }} catch {{ exit 1 }}\\"" 2>/dev/null; do
     sleep 5
   done
@@ -2443,10 +2443,10 @@ echo ">>> starting llama-server on {master['name']}:{remote_port}"
 # the proven shape from the RPC launcher (line ~2221). Single quotes
 # arrive doubled (''C:\...'') and -File rejects them ("path's format
 # is not supported", observed live on winbox).
-sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+ssh -n $SSH_OPTS "{user}@{ip}" \\
   "powershell -NoProfile -ExecutionPolicy Bypass -File \\"%USERPROFILE%\\start-remote-local.ps1\\""
 # stay alive as llama-swap's child until cmdStop closes the port
-while sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+while ssh -n $SSH_OPTS "{user}@{ip}" \\
     "powershell -NoProfile -Command \\"try {{ \\$c = New-Object Net.Sockets.TcpClient('127.0.0.1', {remote_port}); \\$c.Close(); exit 0 }} catch {{ exit 1 }}\\"" 2>/dev/null; do
   sleep 5
 done
@@ -2465,17 +2465,17 @@ SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=5"
 # rolled port otherwise). cmdStop reads it — see the ACTUAL-PORT STATE
 # note in this module's render_remote_local_script docstring.
 _state_write="bash -c 'mkdir -p \\$HOME/.cache/llama-wrapper && echo {remote_port} > \\$HOME/{state_rel}'"
-sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" "$_state_write" 2>/dev/null || true
+ssh -n $SSH_OPTS "{user}@{ip}" "$_state_write" 2>/dev/null || true
 # Reuse probe, retried: on thin links a single dropped SSH probe must
 # never read as "port closed" — that misread would pkill a healthy
 # server below and restart a multi-minute load for nothing.
 for _i in $(seq 1 5); do
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+  ssh -n $SSH_OPTS "{user}@{ip}" \\
     "bash -c 'exec 3<>/dev/tcp/127.0.0.1/{remote_port}'" 2>/dev/null && {{
     echo ">>> {master['name']}:{remote_port} already serving — reusing"
     # STAY ALIVE as llama-swap's child until the port closes (cmdStop's
     # pkill closes it) — exiting would trip 'upstream exited prematurely'
-    while sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+    while ssh -n $SSH_OPTS "{user}@{ip}" \\
         "bash -c 'echo > /dev/tcp/127.0.0.1/{remote_port}'" 2>/dev/null; do
       sleep 5
     done
@@ -2490,29 +2490,29 @@ echo ">>> starting llama-server on {master['name']}:{remote_port}"
 # resets that load to zero on EVERY retry — the reset loop. When a
 # matching server process is already alive but its port isn't open yet,
 # skip the kill AND the start and go straight to waiting on it.
-if sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+if ssh -n $SSH_OPTS "{user}@{ip}" \\
     "pgrep -u {user} -f 'llama-[s]erver.*{port_re}' >/dev/null" 2>/dev/null; then
   echo ">>> {master['name']}:{remote_port} already starting (process alive, port closed) — waiting, no kill"
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" "$_state_write" 2>/dev/null || true
+  ssh -n $SSH_OPTS "{user}@{ip}" "$_state_write" 2>/dev/null || true
 else
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+  ssh -n $SSH_OPTS "{user}@{ip}" \\
     "pkill -u {user} -f 'llama-[s]erver.*{port_re}' 2>/dev/null; true"
   sleep 1
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+  ssh -n $SSH_OPTS "{user}@{ip}" \\
     "{env}; nohup bash -c '{cmd}' </dev/null > \\$HOME/{remote_log} 2>&1 &"
 fi
 # Load/readiness budget: ~2h (2400 polls x ~3s). Thin-link/CIFS farm
 # rule — a slow load must NEVER time out on our end; only a dead
 # server process (fast-fail below) or an explicit evict ends the wait.
 for _i in $(seq 1 2400); do
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+  ssh -n $SSH_OPTS "{user}@{ip}" \\
     "bash -c 'echo > /dev/tcp/127.0.0.1/{remote_port}'" 2>/dev/null && {{
     echo ">>> {master['name']}:{remote_port} is up"
     # STAY ALIVE as llama-swap's child: cmd IS the tracked upstream —
     # exiting here would trip 'upstream exited prematurely'. Hold until
     # the remote port CLOSES (cmdStop's SSH pkill closes it), then exit
     # so llama-swap sees a clean stop.
-    while sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+    while ssh -n $SSH_OPTS "{user}@{ip}" \\
         "bash -c 'echo > /dev/tcp/127.0.0.1/{remote_port}'" 2>/dev/null; do
       sleep 5
     done
@@ -2524,7 +2524,7 @@ for _i in $(seq 1 2400); do
   # ~2h and tripping 'upstream exited prematurely' with no context.
   # (A missing process is a real failure, never a timeout.)
   if [ $((_i % 20)) -eq 0 ]; then
-    sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "{user}@{ip}" \\
+    ssh -n $SSH_OPTS "{user}@{ip}" \\
       "pgrep -u {user} -f 'llama-[s]erver.*{port_re}' >/dev/null" 2>/dev/null || {{
       echo "!!! {master['name']}:{remote_port} server process died before opening the port — check ~/{remote_log} there" >&2
       exit 1
@@ -2660,39 +2660,35 @@ def _render_rpc(model_cfg, master, peers, cmd=None):
 
     # Agent-only launch script: one ggml-rpc-server per (peer, group) is
     # started through the peer agent's typed /rpc/ensure, then llama-server
-    # runs in the foreground. No SSH, no passwords, no sshpass.
+    # runs in the foreground. No SSH, no passwords, key-based SSH only.
     return f"""#!/bin/bash
 set -uo pipefail
 LINUX_USER="{master['username']}"
 WIN_USER="{win_user}"
-SSH_PASS="${{SSH_PASS:-}}"
 # NODES are per-SERVER entries (tag = IP, or IP#cpu for the separate
 # CPU/RAM server). SSH targets strip the #group suffix.
 LINUX_NODES=({linux_nodes})
 WIN_NODES=({win_nodes})
 ALL_NODES=("${{LINUX_NODES[@]}}" "${{WIN_NODES[@]-}}")
+AGENT_NODES=("${{LINUX_NODES[@]}}" "${{WIN_NODES[@]-}}")
 node_ip() {{ local t="$1"; echo "${{t%%#*}}"; }}
+agent_base() {{ echo "http://$(node_ip "$1"):${{AGENT_PORT:-8198}}"; }}
 PORT="${{1:-8080}}"
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=5"
 WIN_SSH_OPTS="$SSH_OPTS -o BatchMode=yes"
-# Auth: ssh keys first (BatchMode probe on every linux peer); sshpass only as fallback
+# Auth: SSH keys only; the peer agent owns RPC lifecycle control.
 USE_KEY=1
 for _n in "${{LINUX_NODES[@]}}"; do
   [[ -n "$_n" ]] || continue
   ssh -n $SSH_OPTS -o BatchMode=yes "$LINUX_USER@$(node_ip "$_n")" true 2>/dev/null || USE_KEY=0
 done
-if [[ "$USE_KEY" == 1 ]]; then
-  echo ">>> ssh auth: keys"
-  sshpass() {{ shift 2; "$@"; }}
-else
-  : "${{SSH_PASS:?no working ssh key and SSH_PASS is not set — run via scripts/farm-run.sh}}"
-  command -v sshpass >/dev/null && : "$SSH_PASS" || {{ echo "!!! no ssh key works and sshpass is missing" >&2; exit 1; }}
-  echo ">>> ssh auth: password"
-fi
+echo ">>> ssh auth: keys"
 DEVICE_ORDER="{device_order}"
 {peer_devices_decl}
 {peer_ports_decl}
 {peer_logs_decl}
+{peer_bins_decl}
+{peer_cm_decl}
 {peer_envs_decl}
 {peer_labels_decl}
 
@@ -2707,14 +2703,14 @@ DEVICE_ORDER="{device_order}"
       echo ">>> rpc backends: ${{devs:-default}}  [$(peer_label_of "$node")]"
       # Kill only the rpc-server on THIS port (co-served models on other
       # ports must survive), then start a fresh one on this port.
-      sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
+      ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
         "pkill -u $LINUX_USER -f \\"ggml-[r]pc-server.*-p $port \\"" >/dev/null 2>&1 || true
       sleep 1
       local envs="$(rpc_env_of "$node")"
       # setsid: Linux util-linux. macOS lacks it — fall back to nohup.
       # ($envs already carries GGML_SCHED_DEBUG/RPC_DEBUG + transport flags
       # from the machine config — single source of truth, no hardcoding.)
-      sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
+      ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
          "export $envs; \\
           setsid \\"$(rpc_bin_of "$node")\\" \\
            -H 0.0.0.0 -p $port -t \\"$(nproc --all 2>/dev/null || sysctl -n hw.ncpu)\\"$extra \\
@@ -2746,7 +2742,7 @@ push_win_launcher() {{
       # Kill only the rpc-server on THIS port (CIM filter on command line),
       # leaving co-served models' rpc-servers on other ports running.
       ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" \\
-        "powershell -NoProfile -Command \\"Get-CimInstance Win32_Process | Where-Object {{ (' ' + \$_.CommandLine + ' ') -like '* -p $port *' -and \\$_.Name -like 'ggml-rpc-server*' }} | ForEach-Object {{ Stop-Process -Id \\$_.ProcessId -Force }}\\"" >/dev/null 2>&1 || true
+        "powershell -NoProfile -Command \\"Get-CimInstance Win32_Process | Where-Object {{ \$x = \$_; (' ' + \$_.CommandLine + ' ') -like '* -p $port *' -and \\$_.Name -like 'ggml-rpc-server*' }} | ForEach-Object {{ Stop-Process -Id \\$_.ProcessId -Force; \\$c++ }}\\"" >/dev/null 2>&1 || true
       sleep 1
       push_win_launcher "$node" || {{ echo "!!! could not copy launcher to $node" >&2; return 1; }}
       ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" \\
@@ -2757,20 +2753,21 @@ stop_node_rpc_linux() {{
   local port="$(rpc_port_of "$node")"
   # ONLY the rpc daemon on this port: llama-server / llama-swap on this
   # box may belong to co-served models and must survive our exit.
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
+  ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
     "pkill -u $LINUX_USER -f \\"ggml-[r]pc-server.*-p $port \\"" >/dev/null 2>&1 || true
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
+  ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
     "rm -f $HOME/.cache/llama-wrapper/rpc.state.$port /tmp/llama-wrapper-rpc.state.$port" >/dev/null 2>&1 || true
   # stale RPC tensor cache (older -c runs): GBs per file, must not starve
   # small peer disks. Safe: purely derived, rebuilt from NAS on demand.
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
+  ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
     "rm -rf $HOME/.cache/llama.cpp/rpc" >/dev/null 2>&1 || true
 }}
+stop_node_rpc_win() {{ agent_stop "$@"; }}
 agent_stop() {{
   local node="$1"
   local port="$(rpc_port_of "$node")"
   ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" \\
-    "powershell -NoProfile -Command \\"Get-CimInstance Win32_Process | Where-Object {{ (' ' + \$_.CommandLine + ' ') -like '* -p $port *' -and \\$_.Name -like 'ggml-rpc-server*' }} | ForEach-Object {{ Stop-Process -Id \\$_.ProcessId -Force }}\\"" >/dev/null 2>&1 || true
+    "powershell -NoProfile -Command \\"Get-CimInstance Win32_Process | Where-Object {{ \$x = \$_; (' ' + \$_.CommandLine + ' ') -like '* -p $port *' -and \\$_.Name -like 'ggml-rpc-server*' }} | ForEach-Object {{ Stop-Process -Id \\$_.ProcessId -Force; \\$c++ }}\\"" >/dev/null 2>&1 || true
   ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" \\
     "powershell -NoProfile -Command \\"Remove-Item \\$env:USERPROFILE/.cache/llama-wrapper/rpc.state.$port, \\$env:TEMP/llama-wrapper-rpc.state.$port -ErrorAction SilentlyContinue\\"" >/dev/null 2>&1 || true
   # stale RPC tensor cache (older -c runs): must not starve peer disks.
@@ -2799,7 +2796,7 @@ agent_port_open() {{
   local port="$(rpc_port_of "$node")"
   # $HOME first, /tmp fallback (a full home disk must not silently
   # disable reuse -- it would restart the peer on every load)
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
+  ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
     "cat $HOME/.cache/llama-wrapper/rpc.state.$port 2>/dev/null || cat /tmp/llama-wrapper-rpc.state.$port 2>/dev/null || true" || true
 }}
 agent_rpc_listed() {{
@@ -2811,7 +2808,7 @@ agent_rpc_listed() {{
 set_rpc_state_linux() {{
   local node="$1" want="$2"
   local port="$(rpc_port_of "$node")"
-  sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
+  ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
     "mkdir -p $HOME/.cache/llama-wrapper && echo \\"$want\\" > $HOME/.cache/llama-wrapper/rpc.state.$port || echo \\"$want\\" > /tmp/llama-wrapper-rpc.state.$port" >/dev/null 2>&1 || true
 }}
 set_rpc_state_win() {{
@@ -2825,7 +2822,7 @@ port_open() {{
   [[ -z "$port" ]] && port="$(rpc_port_of "$node")"
   if [[ -n "$(rpc_cm_of "$node")" ]]; then
     # native-CM peer: no TCP listener exists — alive == process running
-    sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
+    ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
       "pgrep -f \\"ggml-[r]pc-server.*-p $port \\" >/dev/null" 2>/dev/null
     return $?
   fi
@@ -2889,42 +2886,41 @@ ensure_node() {{
   fi
 }}
 ensure_rpc_linux() {{
-  # Reuse a running rpc-server on this port whose backends match; restart
-  # only on mismatch. Per-port: co-served models on other ports are never
-  # touched, so they never need to "agree" on backends anymore.
-  local node="$1" want have
+  # Agent-only ensure: ask the peer agent to start/reuse this model's
+  # rpc-server. No SSH, no passwords, key-based SSH only.
+  local node="$1" want devs dev_json port token_var token
   want="$(peer_devices "$node")"
+  devs="$(peer_devices "$node")"
   [[ -z "$want" ]] && want="default"
-  if port_open "$node"; then
-    have="$(rpc_state_linux "$node")"
-    if [[ "$have" == "$want" ]]; then
-      echo ">>> reusing rpc-server on $node:$(rpc_port_of "$node") (linux) [$want]"
-      return 0
-    fi
-    echo ">>> rpc-server on $node:$(rpc_port_of "$node") backends mismatch (have '${{have:-none}}' want '$want'), restarting"
-  fi
-  stop_node_rpc_linux "$node"
-  sleep 1
-  start_rpc_linux "$node" || return 1
-  set_rpc_state_linux "$node" "$want"
+  port="$(rpc_port_of "$node")"
+  dev_json="[]"
+  [[ -n "$devs" ]] && dev_json="[$(echo "$devs" | sed 's/,/","/g;s/^/"/;s/$/"/')]"
+  token_var="AGENT_TOKEN_$(echo "$node" | tr '[:lower:]-' '[:upper:]_')"
+  token="${{!token_var:-}}"
+  echo ">>> rpc binary: $(rpc_bin_of "$node")"
+  curl -fsS -H "Authorization: Bearer $token" \
+       -H 'Content-Type: application/json' \
+       -d "{{\"port\":$port,\"devices\":$dev_json,\"env\":{{}}}}" \
+       "$(agent_base "$node")/rpc/ensure" >/dev/null
   note_started "$node"
 }}
 ensure_rpc_win() {{
-  local node="$1" want have
+  # Agent-only ensure: ask the peer agent to start/reuse this model's
+  # rpc-server. No SSH, no passwords, key-based SSH only.
+  local node="$1" want devs dev_json port token_var token
   want="$(peer_devices "$node")"
+  devs="$(peer_devices "$node")"
   [[ -z "$want" ]] && want="default"
-  if port_open "$node"; then
-    have="$(rpc_state_win "$node")"
-    if [[ "$have" == "$want" ]]; then
-      echo ">>> reusing rpc-server on $node:$(rpc_port_of "$node") (windows) [$want]"
-      return 0
-    fi
-    echo ">>> rpc-server on $node:$(rpc_port_of "$node") backends mismatch (have '${{have:-none}}' want '$want'), restarting"
-  fi
-  stop_node_rpc_win "$node"
-  sleep 1
-  start_rpc_win "$node" || return 1
-  set_rpc_state_win "$node" "$want"
+  port="$(rpc_port_of "$node")"
+  dev_json="[]"
+  [[ -n "$devs" ]] && dev_json="[$(echo "$devs" | sed 's/,/","/g;s/^/"/;s/$/"/')]"
+  token_var="AGENT_TOKEN_$(echo "$node" | tr '[:lower:]-' '[:upper:]_')"
+  token="${{!token_var:-}}"
+  echo ">>> rpc binary: $(rpc_bin_of "$node")"
+  curl -fsS -H "Authorization: Bearer $token" \
+       -H 'Content-Type: application/json' \
+       -d "{{\"port\":$port,\"devices\":$dev_json,\"env\":{{}}}}" \
+       "$(agent_base "$node")/rpc/ensure" >/dev/null
   note_started "$node"
 }}
 wait_for_rpc() {{
@@ -2936,7 +2932,7 @@ wait_for_rpc() {{
   if [[ -n "$(rpc_cm_of "$node")" ]]; then
     # native-CM peer: wait for the process + its "listening" line in the log
     for i in $(seq 1 60); do
-      if sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
+      if ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" \\
         "pgrep -f \\"ggml-[r]pc-server.*-p $port \\" >/dev/null && grep -a \\"listening on\\" \\"$HOME/$log\\" 2>/dev/null | grep -q ." 2>/dev/null; then
         echo ">>> $node listening on $port (native RDMA)"
         return 0
@@ -2944,7 +2940,7 @@ wait_for_rpc() {{
       sleep 2
     done
     echo "!!! rpc-server never came up on $node:$port" >&2
-    sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" "tail -20 \\"$HOME/$log\\"" >&2 2>/dev/null || true
+    ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" "tail -20 \\"$HOME/$log\\"" >&2 2>/dev/null || true
     return 1
   fi
   for i in $(seq 1 30); do
@@ -2971,7 +2967,7 @@ wait_for_rpc() {{
   if [[ " ${{WIN_NODES[@]-}} " == *" $node "* ]]; then
     ssh -n $WIN_SSH_OPTS "$WIN_USER@$(node_ip "$node")" "powershell -NoProfile -Command \\"Get-Content \\$env:USERPROFILE\\$log -Tail 20\\"" >&2 2>/dev/null || true
   else
-    sshpass -p "$SSH_PASS" ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" "tail -20 \\"$HOME/$log\\"" >&2 2>/dev/null || true
+    ssh -n $SSH_OPTS "$LINUX_USER@$(node_ip "$node")" "tail -20 \\"$HOME/$log\\"" >&2 2>/dev/null || true
   fi
   return 1
   done

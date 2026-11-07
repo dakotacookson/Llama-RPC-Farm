@@ -10,6 +10,7 @@ principle) — these tests pin the vLLM surfaces only.
 """
 import re
 import types
+from pathlib import Path
 
 import yaml
 
@@ -164,9 +165,9 @@ def _qe__model(mid, flags=None, **kw):
     "pass word",  # space
 ])
 def test_render_rpc_password_never_baked_into_script(stub_cfg, bad_password):
-    """Secrets are vault-only: no password ( however metachar-heavy ) may
-    appear anywhere in the generated script. The script requires $SSH_PASS
-    at runtime (scripts/farm-run.sh decrypts the vault and exports it)."""
+    """Generated RPC scripts are agent-only: a machine password must never
+    appear in the script, and the script must not use SSH passwords or
+    sshpass."""
     master = _qe__machine("aibox1", "10.0.0.98", role="master")
     peer = _qe__machine("aibox2", "10.0.0.11", password=bad_password)
     stub_cfg.update({m["name"]: m for m in (master, peer)})
@@ -179,14 +180,26 @@ def test_render_rpc_password_never_baked_into_script(stub_cfg, bad_password):
     assert bad_password not in script, (
         "Plaintext password baked into generated script"
     )
-    assert "SSH_PASS" in script, "Expected runtime $SSH_PASS resolution in script"
-    sshpass_lines = [l for l in script.splitlines()
-                     if "sshpass" in l and not l.lstrip().startswith(("#", "sshpass()"))]
-    assert sshpass_lines, "Expected at least one sshpass line in generated script"
-    for line in sshpass_lines:
-        assert ('$SSH_PASS' in line or '"$SSH_PASS"' in line
-                or "'$SSH_PASS'" in line), (
-            f"sshpass line lacks runtime SSH_PASS reference: {line!r}")
+    assert "SSH_PASS" not in script, (
+        "Generated RPC script must not require or reference SSH_PASS")
+    assert "sshpass" not in script, (
+        "Generated RPC script must not use sshpass")
+
+
+def test_password_ssh_path_uses_runtime_secret():
+    """Pin the repo's existing password-SSH contract: the remote-local
+    launcher resolves SSH_PASS at runtime and never embeds a machine
+    password in generated output."""
+    source = Path(__file__).resolve().parents[1] / "src" / "rpc_manager.py"
+    text = source.read_text(encoding="utf-8")
+
+    assert 'sshpass -p "$SSH_PASS"' in text, (
+        "Existing password-SSH path must use runtime $SSH_PASS")
+
+    for line in text.splitlines():
+        if "sshpass -p" in line:
+            assert "$SSH_PASS" in line, (
+                f"sshpass call does not use runtime SSH_PASS: {line!r}")
 
 
 def _single_quote_escape(s):

@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tarfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -1175,6 +1176,10 @@ def test_discovery_payload_includes_hardware(monkeypatch):
         "ram_total_gb": 64, "cores": 16})
     discovery._hw_cache.update({"ts": 0.0, "data": {}})
     body = discovery.payload(None)
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and not body["hardware"]:
+        time.sleep(0.05)
+        body = discovery.payload(None)
     hw = body["hardware"]
     assert hw["gpu_vendor"] == "nvidia"
     assert hw["gpu_names"] == ["NVIDIA GeForce RTX 4090"]
