@@ -4,14 +4,14 @@ GGUF: a sharded file set like `model-00001-of-00003.gguf` or the user's
 `part 01 of 03` naming is presented as ONE model entry with its shards
 listed, ready to pass to llama-server --model.
 
-HF/safetensors (vLLM's native format, ARD §3.4): a directory containing
-config.json + at least one *.safetensors is ONE model — `vllm serve
-<directory>`. Its -000XX-of-000YY safetensors shards collapse into that
-single entry via the same shard pattern used for GGUF splits.
+HF/safetensors: a directory containing config.json + at least one
+*.safetensors is ONE model. Its -000XX-of-000YY safetensors shards
+collapse into that single entry via the same shard pattern used for GGUF
+splits.
 
 Every model entry carries `format`: "gguf" | "hf", so engine-aware
-surfaces (model wizard, vLLM validation) can treat GGUF-on-vLLM as
-experimental without re-statting the path.
+surfaces (model wizard) can reason about the format without re-statting
+the path.
 """
 import os
 import re
@@ -50,7 +50,7 @@ def _dir_stats(files):
 def _is_hf_model_dir(path):
     """True when `path` holds an HF/safetensors model: config.json plus at
     least one *.safetensors. A safetensors file alone is not identifiable
-    (vLLM reads the architecture from config.json)."""
+    (the architecture comes from config.json)."""
     try:
         if not os.path.isfile(os.path.join(path, HF_CONFIG_MARKER)):
             return False
@@ -68,8 +68,7 @@ def _hf_entry(dirpath):
     Shard collapse reuses the -000XX-of-000YY pattern: the dominant shard
     group (same base name) is the model's weights; stray safetensors files
     (e.g. adapter_model.safetensors) are not weight shards and are left out
-    of the entry. base_path is the directory itself — what `vllm serve`
-    takes.
+    of the entry. base_path is the directory itself.
     """
     groups = {}
     for name in sorted(os.listdir(dirpath)):

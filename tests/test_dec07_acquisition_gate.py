@@ -3,17 +3,15 @@ validate_downloaded members + the engine-gate on POST /api/downloads and
 GET /api/scan, and the reverse format gate in rpc_manager.validate_model.
 
 - Adapter members: LlamaCppAdapter.acquire refuses repo=True and
-  non-GGUF links; VllmAdapter.acquire refuses bare .gguf links; both
-  delegate to the right hf_downloader starter otherwise. browse()
-  proxies gguf vs safetensors search. validate_downloaded() checks the
-  engine's servable shape (.gguf file vs config.json+safetensors dir).
-- POST /api/downloads: in llama.cpp mode a GGUF link works and an HF
-  repo download 409s; in vLLM mode an HF repo works and a GGUF 409s.
+  non-GGUF links, delegating to the right hf_downloader starter. browse()
+  proxies gguf search. validate_downloaded() checks the engine's servable
+  shape (.gguf file).
+- POST /api/downloads: a GGUF link works and an HF repo download 409s.
   The gate fires BEFORE any hf_downloader call (no job is created).
-- GET /api/scan: hf entries disappear in llama.cpp mode, gguf entries
-  disappear in vLLM mode, projectors survive both.
+- GET /api/scan: hf entries disappear in llama.cpp mode, projectors
+  survive.
 - rpc_manager.validate_model (reverse gate): hf-format model under
-  llama.cpp is an error; gguf under vLLM only warns.
+  llama.cpp is an error.
 
 Heavy externals (HF network, subprocess downloads) are monkeypatched —
 no real downloads, no network.
@@ -148,10 +146,7 @@ def test_llamacpp_adapter_browse_gguf(monkeypatch):
         calls.update(kw)
         return {"models": ["gg"]}
 
-    async def fake_st(**kw):
-        raise AssertionError("safetensors search must not run in llama mode")
     monkeypatch.setattr(hf_browse, "search_gguf", fake_gguf)
-    monkeypatch.setattr(hf_browse, "search_safetensors", fake_st)
     ad = engine_registry.get_engine({"engine": "llama_cpp"})
     res = _run(ad.browse(query="qwen", quant="q4", author="a"))
     assert res == {"models": ["gg"]}
@@ -174,14 +169,6 @@ def test_validate_downloaded_shapes(tmp_path, monkeypatch):
     errs = lc.validate_downloaded("HFModel")
     assert errs and errs[0]["level"] == "error"
 
-    vm = engine_registry.get_engine({"engine": "vllm"})
-    errs = vm.validate_downloaded("model.gguf")
-    assert errs and errs[0]["level"] == "error"
-    errs = vm.validate_downloaded("HFModel")  # config.json, no weights
-    assert errs and errs[0]["level"] == "error"
-    (hf_dir / "model.safetensors").write_bytes(b"ST")
-    assert vm.validate_downloaded("HFModel") == []
-
 
 # ---------------- POST /api/downloads engine gate ----------------------------
 
@@ -196,16 +183,11 @@ def test_downloads_gguf_ok_llamacpp_mode(client, settings_file, monkeypatch):
 
 
 def test_downloads_repo_409_llamacpp_mode(client, settings_file, monkeypatch):
-    import hf_downloader
-    fired = []
-    monkeypatch.setattr(hf_downloader, "start_repo",
-                        lambda *a: fired.append(a) or {})
     r = client.post("/api/downloads", json={
         "link": "hf://Qwen/Qwen3-0.6B", "store": "llm-models",
         "repo": True})
     assert r.status_code == 409
     assert "hf" in r.json()["detail"]
-    assert not fired  # gate fires BEFORE any downloader call
 
 
 
@@ -217,26 +199,11 @@ def test_hf_search_gate(client, settings_file, monkeypatch):
 
     async def fake_gguf(**kw):
         return {"models": ["gg"]}
-
-    async def fake_st(**kw):
-        return {"models": ["st"]}
     monkeypatch.setattr(hf_browse, "search_gguf", fake_gguf)
-    monkeypatch.setattr(hf_browse, "search_safetensors", fake_st)
 
-    # llama.cpp: gguf search fine, safetensors 409
-    r = client.get("/api/hf/search", params={"query": "q", "fmt": "gguf"})
+    r = client.get("/api/hf/search", params={"query": "q"})
     assert r.status_code == 200
-    r = client.get("/api/hf/search",
-                   params={"query": "q", "fmt": "safetensors"})
-    assert r.status_code == 409
-
-    # vllm: safetensors fine, gguf 409
-    _set_engine("vllm", settings_file)
-    r = client.get("/api/hf/search",
-                   params={"query": "q", "fmt": "safetensors"})
-    assert r.status_code == 200
-    r = client.get("/api/hf/search", params={"query": "q", "fmt": "gguf"})
-    assert r.status_code == 409
+    assert r.json() == {"models": ["gg"]}
 
 
 # ---------------- GET /api/scan engine gate ----------------------------------
@@ -264,13 +231,6 @@ def test_scan_filters_by_engine(client, settings_file, tmp_path, monkeypatch):
     assert r.status_code == 200, r.text
     fmts = {m.get("format") for m in r.json()["models"]}
     assert fmts == {"gguf"}
-
-    # vllm: only the hf entry
-    _set_engine("vllm", settings_file)
-    r = client.get("/api/scan", params={"path": str(root)})
-    assert r.status_code == 200
-    fmts = {m.get("format") for m in r.json()["models"]}
-    assert fmts == {"hf"}
 
 
 # ---------------- reverse format gate in rpc_manager.validate_model ---------

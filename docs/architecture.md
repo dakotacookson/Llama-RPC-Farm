@@ -19,14 +19,12 @@ A single FastAPI process (`src/app.py`) that:
 | Module | Responsibility |
 |--------|----------------|
 | `app.py` | All HTTP/WS routes. Thin: validates, calls modules, returns. Also: flow-log parsing (`_parse_sched_line` etc.), UI state endpoints (accordion/flow layout), machine detail. |
-| `config_loader.py` | YAML CRUD store classes (`machines`, `groups`, `models`, `swap_groups`), model helpers (`list_models`, variant resolution), hardware fingerprinting, model↔hardware sync. Owns the engine schema vocabulary (enum + `vllm:` block defaults/validation) and the per-model `vllm:` round-trip (`sanitize_vllm_section` / `apply_vllm_section`). |
-| `engine_registry.py` | Engine adapter seam (`llama_cpp` \| `vllm`): `load_settings` applies the engine schema (enum + normalized `vllm:` block — bad values are startup errors, never silent fallback); `get_engine(settings)` is the one seam app.py dispatches on. Adapters implement the `EngineAdapter` Protocol (build_command / probe / swap_entries / validate_model_config / validate_hosts / ui_hints); `LlamaCppAdapter` is pure delegation to rpc_manager/swap_manager, `VllmAdapter` registers lazily from vllm_manager. |
+| `config_loader.py` | YAML CRUD store classes (`machines`, `groups`, `models`, `swap_groups`), model helpers (`list_models`, variant resolution), hardware fingerprinting, model↔hardware sync. Owns the engine enum vocabulary. |
+| `engine_registry.py` | Engine adapter seam (`llama_cpp`): `load_settings` applies the engine schema (enum — bad values are startup errors, never silent fallback); `get_engine(settings)` is the one seam app.py dispatches on. Adapters implement the `EngineAdapter` Protocol (build_command / probe / swap_entries / validate_model_config / validate_hosts / ui_hints); `LlamaCppAdapter` is pure delegation to rpc_manager/swap_manager. |
 | `rpc_manager.py` | The biggest module (~2.6k lines): RPC server start/stop/status, port rolling, per-port state files, `build_llama_command`, `compute_rpc_map`, bash/PowerShell script generation, RDMA gating, llama-swap host bin resolution. |
-| `swap_manager.py` | llama-swap daemon: settings, `generate()` (builds full config.yaml plan from model configs), push, `launch()` orchestration, `stop()`, `reload_daemon()`, systemd/win/mac service paths, backup + validation. Engine-aware at entry-emit time only: when settings `engine: vllm`, each entry emits the vllm cmd/cmdStop/`/health` via `vllm_manager.swap_entry_parts` (thin start script on linux; RPC peers ignored with a warning) — everything downstream (backup, write, push, launch, health) stays engine-agnostic. |
+| `swap_manager.py` | llama-swap daemon: settings, `generate()` (builds full config.yaml plan from model configs), push, `launch()` orchestration, `stop()`, `reload_daemon()`, systemd/win/mac service paths, backup + validation. |
 | `tuner.py` | Math estimate (VRAM fit, KV bytes, split weights) + staged live benchmark search. Writes tuning results back into model configs. |
 | `llamacpp_installer.py` | Downloads the right llama.cpp prebuilt per OS/vendor/arch/glibc and updates `llama_bin`. |
-| `vllm_installer.py` | Installs vLLM on ONE machine (local or SSH) as a `steps.run_steps` report, mirroring llamacpp_installer: gates (OS linux-only — Windows/macOS refused before any command; nvidia-smi must answer; AMD needs rocm-smi + Python 3.12), then delivery per settings `vllm:` — venv (uv when available, else `python3 -m venv`, pinned wheel `0.18.0`, ROCm hosts get the ROCm wheel index) or docker (`docker pull` of the configured image). Post-install verify: `vllm --version`; on AMD a backend probe asserts `torch.version.hip` (the silent-CUDA-fallback guard). Success points settings `vllm.venv_bin` at the installed binary. `plan()` is the no-side-effect preview. The experimental vllm-gguf-plugin is never auto-installed. |
-| `vllm_manager.py` | All vLLM knowledge: `build_vllm_command` (venv `vllm serve` or `docker run`, multi-line shell like rpc_manager), `build_cmd_stop` (`docker stop farm-<id>` / `pkill -f "vllm serve.*<id>"` — llama-swap stops via cmdStop, not the process group), `swap_entry_parts` (cmd/cmdStop/checkEndpoint=`/health`/env — empty by design: device pinning travels inside cmd), HTTP probing (`probe_health` /health, `probe_identity` /v1/models served-name match, `probe_capacity` /metrics gauges), static validation (single host, fp8-only kv cache, GGUF needs `vllm.tokenizer`, TP-vs-GPU-count cross-check), the engine×OS gate (`validate_hosts`: no native Windows, no macOS, ROCm wheels need Python 3.12), and `ui_hints()` (labels/hidden panels/flag presets). Farm device chips map to `CUDA_VISIBLE_DEVICES` index lists. |
 | `swap_installer.py` | Downloads the official llama-swap prebuilt per OS/arch, skip-if-present, updates swap settings' binary. Single-host tool — no fleet install. |
 | `stats_collector.py` | GPU/CPU/RAM stats: local or peer-agent; three OS branches (linux `/proc`+nvidia-smi, Windows PowerShell, macOS sysctl/top). |
 | `discovery.py` | LAN identity helpers: UDP peer-agent discovery + ARP/MAC healing. No SSH scan. |
@@ -52,32 +50,21 @@ host, launches via systemd/detached/Win32_Process.
 Both produce step reports via `steps.run_steps`; files are pushed through
 the peer agent (`/files/write`) or written locally.
 
-## Engine registry (llama.cpp | vLLM)
+## Engine registry (llama.cpp)
 
 `engine_registry.py` is the only seam app.py branches on. Settings
 `engine: llama_cpp` (default, backward compatible when the key is
-missing) or `vllm`; a typo is a startup error listing valid values.
-Each adapter implements the same Protocol so callers get identical
-shapes:
+missing); a typo is a startup error listing valid values. The adapter
+implements the Protocol so callers get stable shapes:
 
-| Operation | llama.cpp | vLLM |
-|---|---|---|
-| command | RPC wrapper script / `llama-server --rpc` | `vllm serve <model> --host 0.0.0.0 --port "$PORT"` or `docker run` |
-| probe | TCP port-open check | HTTP `GET /health` (200 = serving; vLLM binds the port long before it can answer) |
-| serving | multi-machine RPC cluster | single host only — TP for multi-GPU within the host |
-| stop | process group | `cmdStop` (`docker stop` / `pkill -f`) |
-| hosts | any | linux only (no native Windows; macOS needs vLLM-Metal; ROCm wheels need Python 3.12) |
-| kv cache | q4_0/q8_0 | fp8 only |
-
-vLLM scope decisions baked into the code: `servers` must be exactly one
-machine (a peer chip or extra server is refused/warned — in vllm mode
-there is no on-demand multi-machine equivalent of `--rpc`); device
-chips map to `CUDA_VISIBLE_DEVICES` index lists (RAM chips map to
-nothing — CPU offload is `--cpu-offload-gb`); the per-model `env:` is
-always empty because pinning travels inside cmd (venv prefix / docker
-`-e`), so preview and runtime can never drift. The experimental
-vllm-gguf-plugin is opt-in only; GGUF on vLLM requires
-`vllm.tokenizer` pointing at the base HF directory.
+| Operation | llama.cpp |
+|---|---|
+| command | RPC wrapper script / `llama-server --rpc` |
+| probe | TCP port-open check |
+| serving | multi-machine RPC cluster |
+| stop | process group |
+| hosts | any |
+| kv cache | q4_0/q8_0 |
 
 ## Request flow (typical "Launch All")
 
@@ -96,10 +83,7 @@ UI (Launch tab) → POST /api/swap/launch
 
 Single-model live launch: `POST /api/launch` → `rpc_manager` starts each
 peer's rpc-server (`start_rpc`), then `_start_llama_server` on the master,
-then waits for the HTTP port. In vllm mode this endpoint answers **409**
-— live RPC-cluster launch is a llama.cpp-only concept; serve models
-through llama-swap (`POST /api/swap/launch`) instead, where `generate()`
-emits the vllm cmd/cmdStop/`/health` entries.
+then waits for the HTTP port.
 
 ## Serving flow (runtime)
 

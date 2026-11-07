@@ -1,17 +1,12 @@
-"""G-3 + G-10: engine gating of RPC controls + validate_hosts wiring.
+"""G-3 + G-10: llama.cpp regression coverage for RPC controls + launch.
 
-- POST /api/machines/{name}/rpc/start: llama.cpp mode unchanged
-  (delegates to rpc_manager.start_rpc); vllm mode -> 409 with a clear
-  detail, mirroring the /api/launch vLLM refusal — never a silent no-op
-  and never a 500.
-- POST /api/start-all: llama.cpp mode starts RPC on every machine then
-  launches llama-swap (unchanged); vllm mode SKIPS the RPC phase (the
-  payload reports rpc: [{skipped: true, reason}]) but still launches the
-  daemon.
-- POST /api/models (vllm branch): engine.validate_hosts gates the save —
-  Windows/macOS hosts (and ROCm hosts below Python 3.12) reject with 400.
-  Host scope: explicit servers -> group machines -> all machines.
-  llama.cpp mode has NO host gate (its adapter returns []).
+- POST /api/machines/{name}/rpc/start delegates to rpc_manager.start_rpc.
+- POST /api/start-all starts RPC on every machine then launches
+  llama-swap.
+- POST /api/models has NO host gate (llama.cpp serves Windows peers via
+  RPC).
+- /api/launch and /api/launch/stop keep their llama.cpp behavior,
+  including the remote-proxy swap unload.
 
 Heavy externals (SSH, real process starts) are monkeypatched; the REAL
 config_loader owns machines.yaml against tmp files.
@@ -108,10 +103,10 @@ class _LcppEngine:
 
     # DEC-04: save_model dispatches the per-model section round-trip
     # through the owning adapter; stub doubles carry the protocol members.
-    def apply_model_section(self, data, where="vllm"):
+    def apply_model_section(self, data, where="model"):
         return data
 
-    def sanitize_model_section(self, raw, where="vllm"):
+    def sanitize_model_section(self, raw, where="model"):
         if raw is None:
             return None
         return dict(raw)
@@ -183,11 +178,10 @@ def test_start_all_llama_cpp_starts_rpc_then_swap(client, settings_file,
 
 def _model_payload(**over):
     base = {
-        "model_id": "Qwen3-8B-vllm",
-        "name": "Qwen3 8B (vLLM)",
+        "model_id": "qwen-3-8b",
+        "name": "Qwen3 8B",
         "base_path": "/models/Qwen3-8B",
         "servers": ["aibox1"],
-        "vllm": {"max_model_len": 32768},
     }
     base.update(over)
     return base
@@ -210,7 +204,7 @@ def test_save_model_llama_cpp_never_host_gated(client, settings_file,
                         lambda mid: {"issues": []})
     r = client.post("/api/models", json=_model_payload())
     assert r.status_code == 200, r.text
-    assert (os.path.exists(_model_saved("Qwen3-8B-vllm")))
+    assert (os.path.exists(_model_saved("qwen-3-8b")))
 
 
 # ---------------- B15: /api/launch/stop is engine-aware ---------------------
@@ -396,21 +390,3 @@ def test_swap_load_warmup_contract(client, settings_file, monkeypatch):
     assert body["ok"] is True and body["model"] == "Qwen3-8B"
     assert seen["url"] == "http://127.0.0.1:8090/v1/chat/completions"
     assert seen["body"]["max_tokens"] == 1
-
-
-
-# ---------------- Part C: FIX-A7 UI gate vocabulary -------------------------
-# The A7 audit (t_fe83e6b0 comment 119) verdict: both reported defects are
-# UI-gate placement. The frontend has no test harness, so these tests pin
-# the CONTRACTS the frontend consumes: (1) the template must NOT tag
-# #start-all with the blanket data-lcpp-only hide; (2) the vLLM adapter's
-# ui_hints must hide the per-model launch grid (rpc_launch) — the same
-# data-panel mechanism applyEngineHints drives from GET /api/settings.
-
-
-def _ui_source(rel):
-    """Read a UI source file straight off the repo tree (the template and
-    app.js are plain text; the UI contract is greppable)."""
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    with open(os.path.join(here, rel), encoding="utf-8") as f:
-        return f.read()

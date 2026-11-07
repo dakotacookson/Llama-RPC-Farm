@@ -7,9 +7,9 @@
 # report-setup subcommand printing a redacted detection summary for bug
 # reports. Windows entry runs `python bootstrap.py ...` (install.bat).
 #
-# Role flows (§3): main = app venv + llama-swap + llama.cpp + (vLLM opt)
-# + settings prefill; client = engine runtime only (llama.cpp / vLLM+ray),
-# NO app, NO llama-swap, NO settings writes.
+# Role flows (§3): main = app venv + llama-swap + llama.cpp + settings
+# prefill; client = engine runtime only (llama.cpp), NO app, NO
+# llama-swap, NO settings writes.
 
 from __future__ import annotations
 
@@ -35,7 +35,6 @@ LOG_FILE = os.path.join(LOG_DIR, "install.log")
 DEFAULT_PINS = {
     "llama.cpp": {"version": "b10934"},
     "llama-swap": {"version": "255"},
-    "vllm": {"version": "0.30.0"},
 }
 
 
@@ -74,8 +73,6 @@ def cmd_install(args) -> int:
     # notes; nothing system-level is ever touched here.
     manifest = _read_manifest(log)
     plan = probe(info, fs, run, role=args.role, pinned=DEFAULT_PINS,
-                 with_vllm=not args.no_vllm,
-                 with_vllm_metal=args.with_vllm_metal,
                  force_settings=args.force_settings,
                  manifest=manifest)
     if args.dry_run:
@@ -128,8 +125,7 @@ def cmd_report_setup(args) -> int:
     for tool, candidates in (
             ("llama-swap", ["~/.local/bin/llama-swap"]),
             ("llama.cpp", ["~/llama.cpp/bin/llama-server",
-                           "~/llama.cpp/build/bin/llama-server"]),
-            ("vllm", ["~/vllm-env/bin/vllm"])):
+                           "~/llama.cpp/build/bin/llama-server"])):
         found = None
         for c in candidates:
             p = os.path.expanduser(c)
@@ -167,12 +163,6 @@ def main(argv=None) -> int:
     for name in ("install", "upgrade"):
         sp = sub.add_parser(name)
         sp.add_argument("--role", choices=["main", "client"], default="main")
-        sp.add_argument("--with-vllm", dest="no_vllm", action="store_false",
-                        default=True, help="install vLLM venv (default on)")
-        sp.add_argument("--no-vllm", dest="no_vllm", action="store_true",
-                        help="skip the vLLM venv")
-        sp.add_argument("--with-vllm-metal", action="store_true",
-                        help="opt-in vLLM-Metal plugin (macOS)")
         sp.add_argument("--unattended", action="store_true")
         sp.add_argument("--force", action="store_true")
         sp.add_argument("--force-settings", action="store_true",

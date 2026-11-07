@@ -1,12 +1,5 @@
-"""Script-injection tests: model_id and variant labels reach generated
-artifacts — the start-<model_id>.sh filename, the llama-swap models.cmd
-line and the yaml text (ARD t_76f3d1c0 §7 B3).
-
-The vLLM branch gates model_id through the strict allowlist
-(vllm_manager._require_safe_id) BEFORE any filename or yaml key is
-derived, and swap_manager sanitizes variant labels for filenames.
-llama.cpp emit behavior is intentionally untouched (ARD minimal-diff
-principle) — these tests pin the vLLM surfaces only.
+"""Script-injection tests: attacker-controlled IPs and flag values must
+not break out of the generated RPC/launch shell commands.
 """
 import re
 import types
@@ -37,79 +30,16 @@ def _machine(name, ip, **kw):
     m.update(kw)
     return m
 
+import shlex
 
-def _model(mid="qwen3-8b", servers=None, **kw):
-    m = {"model_id": mid, "name": mid, "flags": {},
-         "base_path": "/mnt/store/" + mid,
-         "servers": servers if servers is not None else ["aibox1"]}
-    # DEC-08: launch reads only the native vllm: section; give every model
-    # a minimal non-empty one (cpu_offload_gb 0 emits no flag) unless a
-    # test overrides it via kw.
-    m.setdefault("vllm", {"cpu_offload_gb": 0})
-    m.update(kw)
-    return m
+import pytest
 
+from rpc_manager import _render_rpc, build_llama_command
 
-def _generate(monkeypatch, tmp_path, models, engine_settings):
-    by_name = {"aibox1": _machine("aibox1", "127.0.0.1", role="master")}
-    monkeypatch.setattr(swap_manager, "cfg", types.SimpleNamespace(
-        machines=conftest._FakeMachines(by_name),
-        swap_groups=types.SimpleNamespace(all=lambda: []),
-        list_models=lambda: list(models),
-        # DEC-03: per-machine swap-config override resolution (real
-        # validator; fake machines carry no override keys)
-        machine_swap_config_override=cfg.machine_swap_config_override))
-    # _split_servers resolves machine names through rpc_manager.cfg —
-    # fake it too, or peer lookups would hit the real machine list.
-    monkeypatch.setattr(rpc_manager, "cfg", types.SimpleNamespace(
-        machines=conftest._FakeMachines(by_name)))
-    monkeypatch.setattr(engine_registry, "load_settings",
-                        lambda *a, **k: dict(engine_settings))
-    monkeypatch.setattr(swap_manager, "SWAP_SETTINGS_FILE",
-                        str(tmp_path / "swap-settings.yaml"))
-    return swap_manager.generate(str(tmp_path / "config.yaml"), "aibox1")
-
-
-
-def test_shell_metachar_id_never_reaches_scripts_or_yaml(monkeypatch,
-                                                         tmp_path):
-    hostile = "x;touch /tmp/pwned"
-    plan = _generate(monkeypatch, tmp_path,
-                     [_model(hostile), _model("good-model")],
-                     {"engine": "vllm", "vllm": VENV_BLOCK})
-    assert plan["models"] == ["good-model"]
-    assert plan["scripts"] == ["start-good-model.sh"]
-    assert plan["script_mids"] == ["good-model"]
-    assert "pwned" not in plan["yaml"]
-    for fname in plan["scripts"]:
-        assert _SCRIPT_NAME.fullmatch(fname)
-
-
-def test_dollar_expansion_id_never_reaches_yaml(monkeypatch, tmp_path):
-    plan = _generate(monkeypatch, tmp_path, [_model("a${HOME}b")],
-                     {"engine": "vllm", "vllm": VENV_BLOCK})
-    assert plan["models"] == []
-    assert plan["scripts"] == []
-    assert "a${HOME}b" in plan["skipped"]
-    assert "${HOME}" not in plan["yaml"]
-
-
-def test_variant_label_sanitized_in_script_filename(monkeypatch, tmp_path):
-    model = _model()
-    model["variants"] = [{"label": "evil;id"}]
-    plan = _generate(monkeypatch, tmp_path, [model],
-                     {"engine": "vllm", "vllm": VENV_BLOCK})
-    # ";" sanitized to "-" — the label can never inject into a filename
-    assert "start-qwen3-8b--evil-id.sh" in plan["scripts"]
-    for fname in plan["scripts"]:
-        assert _SCRIPT_NAME.fullmatch(fname)
-    for entry in plan["entries"]:
-        assert _SCRIPT_NAME.fullmatch(f"start-{entry['model_id']}.sh")
-    assert "evil;id" not in plan["yaml"]
 
 # ======================================================================
 # qe-validation-test branch: secrets-vault / installer regression tests
-# (helper names prefixed _qe_ to avoid collision with the vllm-branch helpers above)
+# (helper names prefixed _qe_)
 # ======================================================================
 
 import shlex

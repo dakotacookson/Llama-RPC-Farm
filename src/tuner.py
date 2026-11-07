@@ -5,7 +5,7 @@ servers + device_order chips) -> safe defaults -> Tune -> save winner.
 
 Phase 1 (0 loads, pure math): weights + mmproj + KV(ctx) + SSM state +
 MTP draft overhead vs usable VRAM -> max ctx + integer split weights +
-safe ubatch. Mirrors vLLM --max-model-len auto / Ollama fit-vram logic.
+safe ubatch. Mirrors Ollama fit-vram logic.
 
 Phase 2 (staged live search, early exits): baseline at locked ctx,
 then MTP variants, KV ladder (current/q8/f16/q4), forced splits,

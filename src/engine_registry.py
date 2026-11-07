@@ -1,10 +1,9 @@
-"""Engine adapter seam: llama.cpp | vLLM behind one settings toggle.
+"""Engine adapter seam.
 
 Design per ARD t_76f3d1c0 (§1): a thin registry the app dispatches on.
 `LlamaCppAdapter` is pure delegation to the existing rpc_manager /
 swap_manager functions — code is NOT moved, behavior is byte-identical.
-All vLLM knowledge will live in src/vllm_manager.py (B2); the registry is
-the only seam app.py should branch on.
+The registry is the only seam app.py should branch on.
 """
 import os
 from typing import Protocol
@@ -26,9 +25,8 @@ SETTINGS_FILE = os.path.join(BASE_DIR, "config", "settings.yaml")
 
 VALID_ENGINES = cfg.VALID_ENGINES
 DEFAULT_ENGINE = cfg.DEFAULT_ENGINE
-# DEC-01 (spec §1.4): the VLLM_* settings-block re-exports are retired —
-# the vocabulary constants stay in config_loader (B4's schema home) and
-# block validation lives on the owning adapter (VllmAdapter.settings_section).
+# DEC-01 (spec §1.4): block validation lives on the owning adapter
+# (settings_section); the vocabulary constants stay in config_loader.
 
 
 def load_settings(path=None):
@@ -37,8 +35,7 @@ def load_settings(path=None):
     Validates `engine` against the enum — a typo raises ValueError listing
     the valid values (startup error, never silent fallback). Missing engine
     injects the default (backward compat: existing installs have no key).
-    Normalizes the `vllm:` block: missing -> defaults; unknown keys, bad
-    delivery, or a non-numeric gpu-memory-utilization raise. Fresh dict.
+    Fresh dict.
     """
     file = path or SETTINGS_FILE
     data = {}
@@ -56,8 +53,7 @@ def load_settings(path=None):
 class EngineAdapter(Protocol):
     """Operations the app dispatches on, per engine (ARD §1).
 
-    llama.cpp is the reference implementation; the vLLM adapter (B2) must
-    return the same shapes.
+    llama.cpp is the reference implementation.
 
     Adapter v2 ownership members (AUDIT-T6 §1.3/§1.4, DEC-01): each engine
     owns its settings vocabulary and per-model section name.
@@ -69,12 +65,10 @@ class EngineAdapter(Protocol):
         """Validate + inject defaults for THIS engine's block in
         settings.yaml (AUDIT-T6 §1.4).
 
-        vllm: the `vllm:` block schema (delivery, venv_bin, docker_image,
-        default_gpu_memory_utilization). llama_cpp: llama_bin + defaults
-        (read-time warnings belong to install(); never 400 here).
-        Mutates raw_settings in place and returns it, matching
-        cfg.inject_engine_defaults' contract. Raises ValueError on
-        unknown keys / invalid values — same strictness as today.
+        llama_cpp owns no settings block. Mutates raw_settings in place and
+        returns it, matching cfg.inject_engine_defaults' contract. Raises
+        ValueError on unknown keys / invalid values — same strictness as
+        today.
         """
         ...
 
@@ -83,7 +77,7 @@ class EngineAdapter(Protocol):
     config_section: "str | None"
     """Per-model YAML section name owned by this engine:
     None (llama.cpp: top-level vocabulary — flags{}, tensor_split,
-    servers, variants) | "vllm" (the per-model `vllm:` block)."""
+    servers, variants)."""
 
     def build_command(self, model_cfg, servers, master_name=None) -> str:
         """llama-swap `cmd:` for a model (multi-line shell, ${PORT})."""
@@ -102,7 +96,7 @@ class EngineAdapter(Protocol):
         ...
 
     def validate_hosts(self, machines) -> list:
-        """Engine×OS gate -> [str] errors (vLLM refuses Windows hosts)."""
+        """Engine×OS gate -> [str] errors."""
         ...
 
     def asr_language_system_message(self, language: str) -> str | None:
@@ -135,38 +129,34 @@ class EngineAdapter(Protocol):
     def capable(self, capability) -> bool:
         """Engine-capability check (spec dispatch rule §1.3): app.py asks
         the adapter instead of comparing engine names.
-        "rpc_cluster" — RPC peers + single-model RPC launch/stop
-                        (llama.cpp only; vLLM returns False).
+        "rpc_cluster" — RPC peers + single-model RPC launch/stop.
         "swap_stop"   — model stop rides the llama-swap unload proxy
-                        (vLLM only; llama.cpp returns False)."""
+                        (llama.cpp returns False)."""
         ...
 
     def launch_plan(self, config_path=None, host_name=None) -> dict:
         """The llama-swap plan this engine would generate for a host —
         today swap_manager.launch_plan()'s body (host, yaml, models,
-        scripts, warnings). vLLM emits thin per-model entries."""
+        scripts, warnings)."""
         ...
 
     def start_model(self, model_id, servers, port, variant=None,
                     master_name=None, mode="rpc") -> dict:
         """Single-model live launch. llama.cpp: rpc_manager.launch_model.
         master_name forces which server runs llama-server; mode="local"
-        is the single-box path (no RPC peers). vLLM refuses (ValueError)
-        — serving goes through llama-swap."""
+        is the single-box path (no RPC peers)."""
         ...
 
     def stop_model(self, model_id, servers, variant=None,
                    master_name=None) -> dict:
         """Stop a live-launched model. llama.cpp: rpc_manager.stop_model
         (kills RPC ports; master_name scopes the llama-server kill to the
-        launch master). vLLM: llama-swap model unload (cmdStop) via
-        the swap-host proxy."""
+        launch master)."""
         ...
 
     def active_model(self, machine) -> dict:
         """Per-machine serving status for GET /api/launch/active.
         llama.cpp: TCP probe on the machine's RPC port.
-        vLLM: HTTP /health probe on the swap listen port.
         Returns {"name": ..., "serving": bool} (+ engine extras)."""
         ...
 
@@ -184,15 +174,13 @@ class EngineAdapter(Protocol):
                      quant="", pipeline_tag="", author="",
                      recommended=False):
         """HF search in this engine's vocabulary: llama.cpp proxies GGUF
-        quants, vLLM proxies safetensors/HF repos. Same result shape as
-        hf_browse.search_gguf/search_safetensors."""
+        quants. Same result shape as hf_browse.search_gguf."""
         ...
 
     def validate_downloaded(self, path) -> list:
         """Is `path` (store:// alias or raw path) a model this engine can
         serve? -> [{"level": "error"|"warn", "msg": str}]; [] = fine.
-        llama.cpp wants a .gguf file; vLLM wants a directory holding
-        config.json + *.safetensors."""
+        llama.cpp wants a .gguf file."""
         ...
 
     # -- UI field manifest (AUDIT-T6 §1.5, DEC-02) --
@@ -226,20 +214,18 @@ class LlamaCppAdapter(UiHintsMixin):
         """
         return raw_settings
 
-    def sanitize_model_section(self, raw, where="vllm"):
+    def sanitize_model_section(self, raw, where="model"):
         """llama.cpp has no per-model section of its own (DEC-04): the
         vocabulary IS the top-level model mapping, so there is nothing to
         sanitize. Kept as a no-op member so config_loader.save_model's
-        adapter dispatch is uniform across engines — a llama.cpp save
-        never touches a `vllm:` block and vice versa (round-trip
-        isolation)."""
+        adapter dispatch is uniform across engines."""
         if raw is None:
             return None
         if not isinstance(raw, dict):
             raise ValueError(f"{where}: must be a mapping")
         return dict(raw)
 
-    def apply_model_section(self, data, where="vllm"):
+    def apply_model_section(self, data, where="model"):
         """No-op member for uniform dispatch (see sanitize_model_section):
         llama.cpp saves leave the model dict untouched."""
         return data
@@ -256,7 +242,7 @@ class LlamaCppAdapter(UiHintsMixin):
     def swap_entries(self, config_path=None, host_name=None):
         """Delegates to the existing swap_manager.launch_plan() — the exact
         plan dict (host, yaml, models, scripts, warnings) the app uses
-        today. vLLM entries land in B3 as a branch inside generate()."""
+        today."""
         import swap_manager
         return swap_manager.launch_plan(config_path, host_name)
 
@@ -392,9 +378,8 @@ class LlamaCppAdapter(UiHintsMixin):
 
     def acquire(self, link, store, repo=False, all_shards=True):
         """llama.cpp downloads GGUF quants. repo=True (hf://owner/name,
-        no filename) is the vLLM whole-repo vocabulary — refused here so
-        the adapter is a backstop even if an app-level gate regresses
-        (mirrors the vLLM start_model 409-refusal pattern from DEC-06)."""
+        no filename) is a whole-repo download — refused here so the
+        adapter is a backstop even if an app-level gate regresses."""
         if repo:
             raise ValueError(
                 "whole-repo downloads are not part of the llama.cpp "
@@ -469,30 +454,10 @@ class LlamaCppAdapter(UiHintsMixin):
 _REGISTRY: dict = {"llama_cpp": LlamaCppAdapter}
 
 
-def _register_builtins():
-    """Register the vLLM adapter lazily (B2).
-
-    vllm_manager imports engine_registry's load_settings at call time, and
-    rpc_manager/swap_manager (its imports) must not be dragged into the
-    registry-import cycle — so the adapter registers via a deferred import
-    here instead of vllm_manager importing this module at top level.
-    """
-    try:
-        import vllm_manager
-    except ImportError:
-        return  # vLLM support absent (partial checkout); llama_cpp keeps working
-    _REGISTRY[vllm_manager.ENGINE_VLLM] = vllm_manager.VllmAdapter
-
-
-_register_builtins()
-
-
 def get_engine_section_adapter():
     """Resolve the adapter that owns per-model section round-trip for the
-    CURRENT engine (DEC-04). config_loader.save_model delegates its
-    sanitize/apply here instead of hardcoding the vllm logic. LlamaCppAdapter
-    owns no per-model section (it is the llama.cpp vocabulary itself), so it
-    provides no-ops; vLLM owns the `vllm:` block."""
+    CURRENT engine (DEC-04). LlamaCppAdapter owns no per-model section (it
+    is the llama.cpp vocabulary itself), so it provides no-op members."""
     return get_engine()
 
 def get_engine(settings=None):

@@ -217,9 +217,7 @@ llama.cpp, llama-swap, and every other wrapped tool:
 
 ## Status
 
-v0.01. llama.cpp RPC + llama-swap is the supported engine; an experimental
-vLLM mode exists behind `engine: vllm` (see
-[docs/](docs/README.md) if you're curious — not a supported feature).
+v0.01. llama.cpp RPC + llama-swap is the supported engine.
 
 Licensed under **Apache-2.0** (this project's own code; download engines
 llama.cpp and llama-swap remain MIT under their own terms) — free for

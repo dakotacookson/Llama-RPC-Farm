@@ -102,12 +102,7 @@ class TestFreshMachine:
         assert "InstallTool" in names
         tools = [s.name for s in plan if type(s).__name__ in
                  ("InstallTool", "SkipTool", "RepairTool")]
-        # engine parity: BOTH engines planned on CUDA
         assert "llama.cpp" in tools
-        assert "vllm" in tools
-        vllm_steps = [s for s in plan if getattr(s, "name", None) == "vllm"
-                      and isinstance(s, probe_mod.InstallTool)]
-        assert vllm_steps[0].backend == "pypi"
 
     def test_llcpp_backend_per_gpu(self):
         # CUDA / ROCm / CPU / Metal asset backends
@@ -115,28 +110,6 @@ class TestFreshMachine:
         assert probe_mod.LLCPP_BACKEND[("linux", "amd")] == "rocm-10.0"
         assert probe_mod.LLCPP_BACKEND[("linux", "none")] == "cpu"
         assert probe_mod.LLCPP_BACKEND[("macos", "apple")] == "metal"
-
-    def test_windows_vllm_refused_with_note(self, stub_fs):
-        plan = probe(sysinfo(os="windows", gpu="nvidia"), stub_fs, StubRun({}))
-        notes = [s for s in plan if isinstance(s, probe_mod.PlanNote)]
-        assert any(n.tool == "vllm" and n.kind == "refused" for n in notes)
-
-    def test_macos_vllm_metal_optin(self, stub_fs):
-        info = sysinfo(os="macos", gpu="apple")
-        p1 = probe(info, stub_fs, StubRun({}))           # default: no opt-in
-        p2 = probe(info, StubFS(), StubRun({}), with_vllm_metal=True)
-        assert not any(isinstance(s, probe_mod.InstallTool) and s.name == "vllm"
-                       for s in p1)
-        assert any(isinstance(s, probe_mod.InstallTool) and s.name == "vllm"
-                   and s.backend == "vllm-metal" for s in p2)
-
-    def test_rocm_vllm_index(self, stub_fs):
-        plan = probe(sysinfo(gpu="amd"), stub_fs, StubRun({}))
-        vllm_steps = [s for s in plan if isinstance(s, probe_mod.InstallTool)
-                      and s.name == "vllm"]
-        assert vllm_steps[0].extra.get("index_url") == "https://wheels.vllm.ai/rocm/"
-        assert vllm_steps[0].extra.get("python") == "3.12"
-
 
 # ---------------------------------------------------------------------------
 # Present + current -> all-skip with discovered paths
@@ -152,32 +125,27 @@ class TestPresentCurrent:
         swap = home + "/.local/bin/llama-swap"
         stub_fs.add_file(swap, "#!/bin/sh\n")
         stub_fs.add_file("__ver__:" + swap, "255")
-        vllm = home + "/vllm-env/bin/vllm"
-        stub_fs.add_file(vllm, "#!/bin/sh\n")
-        stub_fs.add_file("__ver__:" + vllm, "0.30.0")
-        return good, swap, vllm
+        return good, swap
 
     def test_all_skip_with_paths(self, stub_fs):
-        good, swap, vllm = self._setup(stub_fs)
+        good, swap = self._setup(stub_fs)
         plan = probe(sysinfo(), stub_fs, StubRun({}))
         skips = {s.name: s for s in plan
                  if isinstance(s, probe_mod.SkipTool)
                  and s.reason == "present-current"}
-        assert set(skips) >= {"llama.cpp", "llama-swap", "vllm"}
+        assert set(skips) >= {"llama.cpp", "llama-swap"}
         assert skips["llama.cpp"].found_path.endswith("llama-server")
-        assert skips["vllm"].version == "0.30.0"
 
     def test_settings_prefill_discovered_path(self, stub_fs):
-        good, swap, vllm = self._setup(stub_fs)
+        good, swap = self._setup(stub_fs)
         plan = probe(sysinfo(), stub_fs, StubRun({}))
         writes = [s for s in plan if isinstance(s, probe_mod.WriteSettings)]
         keys = {s.key for s in writes}
         assert "llama_bin" in keys
-        assert "vllm.venv_bin" in keys
         assert "binary" in keys      # swap.yaml
 
     def test_user_value_kept(self, stub_fs):
-        good, swap, vllm = self._setup(stub_fs)
+        good, swap = self._setup(stub_fs)
         # User value must point at a VALID existing binary to be kept (§6 b/c:
         # a non-existent path is stale and gets repaired to the discovered one).
         stub_fs.add_file("config/settings.yaml",
@@ -253,7 +221,7 @@ class TestSettingsMerge:
         plan = self._probe_with(stub_fs, text)
         for s in plan:
             if isinstance(s, probe_mod.WriteSettings):
-                assert s.key in ("llama_bin", "vllm.venv_bin", "binary")
+                assert s.key in ("llama_bin", "binary")
 
 
 # ---------------------------------------------------------------------------
@@ -272,9 +240,6 @@ class TestIdempotency:
         swap = home + "/.local/bin/llama-swap"
         stub_fs.add_file(swap, "#!/bin/sh\n")
         stub_fs.add_file("__ver__:" + swap, "255")
-        vllm = home + "/vllm-env/bin/vllm"
-        stub_fs.add_file(vllm, "#!/bin/sh\n")
-        stub_fs.add_file("__ver__:" + vllm, "0.30.0")
 
         plan = probe(sysinfo(), stub_fs, StubRun({}))
         ex = Executor(log=lambda m: None, dry_run=True)
@@ -286,7 +251,7 @@ class TestIdempotency:
             s, (probe_mod.InstallTool, probe_mod.RepairTool))]
         assert actions == []
         skips = [s for s in plan2 if isinstance(s, probe_mod.SkipTool)]
-        assert {s.name for s in skips} >= {"llama.cpp", "llama-swap", "vllm"}
+        assert {s.name for s in skips} >= {"llama.cpp", "llama-swap"}
         assert all(s.reason == "present-current" for s in skips)
 
     def test_executor_dry_run_golden(self, stub_fs):
@@ -306,10 +271,10 @@ class TestFailureEnvelope:
 
     def test_schema(self):
         env = failure_envelope("installer", "boom",
-                               context={"tool": "vllm", "log_tail": "traceback"})
+                               context={"tool": "llama.cpp", "log_tail": "traceback"})
         assert env["schema"] == "llama-rpc-farm-failure-envelope/1"
         assert env["source"] == "installer"
-        assert env["context"]["tool"] == "vllm"
+        assert env["context"]["tool"] == "llama.cpp"
         assert "captured_at" in env
         json.dumps(env)     # must be serializable
 
@@ -340,19 +305,14 @@ class TestEngineDefaults:
         info = sysinfo(gpu="nvidia")
         assert probe_mod.tool_defaults("llama.cpp", info)["device_env"] == \
             "CUDA_VISIBLE_DEVICES"
-        assert probe_mod.tool_defaults("vllm", info)["device_env"] == \
-            "CUDA_VISIBLE_DEVICES"
 
     def test_rocm_env_vars(self):
         info = sysinfo(gpu="amd")
-        assert probe_mod.tool_defaults("vllm", info)["device_env"] == \
-            "HIP_VISIBLE_DEVICES"
         assert probe_mod.tool_defaults("llama.cpp", info)["device_env"] == \
             "HIP_VISIBLE_DEVICES"
 
     def test_metal_no_device_env(self):
         info = sysinfo(os="macos", gpu="apple")
-        assert probe_mod.tool_defaults("vllm", info)["device_env"] is None
         assert probe_mod.tool_defaults("llama.cpp", info)["device_env"] is None
 
 

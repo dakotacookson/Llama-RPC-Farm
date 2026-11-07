@@ -16,7 +16,6 @@ sys.path.insert(0, os.path.join(ROOT, "peer_agent"))
 
 from llama_peer_agent.config import AgentConfig  # noqa: E402
 from llama_peer_agent import files, metrics, system, service, install  # noqa: E402
-from llama_peer_agent import ray as agent_ray  # noqa: E402
 from llama_peer_agent import build as agent_build  # noqa: E402
 
 
@@ -242,34 +241,6 @@ def test_install_tar_zip_escape(monkeypatch, tmp_path):
                          "tar.gz")
 
 
-def test_ray_helpers(monkeypatch, tmp_path):
-    c = cfg(tmp_path)
-    monkeypatch.setattr(agent_ray.shutil, "which", lambda n: "/bin/ray")
-    monkeypatch.setattr(agent_ray.os.path, "isfile", lambda p: True)
-    assert agent_ray._ray_bin("ray") == "/bin/ray"
-    with pytest.raises(agent_ray.AgentRayError):
-        agent_ray._ray_bin("/bin/bash")
-    monkeypatch.setattr(agent_ray.subprocess, "run",
-                        lambda *a, **k: type("P", (), {
-                            "stdout": "1.1.1.1 via 10.0.0.1 dev eth0",
-                            "returncode": 0})())
-    assert agent_ray._iface_for("1.1.1.1") == "eth0"
-    assert agent_ray._iface_for("") == ""
-    monkeypatch.setattr(agent_ray.subprocess, "Popen",
-                        lambda *a, **k: type("P", (), {"pid": 99})())
-    monkeypatch.setattr(agent_ray.subprocess, "run",
-                        lambda *a, **k: type("P", (), {
-                            "returncode": 0, "stdout": "", "stderr": ""})())
-    res = agent_ray.start(c, "/bin/ray", "10.0.0.1:6379", 2,
-                          {"A": "1"}, "10.0.0.1", "~/l", "~/p", "~/")
-    assert res["pid"] == 99
-    assert agent_ray.stop(c, "/bin/ray", "~/p")["stopped"] is True
-    with pytest.raises(agent_ray.AgentRayError):
-        agent_ray.start(c, "/bin/ray", "", 2)
-    with pytest.raises(agent_ray.AgentRayError):
-        agent_ray.start(c, "/bin/ray", "h:1", 2, {"bad-key": 1})
-
-
 def test_build_probe_and_update(monkeypatch, tmp_path):
     c = cfg(tmp_path)
     build = tmp_path / "build"
@@ -315,14 +286,11 @@ def test_agent_client_wrappers(monkeypatch):
                   create_parents=True)
     ac.file_mkdir(m, "/d"); ac.file_chmod(m, "/x", 0o600)
     ac.file_backup(m, "/x"); ac.file_stat(m, "/x"); ac.file_list(m, "/")
-    ac.ray_start(m, "/r", "h:1", 1, {"A": "1"}, "h", "/l", "/p", "/w")
-    ac.ray_stop(m, "/r", "/p")
     ac.install_artifact(m, ["https://github.com/x"], "/d")
-    ac.install_verify(m, "/d/x"); ac.vllm_install(m)
+    ac.install_verify(m, "/d/x")
     ac.build_probe(m, "/x"); ac.build_update(m, "/s", "/b", "/s/bin")
     ac.system_detail(m); ac.rdma(m)
     assert any(path.startswith("/file") for _, path, _ in calls)
-    assert any(path.startswith("/ray") for _, path, _ in calls)
     with pytest.raises(ac.AgentError):
         ac._base({"ip": ""})
     monkeypatch.setenv("FARM_AGENT_TOKEN", "envtok")
@@ -499,9 +467,6 @@ def test_server_all_endpoints(monkeypatch):
         assert e.value.code == 400
         with pytest.raises(urllib.error.HTTPError) as e:
             post("/service/start", {"name": "x"})
-        assert e.value.code == 400
-        with pytest.raises(urllib.error.HTTPError) as e:
-            post("/ray/start", {"ray_bin": "bash", "address": "h:1"})
         assert e.value.code == 400
         with pytest.raises(urllib.error.HTTPError) as e:
             post("/install/artifact", {"urls": ["http://x"], "dest": "/tmp"})
@@ -796,25 +761,6 @@ def test_install_more_paths(monkeypatch, tmp_path):
                         lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
     with pytest.raises(ins.AgentInstallError):
         ins.verify(c, str(binp))
-    # vllm branches
-    monkeypatch.setattr(ins.shutil, "which", lambda n: "/bin/" + n)
-    monkeypatch.setattr(ins.subprocess, "run",
-                        lambda *a, **k: type("P", (), {
-                            "returncode": 1, "stdout": "", "stderr": "e"})())
-    assert ins.vllm(c, "python3", "~/v", "1")["ok"] is False
-    monkeypatch.setattr(ins.subprocess, "run",
-                        lambda *a, **k: type("P", (), {
-                            "returncode": 0, "stdout": "", "stderr": ""})())
-    # existing venv python path
-    bindir = tmp_path / "v" / "bin"
-    bindir.mkdir(parents=True)
-    (bindir / "python").write_text("")
-    (bindir / "pip").write_text("")
-    assert ins.vllm(c, "python3", str(tmp_path / "v"), "1")["ok"] is True
-    with pytest.raises(ins.AgentInstallError):
-        ins.vllm(c, str(tmp_path / "nope"), str(tmp_path / "v"))
-
-
 def test_service_more_paths(monkeypatch, tmp_path):
     from llama_peer_agent import service as sv
     monkeypatch.setattr(sv.Path, "home", lambda: tmp_path)
@@ -876,34 +822,6 @@ def test_system_more_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(sy.os, "name", "nt")
     assert sy.detail(c) == {}
     monkeypatch.undo()
-
-
-def test_ray_more_paths(monkeypatch, tmp_path):
-    from llama_peer_agent import ray as r
-    c = AgentConfig(token="t", file_roots=[str(tmp_path)])
-    monkeypatch.setattr(r.shutil, "which", lambda n: "")
-    with pytest.raises(r.AgentRayError):
-        r._ray_bin("ray")
-    monkeypatch.setattr(r.shutil, "which", lambda n: "/bin/ray")
-    monkeypatch.setattr(r.os.path, "isfile", lambda p: False)
-    with pytest.raises(r.AgentRayError):
-        r._ray_bin("/bin/ray")
-    monkeypatch.setattr(r.os.path, "isfile", lambda p: True)
-    monkeypatch.setattr(r, "_ray_bin", lambda v: "/bin/ray")
-    with pytest.raises(r.AgentRayError):
-        r.start(c, "ray", "", 1)
-    with pytest.raises(r.AgentRayError):
-        r.start(c, "ray", "h:1", -1)
-    with pytest.raises(r.AgentRayError):
-        r.start(c, "ray", "h:1", 1, {"bad-key": 1})
-    monkeypatch.setattr(r.subprocess, "run",
-                        lambda *a, **k: type("P", (), {
-                            "returncode": 0, "stdout": "", "stderr": ""})())
-    monkeypatch.setattr(r.subprocess, "Popen",
-                        lambda *a, **k: type("P", (), {"pid": 1})())
-    assert r.start(c, "ray", "h:1", 1, {}, "", "~/l", "~/p")["pid"] == 1
-    assert r.stop(c, "ray", "~/p")["stopped"] is True
-    assert r.stop(c, "ray", None)["stopped"] is True
 
 
 def test_discovery_start_and_errors(monkeypatch):
@@ -1053,27 +971,6 @@ def test_system_remaining(monkeypatch, tmp_path):
     assert sy._windows(c) == {}
     monkeypatch.setattr(sy, "_run", lambda *a, **k: (0, "bad\n", ""))
     assert sy.rdma() == {}
-
-
-def test_ray_remaining(monkeypatch, tmp_path):
-    from llama_peer_agent import ray as r
-    c = AgentConfig(token="t", file_roots=[str(tmp_path)])
-    monkeypatch.setattr(r, "_ray_bin", lambda v: "/bin/ray")
-    monkeypatch.setattr(r.subprocess, "run",
-                        lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
-    assert r._iface_for("1.1.1.1") == ""
-    monkeypatch.setattr(r.subprocess, "run",
-                        lambda *a, **k: type("P", (), {
-                            "returncode": 0, "stdout": "x", "stderr": ""})())
-    assert r._iface_for("1.1.1.1") == ""
-    with pytest.raises(r.AgentRayError):
-        r.start(c, "ray", "h:1", 1, {"A": object()})
-    with pytest.raises(r.AgentRayError):
-        r.start(c, "ray", "h:1", 1, "bad")
-    monkeypatch.setattr(r.subprocess, "Popen",
-                        lambda *a, **k: type("P", (), {"pid": 1})())
-    assert r.start(c, "ray", "h:1", 1, {}, "", "~/l", "~/p")["pid"] == 1
-    assert r.stop(c, "ray", "~/p")["stopped"] is True
 
 
 def test_discovery_remaining(monkeypatch):
