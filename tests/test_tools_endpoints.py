@@ -163,3 +163,65 @@ def test_verify_respects_configured_paths(client, settings_file, tmp_path,
     assert body["llama-swap"]["found"] is True
     assert body["llama-swap"]["path"] == str(swap)
     assert body["llama-swap"]["configured"] == str(swap)
+
+
+def test_install_sync_local_alias_resolves_to_this_host(client, monkeypatch):
+    import app as app_module
+    seen = {}
+
+    monkeypatch.setattr(app_module, "_tools_plan",
+                        lambda m, role, log: ([object()], object(),
+                                              object(), object()))
+
+    def fake_execute(plan, info, dry_run, runner=None):
+        seen["machine"] = "local"
+        return dict(_CANNED_SUMMARY, installed=["llama.cpp"])
+
+    monkeypatch.setattr(app_module, "_execute_plan", fake_execute)
+    r = client.post("/api/tools/install/sync",
+                    json={"machine": "__local__", "tools": ["llama.cpp"],
+                          "dry_run": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["installed"] == ["llama.cpp"]
+
+
+def test_remote_tools_install_uses_agent_and_reports_failures(monkeypatch):
+    import app as app_module
+    import llamacpp_installer
+    import swap_installer
+
+    called = []
+    monkeypatch.setattr(
+        llamacpp_installer, "install_on",
+        lambda machine, log: (called.append("llama.cpp") or
+                              {"ok": True, "detail": "cpp ok",
+                               "version": "b12211"}))
+    monkeypatch.setattr(
+        swap_installer, "install_on",
+        lambda machine, log: (called.append("llama-swap") or
+                              {"ok": False, "detail": "swap failed"}))
+    machine = {"name": "peer1", "ip": "10.0.0.50", "os": "linux"}
+    summary = app_module._install_remote_tools(
+        machine, "main", [], False, lambda m: None)
+    assert called == ["llama.cpp", "llama-swap"]
+    assert summary["installed"] == ["llama.cpp"]
+    assert summary["failures"][0]["context"]["tool"] == "llama-swap"
+    assert summary["manifest"]["tools"]["llama.cpp"]["method"] == "agent"
+
+
+def test_remote_tools_install_dry_run_does_not_call_agent(monkeypatch):
+    import app as app_module
+    import llamacpp_installer
+    import swap_installer
+
+    def boom(*a, **k):
+        raise AssertionError("dry-run must not install")
+    monkeypatch.setattr(llamacpp_installer, "install_on", boom)
+    monkeypatch.setattr(swap_installer, "install_on", boom)
+    logs = []
+    summary = app_module._install_remote_tools(
+        {"name": "peer1", "ip": "10.0.0.50", "os": "linux"},
+        "main", [], True, logs.append)
+    assert summary["planned"] == ["llama.cpp", "llama-swap"]
+    assert summary["failures"] == []
+    assert any("would install llama.cpp" in line for line in logs)
