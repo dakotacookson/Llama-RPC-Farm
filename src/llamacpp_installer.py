@@ -420,18 +420,24 @@ def install_on(machine, log=lambda m: None):
                 return {"ok": False, "machine": name,
                         "detail": f"installed but llama-server verify failed: "
                                   f"{v.get('output', '')[-300:]}"}
-            # Existence check only: ggml-rpc-server builds disagree on
-            # --version exit codes, so running it here gives false failures.
-            try:
-                rst = agent_client.file_stat(machine, f"{dest}/{rpc_name}")
-            except Exception as e:
+            # RPC builds disagree on --version; --help is the reliable
+            # load/run probe (and detects missing shared-library symlinks).
+            rpc_ok = False
+            rpc_out = ""
+            for args in (["--help"], ["--version"]):
+                try:
+                    rv = agent_client.install_verify(
+                        machine, f"{dest}/{rpc_name}", args, timeout=35) or {}
+                    rpc_out = str(rv.get("output") or "")
+                    if rv.get("returncode") == 0:
+                        rpc_ok = True
+                        break
+                except Exception as e:
+                    rpc_out = str(e)
+            if not rpc_ok:
                 return {"ok": False, "machine": name,
-                        "detail": f"installed but llama RPC check failed "
-                                  f"({rpc_name}): {e}"}
-            if not (rst.get("exists") and rst.get("is_file")):
-                return {"ok": False, "machine": name,
-                        "detail": f"installed but llama RPC binary is "
-                                  f"missing ({rpc_name})"}
+                        "detail": f"installed but llama RPC verify failed "
+                                  f"({rpc_name}): {rpc_out[-300:]}"}
             bin_path = f"{dest}/{bin_name}"
             try:
                 cfg.machines.update(name, {"llama_bin": dest})
