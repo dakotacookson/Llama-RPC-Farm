@@ -44,7 +44,9 @@ their own `.deb`/`.pkg`/`setup.exe` packages (no remote shell, no
 sshpass). A Linux master
 runs llama-swap + llama-server, peers run `ggml-rpc-server` or native
 `llama-server` via the agent. Vanilla-JS frontend (`ui/`), YAML configs
-(`config/`). Nothing outside this folder is ever modified.
+(`config/`). The app keeps its state under this folder (or the platform
+data dir for packaged builds); engine/agent installs use standard user
+locations.
 
 ## AI agent quick playbook: install & manage
 
@@ -69,17 +71,23 @@ install.bat           # Windows equivalent (cmd.exe)
   `config_loader.py` tolerate empty/missing YAML).
 - Peer agent: per-machine `agent_port` (default 8198) and a vault-only
   agent token. Agents are installed from their own platform packages; the
-  Machines page only adds their IP/port/token. `/agent/update` performs
-  in-place upgrades. Linux installs should enable linger; Windows uses a
-  boot Scheduled Task (`LlamaPeerAgent`).
+  Machines page only adds their IP/port/token. Updates are **release-driven**:
+  the app live-checks GitHub for the highest published release, installs the
+  release wheel for pip agents (`/agent/update`) or the raw platform binary
+  for standalone agents (`/agent/update-binary`), then verifies `/version`.
+  Local source/bundled versions must never decide whether a peer updates.
+  Linux installs should enable linger; Windows uses a boot Scheduled Task
+  (`LlamaPeerAgent`); macOS uses the `.pkg` launchd agent.
   Packaged binaries self-register at next login; an agent with no token
-  opens a bounded pairing window and the app auto-enrolls it with the farm
-  token. Windows agent adds TCP 8198/UDP 8199 firewall rules.
+  opens a bounded pairing window and the app auto-enrolls it with the
+  auto-managed farm token. Windows agent adds TCP 8198/UDP 8199 firewall
+  rules.
 - Secrets NEVER go in YAML or generated scripts: HF token + agent tokens
   live in the Fernet vault (`.env`, keys `FARM_SECRET_KEY`, `FARM_SALT`,
-  `HF_TOKEN_ENC`, `MACHINE_<ID>_AGENT_TOKEN_ENC`). Tokens are set via the
-  Machines UI/API (`agent_token_set` flags only; no plaintext in
-  responses) or `scripts/set-agent-token.py`.
+  `HF_TOKEN_ENC`, `AGENT_TOKEN_ENC`, `MACHINE_<ID>_AGENT_TOKEN_ENC`). The
+  farm token is app-managed (auto-generated, no UI override); per-machine
+  tokens are set via the Machines UI/API (`agent_token_set` flags only; no
+  plaintext in responses) or `scripts/set-agent-token.py <machine>`.
 - Managing models/machines as an agent: use the HTTP API at `:8199`
   (complete route reference: `docs/api.md`) rather than hand-editing YAML
   — the running app holds in-memory state and YAML CRUD from outside is
@@ -97,8 +105,7 @@ install.bat           # Windows equivalent (cmd.exe)
   farm llama/RPC process on all machines, restarts daemon + UI) or
   `./restart.sh --ui` (web app only; leaves models/VRAM running).
   `run.sh` only starts the UI when it is not already running. systemd unit
-  owners can also: `systemctl --user restart llama-swap`,
-  `sudo systemctl restart swap-gateway`.
+  owners can also: `systemctl --user restart llama-swap`.
 
 ## Commands
 
@@ -112,9 +119,10 @@ install.bat           # Windows equivalent (cmd.exe)
 ./run.sh                                    # (or run.bat) start UI without killing llama processes
 ```
 
-- `docs/` has a curated index (docs/README.md): architecture, api,
-  secrets, cross-platform, rpc-model, visualizer, tuner, development.
-  Read the relevant one before large changes; AGENTS.md holds only traps.
+- `docs/` has a curated index (docs/README.md): setup, architecture, api,
+  secrets, cross-platform, rpc-model, models-and-variants, peer-agent,
+  release, visualizer, tuner, development. Read the relevant one before
+  large changes; AGENTS.md holds only traps.
 - No lint/typecheck configured — `python3 -m py_compile`, `node --check
   ui/static/app.js`, and `bash -n` on touched shell scripts are the
   de-facto syntax gates.
@@ -171,9 +179,12 @@ install.bat           # Windows equivalent (cmd.exe)
 The app runs on any of the three; peers can be any mix. When touching
 anything that runs shell commands:
 
-- Windows peers: OpenSSH default shell is cmd.exe — remote commands are
-  `powershell -NoProfile -Command "..."` wrappers; `%USERPROFILE%` expands
-  only under cmd.exe.
+- **There is no SSH or remote-shell transport.** Every peer operation is a
+  typed peer-agent HTTP call (`/rpc/*`, `/llama/*`, `/files/*`,
+  `/service/*`, `/install/*`, `/metrics`, `/system/*`). Do not add SSH,
+  sshpass, paramiko, or a remote shell command path.
+- Windows agents use PowerShell/CIM internally; `%USERPROFILE%` is
+  expanded by the agent/installer, never by a remote cmd.exe shell.
 - macOS has **no pgrep, no pkill, no setsid** — use port probes /
   `killall` / `ps -axc -o pid,comm` / nohup. Grep for `os_type == "macos"`
   before assuming a POSIX branch is fine.

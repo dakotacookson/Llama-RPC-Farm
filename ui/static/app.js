@@ -6722,14 +6722,6 @@ async function loadSettings() {
         ? "Token saved — gated models will use it. Paste a new one to replace."
         : "Not set — gated downloads will 401.";
     }
-    const ftok = $("#set-farm-agent-token");
-    if (ftok) ftok.value = "";
-    const fhint = $("#set-farm-agent-token-hint");
-    if (fhint) {
-      fhint.textContent = s.farm_agent_token_set
-        ? "Farm token saved — discovered agents using it verify automatically."
-        : "Not set — per-machine tokens are used.";
-    }
     appSettings = s;
     applyEngineHints(s);
     if (s.theme_family && !localStorage.getItem("ui-theme-family")) {
@@ -6754,8 +6746,6 @@ on("#set-save", "click", async (e) => {
     // only send the token when the user typed one — empty keeps the saved one
     const tok = $("#set-hf-token")?.value.trim();
     if (tok) payload.hf_token = tok;
-    const ftok = $("#set-farm-agent-token")?.value.trim();
-    if (ftok) payload.farm_agent_token = ftok;
     const engSel = $("#set-engine");
     if (engSel?.value) payload.engine = engSel.value;
     const saved = await api("POST", "/api/settings", payload);
@@ -6795,15 +6785,7 @@ on("#set-save", "click", async (e) => {
     }
     const tokInput = $("#set-hf-token");
     if (tokInput) tokInput.value = "";
-    const fHint = $("#set-farm-agent-token-hint");
-    if (fHint) {
-      fHint.textContent = saved.farm_agent_token_set
-        ? "Farm token saved — discovered agents using it verify automatically."
-        : "Not set — per-machine tokens are used.";
-    }
-    const fInput = $("#set-farm-agent-token");
-    if (fInput) fInput.value = "";
-    box.innerHTML = `<p class="status-ok">Defaults saved${tok ? " (HF token updated)." : "."}${ftok ? " (farm agent token updated)." : ""}</p>`;
+    box.innerHTML = `<p class="status-ok">Defaults saved${tok ? " (HF token updated)." : "."}</p>`;
     toast("Defaults saved", "ok");
   } catch (err) {
     box.innerHTML = `<p class="status-bad">${escHtml(err.message)}</p>`;
@@ -6812,22 +6794,6 @@ on("#set-save", "click", async (e) => {
   btn.disabled = false; btn.textContent = "Save defaults";
 });
 
-on("#set-farm-agent-token-toggle", "click", () => {
-  const inp = $("#set-farm-agent-token");
-  if (inp) inp.type = inp.type === "password" ? "text" : "password";
-});
-on("#set-farm-agent-token-clear", "click", async (e) => {
-  e.currentTarget.disabled = true;
-  try {
-    const saved = await api("POST", "/api/settings", { clear_farm_agent_token: true });
-    const hint = $("#set-farm-agent-token-hint");
-    if (hint) hint.textContent = saved.farm_agent_token_set
-      ? "Farm token saved."
-      : "Not set — per-machine tokens are used.";
-    toast(saved.farm_agent_token_set ? "Farm token cleared" : "No farm token was saved", saved.farm_agent_token_set ? "warn" : "ok");
-  } catch (err) { toast(err.message, "bad"); }
-  e.currentTarget.disabled = false;
-});
 on("#set-hf-token-toggle", "click", () => {
   const inp = $("#set-hf-token");
   if (!inp) return;
@@ -6894,135 +6860,6 @@ async function loadToolStatus() {
 });
 
 
-/* ---------------- installer modal (UX-2) ----------------
-   One modal for ALL tools (llama.cpp / llama-swap): node
-   picker (machines.yaml, "this machine" first), tool set, role, dry-run.
-   Submits POST /api/tools/install and consumes the NDJSON progress
-   stream ({event: log|done}) — busy state + per-step log + result
-   summary. Skips render as "already installed" (re-run for a provisioned
-   node shows only skip lines). No native confirm/alert dialogs. */
-
-function instModalClose() {
-  $("#inst-modal").classList.add("hidden");
-  $("#inst-modal").setAttribute("aria-hidden", "true");
-}
-
-async function openInstModal() {
-  const sel = $("#inst-machine");
-  try {
-    const machines = await api("GET", "/api/machines");
-    const opts = [`<option value="__local__">this machine (UI host)</option>`]
-      .concat((machines || []).map(m =>
-        `<option value="${escHtml(m.name)}">${escHtml(m.name)}${m.role === "master" ? " (master)" : ""} · ${escHtml(m.os || "?")}</option>`));
-    sel.innerHTML = opts.join("");
-  } catch (_) {
-    sel.innerHTML = `<option value="__local__">this machine (UI host)</option>`;
-  }
-  // reset to form view
-  $("#inst-form").hidden = false;
-  $("#inst-progress").hidden = true;
-  $("#inst-result").innerHTML = "";
-  $("#inst-log").textContent = "";
-  $("#inst-progress-head").innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Planning…`;
-  const submit = $("#inst-submit");
-  submit.disabled = false; submit.textContent = "Run install";
-  $("#inst-modal").classList.remove("hidden");
-  $("#inst-modal").setAttribute("aria-hidden", "false");
-}
-
-function fmtInstSummary(summary) {
-  const done = (summary.installed || []).length
-    + (summary.repaired || []).length;
-  const skipped = (summary.skipped || []).length;
-  const planned = (summary.planned || []).length;
-  const failed = (summary.failures || []).length;
-  const cls = failed ? "status-bad" : done ? "status-ok" : "status-ok";
-  const icon = failed ? "fa-triangle-exclamation" : "fa-circle-check";
-  const bits = [];
-  if (done) bits.push(`${done} installed/repaired`);
-  if (planned) bits.push(`${planned} would be installed`);
-  if (skipped) bits.push(`${skipped} skipped (already present)`);
-  if (failed) bits.push(`${failed} failed`);
-  if (!bits.length) bits.push("nothing to do");
-  return `<p class="${cls}"><i class="fa-solid ${icon}"></i> ${escHtml(bits.join(" · "))}</p>`;
-}
-
-on("#install-open-modal", "click", openInstModal);
-on("#inst-modal-close", "click", instModalClose);
-on("#inst-modal-done", "click", instModalClose);
-on("#inst-modal-backdrop", "click", instModalClose);
-on("#inst-submit", "click", async (e) => {
-  const btn = e.currentTarget;
-  const machine = $("#inst-machine").value;
-  const toolSel = $("#inst-tools").value;
-  const role = $("#inst-role").value;
-  const dryRun = $("#inst-dry-run").checked;
-  const tools = toolSel === "all" ? [] : [toolSel];
-  btn.disabled = true; btn.textContent = "installing…";
-  $("#inst-form").hidden = true;
-  $("#inst-progress").hidden = false;
-  $("#inst-result").innerHTML = "";
-  const logEl = $("#inst-log");
-  try {
-    const resp = await fetch("/api/tools/install", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ machine, tools, role, dry_run: dryRun }),
-    });
-    if (!resp.ok && !resp.body) throw new Error(`HTTP ${resp.status}`);
-    const reader = resp.body.getReader();
-    const dec = new TextDecoder();
-    let buf = "", summary = null;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line) continue;
-        let ev;
-        try { ev = JSON.parse(line); } catch (_) { continue; }
-        if (ev.event === "log") {
-          logEl.textContent += ev.message + "\n";
-          logEl.scrollTop = logEl.scrollHeight;
-        } else if (ev.event === "done") {
-          summary = ev.summary || {};
-        } else if (ev.event === "timeout") {
-          throw new Error("installer timed out (no activity for 5 min)");
-        }
-      }
-    }
-    const failures = summary ? (summary.failures || []) : [{ error: "no result from server" }];
-    const skipped = summary ? (summary.skipped || []) : [];
-    const installed = summary
-      ? (summary.installed || []).concat(summary.repaired || [])
-      : [];
-    $("#inst-progress-head").innerHTML = failures.length
-      ? `<i class="fa-solid fa-triangle-exclamation status-bad"></i> finished with failures`
-      : `<i class="fa-solid fa-circle-check status-ok"></i> finished`;
-    let html = fmtInstSummary(summary || {});
-    if (skipped.length) {
-      html += `<small class="hint" style="display:block">skipped: ${escHtml(skipped.join(", "))} — already installed, nothing re-run</small>`;
-    }
-    if (failures.length) {
-      const rows = failures.map(f =>
-        `<div style="padding:6px 8px;border-bottom:1px solid var(--border-soft);font-size:12px"><i class="fa-solid fa-triangle-exclamation status-bad"></i> ${escHtml(f.error || JSON.stringify(f))}${(f.context || {}).tool ? ` <small>(${escHtml(f.context.tool)})</small>` : ""}</div>`).join("");
-      html += `<div class="card" style="padding:0;overflow:hidden;margin-top:6px">${rows}</div>`;
-    }
-    $("#inst-result").innerHTML = html;
-    toast(failures.length ? "install finished with failures"
-            : installed.length ? "install complete"
-            : "already up to date",
-          failures.length ? "bad" : "ok");
-  } catch (err) {
-    $("#inst-progress-head").innerHTML = `<i class="fa-solid fa-triangle-exclamation status-bad"></i> failed`;
-    $("#inst-result").innerHTML = `<p class="status-bad">${escHtml(err.message)}</p>`;
-    toast(err.message, "bad");
-  }
-  btn.disabled = false; btn.textContent = "Run install";
-});
 on("#install-llama-cpp", "click", async (e) => {
   const btn = e.currentTarget;
   btn.disabled = true; btn.textContent = "installing…";
@@ -7044,123 +6881,6 @@ on("#install-llama-cpp", "click", async (e) => {
   }
   btn.disabled = false; btn.textContent = "Install llama.cpp (this host)";
 });
-
-/* Install-on-machines modal: engine-parameterized checklist. Opened by
-   the per-engine "Install on other machines…" buttons; lists every
-   configured machine except the local host, auto-checks install state
-   (existing installs are reported, never touched), and installs only on
-   the ticked machines via the batch endpoints' `machines` subset. */
-function installModalEndpoint() {
-  return "/api/install-llama-cpp/all";
-}
-function installModalLabel() {
-  return "llama.cpp";
-}
-function openInstallModal() {
-  const modal = $("#install-modal");
-  if (!modal) return;
-  $("#install-modal-title").innerHTML =
-    `<i class="fa-solid fa-server"></i> Install ${escHtml(installModalLabel())} on other machines`;
-  $("#install-modal-sub").textContent =
-    `Tick machines to check. Existing installs are skipped — only missing ones get the ${installModalLabel()} prebuilt for its machine type.`;
-  $("#install-modal-list").innerHTML =
-    `<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Loading machines…</p>`;
-  modal.classList.remove("hidden");
-  modal.setAttribute("aria-hidden", "false");
-  loadInstallModalMachines();
-}
-function closeInstallModal() {
-  const modal = $("#install-modal");
-  if (!modal) return;
-  modal.classList.add("hidden");
-  modal.setAttribute("aria-hidden", "true");
-}
-async function loadInstallModalMachines() {
-  const box = $("#install-modal-list");
-  try {
-    const [machines, settings] = await Promise.all([
-      api("GET", "/api/machines"),
-      api("GET", "/api/swap/settings"),
-    ]);
-    const localName = settings.host_name || settings.host;
-    const remotes = (machines || []).filter(m => m.name !== localName);
-    if (!remotes.length) {
-      box.innerHTML = `<p class="hint">No other machines configured — add one on the Machines tab first.</p>`;
-      return;
-    }
-    box.innerHTML = `<div class="checkbox-list">` + remotes.map(m => {
-      const gpus = (m.detected && m.detected.gpu_names) || [];
-      return `
-      <label class="server-chip" data-machine="${escHtml(m.name)}" title="tick to include in check/install">
-        <input type="checkbox" class="install-modal-tick" value="${escHtml(m.name)}" checked>
-        <span class="chip-name">${escHtml(m.name)}${m.role === "master" ? ' <span class="badge badge-master">master</span>' : ""}</span>
-        <span class="chip-sub">${escHtml(m.ip || "")} · ${escHtml(m.os || "linux")} · ${gpus.length || "?"} GPU</span>
-        <span class="badge install-modal-status">not checked</span>
-      </label>`;
-    }).join("") + `</div>`;
-    // auto-check on open so the user sees state before ticking
-    await runInstallModalCheck();
-  } catch (err) {
-    box.innerHTML = `<p class="status-bad">${escHtml(err.message)}</p>`;
-  }
-}
-function installModalRowStatus(name, kind, text) {
-  // badge idiom matches the launch-grid server-chips: ok / down / warn
-  const badge = kind === "ok" ? "" : kind === "bad" ? " badge-down" : " badge-local";
-  const row = document.querySelector(`#install-modal-list .server-chip[data-machine="${CSS.escape(name)}"] .install-modal-status`);
-  if (row) { row.className = "badge install-modal-status" + badge; row.textContent = text; }
-}
-function installModalTicked() {
-  return Array.from(document.querySelectorAll("#install-modal-list .install-modal-tick:checked"))
-    .map(el => el.value);
-}
-async function runInstallModalCheck() {
-  const names = installModalTicked();
-  names.forEach(n => installModalRowStatus(n, "warn", "checking…"));
-  try {
-    const resp = await api("POST", installModalEndpoint(), {install_missing: false, machines: names});
-    for (const r of (resp.results || [])) {
-      const ok = r.status === "already-installed" || r.status === "installed";
-      const kind = ok ? "ok" : r.status === "offline" ? "warn" : "bad";
-      installModalRowStatus(r.machine, kind, r.status + (r.bin ? ` — ${r.bin}` : r.reason ? ` — ${r.reason}` : ""));
-      // pre-untick machines that need nothing, so Install hits only gaps
-      if (ok || r.status === "offline") {
-        const tick = document.querySelector(`#install-modal-list .server-chip[data-machine="${CSS.escape(r.machine)}"] .install-modal-tick`);
-        if (tick) tick.checked = false;
-      }
-    }
-    const missing = (resp.missing || []).length;
-    toast(resp.summary || "Check complete", missing ? "warn" : "ok");
-  } catch (err) {
-    toast(err.message, "bad");
-  }
-}
-async function runInstallModalInstall(btn) {
-  const names = installModalTicked();
-  if (!names.length) { toast("Tick at least one machine", "warn"); return; }
-  btn.disabled = true; btn.textContent = "installing…";
-  names.forEach(n => installModalRowStatus(n, "warn", "installing…"));
-  try {
-    const resp = await api("POST", installModalEndpoint(), {install_missing: true, machines: names});
-    for (const r of (resp.results || [])) {
-      const ok = r.status === "already-installed" || r.status === "installed";
-      const kind = ok ? "ok" : r.status === "offline" ? "warn" : "bad";
-      installModalRowStatus(r.machine, kind, r.status + (r.bin ? ` — ${r.bin}` : r.reason ? ` — ${r.reason}` : ""));
-    }
-    const box = $("#install-all-status");
-    if (box) box.innerHTML = `<p class="status-ok">${escHtml(resp.summary || "Install complete")}</p>`;
-    toast(resp.summary || "Install complete", "ok");
-  } catch (err) {
-    toast(err.message, "bad");
-  }
-  btn.disabled = false; btn.textContent = "Install selected";
-}
-on("#install-llama-cpp-others", "click", () => openInstallModal());
-on("#install-modal-close", "click", closeInstallModal);
-on("#install-modal-backdrop", "click", closeInstallModal);
-on("#install-modal-check", "click", runInstallModalCheck);
-on("#install-modal-install", "click", (e) => runInstallModalInstall(e.currentTarget));
-
 
 /* tool status rides along with the settings load (same panel, same tab) */
 const _loadSettings = loadSettings;

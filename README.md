@@ -11,8 +11,11 @@ spec decoding, KV-cache options, 128k+ contexts — the raw llama-server
 features, wired together across machines for you, instead of hand-rolled
 startup scripts.
 
-**Nothing outside this folder is ever modified.** Your existing
-`llama.cpp/`, `llama-swap/` configs, and scripts stay untouched.
+**Your existing configs and scripts stay untouched.** The farm keeps its own
+state under this folder (or the platform data dir for packaged builds);
+engine/agent installs go to standard user locations such as
+`~/.local/bin`, systemd user units, and the swap host's
+`~/.config/llama-swap/`.
 
 ## What it does
 
@@ -55,8 +58,10 @@ startup scripts.
 ./run.sh        # then open http://localhost:8199
 ```
 
-That's the entire setup path — the full walkthrough (vault, machines,
-stores, llama.cpp build, llama-swap, gateway, client config) is in
+The install script sets up the app and Python environment only. On first
+launch, the dashboard's **Setup needed** panel installs llama.cpp + RPC on
+peers and llama-swap on the swap host. The full walkthrough (vault,
+machines, stores, engines, gateway, client config) is in
 **[docs/setup.md](docs/setup.md)**.
 
 Windows SmartScreen warning on the unsigned installer? See
@@ -183,11 +188,10 @@ It's a farm you shape, not a fixed topology.
 **This is a homelab tool for trusted networks.** llama.cpp's RPC server
 is unauthenticated by design; the farm assumes your LAN or a VPN
 (Tailscale-style) is the boundary. Don't port-forward the RPC ports or
-the UI to the public internet. What the app does touch: peer-agent HTTP
-and HTTP for the peer agents on machines
-you add (agent tokens live in the encrypted `.env` vault, never in
-configs or scripts). Everything else stays inside the
-project folder.
+the UI to the public internet. What the app does touch: HTTP to peer agents on machines you add, and
+downloads from official GitHub releases for llama.cpp, llama-swap, and the
+peer agent (agent tokens live in the encrypted `.env` vault, never in
+configs or scripts). Everything else stays inside the project folder.
 
 ## Documentation
 
@@ -222,7 +226,8 @@ llama.cpp, llama-swap, and every other wrapped tool:
 
 ## Status
 
-v1.0.0. llama.cpp RPC + llama-swap is the supported engine.
+Rolling `1.0.x` prereleases — see GitHub Releases for the current version.
+llama.cpp RPC + llama-swap is the supported engine.
 
 Licensed under **Apache-2.0** (this project's own code; download engines
 llama.cpp and llama-swap remain MIT under their own terms) — free for

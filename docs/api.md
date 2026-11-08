@@ -7,7 +7,7 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 
 | Method + Path | Purpose |
 |---|---|
-| `GET /api/machines` | List machines (password replaced by `password_set` flag) |
+| `GET /api/machines` | List machines (agent-only: no login password fields; legacy fields scrubbed) |
 | `POST /api/machines` | Add machine (wizard payload) |
 | `PUT /api/machines/{name}` | Update machine |
 | `DELETE /api/machines/{name}` | Remove machine |
@@ -17,8 +17,8 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 | `POST /api/machines/probe` | Probe hardware on an unsaved machine (wizard) |
 | `POST /api/machines/agent-check` | Pre-save peer-agent health check for Add/Edit |
 | `GET /api/machines/connections` | Detected transport capability: local/agent/none |
-| `GET /api/machines/{name}/agent-version` | Current vs bundled agent version |
-| `POST /api/machines/{name}/update-agent` | Build/install agent, restart it, verify health |
+| `GET /api/machines/{name}/agent-version` | Current agent version vs highest published release |
+| `POST /api/machines/{name}/update-agent` | Install the latest release agent (standalone binary or wheel), restart it, verify health |
 | `GET /api/machines/{name}/status` | Reachability + rpc-server running + IP sync |
 | `POST /api/machines/{name}/rpc/start` | Start rpc-server(s) on that machine |
 | `POST /api/machines/{name}/rpc/stop` | Stop rpc-server(s); body may carry `port` for per-port stop |

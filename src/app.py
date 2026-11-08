@@ -132,10 +132,7 @@ def seed_local_master():
     ensure_runtime_layout()
     local_node.ensure_local_master()
     try:
-        import secrets as _secrets
-        import secrets_vault as _vault
-        if not _vault.farm_agent_token_set():
-            _vault.set_farm_agent_token(_secrets.token_urlsafe(32))
+        _ensure_farm_agent_token()
     except Exception:
         pass
     start_swap_gateway()
@@ -853,6 +850,19 @@ async def machine_agent_check(p: AgentCheckIn):
     return {"ok": True, **out}
 
 
+def _ensure_farm_agent_token():
+    """Farm token is app-managed: generated once and reused; never exposed
+    for manual override in Settings."""
+    import secrets as _secrets
+    import secrets_vault as _vault
+    try:
+        if not _vault.farm_agent_token_set():
+            _vault.set_farm_agent_token(_secrets.token_urlsafe(32))
+        return _vault.get_farm_agent_token()
+    except Exception:
+        return ""
+
+
 def _persist_farm_token_if_missing(machine):
     """A successfully reached agent with no per-machine vault token is using
     the farm token; persist it so the machine shows agent_token_set=true and
@@ -861,7 +871,7 @@ def _persist_farm_token_if_missing(machine):
         import secrets_vault as _vault
         mid = machine.get("id")
         if mid and not _vault.get_machine_agent_token(machine):
-            farm = _vault.get_farm_agent_token()
+            farm = _ensure_farm_agent_token()
             if farm:
                 _vault.set_machine_agent_token(mid, farm)
     except Exception:
@@ -893,7 +903,7 @@ def _auto_agent_token(machine, requested=""):
         _ok, err = _ensure_agent_ready(machine, existing)
         if not err:
             return existing
-    farm = _vault.get_farm_agent_token()
+    farm = _ensure_farm_agent_token()
     if farm:
         _ok, err = _ensure_agent_ready(machine)
         if not err:
@@ -942,11 +952,7 @@ def _ensure_agent_ready(machine, token_override="", timeout=4):
                 return out, None
             except Exception as e:
                 return None, str(e)
-        try:
-            import secrets_vault as _vault
-            farm = _vault.get_farm_agent_token()
-        except Exception:
-            farm = ""
+        farm = _ensure_farm_agent_token()
         if farm:
             pair_err = None
             try:
@@ -3692,8 +3698,6 @@ class AppSettingsIn(pydantic.BaseModel):
     theme_mode: str = "dark"
     hf_token: str | None = None  # only a non-empty value updates the stored token
     clear_hf_token: bool = False
-    farm_agent_token: str | None = None  # shared by all agents when set
-    clear_farm_agent_token: bool = False
     engine: str | None = None  # llama_cpp — None leaves the stored value
 
 
@@ -3788,9 +3792,7 @@ async def save_settings(s: AppSettingsIn, r: Request):
         or access.is_admin(None)
     _key_name_for_ui = access.key_display_name()
     if not _control_identity and (s.engine is not None
-                                  or s.hf_token or s.clear_hf_token
-                                  or s.farm_agent_token
-                                  or s.clear_farm_agent_token):
+                                  or s.hf_token or s.clear_hf_token):
         raise HTTPException(404, "not found")
     # merge over the CURRENT FILE so unknown/future keys survive the write;
     # loaded via the comment-preserving persister (B9c) — a plain
@@ -3800,8 +3802,6 @@ async def save_settings(s: AppSettingsIn, r: Request):
     update = s.model_dump()
     tok = (update.pop("hf_token", None) or "").strip()
     clear_tok = update.pop("clear_hf_token", False)
-    farm_tok = (update.pop("farm_agent_token", None) or "").strip()
-    clear_farm_tok = update.pop("clear_farm_agent_token", False)
     engine = update.pop("engine", None)
     # per-key UI state: scoped identities write theme_family/theme_mode
     # into THEIR access_keys ui: block instead of the shared file —
@@ -3847,10 +3847,6 @@ async def save_settings(s: AppSettingsIn, r: Request):
         _vault.set_hf_token("")
     elif tok:
         _vault.set_hf_token(tok)
-    if clear_farm_tok:
-        _vault.set_farm_agent_token("")
-    elif farm_tok:
-        _vault.set_farm_agent_token(farm_tok)
     # don't echo the raw token back; write via the comment-preserving
     # persister (B9c) so unrelated keys, key order, and all comments
     # survive — never a wholesale rewrite from the request dict
