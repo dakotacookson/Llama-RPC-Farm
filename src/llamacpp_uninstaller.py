@@ -1,7 +1,8 @@
 """llama.cpp uninstaller: removes ONLY what llamacpp_installer created.
 
 Mirrors the installer's uninstall contract — run on ONE
-machine (local or over SSH), produce a steps.run_steps report, and never
+machine (local or through the peer agent), produce a steps.run_steps
+report, and never
 damage the node (card t_df5839d3's core safety property: "a failed
 install must never brick the machine" — and a cleanup must never damage
 it either):
@@ -43,8 +44,8 @@ from llamacpp_installer import DEST_POSIX, DEST_WIN, _win_fw_remove_ps
 
 
 def _make_runner(machine):
-    """run(cmd, timeout) -> (exit_code, combined output): local bash or
-    SSH. Remote machines are agent-only (use the peer agent)."""
+    """run(cmd, timeout) -> (exit_code, combined output) for a local
+    machine. Remote machines are agent-only and never reach this runner."""
     is_local = local_node.is_local(machine)
 
     def run(cmd, timeout=60):
@@ -246,9 +247,8 @@ def _fw_rules_remove(run, is_posix):
     if is_posix:
         return {"detail": "no firewall rules on this OS "
                           "(installer creates them on Windows only)"}
-    # run comes from _make_runner (raw SSH): Windows
-    # peers' OpenSSH default shell is cmd.exe, so the PowerShell body
-    # needs the explicit wrapper — same convention as rpc_manager.
+    # run comes from _make_runner (local shell): Windows needs the
+    # explicit PowerShell wrapper — same convention as rpc_manager.
     cmd = 'powershell -NoProfile -Command "' \
           + _win_fw_remove_ps().replace('"', '\\"') + '"'
     code, out = run(cmd, timeout=60)

@@ -1,7 +1,7 @@
 """Unit tests for stats_collector parsing/aggregation and gguf_inspect
 binary readers — the dashboard numbers must parse deterministically.
 
-collect_* functions need live SSH and are covered by integration, not here.
+collect_* functions need live hosts and are covered by integration, not here.
 """
 import struct
 

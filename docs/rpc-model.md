@@ -78,7 +78,7 @@ main: start each peer through its agent, wait for port/open (or /rpc/list),
 trap → stop only the peers this run started (per-port, co-serve safe)
 ```
 
-No SSH/sshpass is emitted. Env baked into scripts: `GGML_SCHED_DEBUG=3` +
+No shell transport is emitted. Env baked into scripts: `GGML_SCHED_DEBUG=3` +
 `GGML_RPC_DEBUG=3` (visualizer + log tails ground truth),
 `CUDA_DEVICE_ORDER=PCI_BUS_ID`, `GGML_CUDA_P2P=1`, and RDMA gating
 (`GGML_RPC_NO_RDMA=1` default; `GGML_RDMA_DEV/GGML_RDMA_GID/USE_CM` when

@@ -90,7 +90,7 @@ def client(settings_file, monkeypatch):
 
 def _engine_llcpp(monkeypatch):
     """llama.cpp adapter double: capable(rpc_cluster), launch/stop land in
-    spies (the real engine start would SSH out)."""
+    spies (the real engine start would reach out to a peer)."""
     class _Lcpp:
         name = "llama_cpp"
 

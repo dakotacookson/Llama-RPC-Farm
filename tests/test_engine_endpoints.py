@@ -7,7 +7,7 @@
 - POST /api/launch keeps reaching rpc_manager.launch_model.
 - GET /api/tools/verify keeps the read-only per-tool shape.
 
-Heavy externals (SSH probing, real HTTP) are monkeypatched; the REAL
+Heavy externals (agent probing, real HTTP) are monkeypatched; the REAL
 config_loader round-trips the model YAML against tmp files.
 """
 import os

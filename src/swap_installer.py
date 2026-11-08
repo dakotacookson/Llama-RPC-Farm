@@ -1,8 +1,8 @@
 """llama-swap installer — mirrors llamacpp_installer.py.
 
 Downloads the right official llama-swap prebuilt for the machine
-(os + arch) and installs it (local or over SSH). Local machines (no SSH
-needed) use the same shell-wrapper pattern as the llama.cpp installer.
+(os + arch) and installs it locally or through the peer agent, using the
+same shell-wrapper pattern as the llama.cpp installer.
 
 Asset map (llama-swap releases, verified against v256):
   linux  amd64/arm64 -> llama-swap_<tag>_<os>_<arch>.tar.gz (flat tar)
@@ -87,7 +87,7 @@ def plan(machine):
 
 
 def install_on(machine, log=lambda m: None):
-    """Install the official llama-swap binary on a machine (local or SSH).
+    """Install the official llama-swap binary on a machine (local/agent).
     Returns dict {ok, machine, bin, detail}."""
     import config_loader as cfg
     import local_node
@@ -153,10 +153,8 @@ def install_on(machine, log=lambda m: None):
                         "detail": f"installed but verify failed: "
                                   f"{v.get('output', '')[-300:]}"}
             except Exception as e:
-                if agent_client.transport(machine) == "agent":
-                    return {"ok": False, "machine": name,
-                            "detail": f"agent install failed: {e}"}
-                print(f"[agent] {name}: install failed, falling back to SSH: {e}")
+                return {"ok": False, "machine": name,
+                        "detail": f"agent install failed: {e}"}
         if is_win:
             # $d uses $env:USERPROFILE: PS never expands cmd-style %VAR%,
             # and on a LOCAL windows install there is no cmd.exe wrapper
@@ -282,9 +280,6 @@ def detect_on(machine):
                 if st.get("exists") and st.get("is_file"):
                     return True, cand
             return False, None
-        except Exception as e:
-            if agent_client.transport(machine) == "agent":
-                return False, None
-            print(f"[agent] {machine.get('name')}: swap probe failed, "
-                  f"falling back to SSH: {e}")
+        except Exception:
+            return False, None
     return False, None

@@ -8,8 +8,8 @@ that speaks OpenAI.
 
 Real llama.cpp means real features: full CUDA, tensor-split across GPUs,
 spec decoding, KV-cache options, 128k+ contexts — the raw llama-server
-features, wired together across machines for you, instead of fighting SSH
-and hand-rolled startup scripts.
+features, wired together across machines for you, instead of hand-rolled
+startup scripts.
 
 **Nothing outside this folder is ever modified.** Your existing
 `llama.cpp/`, `llama-swap/` configs, and scripts stay untouched.
@@ -106,8 +106,9 @@ curl http://<master-ip>:8090/v1/models -H "Authorization: Bearer sk-farm-XXXX"
 ```
 
 Admins manage it all from the UI — create/revoke keys, edit who sees
-what, and watch per-key usage. Keys are never stored in plaintext in
-configs (the vault holds them; details in
+what, and watch per-key usage. Access keys live in the per-install,
+git-ignored `config/settings.yaml` (never in git); agent tokens and the
+HF token live only in the encrypted vault (details in
 [docs/secrets.md](docs/secrets.md)).
 
 ## Test every model type before it matters

@@ -33,7 +33,7 @@ Per machine:
   gpu_vendor: nvidia    # nvidia | amd | intel | apple | cpu
   rdma: false           # RDMA/RoCE transport (opt-in; TCP default)
   rdma_ip: / rdma_dev: / rdma_gid: / rdma_cm: false
-  transport: agent      # auto | ssh | agent
+  transport: agent      # accepted for compatibility; runtime is agent-only
   agent_port: 8198      # agent HTTP port
   # agent_token is write-only in the Add/Edit form; it is stored in the
   # Fernet vault, never in machines.yaml.
@@ -136,7 +136,6 @@ Generated into llama-swap's `groups:` config section on push.
 | `flow_layout.json` | Visualizer node drag positions (per model node) |
 | `model_icons.json` | Model → icon URL cache |
 | `net_speed_cache.json` | Bandwidth probe results (7-day TTL) |
-| `ssh_known_hosts.json` | SSH host key fingerprints (TOFU store) |
 | `swap.yaml` | llama-swap host pointer (`host_name`); never contains secrets |
 
 ## The second copy (on the host)

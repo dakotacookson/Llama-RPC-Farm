@@ -4,15 +4,16 @@ Status: **agent-only** in `peer_agent/` (agent 0.3.4). RPC + native
 llama-server lifecycle, remote-local models, multi-host RPC scripts,
 custom Windows runtimes, process/status views, logs,
 files, service control, installers, stats/tuner probes, discovery, and
-in-place agent updates are agent-backed. SSH/sshpass/paramiko have been
-removed; agents are installed from their own `.deb`/`.pkg`/`setup.exe`.
+in-place agent updates are agent-backed. Remote shell access, password
+transport, and paramiko were removed; agents are installed from their own
+`.deb`/`.pkg`/`setup.exe`.
 Separate release artifacts are built automatically on every `main` push by
 `.github/workflows/rolling-main.yml`; the agent is published in each
 versioned rolling prerelease, with `main-latest` pointing at the newest build.
 
 ## Why
 
-SSH works for bootstrap and most lifecycle actions, but every action is a
+Shell-based remote execution works for bootstrap, but every action is a
 new connection with OS-specific shell/quoting. The remaining sharp edges:
 
 - `cmdStop`/cleanup historically needed the right environment (sidecar)
@@ -20,8 +21,7 @@ new connection with OS-specific shell/quoting. The remaining sharp edges:
 - process/metrics queries differ across Linux, Windows, macOS
 - a dropped connection can leave an action half-done
 
-A tiny peer agent makes those deterministic without changing the
-architecture for users who prefer SSH.
+A tiny peer agent makes those deterministic with typed operations.
 
 ## Non-goals
 
@@ -29,8 +29,8 @@ architecture for users who prefer SSH.
   operations (processes, files, services, logs, metrics), not shell.
 - No model-file transfer/streaming (models stay on the shared store).
 - No change to llama.cpp, llama-swap, or generated start/stop semantics.
-- No requirement to install it during the transition. A farm can remain
-  SSH-only until the relevant parity slice is complete.
+- The agent is required for every configured peer; there is no shell-only
+  mode.
 
 ## Implemented (current)
 
@@ -44,9 +44,8 @@ architecture for users who prefer SSH.
   `/llama/stop-all`; Bearer-token auth.
 - UDP discovery: agents answer `LLAMA_FARM_DISCOVER_V1` on port `8199`
   with identity-only metadata; `src/agent_discovery.py` collects replies.
-- `src/agent_client.py` — master-side client + `transport` selection
-  (`auto` probes `/health` and falls back to SSH; `ssh` never uses the
-  agent; `agent` requires it).
+- `src/agent_client.py` — master-side client. `transport()` always returns
+  `agent`; legacy `transport:` values are accepted but ignored.
 - `rpc_manager.start_rpc` / `stop_rpc(port)` / `list_rpc_servers` use the
   agent when selected, so the orphan reaper automatically gets the same
   process list on Linux and Windows.
@@ -65,13 +64,13 @@ architecture for users who prefer SSH.
 - Live Launch-page remote-local runs (`_start_llama_server` /
   `stop_llama_server_port`) also use `/llama/start` / `/llama/stop` when
   the agent is selected.
-- `src/peer_transport.py` is the transport seam: agent first, SSH
-  fallback only for bootstrap/recovery.
-- Generated RPC-cluster scripts branch per peer: agent peers use
-  `/rpc/ensure`, `/rpc/stop`, `/port/open`, and `/rpc/list`; SSH peers
-  keep the legacy path. RPC `cmdStop` is agent-aware.
+- `src/peer_transport.py` is the transport seam; its only implementation
+  is `AgentTransport` (there is no shell runtime transport).
+- Generated RPC-cluster scripts use the agent's `/rpc/ensure`,
+  `/rpc/stop`, `/port/open`, and `/rpc/list` endpoints on every OS. RPC
+  `cmdStop` is agent-aware.
 - Remote-local models and custom Windows `.bat` runtimes use typed agent
-  endpoints (`/llama/*`, `/custom/*`) when the peer is agent-backed.
+  endpoints (`/llama/*`, `/custom/*`).
 - In-place agent updates use `/agent/update`; the Machines page exposes
   current→latest version state and an Agent update button.
 - Linux installs enable the systemd user unit with linger; Windows uses
@@ -85,20 +84,24 @@ architecture for users who prefer SSH.
 Per machine:
 
 ```yaml
-transport: auto        # auto | ssh | agent
+transport: auto        # accepted for compatibility; behaviour is agent-only
 agent_port: 8198
 # agent token lives in the vault, never in YAML
 ```
 
 Resolution:
 
-1. `ssh` → existing SSH path, unchanged.
-2. `agent` → require a healthy agent; fail loudly if unavailable.
-3. `auto` (default) → use the agent when it answers `/health` and the
-   configured version is compatible; otherwise fall back to SSH.
+1. Every configured peer is reached through the peer agent.
+   `agent_client.transport()` always returns `agent` and
+   `should_use_agent()` always returns true; the legacy `transport:`
+   value no longer changes behaviour.
+2. There is no shell transport helper; any remote command would fail.
+3. First-time agent installation/recovery on a host with no agent is an
+   explicit out-of-band operation (the platform package), not a fallback
+   the app silently takes.
 
-Every operation is idempotent, so the master can retry over the other
-transport. Start scripts and llama-swap config stay transport-agnostic.
+Every operation is idempotent. Start scripts and llama-swap config use
+the same typed agent endpoints on every OS.
 
 ## Agent shape
 
@@ -146,9 +149,9 @@ transport. Start scripts and llama-swap config stay transport-agnostic.
 | `GET /llama/list` | running native `llama-server` processes |
 | `GET /llama/status?port=N` | 200 while loading/running, 404 when gone |
 
-Remaining SSH exceptions: first-time agent bootstrap/recovery on a host
-with no agent, optional SSH discovery mode, and connection detection's
-SSH-port probe. All normal configured-machine operations are agent-backed.
+There is no shell fallback, no sshpass, and no password transport. All
+normal configured-machine operations are agent-backed; installing the
+agent is a one-time platform-package step.
 
 Mutating calls are validated and return the same shape as the master's
 step reports. Stop-all is explicit and restricted to the known llama
@@ -157,8 +160,7 @@ process names; per-port operations remain the preferred path.
 ## Master integration
 
 `src/peer_transport.py` provides the seam. `AgentTransport` calls
-`src/agent_client.py`; `SSHTransport` keeps the legacy behavior for
-operations that are not ported yet.
+`src/agent_client.py`; it is the only implementation.
 
 ```python
 class PeerTransport:
@@ -177,8 +179,8 @@ Current call sites using the seam or agent branches:
 - generated remote-local start/stop scripts
 - orphan reaper (`rpc_list` + `rpc_stop`)
 
-The remaining SSH call sites are the parity backlog. New operations
-should go through `PeerTransport`, not a direct `_ssh_for(...)` call.
+New operations must go through `PeerTransport`; there is no direct
+remote-shell call site.
 
 ## Install / lifecycle
 
@@ -225,7 +227,7 @@ should go through `PeerTransport`, not a direct `_ssh_for(...)` call.
 6. **Metrics**: Prometheus endpoint and dashboard integration.
 7. **macOS parity**: launchd installer and live validation.
 
-Each slice keeps SSH functional, so no user is forced to migrate early.
+Every slice is agent-backed; there is no parallel shell runtime path.
 
 ## Release packaging
 
@@ -242,8 +244,8 @@ builds are retained under their own version tags.
 See `docs/release.md` for the platform workflows. Bump
 `peer_agent/pyproject.toml` and `llama_peer_agent.__version__` when the
 agent protocol changes. Protocol compatibility is reported by `/version`;
-the master accepts protocol 1 only and falls back to SSH on
-incompatible/missing agents.
+the master accepts protocol 1 only and reports incompatible/missing
+agents as offline.
 
 ## Testing
 
@@ -260,7 +262,7 @@ incompatible/missing agents.
 | Risk | Mitigation |
 |---|---|
 | Extra network service | LAN/VPN bind, token auth, firewall, optional HTTPS |
-| Agent drift | version in `/health`, compatibility check, SSH fallback |
+| Agent drift | version in `/health`, compatibility check, explicit in-place `/agent/update` |
 | Split-brain actions | per-port operations preferred; explicit typed stop-all only |
 | Windows service complexity | scheduled task fallback first, service later |
 | Security regression | no shell endpoint; whitelist args; audit log |

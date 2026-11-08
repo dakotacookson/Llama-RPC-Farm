@@ -1,7 +1,7 @@
 """Machine-type-aware llama.cpp installer.
 
 Picks the correct official prebuilt for each machine (os + gpu_vendor +
-arch) and installs it over SSH (or locally):
+arch) and installs it through the peer agent (or locally):
 
   macOS arm64/x64     -> bin-macos-*  (Metal built in)
   Linux + AMD (ROCm)  -> bin-ubuntu-rocm-<ver>-<arch>.tar.gz
@@ -271,7 +271,7 @@ def plan(machine):
 
 
 def install_on(machine, log=lambda m: None):
-    """Install the right prebuilt on a machine (local or via SSH).
+    """Install the right prebuilt on a machine (local or via the agent).
     Returns dict {ok, machine, bin, detail}."""
     import config_loader as cfg
     import local_node
@@ -372,10 +372,8 @@ def install_on(machine, log=lambda m: None):
                     "detail": f"installed but verify failed: "
                               f"{v.get('output', '')[-300:]}"}
         except Exception as e:
-            if agent_client.transport(machine) == "agent":
-                return {"ok": False, "machine": name,
-                        "detail": f"agent install failed: {e}"}
-            print(f"[agent] {name}: install failed, falling back to SSH: {e}")
+            return {"ok": False, "machine": name,
+                    "detail": f"agent install failed: {e}"}
     # download+extract budget: CUDA+cuDART archives are ~1 GB total; a
     # flat 600s was tight on slow uplinks and killed the run mid-download
     # (fixed 2026-10-31). 20 min per asset set, verify keeps its own.
@@ -481,8 +479,8 @@ def install_on(machine, log=lambda m: None):
 # custom CUDA build broke every --device CUDA* launch on the farm.
 
 def _machine_run(machine):
-    """(run, is_local) for a machine — bash -c locally, raw SSH
-    remotely (POSIX; Windows peers never take the source path)."""
+    """(run, is_local) for a machine — bash -c locally. Remote source
+    work goes through the peer agent and never reaches this helper."""
     import local_node
     is_local = local_node.is_local(machine)
 
@@ -524,12 +522,9 @@ def probe_setup(machine, log=lambda m: None):
             res = agent_client.build_probe(machine, lb)
             res["machine"] = machine.get("name", "?")
             return res
-        except Exception as e:
-            if agent_client.transport(machine) == "agent":
-                out["machine"] = machine.get("name", "?")
-                return out
-            print(f"[agent] {machine.get('name')}: build probe failed, "
-                  f"falling back to SSH: {e}")
+        except Exception:
+            out["machine"] = machine.get("name", "?")
+            return out
     if not lb or machine.get("os", "linux") == "windows":
         # Windows can't remote-source-build (no MSVC toolchain
         # assumption) and an empty llama_bin just needs a prebuilt.
@@ -630,10 +625,8 @@ def update_source_on(machine, probe=None, log=lambda m: None):
             return {"ok": False, "machine": name,
                     "detail": res.get("error") or "source update failed"}
         except Exception as e:
-            if agent_client.transport(machine) == "agent":
-                return {"ok": False, "machine": name,
-                        "detail": f"agent source update failed: {e}"}
-            print(f"[agent] {name}: source update failed, falling back to SSH: {e}")
+            return {"ok": False, "machine": name,
+                    "detail": f"agent source update failed: {e}"}
     run, _is_local = _machine_run(machine)
 
     try:

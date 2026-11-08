@@ -16,7 +16,7 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 | `POST /api/machines/detect-all` | Detect hardware on every machine |
 | `POST /api/machines/probe` | Probe hardware on an unsaved machine (wizard) |
 | `POST /api/machines/agent-check` | Pre-save peer-agent health check for Add/Edit |
-| `GET /api/machines/connections` | Detected transport capability: local/both/ssh/agent/none |
+| `GET /api/machines/connections` | Detected transport capability: local/agent/none |
 | `GET /api/machines/{name}/agent-version` | Current vs bundled agent version |
 | `POST /api/machines/{name}/update-agent` | Build/install agent, restart it, verify health |
 | `GET /api/machines/{name}/status` | Reachability + rpc-server running + IP sync |
@@ -31,7 +31,7 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 ## Discovery
 
 | `GET /api/discover/subnets` | Candidate subnets for scanning |
-| `POST /api/discover` | Scan SSH hosts, or peer agents with `agent_only: true` (UDP discovery) |
+| `POST /api/discover` | Discover peer agents over UDP (`agent_only: true`) |
 | `GET /api/hardware/changes` | Hardware fingerprint diff polling |
 
 ## Groups (machine clusters)
@@ -115,7 +115,7 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 | `POST /api/install-llama-cpp` | Detect existing local install, configure path |
 | `POST /api/install-llama-cpp/install?name=` | Install the right prebuilt on one machine |
 | `POST /api/install-llama-cpp/all` | Check all machines, optionally install missing |
-| `POST /api/install-llama-swap?name=` | Install llama-swap on a machine if missing (local = no SSH); updates swap settings' binary |
+| `POST /api/install-llama-swap?name=` | Install llama-swap on a machine if missing (local or via the agent); updates swap settings' binary |
 | `POST /api/restart` | Restart this web app (POSIX/Windows aware) |
 
 ## Misc
@@ -132,13 +132,16 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 | `/ws/flow/upstream` | Token-chunk events (model currently streaming) |
 | `/ws/flow/sched` | Per-tensor backend events from GGML_SCHED_DEBUG logs + peer rpc-server logs |
 | `/ws/logs/stream` | **Raw** proxy+upstream lines for the Logs tab (`{src, line}`), primed ~1.5s |
-| `/ws/socket.io/*` | Chainlit chat (proxied) |
+| `/ws/swap/faults` | Structured model-load failure notices (one per model per cooldown) |
 
 All log-feed WebSockets must tolerate llama-swap's history replay on
 connect — the backend primes silently; clients ignore the first ~1.5s.
 
 ## Auth model
 
-None on the API itself (LAN tool). Secrets never cross it — machine
-passwords appear only as `password_set: true/false`; the HF token as
-`hf_token_set`.
+Identity is the farm access key (`Authorization: Bearer` / `X-Api-Key`)
+or the web-login session cookie, resolved by `src/access.py`; a scoped
+key only sees/stops its granted models. Trusted loopback (the operator
+console) and in-process callers stay open. Secrets never cross the API:
+agent tokens appear only as `agent_token_set`, the HF token as
+`hf_token_set`, and model configs as `private: true/false`-filtered.

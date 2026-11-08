@@ -7,7 +7,7 @@ Guidance for AI coding agents working in this repo. Only non-obvious, verified f
 Run ALL of these against every commit reachable from `main`
 (`git rev-list --all`), not just HEAD — a HEAD-only scan misses history:
 
-1. Secrets: machine SSH passwords (compare against the maintainer's
+1. Secrets: machine credentials (compare against the maintainer's
    LOCAL machines.yaml / vault — never paste the real values into
    tracked files; describe them as patterns only, e.g. "password shown
    in ~/.hermes skill or machines vault"), the real access keys
@@ -40,7 +40,8 @@ test-stub keys (`sk-dad-test-…`).
 
 FastAPI web UI (`src/app.py`, port **8199**) that manages a llama.cpp RPC
 cluster. Peers are reached **only** through the peer agent; agents ship as
-their own `.deb`/`.pkg`/`setup.exe` packages (no SSH, no sshpass). A Linux master
+their own `.deb`/`.pkg`/`setup.exe` packages (no remote shell, no
+sshpass). A Linux master
 runs llama-swap + llama-server, peers run `ggml-rpc-server` or native
 `llama-server` via the agent. Vanilla-JS frontend (`ui/`), YAML configs
 (`config/`). Nothing outside this folder is ever modified.

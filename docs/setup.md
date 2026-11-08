@@ -9,7 +9,7 @@ Nothing outside the project folder is ever modified.
 | Where you need it | Requirement |
 |---|---|
 | Master (this app's box) | Python 3.11+, a terminal, network reach to every peer (Tailscale or LAN) |
-| Peers | The peer agent package (`.deb` / `.pkg` / `setup.exe`) — no SSH server needed |
+| Peers | The peer agent package (`.deb` / `.pkg` / `setup.exe`) — no remote login needed |
 | Models | llama.cpp `llama-server` built (or installed later via the UI) + GGUF files on a shared path |
 | Serving clients | Any OpenAI-compatible client (opencode, SillyTavern, curl, …) |
 | Optional | `curl` (used by run.sh / run.bat health checks) |
@@ -98,7 +98,7 @@ with `LLAMA_FARM_NO_SERVICE=1` / `PEER_AGENT_NO_SERVICE=1`; run either binary
 with `--install-service` / `--uninstall-service` to manage it manually.
 
 Machine identity is the MAC, not the IP — DHCP drift self-heals when the
-new IP answers SSH (only for machines with a stored MAC).
+new IP answers on the agent port (only for machines with a stored MAC).
 
 ## 5. Point model paths at shared storage (stores.yaml)
 
@@ -195,10 +195,9 @@ minutes between streamed chunks (prefill, RPC backends, memory pressure).
 - **UI won't come up** — check the log (`/tmp/llama-web.log` POSIX,
   `%TEMP%\llama-web.log` Windows); free port 8199 and re-run run.sh.
 - **Peer-agent failures** — service/task stopped, token missing/rotated, or
-  firewall blocking TCP 8198/UDP 8199. SSH failures still apply to SSH-mode
-  peers: password changed, OpenSSH not running, or
-  the OS shell trap: Windows peers need PowerShell-wrapped commands
-  (`OpenSSH` default shell is cmd.exe), macOS has no `pgrep`/`pkill`.
+  firewall blocking TCP 8198/UDP 8199. There is no shell fallback: every
+  configured machine must have a reachable agent, and installing/repairing
+  it is a one-time platform-package step.
 - **Model path not found on a peer** — the `store://` alias lacks a key
   for that machine's OS; add it in `stores.yaml`.
 - **Port 50052 family busy on a peer** — per-model ports roll

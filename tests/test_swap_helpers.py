@@ -1,7 +1,7 @@
 """Unit tests for swap_manager's pure helpers: key dedup, env, dir/paths,
 systemd unit, binary resolution, and settings round-trip.
 
-No daemon, no SSH, no real config files (tmp settings path).
+No daemon, no remote host, no real config files (tmp settings path).
 """
 import os
 

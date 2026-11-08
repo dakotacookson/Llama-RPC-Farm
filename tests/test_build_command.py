@@ -4,7 +4,7 @@ flags/peers/ports change, and they're pure string/logic (no network).
 
 build_llama_command is imported from rpc_manager and exercised with
 hand-built model dicts + peer lists so the output can be asserted
-without any real machine or SSH.
+without any real machine or peer transport.
 """
 import shlex
 

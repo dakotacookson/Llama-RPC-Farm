@@ -938,27 +938,18 @@ def _pcie_info(machine):
     val = ""
     q = ("nvidia-smi --query-gpu=pcie.link.gen.current,"
          "pcie.link.width.current --format=csv,noheader,nounits")
-    agent_selected = agent_client.should_use_agent(machine)
-    if agent_selected:
+    import local_node as _ln
+    if machine is not None and not _ln.is_local(machine):
         try:
             val = (agent_client.system_detail(machine).get("pcie") or "")
-        except Exception as e:
-            if agent_client.transport(machine) == "agent":
-                val = ""
-            else:
-                print(f"[agent] {machine.get('name')}: pcie failed, falling back to SSH: {e}")
-    if not val and not (agent_selected and
-                        agent_client.transport(machine) == "agent"):
+        except Exception:
+            val = ""
+    else:
         try:
-            import local_node as _ln
-            if _ln.is_local(machine):
-                p = subprocess.run(q.split(), capture_output=True, text=True,
-                                   timeout=10)
-                out = p.stdout
-            else:
-                out = ""
+            p = subprocess.run(q.split(), capture_output=True, text=True,
+                               timeout=10)
             tags = []
-            for line in (out or "").splitlines():
+            for line in (p.stdout or "").splitlines():
                 cells = [x.strip() for x in line.split(",")]
                 if len(cells) == 2 and cells[0].isdigit() and cells[1].isdigit():
                     tags.append(f"g{cells[0]}x{cells[1]}")
@@ -975,7 +966,7 @@ def _pcie_info(machine):
 
 def probe_link_mbps(machine, size_mb=32):
     """Effective master->machine throughput (Mbps), file-cached 7d.
-    Small dd-over-SSH transfer: measures the real path RPC tensors take,
+    Agent `/speedtest` transfer: measures the real path RPC tensors take,
     not the NIC label (virtio reports speed -1)."""
     import subprocess
     import json as _js
@@ -985,26 +976,13 @@ def probe_link_mbps(machine, size_mb=32):
     if hit and time.time() - hit.get("ts", 0) < 7 * 86400:
         return hit["mbps"]
     mbps = 0
-    agent_selected = agent_client.should_use_agent(machine)
-    if agent_selected:
+    import local_node as _ln
+    if machine is not None and not _ln.is_local(machine):
         try:
             mbps = agent_client.speedtest(machine, size_mb) or 0
-        except Exception as e:
-            if agent_client.transport(machine) == "agent":
-                mbps = 0
-            else:
-                print(f"[agent] {name}: speedtest failed, falling back to SSH: {e}")
-    try:
-        import local_node as _ln
-        if mbps or (agent_selected and
-                    agent_client.transport(machine) == "agent"):
-            pass
-        elif _ln.is_local(machine):
-            mbps = 0  # local: not a network hop
-        else:
+        except Exception:
             mbps = 0
-    except Exception:
-        mbps = 0
+    # local: not a network hop
     cache[name] = {"mbps": mbps, "ts": time.time()}
     try:
         _js.dump(cache, open(cache_p, "w"))
@@ -1019,7 +997,8 @@ def virt_info(machine=None):
     not). Returns dict; best-effort, never raises."""
     import subprocess
     info = {"virt": "", "cpu": "", "rebar": ""}
-    if machine is not None and agent_client.should_use_agent(machine):
+    import local_node as _ln
+    if machine is not None and not _ln.is_local(machine):
         try:
             d = agent_client.system_detail(machine)
             return {
@@ -1028,12 +1007,9 @@ def virt_info(machine=None):
                         str(d.get("cpu_flags") or ""))[:160],
                 "rebar": d.get("rebar") or "",
             }
-        except Exception as e:
-            if agent_client.transport(machine) == "agent":
-                return info
-            print(f"[agent] {machine.get('name')}: virt failed, falling back to SSH: {e}")
+        except Exception:
+            return info
     try:
-        import local_node as _ln
         if machine is None or _ln.is_local(machine):
             def run(cmd):
                 p = subprocess.run(cmd.split(), capture_output=True,
@@ -1063,8 +1039,7 @@ def virt_info(machine=None):
                     p = _sp.run(q.split(), capture_output=True, text=True,
                                 timeout=10)
                     return p.stdout.strip().splitlines()
-                code, out, _ = ssh.run(q, timeout=15)
-                return out.strip().splitlines() if code == 0 else []
+                return []
             bars = _rebar()
             if bars:
                 nums = [b.strip().split()[0] for b in bars
@@ -1139,7 +1114,7 @@ SAFE_MIN_FREE_GB = 0.75
 
 def measure_headroom(servers):
     """Min free VRAM (GB) across the selected servers' GPUs, right now.
-    Lightweight nvidia-smi poll (local + one SSH each), not full stats."""
+    Lightweight nvidia-smi poll (local) or agent metrics (remote)."""
     import subprocess
     q = "nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits"
     frees = []
@@ -1148,20 +1123,18 @@ def measure_headroom(servers):
             m = cfg.machines.require(name)
         except ValueError:
             continue
-        if agent_client.should_use_agent(m):
+        import local_node as _ln
+        if not _ln.is_local(m):
             try:
                 for g in agent_client.metrics(m).get("gpus") or []:
                     free = float(g.get("mem_total_gb") or 0) - float(
                         g.get("mem_used_gb") or 0)
                     if free > 0:
                         frees.append(free)
-                continue
-            except Exception as e:
-                if agent_client.transport(m) == "agent":
-                    continue
-                print(f"[agent] {name}: metrics failed, falling back to SSH: {e}")
+            except Exception:
+                pass
+            continue
         try:
-            import local_node as _ln
             if _ln.is_local(m):
                 p = subprocess.run(q.split(), capture_output=True, text=True,
                                    timeout=10)

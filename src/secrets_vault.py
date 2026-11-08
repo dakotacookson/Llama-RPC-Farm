@@ -7,7 +7,7 @@ Design (per user request):
   `settings.yaml:hf_token` are migrated to the vault and cleared.
 - At rest nothing sensitive is plaintext: values in `.env` are Fernet
   tokens (AES-128-CBC + HMAC-SHA256). They are decrypted on the fly only
-  at the moment of use (SSH connect, HF API call, generated script).
+  at the moment of use (remote credential, HF API call, script).
 - SHA-256 + salt is used two ways:
   1. `hash_password` / `verify_password` for any future app-login secret
      (one-way fingerprint: SHA-256(salt || password), compare_digest).
@@ -204,7 +204,7 @@ def delete_env_value(key):
 
 # ---------------- machine passwords ----------------
 def set_machine_password(machine_id, plain):
-    """Encrypt + store a machine SSH password in .env. Empty clears it."""
+    """Encrypt + store a legacy machine credential in .env. Empty clears it."""
     key = machine_env_key(machine_id)
     if plain:
         set_env_value(key, encrypt_value(plain))
@@ -215,7 +215,7 @@ def set_machine_password(machine_id, plain):
 def get_machine_password(machine):
     """Resolve a machine dict's password: vault first, legacy YAML fallback.
 
-    Returns plaintext ONLY in memory for immediate use (SSH connect, script
+    Returns plaintext ONLY in memory for immediate use (legacy fields, script
     gen). Never writes it back to YAML.
     """
     mid = (machine or {}).get("id") or (machine or {}).get("name") or ""

@@ -38,7 +38,7 @@ machine as master. Chat testing is a native tab in the same UI (no extra service
 
 - All tests are unit-stubbed: `tests/conftest.py` replaces
   `rpc_manager.cfg` with an in-memory machine map (`stub_cfg` fixture —
-  populate it with `stub_cfg.update({...})`) and fakes SSH. No real host
+  populate it with `stub_cfg.update({...})`) and fakes the peer transport. No real host
   is ever contacted.
 - **String-assertion style:** several tests assert EXACT rendered
   bash/PowerShell snippets from `rpc_manager` / `swap_manager`. If you
@@ -80,7 +80,7 @@ bash -n restart.sh restart-llama-swap.sh run.sh    # if touched
 - Never assume pgrep/pkill/setsid exist (macOS), or that `%USERPROFILE%`
   expands under PowerShell (`$env:USERPROFILE` there).
 - Tests must never contact real hosts — everything goes through the
-  `stub_cfg` fixture + fakes. Don't introduce live SSH in tests.
+  `stub_cfg` fixture + fakes. Don't introduce live hosts in tests.
 
 ## Conventions
 
@@ -93,7 +93,9 @@ bash -n restart.sh restart-llama-swap.sh run.sh    # if touched
 
 ## Releases / distribution
 
-No packaging configured — it runs from the checkout. If distributing:
-rotate `.env` secrets, keep `THIRD-PARTY-LICENSES.md` + the LGPL-2.1
-text (paramiko), keep paramiko as a pip dependency (see README legal
-section).
+Rolling releases are built on every `main` push by
+`.github/workflows/rolling-main.yml` (Linux `.deb`, macOS `.pkg`,
+Windows `setup.exe`, plus the peer-agent packages). See
+[release.md](release.md) for versioning, signing, and publishing. Before
+distributing from a checkout, rotate `.env` secrets and keep
+`THIRD-PARTY-LICENSES.md` current.

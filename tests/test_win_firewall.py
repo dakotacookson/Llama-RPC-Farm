@@ -97,7 +97,7 @@ def test_ensure_warns_when_probe_gives_no_tokens():
 def test_ensure_run_failure_never_raises():
     class BoomRun:
         def __call__(self, cmd, timeout=60):
-            raise RuntimeError("ssh down")
+            raise RuntimeError("agent down")
     assert lci._ensure_win_firewall(BoomRun(), lambda m: None) == ""
 
 
@@ -108,7 +108,7 @@ def test_uninstall_removes_rules_on_windows():
     rep = _fw_rules_remove(run, is_posix=False)
     assert not rep.get("failed")
     assert "removed" in rep["detail"]
-    # explicit wrapper: run comes from _make_runner's raw SSH, and the
+    # explicit wrapper: run comes from _make_runner's local shell, and the
     # peer's default shell is cmd.exe (AGENTS.md OS coverage)
     assert run.cmds[0].startswith('powershell -NoProfile -Command "')
     assert lci._win_fw_remove_ps() in run.cmds[0]

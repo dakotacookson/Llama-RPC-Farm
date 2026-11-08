@@ -258,7 +258,7 @@ def list_swap_processes() -> list[dict]:
 
 
 def gpu_rows() -> list[str]:
-    """NVIDIA CSV rows in the same shape as ssh_manager.gpu_info()."""
+    """NVIDIA CSV rows normalized for the metrics payload."""
     exe = shutil.which("nvidia-smi")
     if not exe:
         return []
@@ -327,7 +327,7 @@ def stop_rpc_port(config: AgentConfig, port: int) -> dict:
         _state_path(config, port).unlink()
     except OSError:
         pass
-    # stale RPC tensor cache (same cleanup as the SSH/script path)
+    # stale RPC tensor cache (same cleanup as the script path)
     try:
         shutil.rmtree(Path.home() / ".cache" / "llama.cpp" / "rpc",
                       ignore_errors=True)
