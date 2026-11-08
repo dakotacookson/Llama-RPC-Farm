@@ -1866,27 +1866,36 @@ def launch(binary=None, listen_port=None, config_path=None,
     # RPC peers up -- but only for direct-cmd models. Script-mode models
     # own their peers inside the .sh (spin up on load, down on exit),
     # so pre-starting them would just be torn down and redone.
-    script_mids = set(gen["script_mids"])
     peer_names = []
     # Direct-cmd models point --rpc at their own per-(model, peer, group)
     # port (rpc_manager._model_rpc_ports), not the peer's base port, and
-    # nothing else starts those servers. Collect them here.
+    # nothing else starts those servers. Walk the generated ENTRIES, not
+    # base model configs: variants are entries with their own device order
+    # and therefore their own RPC ports.
     model_rpc = {}   # (peer_name, port) -> device list
-    for model in cfg.list_models():
-        mid = model.get("model_id")
-        if mid in script_mids:
+    for entry in gen.get("entries") or []:
+        if entry.get("mode") != "direct":
             continue
-        if mid not in {e["model_id"] for e in gen["entries"]}:
+        base_id = entry.get("base_model") or entry.get("model_id")
+        model = cfg.get_model(base_id)
+        if model is None:
             continue
+        var = (entry.get("variant") or "").strip()
+        if var:
+            try:
+                model = rpc_manager._resolve_variant(model, var)
+            except Exception:
+                continue
         peers_of = []
         for s in model.get("servers") or []:
-            if s != host["name"] and s not in peer_names:
+            if s == host["name"]:
+                continue
+            if s not in peer_names:
                 peer_names.append(s)
-            if s != host["name"]:
-                try:
-                    peers_of.append(cfg.machines.require(s))
-                except Exception:
-                    pass
+            try:
+                peers_of.append(cfg.machines.require(s))
+            except Exception:
+                pass
         try:
             ports = rpc_manager._model_rpc_ports(model, peers_of)
         except Exception:
