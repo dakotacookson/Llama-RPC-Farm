@@ -843,23 +843,13 @@ async def machine_agent_check(p: AgentCheckIn):
     machine = {"name": p.name or p.ip, "ip": p.ip, "agent_port": port,
                "transport": "agent",
                "id": (existing or {}).get("id")}
-    try:
-        out = await run_in_threadpool(
-            agent_client.health, machine, 4.0, p.agent_token or None)
-    except Exception:
-        # Unpaired agent + farm token: enroll automatically, then retry.
-        try:
-            import secrets_vault as _vault
-            farm = _vault.get_farm_agent_token()
-            if farm and not p.agent_token:
-                await run_in_threadpool(agent_client.pair, machine, farm)
-                out = await run_in_threadpool(
-                    agent_client.health, machine, 4.0, farm)
-            else:
-                raise
-        except Exception as e:
-            raise HTTPException(status_code=502,
-                                detail=f"peer agent unreachable: {e}")
+    _caps, err = await run_in_threadpool(
+        _ensure_agent_ready, machine, p.agent_token or "")
+    if err:
+        raise HTTPException(status_code=502,
+                            detail=f"peer agent auth failed: {err}")
+    out = await run_in_threadpool(
+        agent_client.health, machine, 4.0, p.agent_token or None)
     return {"ok": True, **out}
 
 
@@ -890,39 +880,30 @@ def _auto_agent_token(machine, requested=""):
     import secrets as _secrets
     import secrets_vault as _vault
 
-    def _health(tok):
-        try:
-            agent_client.health(machine, timeout=4, token=tok)
-            return True
-        except Exception:
-            return False
-
     requested = (requested or "").strip()
     if requested:
-        if _health(requested):
-            return requested
-        try:
-            agent_client.pair(machine, requested)
-            return requested
-        except Exception as e:
+        _ok, err = _ensure_agent_ready(machine, requested)
+        if err:
             raise ValueError(
-                f"peer agent rejected the token: {e}") from e
+                f"peer agent rejected the token: {err}")
+        return requested
 
     existing = _vault.get_machine_agent_token(machine)
-    if existing and _health(existing):
-        return existing
+    if existing:
+        _ok, err = _ensure_agent_ready(machine, existing)
+        if not err:
+            return existing
     farm = _vault.get_farm_agent_token()
     if farm:
-        if _health(farm):
+        _ok, err = _ensure_agent_ready(machine)
+        if not err:
             return farm
-        try:
-            agent_client.pair(machine, farm)
-            return farm
-        except Exception:
-            pass
     tok = _secrets.token_urlsafe(32)
+    m = dict(machine)
+    m["_agent_token"] = tok
     try:
-        agent_client.pair(machine, tok)
+        agent_client.pair(m, tok)
+        agent_client.capabilities(m, timeout=8)
         return tok
     except Exception as e:
         raise ValueError(
@@ -931,36 +912,58 @@ def _auto_agent_token(machine, requested=""):
 
 
 def _ensure_agent_ready(machine, token_override="", timeout=4):
-    """Health-check a peer agent, auto-pairing a fresh agent with the farm
-    token when possible. Returns (health_or_None, error_or_None)."""
+    """Validate a peer agent's TOKEN (not just reachability), auto-pairing a
+    fresh agent with the farm token when possible.
+
+    /health is deliberately unauthenticated, so it cannot prove the token is
+    right. /capabilities requires auth and is the gate here.
+    Returns (capabilities_or_None, error_or_None)."""
     m = dict(machine)
     if token_override:
         m["_agent_token"] = token_override
     try:
-        out = agent_client.health(m, timeout=timeout)
+        out = agent_client.capabilities(m, timeout=8)
         if not token_override:
             _persist_farm_token_if_missing(machine)
         return out, None
     except Exception as first:
         if token_override:
-            return None, str(first)
+            # An explicitly supplied token can also enroll a fresh agent.
+            try:
+                agent_client.pair(m, token_override)
+            except Exception as pe:
+                if "already paired" in str(pe).lower():
+                    return None, (
+                        "agent is already paired with a different token — "
+                        "enter its token in Configure")
+                return None, str(first)
+            try:
+                out = agent_client.capabilities(m, timeout=8)
+                return out, None
+            except Exception as e:
+                return None, str(e)
         try:
             import secrets_vault as _vault
             farm = _vault.get_farm_agent_token()
         except Exception:
             farm = ""
         if farm:
+            pair_err = None
             try:
                 agent_client.pair(m, farm)
-            except Exception:
-                pass
+            except Exception as e:
+                pair_err = str(e)
             m["_agent_token"] = farm
             try:
-                out = agent_client.health(m, timeout=timeout)
+                out = agent_client.capabilities(m, timeout=8)
                 _persist_farm_token_if_missing(machine)
                 return out, None
-            except Exception:
-                pass
+            except Exception as e:
+                if pair_err and "already paired" in pair_err.lower():
+                    return None, (
+                        "agent is already paired with a different token — "
+                        "enter its token in Configure")
+                return None, str(e)
         return None, str(first)
 
 
@@ -1058,7 +1061,14 @@ async def delete_machine(name: str):
     try:
         import secrets_vault as _vault
         target = cfg.machines.get(name) or {}
-        _vault.delete_env_value(_vault.machine_env_key(target.get("id") or name))
+        # Remove every app-side secret keyed to this machine (id, name, and
+        # the requested name) so a fresh re-add starts clean instead of
+        # inheriting a stale token.
+        for ident in {target.get("id"), target.get("name"), name}:
+            if not ident:
+                continue
+            _vault.set_machine_agent_token(ident, "")
+            _vault.delete_env_value(_vault.machine_env_key(ident))
     except Exception:
         pass
     return {"remaining": cfg.machines.delete(name)}
@@ -1194,16 +1204,9 @@ async def probe_hardware(p: ProbeIn):
 
     def run():
         if not local_node.is_local(machine):
-            try:
-                agent_client.health(machine, timeout=4)
-            except Exception:
-                try:
-                    import secrets_vault as _vault
-                    farm = _vault.get_farm_agent_token()
-                    if farm:
-                        agent_client.pair(machine, farm)
-                except Exception:
-                    pass
+            _caps, err = _ensure_agent_ready(machine)
+            if err:
+                return {"online": False, "error": err}
         s = stats_collector.machine_stats(machine)
         if s["status"] != "online":
             return {"online": False}
@@ -1229,9 +1232,10 @@ async def probe_hardware(p: ProbeIn):
     if not result["online"]:
         raise HTTPException(
             status_code=503,
-            detail=f"{p.ip} is unreachable over the peer agent "
-                   f"(port {p.agent_port}) — install/start the agent there "
-                   f"and check the token")
+            detail=result.get("error") or (
+                f"{p.ip} is unreachable over the peer agent "
+                f"(port {p.agent_port}) — install/start the agent there "
+                f"and check the token"))
     result["detected"] = result.get("detected") or {}
     return result
 
@@ -5002,23 +5006,26 @@ def _readiness_for(machine, swap_host_name):
     if is_local:
         out.update(_local_engine_readiness(machine))
     else:
-        try:
-            h = agent_client.health(machine, timeout=4)
+        caps, err = _ensure_agent_ready(machine)
+        if err:
+            out["agent"] = {"ok": False, "local": False,
+                            "version": None, "error": err}
+        else:
+            try:
+                h = agent_client.health(machine, timeout=4)
+            except Exception:
+                h = {}
             out["agent"] = {"ok": True, "local": False,
                             "version": h.get("agent_version"),
                             "protocol": h.get("protocol_version"),
                             "error": None}
-        except Exception as e:
-            out["agent"]["error"] = str(e)
-        try:
-            caps = agent_client.capabilities(machine, timeout=8) or {}
-            lp = caps.get("llama_binary")
-            rp = caps.get("rpc_binary")
+            lp = (caps or {}).get("llama_binary")
+            rp = (caps or {}).get("rpc_binary")
             out["llama_cpp"]["installed"] = bool(
-                caps.get("llama_available") and lp)
+                (caps or {}).get("llama_available") and lp)
             out["llama_cpp"]["path"] = lp or None
             out["llama_rpc"]["installed"] = bool(
-                caps.get("rpc_available") and rp)
+                (caps or {}).get("rpc_available") and rp)
             out["llama_rpc"]["path"] = rp or None
             if lp:
                 try:
@@ -5030,8 +5037,6 @@ def _readiness_for(machine, swap_host_name):
                             str(v.get("output") or ""))
                 except Exception:
                     pass
-        except Exception as e:
-            out["llama_cpp"]["error"] = str(e)
     try:
         import swap_installer
         found, path = swap_installer.detect_on(machine)
