@@ -4464,7 +4464,7 @@ async def update_agent_machine(name: str):
 
 
 @app.post("/api/machines/{name}/update-llama-cpp")
-async def update_llama_cpp_machine(name: str):
+async def update_llama_cpp_machine(name: str, force: bool = False):
     """One-click llama.cpp UPDATE for one machine (machine-page button).
 
     Background job that: (1) stops that machine's llama processes —
@@ -4501,7 +4501,34 @@ async def update_llama_cpp_machine(name: str):
             # rebuild still costs a fetch + cmake pass, and the UI
             # shows 'on latest' for these machines anyway.
             vp = _llama_version_payload(machine)
-            if vp.get("on_latest"):
+            if force:
+                job["log"].append(
+                    f"{name}: forced clean reinstall of llama.cpp + RPC "
+                    "(existing binaries will be overwritten)")
+                try:
+                    if name == (swap_manager.get_host() or {}).get("name"):
+                        port = int(swap_manager.load_settings().get("listen_port") or 8080)
+                        with urllib.request.urlopen(
+                                f"http://127.0.0.1:{port}/health", timeout=3) as r:
+                            was_swap_up = (r.status == 200)
+                        job["log"].append(
+                            f"llama-swap on {name}: "
+                            + ("running — will restart after the install"
+                               if was_swap_up else "not running"))
+                except Exception:
+                    was_swap_up = False
+                job["log"].append(f"stopping llama processes on {name} …")
+                try:
+                    rep = rpc_manager.stop_rpc(name)
+                    job["log"].append("stop_rpc: " + json.dumps(rep)[:400])
+                except Exception as e:
+                    job["log"].append(f"stop_rpc failed (continuing anyway): {e}")
+                job["state"] = "installing"
+                res = llamacpp_installer.install_on(
+                    machine, log=lambda m: job["log"].append(str(m)))
+                job["result"] = res
+                job["state"] = "done" if res.get("ok") else "failed"
+            elif vp.get("on_latest"):
                 job["log"].append(
                     f"{name} already on the latest release "
                     f"({vp.get('latest')}) — nothing to do")
