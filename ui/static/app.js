@@ -5524,9 +5524,15 @@ async function loadLaunch() {
     const btn = card.querySelector('[data-act="launch"]');
     const hint = card.querySelector(".launch-ready-hint");
     const notReady = down.length > 0;
+    const key = card.dataset.variant
+      ? `${card.dataset.model}--${card.dataset.variant}`
+      : card.dataset.model;
+    const on = loadedSet.has(key);
     if (btn) {
-      btn.disabled = notReady || card.dataset.loading === "1";
-      btn.title = notReady ? `unavailable — down: ${down.join(", ")}` : "Launch";
+      // already loaded: nothing to load (Evict first to reload)
+      btn.disabled = notReady || on || card.dataset.loading === "1";
+      btn.title = notReady ? `unavailable — down: ${down.join(", ")}`
+        : on ? "already loaded" : "Launch";
     }
     card.classList.toggle("not-ready", notReady);
     if (hint) {
@@ -5536,10 +5542,6 @@ async function loadLaunch() {
     }
     const cst = card.querySelector(".card-loaded");
     if (cst) {
-      const key = card.dataset.variant
-        ? `${card.dataset.model}--${card.dataset.variant}`
-        : card.dataset.model;
-      const on = loadedSet.has(key);
       cst.className = `serving-ind card-loaded ${on ? "status-ok" : "status-warn"}`;
       cst.textContent = on ? "loaded" : "idle";
       // nothing to evict unless the model is loaded (or loading: evict
