@@ -4392,6 +4392,62 @@ def _agent_latest_version():
         return None
 
 
+_AGENT_REPO = os.environ.get("LLAMA_FARM_REPO",
+                             "dakotacookson/Llama-RPC-Farm")
+
+
+def _agent_binary_asset(machine):
+    """Release asset name for this peer's standalone agent, if published."""
+    os_type = (machine.get("os") or "").lower()
+    arch = ((machine.get("detected") or {}).get("arch") or "").lower()
+    if not arch:
+        try:
+            arch = str((agent_client.info(machine) or {}).get("arch") or "").lower()
+        except Exception:
+            arch = ""
+    if os_type == "windows":
+        return "llama-peer-agent-windows-x64.exe"
+    if os_type in ("macos", "darwin"):
+        return ("llama-peer-agent-macos-arm64"
+                if arch in ("arm64", "aarch64") else None)
+    if os_type == "linux":
+        return ("llama-peer-agent-linux-x86_64"
+                if arch in ("x86_64", "amd64", "") else None)
+    return None
+
+
+_AGENT_ASSET_CACHE = {"ts": 0.0, "urls": {}}
+
+
+def _agent_binary_url(machine):
+    """Newest published raw-agent asset for this peer's platform."""
+    asset = _agent_binary_asset(machine)
+    if not asset:
+        return None, None
+    now = time.time()
+    with _LLAMA_UPDATES_LOCK:
+        if now - _AGENT_ASSET_CACHE["ts"] < 300:
+            cached = _AGENT_ASSET_CACHE["urls"].get(asset)
+            if cached:
+                return asset, cached
+    import json
+    import urllib.request
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{_AGENT_REPO}/releases?per_page=30",
+        headers={"User-Agent": "llama-rpc-farm",
+                 "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        releases = json.load(r)
+    for rel in releases:
+        for a in rel.get("assets") or []:
+            if a.get("name") == asset and a.get("browser_download_url"):
+                with _LLAMA_UPDATES_LOCK:
+                    _AGENT_ASSET_CACHE["ts"] = now
+                    _AGENT_ASSET_CACHE["urls"][asset] = a["browser_download_url"]
+                return asset, a["browser_download_url"]
+    return asset, None
+
+
 def _agent_version_payload(machine):
     latest = _agent_latest_version()
     if local_node.is_local(machine):
@@ -4420,10 +4476,50 @@ def _update_agent_remote(machine):
     version = _agent_latest_version()
     av = _agent_version_payload(machine)
     if av.get("packaged"):
+        try:
+            asset, url = _agent_binary_url(machine)
+        except Exception as e:
+            return {"ok": False, "machine": name, "frozen": True,
+                    "detail": f"could not check GitHub for an agent build: "
+                              f"{e} — reinstall the peer agent package"}
+        if not asset:
+            return {"ok": False, "machine": name, "frozen": True,
+                    "detail": "no standalone agent asset is published for "
+                              "this platform — reinstall the peer agent "
+                              "package to update it"}
+        if not url:
+            return {"ok": False, "machine": name, "frozen": True,
+                    "detail": f"no published standalone agent asset "
+                              f"({asset}) yet — reinstall the peer agent "
+                              "package or wait for the rolling build"}
+        try:
+            res = agent_client.agent_update_binary(
+                machine, url, version or "")
+        except Exception as e:
+            return {"ok": False, "machine": name, "frozen": True,
+                    "detail": "could not download the new standalone agent "
+                              f"({asset}): {e} — reinstall the peer agent "
+                              "package to update it"}
+        if res.get("ok"):
+            for _ in range(20):
+                import time as _t
+                _t.sleep(1)
+                try:
+                    h = agent_client.health(machine, timeout=3)
+                    if h.get("agent_version") == version:
+                        return {"ok": True, "machine": name,
+                                "agent_version": h.get("agent_version"),
+                                "protocol_version": h.get("protocol_version"),
+                                "method": "binary", "asset": asset}
+                except Exception:
+                    continue
+            return {"ok": False, "machine": name, "frozen": True,
+                    "detail": "agent downloaded the new binary but did not "
+                              "come back healthy — reinstall the peer agent "
+                              "package"}
         return {"ok": False, "machine": name, "frozen": True,
-                "detail": "this is a standalone agent build and cannot be "
-                          "updated in place — reinstall the peer agent "
-                          "package to update it"}
+                "detail": res.get("error")
+                          or "standalone agent update failed"}
     if True:
         try:
             with open(wheel, "rb") as f:
