@@ -6718,11 +6718,13 @@ function fmtInstSummary(summary) {
   const done = (summary.installed || []).length
     + (summary.repaired || []).length;
   const skipped = (summary.skipped || []).length;
+  const planned = (summary.planned || []).length;
   const failed = (summary.failures || []).length;
   const cls = failed ? "status-bad" : done ? "status-ok" : "status-ok";
   const icon = failed ? "fa-triangle-exclamation" : "fa-circle-check";
   const bits = [];
   if (done) bits.push(`${done} installed/repaired`);
+  if (planned) bits.push(`${planned} would be installed`);
   if (skipped) bits.push(`${skipped} skipped (already present)`);
   if (failed) bits.push(`${failed} failed`);
   if (!bits.length) bits.push("nothing to do");

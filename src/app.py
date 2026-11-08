@@ -4543,6 +4543,77 @@ def _machine_env(machine):
     return info, run
 
 
+def _resolve_install_machine(name):
+    """Settings-modal machine id: '__local__'/'' = this host, else a name."""
+    if name in ("", "__local__"):
+        for m in cfg.machines.all():
+            if local_node.is_local(m):
+                return m
+        raise HTTPException(status_code=400,
+                            detail="no local machine configured")
+    try:
+        return cfg.machines.require(name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from None
+
+
+def _install_remote_tools(machine, role, tools, dry_run, log):
+    """Agent-backed install for a peer (the Settings modal's peer path).
+
+    The peer agent already implements /install/artifact + /install/verify;
+    this just routes the app's request there instead of trying to probe the
+    remote host locally.
+    """
+    import llamacpp_installer
+    import swap_installer
+
+    name = machine.get("name") or "?"
+    want = set(tools or [])
+    if not want:
+        want = ({"llama.cpp", "llama-swap"} if role == "main"
+                else {"llama.cpp"})
+    summary = {"installed": [], "skipped": [], "repaired": [],
+               "settings": [], "notes": [], "failures": [],
+               "manifest": {"tools": {}}}
+    if dry_run:
+        planned = []
+        if "llama.cpp" in want:
+            planned.append("llama.cpp")
+        if role == "main" and "llama-swap" in want:
+            planned.append("llama-swap")
+        for tool in planned:
+            log(f"[dry-run] would install {tool} on {name} through the "
+                f"peer agent")
+        summary["planned"] = planned
+        summary["notes"].append("dry run — nothing executed")
+        return summary
+
+    def _finish(tool, res):
+        for line in str(res.get("detail") or "").splitlines():
+            if line.strip():
+                log(line.strip())
+        if res.get("ok"):
+            summary["installed"].append(tool)
+            summary["manifest"]["tools"][tool] = {
+                "version": res.get("version") or "",
+                "method": "agent",
+            }
+            summary["notes"].append(f"{tool}: {res.get('detail') or 'ok'}")
+        else:
+            summary["failures"].append({
+                "error": res.get("detail") or f"{tool} install failed",
+                "context": {"tool": tool},
+            })
+
+    if "llama.cpp" in want:
+        log(f"installing llama.cpp + llama RPC on {name} via the peer agent")
+        _finish("llama.cpp", llamacpp_installer.install_on(machine, log=log))
+    if role == "main" and "llama-swap" in want:
+        log(f"installing llama-swap on {name} via the peer agent")
+        _finish("llama-swap", swap_installer.install_on(machine, log=log))
+    return summary
+
+
 def _tools_plan(machine, role, log=lambda m: None):
     """Build the SAME dynamic install plan the bootstrap uses: newest
     llama.cpp/llama-swap releases with matching assets, plus source-build
@@ -4601,16 +4672,17 @@ async def tools_install(p: ToolsInstallIn):
     it (installer.execute), streaming per-step progress as NDJSON
     ({event: log|done}). The plan carries per-tool skip/refuse notes;
     llama.cpp behavior is untouched (this endpoint only ADDS surfaces)."""
-    machine = p.machine
-    try:
-        m = cfg.machines.require(machine)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    m = _resolve_install_machine(p.machine)
     role = p.role if p.role in ("main", "client") else "main"
     progress = _ToolsProgress()
 
     def run_install():
         try:
+            if not local_node.is_local(m):
+                summary = _install_remote_tools(
+                    m, role, p.tools, p.dry_run, progress.log)
+                progress.finish(summary)
+                return
             from installer.execute import Executor
 
             plan, info, run, fs = _tools_plan(m, role, progress.log)
@@ -4718,17 +4790,17 @@ async def tools_install_sync(p: ToolsInstallIn):
     """Non-streaming variant of /api/tools/install: same plan+execute,
     but the full summary is returned in one body (for tests + simple
     clients). Same engine gates, same refusal semantics."""
-    machine = p.machine
-    try:
-        m = cfg.machines.require(machine)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    from installer.execute import Executor  # noqa: F401
+    m = _resolve_install_machine(p.machine)
     role = p.role if p.role in ("main", "client") else "main"
-    plan, info, run, fs = await run_in_threadpool(
-        _tools_plan, m, role, lambda msg: print(msg, flush=True))
-    summary = await run_in_threadpool(
-        _execute_plan, plan, info, p.dry_run, run)
+    if not local_node.is_local(m):
+        summary = await run_in_threadpool(
+            _install_remote_tools, m, role, p.tools, p.dry_run,
+            lambda msg: print(msg, flush=True))
+    else:
+        plan, info, run, fs = await run_in_threadpool(
+            _tools_plan, m, role, lambda msg: print(msg, flush=True))
+        summary = await run_in_threadpool(
+            _execute_plan, plan, info, p.dry_run, run)
     ok = not summary.get("failures")
     return JSONResponse(status_code=200 if ok else 502, content=summary)
 
