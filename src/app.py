@@ -1796,8 +1796,9 @@ async def list_saved_models(full: bool = False):
                     tags.append("speech")
                 if "embed" in mid or "embed" in name or "bert" in arch:
                     tags.append("embedding")
-                if (flags.get("mmproj") or "vision" in mid
-                        or ("vl" in arch and arch != "unknown")):
+                if ("speech" not in tags
+                        and (flags.get("mmproj") or "vision" in mid
+                             or ("vl" in arch and arch != "unknown"))):
                     tags.append("vision")
                 if not tags or tags == ["vision"]:
                     tags.append("chat")
@@ -1828,9 +1829,13 @@ async def list_saved_models(full: bool = False):
         if m.get("decision_type") or base in dec_ids:
             tags.append("decision")
         else:
-            if base in aud_ids:
+            is_speech = base in aud_ids
+            if is_speech:
                 tags.append("speech")
-            if (base in vis_ids or "mmproj" in (m.get("flags") or {})):
+            # ASR models also carry a projector, but it is audio-side; do
+            # not label them vision just because mmproj exists.
+            if not is_speech and (base in vis_ids
+                                  or "mmproj" in (m.get("flags") or {})):
                 tags.append("vision")
             if base in emb_ids or "bert" in arch or "embed" in arch:
                 tags.append("embedding")
@@ -4429,28 +4434,10 @@ def _agent_wheel_path():
         return wheels[0]
 
 
-def _agent_latest_version():
-    if getattr(sys, "frozen", False):
-        import glob
-        wheels = sorted(glob.glob(os.path.join(
-            ASSET_DIR, "agent-wheel", "llama_rpc_farm_agent-*.whl")))
-        if wheels:
-            base = os.path.basename(wheels[-1])
-            m = re.match(r"llama_rpc_farm_agent-([^-]+)-", base)
-            return m.group(1) if m else None
-        return None
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "peer_agent", "pyproject.toml")
-    try:
-        text = open(path, encoding="utf-8").read()
-        m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
-        return m.group(1) if m else None
-    except OSError:
-        return None
-
-
 _AGENT_REPO = os.environ.get("LLAMA_FARM_REPO",
                              "dakotacookson/Llama-RPC-Farm")
+
+_AGENT_RELEASE_CACHE = {"ts": 0.0, "by_asset": {}}
 
 
 def _agent_binary_asset(machine):
@@ -4473,43 +4460,58 @@ def _agent_binary_asset(machine):
     return None
 
 
-_AGENT_ASSET_CACHE = {"ts": 0.0, "urls": {}}
-
-
-def _agent_binary_url(machine):
-    """Newest published raw-agent asset for this peer's platform."""
+def _agent_release_info(machine):
+    """Live GitHub release check: newest release carrying this peer's raw
+    agent binary. The release tag is the authoritative agent version."""
     asset = _agent_binary_asset(machine)
     if not asset:
-        return None, None
+        return {"asset": None, "url": None, "version": None}
     now = time.time()
     with _LLAMA_UPDATES_LOCK:
-        if now - _AGENT_ASSET_CACHE["ts"] < 300:
-            cached = _AGENT_ASSET_CACHE["urls"].get(asset)
-            if cached:
-                return asset, cached
+        if now - _AGENT_RELEASE_CACHE["ts"] < 60:
+            hit = _AGENT_RELEASE_CACHE["by_asset"].get(asset)
+            if hit:
+                return dict(hit)
     import json
     import urllib.request
     req = urllib.request.Request(
-        f"https://api.github.com/repos/{_AGENT_REPO}/releases?per_page=30",
+        f"https://api.github.com/repos/{_AGENT_REPO}/releases?per_page=100",
         headers={"User-Agent": "llama-rpc-farm",
                  "Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(req, timeout=15) as r:
         releases = json.load(r)
+    # The releases API is NOT guaranteed to be ordered by version (deleting
+    # and recreating releases reorders it). Pick the highest semantic
+    # release tag, not the first matching array element.
+    best = None
+    best_key = None
     for rel in releases:
+        tag = str(rel.get("tag_name") or "")
+        m = re.fullmatch(r"release-(\d+\.\d+\.\d+)", tag)
+        if not m:
+            continue
+        key = tuple(int(p) for p in m.group(1).split("."))
         for a in rel.get("assets") or []:
             if a.get("name") == asset and a.get("browser_download_url"):
-                with _LLAMA_UPDATES_LOCK:
-                    _AGENT_ASSET_CACHE["ts"] = now
-                    _AGENT_ASSET_CACHE["urls"][asset] = a["browser_download_url"]
-                return asset, a["browser_download_url"]
-    return asset, None
+                if best_key is None or key > best_key:
+                    best_key = key
+                    best = {"asset": asset,
+                            "url": a["browser_download_url"],
+                            "version": m.group(1)}
+                break
+    with _LLAMA_UPDATES_LOCK:
+        _AGENT_RELEASE_CACHE["ts"] = now
+        if best:
+            _AGENT_RELEASE_CACHE["by_asset"][asset] = dict(best)
+    if best:
+        return best
+    return {"asset": asset, "url": None, "version": None}
 
 
 def _agent_version_payload(machine):
-    latest = _agent_latest_version()
     if local_node.is_local(machine):
-        return {"current": None, "latest": latest, "on_latest": True,
-                "local": True}
+        return {"current": None, "latest": None, "on_latest": True,
+                "local": True, "packaged": False}
     current = None
     packaged = False
     try:
@@ -4518,99 +4520,76 @@ def _agent_version_payload(machine):
         packaged = bool(v.get("packaged"))
     except Exception:
         current = None
+    try:
+        info = _agent_release_info(machine)
+        latest = info.get("version")
+    except Exception:
+        latest = None
+    applied = str(machine.get("agent_release") or "").strip()
     return {"current": current, "latest": latest,
-            "on_latest": bool(current and latest and current == latest),
+            "on_latest": bool(latest and (current == latest
+                                          or applied == latest)),
             "packaged": packaged}
 
 
 def _update_agent_remote(machine):
-    """Install/update the agent through its in-place /agent/update endpoint."""
+    """Install/update a standalone peer agent from the latest repo release."""
     name = machine.get("name") or machine.get("id") or "?"
     if local_node.is_local(machine):
         return {"ok": True, "machine": name, "skipped": True, "local": True,
                 "detail": "local master uses the app directly; no peer agent"}
-    wheel = _agent_wheel_path()
-    version = _agent_latest_version()
     av = _agent_version_payload(machine)
-    if av.get("packaged"):
-        try:
-            asset, url = _agent_binary_url(machine)
-        except Exception as e:
-            return {"ok": False, "machine": name, "frozen": True,
-                    "detail": f"could not check GitHub for an agent build: "
-                              f"{e} — reinstall the peer agent package"}
-        if not asset:
-            return {"ok": False, "machine": name, "frozen": True,
-                    "detail": "no standalone agent asset is published for "
-                              "this platform — reinstall the peer agent "
-                              "package to update it"}
-        if not url:
-            return {"ok": False, "machine": name, "frozen": True,
-                    "detail": f"no published standalone agent asset "
-                              f"({asset}) yet — reinstall the peer agent "
-                              "package or wait for the rolling build"}
-        try:
-            res = agent_client.agent_update_binary(
-                machine, url, version or "")
-        except Exception as e:
-            return {"ok": False, "machine": name, "frozen": True,
-                    "detail": "could not download the new standalone agent "
-                              f"({asset}): {e} — reinstall the peer agent "
-                              "package to update it"}
-        if res.get("ok"):
-            for _ in range(20):
-                import time as _t
-                _t.sleep(1)
-                try:
-                    h = agent_client.health(machine, timeout=3)
-                    if h.get("agent_version") == version:
-                        return {"ok": True, "machine": name,
-                                "agent_version": h.get("agent_version"),
-                                "protocol_version": h.get("protocol_version"),
-                                "method": "binary", "asset": asset}
-                except Exception:
-                    continue
-            return {"ok": False, "machine": name, "frozen": True,
-                    "detail": "agent downloaded the new binary but did not "
-                              "come back healthy — reinstall the peer agent "
-                              "package"}
+    if not av.get("packaged"):
+        return {"ok": False, "machine": name, "reinstall": True,
+                "detail": "peer agent is not a standalone release build — "
+                          "reinstall the peer agent package from the latest "
+                          "release"}
+    try:
+        info = _agent_release_info(machine)
+    except Exception as e:
         return {"ok": False, "machine": name, "frozen": True,
-                "detail": res.get("error")
-                          or "standalone agent update failed"}
-    if True:
+                "detail": f"could not check GitHub releases: {e}"}
+    asset, url, version = info.get("asset"), info.get("url"), info.get("version")
+    if not asset:
+        return {"ok": False, "machine": name, "frozen": True,
+                "detail": "no standalone agent asset is published for this "
+                          "platform — reinstall the peer agent package"}
+    if not url:
+        return {"ok": False, "machine": name, "frozen": True,
+                "detail": f"no published standalone agent asset ({asset})"}
+    try:
+        res = agent_client.agent_update_binary(machine, url, version or "")
+    except Exception as e:
+        return {"ok": False, "machine": name, "frozen": True,
+                "detail": f"could not download {asset}: {e}"}
+    if not res.get("ok"):
+        return {"ok": False, "machine": name, "frozen": True,
+                "detail": res.get("error") or "standalone agent update failed"}
+    # Success = healthy /version after the agent replaces and restarts itself.
+    # Its internal build version may lag the release tag; record the release
+    # we installed so the machine is not considered stale forever.
+    for _ in range(20):
+        import time as _t
+        _t.sleep(1)
         try:
-            with open(wheel, "rb") as f:
-                blob = f.read()
-            res = agent_client.agent_update(machine, blob, version or "")
-            if res.get("ok"):
-                for _ in range(15):
-                    import time as _t
-                    _t.sleep(1)
+            h = agent_client.health(machine, timeout=3)
+            if h.get("agent_version"):
+                if version:
                     try:
-                        h = agent_client.health(machine, timeout=3)
-                        if h.get("agent_version") == version:
-                            return {"ok": True, "machine": name,
-                                    "wheel": os.path.basename(wheel),
-                                    "agent_version": h.get("agent_version"),
-                                    "protocol_version": h.get("protocol_version"),
-                                    "method": "agent"}
+                        cfg.machines.update(name, {"agent_release": version})
                     except Exception:
-                        continue
-                return {"ok": False, "machine": name,
-                        "wheel": os.path.basename(wheel),
-                        "method": "agent",
-                        "detail": "agent accepted update but did not come back healthy"}
-        except Exception as e:
-            msg = str(e)
-            frozen = ("unrecognized arguments" in msg and "pip" in msg) or \
-                     ("pip install failed" in msg) or \
-                     ("No module named pip" in msg)
-            return {"ok": False, "machine": name, "frozen": frozen,
-                    "wheel": os.path.basename(wheel),
-                    "method": "agent",
-                    "detail": ("standalone agent build cannot be updated "
-                               "in place — reinstall the peer agent package"
-                               if frozen else f"agent update failed: {e}")}
+                        pass
+                return {"ok": True, "machine": name,
+                        "agent_version": h.get("agent_version"),
+                        "agent_release": version,
+                        "protocol_version": h.get("protocol_version"),
+                        "method": "binary", "asset": asset}
+        except Exception:
+            continue
+    return {"ok": False, "machine": name, "frozen": True,
+            "detail": "agent downloaded the new binary but did not come "
+                      "back healthy — reinstall the peer agent package"}
+
 
 @app.get("/api/machines/{name}/agent-version")
 async def agent_version_machine(name: str):
@@ -4678,15 +4657,24 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
                             f"{av.get('latest')} before engine install")
                         up = _update_agent_remote(machine)
                         if not up.get("ok"):
-                            job["result"] = {
-                                "ok": False, "machine": name,
-                                "detail": "agent update failed before "
-                                          "engine install: "
-                                          + str(up.get("detail") or "unknown")}
-                            job["state"] = "failed"
-                            return
-                        job["log"].append(
-                            f"peer agent updated to {up.get('agent_version')}")
+                            if up.get("reinstall"):
+                                job["log"].append(
+                                    "peer agent is not a standalone release "
+                                    "build; continuing with the installed "
+                                    "agent: " + str(up.get("detail") or ""))
+                            else:
+                                job["result"] = {
+                                    "ok": False, "machine": name,
+                                    "detail": "agent update failed before "
+                                              "engine install: "
+                                              + str(up.get("detail")
+                                                    or "unknown")}
+                                job["state"] = "failed"
+                                return
+                        else:
+                            job["log"].append(
+                                f"peer agent updated to "
+                                f"{up.get('agent_version')}")
                 except Exception as e:
                     job["log"].append(
                         f"agent pre-update check failed (continuing): {e}")
@@ -6942,6 +6930,42 @@ async def vision_test(v: VisionIn, request: Request):
     return await run_in_threadpool(do)
 
 
+def _tags_by_base_path(models, engine):
+    """Same model-type filters as /api/models, keyed by base_path. Used by
+    /api/scan so configured source rows inherit mmproj/vision and other
+    capabilities the file scan alone cannot know."""
+    def _ids(fn):
+        try:
+            return {m.get("model_id") for m in (fn(models) or [])}
+        except Exception:
+            return set()
+    emb_ids = _ids(engine.filter_embedding_models)
+    aud_ids = _ids(engine.filter_audio_models)
+    vis_ids = _ids(engine.filter_vision_models)
+    dec_ids = _ids(engine.filter_decision_models)
+    out = {}
+    for m in models:
+        mid = m.get("model_id") or ""
+        base = mid.split("--")[0]
+        arch = (m.get("architecture") or "").lower()
+        flags = m.get("flags") or {}
+        tags = []
+        if m.get("decision_type") or base in dec_ids:
+            tags.append("decision")
+        else:
+            is_speech = base in aud_ids
+            if is_speech:
+                tags.append("speech")
+            if not is_speech and (base in vis_ids or "mmproj" in flags):
+                tags.append("vision")
+            if base in emb_ids or "bert" in arch or "embed" in arch:
+                tags.append("embedding")
+            if not tags or tags == ["vision"]:
+                tags.append("chat")
+        out[m.get("base_path")] = tags
+    return out
+
+
 @app.get("/api/scan")
 async def scan_models(path: str, recursive: bool = False):
     if not path:
@@ -7038,21 +7062,34 @@ async def scan_models(path: str, recursive: bool = False):
     for p in projectors:
         p["base_path"] = path_resolver.to_alias(p["base_path"])
     # attach architecture for grouping in the wizard source list
+    # Configured source rows inherit the SAME capability tags as the model
+    # list (mmproj -> vision, embed -> embedding, etc.). File-scan heuristics
+    # alone cannot see mmproj because projectors are scanned separately.
+    try:
+        configured_tags = _tags_by_base_path(
+            engine.filter_models(cfg.list_models()), engine)
+    except Exception:
+        configured_tags = {}
     for m in filtered_models:
         m["architecture"] = cfg._get_model_architecture(m["base_path"])
         # TypeSafe decision models surface in the wizard the same way
         m["decision_type"] = cfg._get_decision_type(m["base_path"])
+        if m["base_path"] in configured_tags:
+            m["model_tags"] = configured_tags[m["base_path"]]
+            continue
         mid = (m.get("model_id") or m.get("base_path") or "").lower()
         arch = (m.get("architecture") or "").lower()
         tags = []
         if m["decision_type"]:
             tags.append("decision")
         else:
-            if "asr" in mid or "whisper" in mid or "audio" in mid:
+            is_speech = "asr" in mid or "whisper" in mid or "audio" in mid
+            if is_speech:
                 tags.append("speech")
             if "embed" in mid or "bert" in arch:
                 tags.append("embedding")
-            if "vision" in mid or "vl" in arch or "-vl" in mid:
+            if not is_speech and ("vision" in mid or "vl" in arch
+                                  or "-vl" in mid):
                 tags.append("vision")
             if not tags or tags == ["vision"]:
                 tags.append("chat")
