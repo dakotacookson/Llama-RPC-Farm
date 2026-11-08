@@ -1242,7 +1242,48 @@ tr.row-selected td:first-child {
 .model-avatar { width: 24px; height: 24px; border-radius: 6px; object-fit: cover; margin-right: 8px; vertical-align: middle; flex-shrink: 0; }
 .model-avatar-ph { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; background: var(--inset); border: 1px solid var(--border); color: var(--accent); font-size: 12px; margin-right: 8px; vertical-align: middle; }
 .hw-chip:hover { border-color: var(--border-strong); }
-.hw-chip input[type="checkbox"] { width: 13px; height: 13px; margin: 0; }
+/* Selection must not rely on the chip tint alone: on dark themes the native
+   checkbox is nearly invisible. Draw our own box with a high-contrast tick
+   (tick colour = page background, fill = accent) so it reads on every theme. */
+.hw-chip input[type="checkbox"],
+.server-chip input[type="checkbox"] {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  border: 2px solid var(--text-2);
+  border-radius: 4px;
+  background: transparent;
+  display: inline-grid;
+  place-content: center;
+  cursor: pointer;
+}
+.hw-chip input[type="checkbox"]::before,
+.server-chip input[type="checkbox"]::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  background: var(--bg);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 6.5l2.5 2.5L10 3.5' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 6.5l2.5 2.5L10 3.5' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  transform: scale(0);
+  transition: transform 0.1s ease-in-out;
+}
+.hw-chip input[type="checkbox"]:checked,
+.server-chip input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.hw-chip input[type="checkbox"]:checked::before,
+.server-chip input[type="checkbox"]:checked::before { transform: scale(1); }
+.ram-chip input[type="checkbox"]:checked { background: var(--ok); border-color: var(--ok); }
+.hw-chip input[type="checkbox"]:focus-visible,
+.server-chip input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .hw-chip input[type="radio"] { width: 13px; height: 13px; margin: 0; accent-color: var(--accent); }
 .hw-chip .chip-name { font-weight: 500; color: var(--text); }
 .hw-chip .chip-sub { color: var(--muted); font-size: 11px; }
