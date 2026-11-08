@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llama-rpc-farm-agent"
-version = "1.0.0"
+version = "1.0.1"
 description = "Optional token-authenticated peer agent for Llama RPC Farm"
 readme = "README.md"
 requires-python = ">=3.10"
