@@ -39,6 +39,9 @@ GITHUB_LATEST_DL = "https://github.com/ggml-org/llama.cpp/releases/latest/downlo
 LINUX_VER = "10.0"   # ubuntu-rocm-<ver>
 WIN_CUDA_VER = "12.4"
 WIN_ROCM_VER = "10.0"
+# CUDA 12.4 GA needs >= 551.61 on Windows. Older drivers keep working with
+# the Vulkan prebuilt (same llama.cpp/RPC feature set, no CUDA).
+WIN_CUDA_MIN_DRIVER = (551, 61)
 LINUX_CUDA_VER = "13.4"   # ubuntu-cuda-<ver>; upstream also ships 12.8
 LINUX_CUDA_VER_OLD = "12.8"   # fallback when the newest CUDA asset is absent
 DEST_POSIX = "~/llama.cpp/bin"
@@ -164,6 +167,39 @@ def _fetch_latest_assets(limit=30):
     return None, [], GITHUB_LATEST_DL
 
 
+def _driver_tuple(text):
+    """'551.61' / '551.61.0' -> (551, 61); None when unknown."""
+    import re
+    m = re.search(r"(\d+)\.(\d+)", str(text or ""))
+    try:
+        return (int(m.group(1)), int(m.group(2))) if m else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _windows_nvidia_driver(machine, run=None, is_local=True):
+    """Detected NVIDIA driver tuple on a Windows machine, or None."""
+    dv = ((machine.get("detected") or {}).get("driver_version")
+          or machine.get("driver_version") or "")
+    if dv:
+        return _driver_tuple(dv)
+    if not is_local and agent_client.should_use_agent(machine):
+        try:
+            sd = agent_client.system_detail(machine) or {}
+            return _driver_tuple(sd.get("driver_version") or sd.get("driver"))
+        except Exception:
+            return None
+    if run is not None and is_local:
+        try:
+            _c, out = run("nvidia-smi --query-gpu=driver_version "
+                          "--format=csv,noheader")
+        except Exception:
+            return None
+        first = (out or "").strip().splitlines()
+        return _driver_tuple(first[0] if first else "")
+    return None
+
+
 def _glibc_from_text(text):
     import re
     m = re.search(r"(\d+)\.(\d+)", str(text or ""))
@@ -188,7 +224,7 @@ def _glibc_version(cmd_prefix, run):
         return None
 
 
-def _pick_assets(machine, tag, assets, glibc=None):
+def _pick_assets(machine, tag, assets, glibc=None, driver_version=None):
     """Choose release asset name(s) for a machine. Returns
     (asset_names, dest, backend_note, is_win_zip) or raises ValueError."""
     os_type = machine.get("os", "linux")
@@ -207,6 +243,18 @@ def _pick_assets(machine, tag, assets, glibc=None):
             return [f"llama-{tag}-bin-win-rocm-{WIN_ROCM_VER}-{arch_kind}.zip"], \
                 DEST_WIN, "HIP/ROCm backend", True
         if vendor == "nvidia" and not is_arm:
+            if (driver_version is not None
+                    and driver_version < WIN_CUDA_MIN_DRIVER):
+                vulkan = f"llama-{tag}-bin-win-vulkan-{arch_kind}.zip"
+                if vulkan in assets:
+                    return [vulkan], DEST_WIN, (
+                        f"Vulkan backend (NVIDIA driver "
+                        f"{driver_version[0]}.{driver_version[1]} is older "
+                        f"than CUDA {WIN_CUDA_VER}'s minimum)"), True
+                cpu = f"llama-{tag}-bin-win-cpu-{arch_kind}.zip"
+                return [cpu], DEST_WIN, (
+                    "CPU backend (old NVIDIA driver, no Windows Vulkan "
+                    "asset upstream)"), True
             cud = f"cudart-llama-bin-win-cuda-{WIN_CUDA_VER}-{arch_kind}.zip"
             return [f"llama-{tag}-bin-win-cuda-{WIN_CUDA_VER}-{arch_kind}.zip",
                     cud], DEST_WIN, f"CUDA {WIN_CUDA_VER} backend (+cudart)", True
@@ -262,7 +310,11 @@ def plan(machine):
     except Exception as e:
         return {"ok": False, "error": f"cannot reach GitHub releases: {e}"}
     try:
-        names, dest, note, _zip = _pick_assets(machine, tag, assets)
+        names, dest, note, _zip = _pick_assets(
+            machine, tag, assets,
+            driver_version=_driver_tuple(
+                (machine.get("detected") or {}).get("driver_version")
+                or machine.get("driver_version")))
     except ValueError as e:
         return {"ok": False, "error": str(e)}
     missing = [n for n in names if n not in assets]
@@ -335,7 +387,12 @@ def install_on(machine, log=lambda m: None):
                 glibc = _glibc_from_text(sd.get("glibc"))
             except Exception:
                 glibc = None
-        names, dest, note, _zip = _pick_assets(machine, tag, assets, glibc)
+        driver = None
+        if is_win and (machine.get("gpu_vendor") or "").lower() == "nvidia":
+            driver = _windows_nvidia_driver(machine, run=run,
+                                            is_local=is_local)
+        names, dest, note, _zip = _pick_assets(
+            machine, tag, assets, glibc, driver_version=driver)
         plan_info = {"ok": True, "tag": tag, "assets": names, "dest": dest,
                      "backend": note,
                      "missing": [n for n in names if n not in assets]}
