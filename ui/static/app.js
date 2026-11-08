@@ -2050,9 +2050,7 @@ async function loadMachines(skipCaps = false) {
       <div class="scan-model-actions">
         <button class="small" data-act="edit">Edit</button>
         <button class="small" data-act="detect">Detect</button>
-        <button class="small" data-act="update">Update</button>
-        ${needsEngines ? '<button class="small" data-act="install-engines">Install engines</button>' : ""}
-        <button class="small" data-act="reinstall-engines" title="Overwrite existing llama.cpp + RPC with a fresh install">Reinstall engines</button>
+        <button class="small" data-act="engine-action" data-missing="${needsEngines ? "1" : "0"}" title="${needsEngines ? "Install llama.cpp + RPC" : "Reinstall llama.cpp + RPC"}">${needsEngines ? "Install engines" : "Reinstall engines"}</button>
         ${needsSwap ? '<button class="small" data-act="install-swap">Install llama-swap</button>' : ""}
         ${(m.role === "master" || m.is_local) ? '<button type="button" class="badge" data-app-version data-act="app-update" style="border:0;background:var(--accent-dim);color:var(--accent);cursor:pointer;font-family:inherit" title="Update farm app">app …</button>' : ""}
         ${(m.role === "master" || m.is_local) ? "" : '<button class="small" data-act="agent-update" title="Install or update the peer agent on this machine">Agent ⟳</button>'}
@@ -2064,65 +2062,29 @@ async function loadMachines(skipCaps = false) {
         hydrateAppVersion(appPill);
         wireAppUpdate(appPill);
       }
-      tr.querySelector('[data-act="update"]').onclick = async (e) => {
+      const engineBtn = tr.querySelector('[data-act="engine-action"]');
+      if (engineBtn) engineBtn.onclick = async (e) => {
         const btn = e.currentTarget;
-        if (!window.confirm(`Update llama.cpp on ${m.name}?\n\nSource builds are rebuilt in place (custom flags kept, running models keep serving); prebuilt installs stop that machine's llama processes first. Continue?`)) return;
-        btn.disabled = true; btn.textContent = "Starting…";
+        const mode = btn.dataset.mode || (btn.dataset.missing === "1" ? "install" : "reinstall");
+        const confirmMsg = mode === "install"
+          ? `Install llama.cpp + RPC on ${m.name} through the peer agent?`
+          : mode === "update"
+            ? `Update llama.cpp on ${m.name}?\n\nSource builds are rebuilt in place (custom flags kept); prebuilt installs stop that machine's llama processes first. Continue?`
+            : `Cleanly reinstall llama.cpp + RPC on ${m.name}?\n\nExisting binaries will be overwritten.`;
+        if (!window.confirm(confirmMsg)) return;
+        btn.disabled = true; btn.textContent = mode === "install" ? "Installing…" : mode === "update" ? "Updating…" : "Reinstalling…";
         try {
           const job = await runLlamaCppUpdate(m.name, (state) => {
             btn.textContent = state === "stopping" ? "Stopping…"
               : state === "installing" ? "Installing…"
               : state === "updating" ? "Rebuilding…" : btn.textContent;
-          });
+          }, mode === "reinstall");
           if (job.state === "done") {
-            btn.textContent = "Updated";
-            toast(`llama.cpp updated on ${m.name}`, "ok");
+            toast(mode === "install" ? `llama.cpp + RPC installed on ${m.name}`
+                  : mode === "update" ? `llama.cpp updated on ${m.name}`
+                  : `llama.cpp + RPC reinstalled on ${m.name}`, "ok");
           } else {
-            btn.textContent = "Failed";
-            toast(`llama.cpp update failed on ${m.name}: ${(job.result && job.result.detail) || "failed"}`, "bad");
-            btn.disabled = false;
-          }
-        } catch (err) {
-          btn.textContent = "Update"; btn.disabled = false;
-          toast(err.message, "bad");
-        }
-      };
-      const installEnginesBtn = tr.querySelector('[data-act="install-engines"]');
-      if (installEnginesBtn) installEnginesBtn.onclick = async (e) => {
-        const btn = e.currentTarget;
-        if (!window.confirm(`Install llama.cpp + llama RPC on ${m.name} through the peer agent?`)) return;
-        btn.disabled = true; btn.textContent = "Installing…";
-        try {
-          const job = await runLlamaCppUpdate(m.name, (state) => {
-            btn.textContent = state === "stopping" ? "Stopping…"
-              : state === "installing" ? "Installing…"
-              : state === "updating" ? "Rebuilding…" : btn.textContent;
-          });
-          if (job.state === "done") {
-            toast(`llama.cpp + RPC installed on ${m.name}`, "ok");
-          } else {
-            toast(`install failed on ${m.name}: ${(job.result && job.result.detail) || "failed"}`, "bad");
-          }
-        } catch (err) {
-          toast(err.message, "bad");
-        }
-        await loadReadiness(true); loadMachines();
-      };
-      const reinstallEnginesBtn = tr.querySelector('[data-act="reinstall-engines"]');
-      if (reinstallEnginesBtn) reinstallEnginesBtn.onclick = async (e) => {
-        const btn = e.currentTarget;
-        if (!window.confirm(`Cleanly reinstall llama.cpp + RPC on ${m.name}?\n\nExisting binaries will be overwritten.`)) return;
-        btn.disabled = true; btn.textContent = "Reinstalling…";
-        try {
-          const job = await runLlamaCppUpdate(m.name, (state) => {
-            btn.textContent = state === "stopping" ? "Stopping…"
-              : state === "installing" ? "Installing…"
-              : state === "updating" ? "Rebuilding…" : btn.textContent;
-          }, true);
-          if (job.state === "done") {
-            toast(`llama.cpp + RPC reinstalled on ${m.name}`, "ok");
-          } else {
-            toast(`reinstall failed on ${m.name}: ${(job.result && job.result.detail) || "failed"}`, "bad");
+            toast(`${mode} failed on ${m.name}: ${(job.result && job.result.detail) || "failed"}`, "bad");
           }
         } catch (err) {
           toast(err.message, "bad");
@@ -2190,6 +2152,7 @@ async function loadMachines(skipCaps = false) {
         document.querySelector("#machine-form").scrollIntoView({ behavior: "smooth", block: "start" });
       };
       secBody.appendChild(tr);
+      if (engineBtn) engineBtn.dataset.mode = needsEngines ? "install" : "reinstall";
       fillInlineUpdateState(tr, m.name);
       fillAgentUpdateState(tr, m.name);
     }
@@ -2231,20 +2194,26 @@ function fillAgentUpdateState(tr, name) {
 }
 
 function fillInlineUpdateState(tr, name) {
-  const btn = tr.querySelector('[data-act="update"]');
+  const btn = tr.querySelector('[data-act="engine-action"]');
   if (!btn) return;
+  if (btn.dataset.missing === "1") return;   // missing engines: keep Install
   api("GET", `/api/machines/${encodeURIComponent(name)}/llama-cpp-version`)
     .then(v => {
       if (!btn.isConnected) return;          // grid re-rendered meanwhile
       if (v.on_latest) {
-        btn.disabled = true;
-        btn.textContent = `on latest (${v.latest})`;
-        btn.title = "already on the newest llama.cpp release";
+        btn.textContent = "Reinstall engines";
+        btn.dataset.mode = "reinstall";
+        btn.title = `already on the newest llama.cpp release (${v.latest})`;
       } else if (v.build != null && v.latest_build != null && v.build < v.latest_build) {
         btn.textContent = `Update ${v.build}→${v.latest_build}`;
+        btn.dataset.mode = "update";
         btn.title = `current build ${v.build}, latest ${v.latest} (${v.latest_build})`;
+      } else {
+        btn.textContent = "Reinstall engines";
+        btn.dataset.mode = "reinstall";
       }
-    }).catch(() => { /* unprobed/offline: keep plain Update */ });
+      btn.disabled = false;
+    }).catch(() => { /* unprobed/offline: keep Reinstall */ });
 }
 
 function detectedHTML(m) {
