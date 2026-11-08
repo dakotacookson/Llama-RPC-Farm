@@ -985,22 +985,23 @@ async def detect_hardware(name: str):
             "ram_total_gb": math.floor(stats["ram_total_gb"]),
         },
     }
-    # RDMA auto-detect: when the machine has rdma=True, discover the RoCE NIC
-    # (device name + GID index + IP) via ibv_devinfo + the sysfs GID table,
-    # and persist them so the user doesn't have to type them.
+    # RDMA auto-detect: probe for an ACTIVE RoCE NIC even when the flag is
+    # currently off. If one is found, auto-enable RDMA and persist the
+    # device/GID/IP (user can turn it back off in the machine editor if
+    # they prefer TCP). Detection is Linux-only; Windows/macOS return {}.
     is_local = False
     try:
         is_local = local_node.is_local(machine)
     except Exception:
         pass
     rdma_info = {}
-    if machine.get("rdma"):
-        rdma_info = await run_in_threadpool(_detect_rdma_nic, machine, is_local)
-        if rdma_info:
-            updates["rdma_dev"] = rdma_info.get("dev", "")
-            updates["rdma_gid"] = rdma_info.get("gid", "")
-            if rdma_info.get("ip"):
-                updates["rdma_ip"] = rdma_info["ip"]
+    rdma_info = await run_in_threadpool(_detect_rdma_nic, machine, is_local)
+    if rdma_info:
+        updates["rdma"] = True
+        updates["rdma_dev"] = rdma_info.get("dev", "")
+        updates["rdma_gid"] = rdma_info.get("gid", "")
+        if rdma_info.get("ip"):
+            updates["rdma_ip"] = rdma_info["ip"]
     updates = {k: v for k, v in updates.items() if v is not None}
     result = cfg.machines.update(name, updates)
     result["synced_models"] = cfg.sync_models_to_hardware()
