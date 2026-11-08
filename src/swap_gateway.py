@@ -218,14 +218,20 @@ def allow_for_ip(request: Request):
         return None  # pre-Access farm state: open
     tok = request_token(request)
     rec = keys.get(tok) if tok else None
-    if rec is None or not rec.get("models"):
+    if rec is not None and not rec.get("models"):
+        # known key with no model grants = unscoped: unrestricted, the
+        # same rule as access.restrict_scope_from_key on :8199. The
+        # first-run admin key is created exactly like this
+        # (models: [], admin_unrestricted: true).
+        return None
+    if rec is None:
         # loopback console (the farm itself proxying server-side) stays
         # unrestricted: the FARM's embeddings/audio/vision proxies cross
         # this gateway without a key by design — tracking attributes
         # them to "console"
         if request_key_name(request) == "console":
             return None
-        # any OTHER keyless/unknown/unscoped caller: zero models + 401
+        # any OTHER keyless/unknown caller: zero models + 401
         return set()
     return rec["models"]
 
