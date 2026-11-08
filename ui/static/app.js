@@ -4394,7 +4394,7 @@ async function loadModels() {
       const sub1 = `${escHtml((m.base_path || "").split("/").pop())}${m.group ? ` · group: ${escHtml(m.group)}` : ""} · servers: ${escHtml((m.servers || []).join(", ")) || "-"}${m.pinned ? ' · <span class="badge" style="background:var(--ok-dim);color:var(--ok)">pinned</span>' : ""}`;
       const sub2 = `${escHtml(((m.tensor_split_mode === "manual" ? "fit" : m.tensor_split_mode || "auto")) + " " + Object.entries(m.flags || {}).map(([k, v]) => `${k}=${v}`).join(" ").trim() || "-")}${(m.variants||[]).length ? ` · variants: ${escHtml((m.variants||[]).map(v=>`${v.label}(${(v.servers||[]).join(",")})`).join(" | "))}` : ""}`;
       tr.innerHTML = `
-      <div class="scan-main"><div class="scan-title">${modelIconHTML(m.model_id)}${escHtml(m.model_id)} ${(m.variants||[]).length ? `<span class="badge" style="background:var(--accent-dim);color:var(--accent)" title="${escHtml((m.variants||[]).map(v=>v.label).join(", "))}">+${(m.variants||[]).length} configs</span>` : ""}${m.decision_type ? ` <span class="badge" style="background:var(--ok-dim);color:var(--ok)" title="TypeSafe decision model — serves /v1/systemone only (no chat generation)">decision</span>` : ""}</div>
+      <div class="scan-main"><div class="scan-title">${modelIconHTML(m.model_id)}${escHtml(m.model_id)} ${(m.variants||[]).length ? `<span class="badge" style="background:var(--accent-dim);color:var(--accent)" title="${escHtml((m.variants||[]).map(v=>v.label).join(", "))}">+${(m.variants||[]).length} config${(m.variants||[]).length>1?"s":""}</span>` : ""} ${modelTagsHTML(m)}</div>
         <small>${sub1}</small>
         <small>${sub2}</small></div>
       <div class="scan-model-actions">
@@ -4504,6 +4504,20 @@ const _origTabHandler = document.querySelectorAll("nav button");
 on('nav button[data-tab="launch"]', "click", () => setTimeout(loadActiveModels, 300));
 
 const escHtml = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const _MODEL_TAG_STYLE = {
+  chat:      "background:var(--accent-dim);color:var(--accent)",
+  vision:    "background:#3b2a5a;color:#d7c4ff",
+  speech:    "background:#4a2f16;color:#ffd39b",
+  embedding: "background:#123f3a;color:#9ff0df",
+  decision:  "background:var(--ok-dim);color:var(--ok)",
+};
+function modelTagsHTML(m) {
+  const tags = (m && m.model_tags) ||
+    ((m && m.decision_type) ? ["decision"] : ["chat"]);
+  return (tags || []).map(t =>
+    `<span class="badge" style="${_MODEL_TAG_STYLE[t] || ""}" title="${escHtml(t)} model">${escHtml(t)}</span>`
+  ).join(" ");
+}
 
 async function testModel(modelId, btn) {
   console.log("[ui] check click", modelId);
