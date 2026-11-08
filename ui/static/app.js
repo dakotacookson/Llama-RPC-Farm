@@ -2054,10 +2054,16 @@ async function loadMachines(skipCaps = false) {
         ${needsEngines ? '<button class="small" data-act="install-engines">Install engines</button>' : ""}
         <button class="small" data-act="reinstall-engines" title="Overwrite existing llama.cpp + RPC with a fresh install">Reinstall engines</button>
         ${needsSwap ? '<button class="small" data-act="install-swap">Install llama-swap</button>' : ""}
+        ${(m.role === "master" || m.is_local) ? '<span class="badge" data-app-version>app …</span><button class="small" data-act="app-update" hidden>App ⟳</button>' : ""}
         ${(m.role === "master" || m.is_local) ? "" : '<button class="small" data-act="agent-update" title="Install or update the peer agent on this machine">Agent ⟳</button>'}
         <button class="small danger" data-act="delete">Delete</button>
       </div>`;
       tr.classList.add("scan-model");
+      if (m.role === "master" || m.is_local) {
+        hydrateAppVersion(tr.querySelector('[data-app-version]'),
+                          tr.querySelector('[data-act="app-update"]'));
+        wireAppUpdate(tr.querySelector('[data-act="app-update"]'));
+      }
       tr.querySelector('[data-act="update"]').onclick = async (e) => {
         const btn = e.currentTarget;
         if (!window.confirm(`Update llama.cpp on ${m.name}?\n\nSource builds are rebuilt in place (custom flags kept, running models keep serving); prebuilt installs stop that machine's llama processes first. Continue?`)) return;
@@ -6882,58 +6888,61 @@ on("#install-llama-cpp", "click", async (e) => {
   btn.disabled = false; btn.textContent = "Install llama.cpp (this host)";
 });
 
+/* Farm-app version/update lives on the master machine row. */
+async function hydrateAppVersion(pill, btn) {
+  if (!pill) return;
+  try {
+    const d = await api("GET", "/api/app-version");
+    pill.textContent = `app ${d.current || "?"}${d.latest && d.latest !== d.current ? ` → ${d.latest}` : ""}`;
+    pill.title = d.source
+      ? "source install — Update app runs a clean git fast-forward"
+      : (d.latest ? `latest release: ${d.latest}` : "");
+    if (btn) {
+      const updatable = !!(d.latest && !d.on_latest);
+      btn.hidden = !updatable;
+      btn.dataset.source = d.source ? "1" : "";
+      btn.title = updatable
+        ? (d.source ? `Update source to ${d.latest} and restart`
+                    : `Update to ${d.latest} and restart`)
+        : "farm app is current";
+    }
+  } catch (_) {
+    pill.textContent = "app ?";
+  }
+}
+
+function wireAppUpdate(btn) {
+  if (!btn) return;
+  btn.onclick = async (e) => {
+    const b = e.currentTarget;
+    const source = b.dataset.source === "1";
+    const msg = source
+      ? "Fast-forward this source checkout to the latest main and restart the app?"
+      : "Download and install the latest farm-app release? The app will restart.";
+    if (!window.confirm(msg)) return;
+    b.disabled = true; b.textContent = "Updating…";
+    try {
+      const r = await api("POST", "/api/app/update", {});
+      if (r.ok) {
+        toast(source ? "Source updated — restarting" : `Updated to ${r.version || "latest"} — restarting`, "ok");
+        setTimeout(() => location.reload(), 4000);
+      } else {
+        toast(r.detail || "update failed", "bad");
+        b.disabled = false; b.textContent = "App ⟳";
+      }
+    } catch (err) {
+      toast(err.message, "bad");
+      b.disabled = false; b.textContent = "App ⟳";
+    }
+  };
+}
+
 /* tool status rides along with the settings load (same panel, same tab) */
 const _loadSettings = loadSettings;
 loadSettings = async function () {
   await _loadSettings();
   loadToolStatus();
-  loadAppVersion();
 };
-
-async function loadAppVersion() {
-  const pill = $("#app-version-pill");
-  const btn = $("#app-update-btn");
-  const hint = $("#app-update-hint");
-  if (!pill) return;
-  try {
-    const d = await api("GET", "/api/app-version");
-    pill.textContent = d.current || "?";
-    pill.title = d.latest ? `latest release: ${d.latest}` : "";
-    if (d.source) {
-      if (btn) btn.hidden = true;
-      if (hint) hint.textContent = d.latest
-        ? `source install — latest release is ${d.latest}; update with git pull or the installer`
-        : "source install — update with git pull or the installer";
-    } else if (d.latest && !d.on_latest) {
-      if (btn) btn.hidden = false;
-      if (hint) hint.textContent = `update available: ${d.current} → ${d.latest}`;
-    } else {
-      if (btn) btn.hidden = true;
-      if (hint) hint.textContent = "on the latest release";
-    }
-  } catch (e) {
-    if (hint) hint.textContent = "version check failed: " + e.message;
-  }
-}
-
-on("#app-update-btn", "click", async (e) => {
-  const btn = e.currentTarget;
-  if (!window.confirm("Download and install the latest farm-app release? The app will restart.")) return;
-  btn.disabled = true; btn.textContent = "updating…";
-  try {
-    const r = await api("POST", "/api/app/update", {});
-    if (r.ok) {
-      toast(`Updated to ${r.version || "latest"} — restarting`, "ok");
-      setTimeout(() => location.reload(), 4000);
-    } else {
-      toast(r.detail || "update failed", "bad");
-      btn.disabled = false; btn.textContent = "Update farm app";
-    }
-  } catch (err) {
-    toast(err.message, "bad");
-    btn.disabled = false; btn.textContent = "Update farm app";
-  }
-});
 
 /* ---------------- file explorer modal (Settings + per-machine) ---------------- */
 let fsTargetInput = null;

@@ -4556,15 +4556,16 @@ def _app_release_info():
         if not m:
             continue
         key = tuple(int(p) for p in m.group(1).split("."))
+        if best_key is not None and key <= best_key:
+            continue
+        url = None
         for a in rel.get("assets") or []:
             if (a.get("name") == asset
-                    and a.get("browser_download_url")
-                    and (best_key is None or key > best_key)):
-                best_key = key
-                best = {"asset": asset,
-                        "url": a["browser_download_url"],
-                        "version": m.group(1)}
+                    and a.get("browser_download_url")):
+                url = a["browser_download_url"]
                 break
+        best_key = key
+        best = {"asset": asset, "url": url, "version": m.group(1)}
     with _LLAMA_UPDATES_LOCK:
         _APP_RELEASE_CACHE["ts"] = now
         if best:
@@ -4601,9 +4602,44 @@ def _restart_app_binary():
 
 def _update_app_binary():
     if not getattr(sys, "frozen", False):
-        return {"ok": False, "source": True,
-                "detail": "source install — update with git pull or the "
-                          "release installer"}
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if not os.path.isdir(os.path.join(repo, ".git")):
+            return {"ok": False, "source": True,
+                    "detail": "source install is not a git checkout — "
+                              "update with git or the release installer"}
+        try:
+            dirty = subprocess.run(
+                ["git", "-C", repo, "status", "--porcelain"],
+                capture_output=True, text=True, timeout=60)
+            if (dirty.stdout or "").strip():
+                return {"ok": False, "source": True,
+                        "detail": "source tree has local changes — commit or "
+                                  "stash them before updating"}
+            pull = subprocess.run(
+                ["git", "-C", repo, "pull", "--ff-only", "origin", "main"],
+                capture_output=True, text=True, timeout=600)
+            if pull.returncode != 0:
+                return {"ok": False, "source": True,
+                        "detail": "git pull failed: "
+                                  + ((pull.stderr or pull.stdout or "")[-400:])}
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q",
+                            "-r", os.path.join(repo, "requirements.txt")],
+                           capture_output=True, text=True, timeout=600)
+        except Exception as e:
+            return {"ok": False, "source": True,
+                    "detail": f"source update failed: {e}"}
+
+        def _restart_source():
+            import time as _t
+            _t.sleep(1.5)
+            script = os.path.join(repo, "src", "app.py")
+            try:
+                os.execv(sys.executable, [sys.executable, script])
+            except Exception:
+                pass
+        threading.Thread(target=_restart_source, daemon=True).start()
+        return {"ok": True, "source": True, "restarting": True,
+                "detail": "source tree fast-forwarded; restarting"}
     info = _app_release_info()
     url = info.get("url")
     version = info.get("version")
