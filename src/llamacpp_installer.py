@@ -434,6 +434,17 @@ def install_on(machine, log=lambda m: None):
                         break
                 except Exception as e:
                     rpc_out = str(e)
+                    if "not allowed" in rpc_out:
+                        # Older agents cannot verify RPC; presence is the
+                        # best available check until the agent is updated.
+                        try:
+                            rst = agent_client.file_stat(
+                                machine, f"{dest}/{rpc_name}") or {}
+                            rpc_ok = bool(rst.get("exists")
+                                          and rst.get("is_file"))
+                        except Exception:
+                            rpc_ok = False
+                        break
             if not rpc_ok:
                 return {"ok": False, "machine": name,
                         "detail": f"installed but llama RPC verify failed "
