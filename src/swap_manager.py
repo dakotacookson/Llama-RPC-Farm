@@ -1868,15 +1868,35 @@ def launch(binary=None, listen_port=None, config_path=None,
     # so pre-starting them would just be torn down and redone.
     script_mids = set(gen["script_mids"])
     peer_names = []
+    # Direct-cmd models point --rpc at their own per-(model, peer, group)
+    # port (rpc_manager._model_rpc_ports), not the peer's base port, and
+    # nothing else starts those servers. Collect them here.
+    model_rpc = {}   # (peer_name, port) -> device list
     for model in cfg.list_models():
         mid = model.get("model_id")
         if mid in script_mids:
             continue
         if mid not in {e["model_id"] for e in gen["entries"]}:
             continue
+        peers_of = []
         for s in model.get("servers") or []:
             if s != host["name"] and s not in peer_names:
                 peer_names.append(s)
+            if s != host["name"]:
+                try:
+                    peers_of.append(cfg.machines.require(s))
+                except Exception:
+                    pass
+        try:
+            ports = rpc_manager._model_rpc_ports(model, peers_of)
+        except Exception:
+            ports = {}
+        order = model.get("device_order") or ""
+        for peer in peers_of:
+            for gname, devs in rpc_manager._peer_server_groups(order, peer):
+                port_ = ports.get((peer["name"], gname))
+                if port_:
+                    model_rpc[(peer["name"], port_)] = list(devs) or None
 
     def do_start():
         if os_type == "windows":
@@ -1904,6 +1924,9 @@ def launch(binary=None, listen_port=None, config_path=None,
     # per-model rpc-servers (other ports) from co-served scripts survive.
     steps.extend((f"rpc:{p}", rpc_manager.start_rpc, p, None, None, None, True)
                  for p in peer_names)
+    steps.extend((f"rpc:{peer}:{port_}", rpc_manager.start_rpc, peer, port_,
+                  None, devs, True)
+                 for (peer, port_), devs in model_rpc.items())
     steps.append(("swap:start", do_start))
     run_steps(report, steps)
     if report["failed"]:
