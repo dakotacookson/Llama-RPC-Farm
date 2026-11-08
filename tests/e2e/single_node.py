@@ -129,7 +129,7 @@ def download_model(work):
     return dest
 
 
-def write_config(work, host, model_path):
+def write_config(work, host, model_path, gpu_vendor="cpu", ngl=0):
     """Write the minimum config needed to boot the app.
 
     llama.cpp and llama-swap are intentionally NOT written here: the E2E
@@ -156,7 +156,7 @@ def write_config(work, host, model_path):
     machine = {
         "id": host, "name": host, "ip": "127.0.0.1", "username": "",
         "password": "", "port": 22, "role": "master", "os": _os_name(),
-        "rpc_port": 50052, "gpu": "", "gpu_vendor": "cpu",
+        "rpc_port": 50052, "gpu": "", "gpu_vendor": gpu_vendor,
         "llama_bin": "", "ram_total_gb": 8,
         "expose": {"mode": "both", "gpus": []},
     }
@@ -182,7 +182,7 @@ def write_config(work, host, model_path):
         "servers": [host], "group": "", "pinned": False, "ttl": 0,
         "device_order": "", "device_order_policy": "as-selected",
         "expose": {},
-        "flags": {"ctx-size": 2048, "n-gpu-layers": 0, "parallel": 1},
+        "flags": {"ctx-size": 2048, "n-gpu-layers": ngl, "parallel": 1},
         "reset": False, "variants": [],
     }
     (cfg_dir / "models" / "e2e-tiny.yaml").write_text(
@@ -243,14 +243,24 @@ def isolate_env(work):
 def main():
     global APP_PORT, GATEWAY_PORT, SWAP_PORT, AGENT_PORT
     ap = argparse.ArgumentParser()
-    ap.add_argument("--app", required=True)
-    ap.add_argument("--agent", required=True)
+    ap.add_argument("--app", default="")
+    ap.add_argument("--agent", default="")
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--app-port", type=int, default=APP_PORT)
     ap.add_argument("--gateway-port", type=int, default=GATEWAY_PORT)
     ap.add_argument("--swap-port", type=int, default=SWAP_PORT)
     ap.add_argument("--agent-port", type=int, default=AGENT_PORT)
+    ap.add_argument("--source", action="store_true",
+                    help="run app/agent from this checkout (self-hosted GPU "
+                         "runners) instead of installed executables")
+    ap.add_argument("--gpu-vendor", default="cpu",
+                    choices=["cpu", "nvidia", "amd", "intel", "apple", "auto"],
+                    help="backend to install/test (auto detects locally)")
+    ap.add_argument("--n-gpu-layers", type=int, default=None,
+                    help="llama.cpp ngl (default: 0 cpu, 99 gpu)")
     args = ap.parse_args()
+    if not args.source and (not args.app or not args.agent):
+        ap.error("--app and --agent are required unless --source is used")
     used = set()
     APP_PORT = _free_port(args.app_port, used)
     GATEWAY_PORT = _free_port(args.gateway_port, used)
@@ -264,13 +274,21 @@ def main():
     sys.path.insert(0, str(ROOT / "src"))
 
     host = socket.gethostname().split(".")[0].lower()
+    gpu_vendor = args.gpu_vendor
+    if gpu_vendor == "auto":
+        import gpu_vendor as _gv
+        gpu_vendor = _gv.detect_vendor_local() or "cpu"
+    ngl = args.n_gpu_layers
+    if ngl is None:
+        ngl = 0 if gpu_vendor == "cpu" else 99
+    log(f"backend={gpu_vendor} ngl={ngl}")
     app_proc = agent_proc = None
     app_log = open(work / "app.log", "w", encoding="utf-8")
     agent_log = open(work / "agent.log", "w", encoding="utf-8")
     try:
         log(f"platform={_os_name()} arch={_arch()} host={host}")
         model_path = download_model(work)
-        data = write_config(work, host, model_path)
+        data = write_config(work, host, model_path, gpu_vendor, ngl)
 
         # ---- agent package ----
         isolated = isolate_env(work)
@@ -283,9 +301,16 @@ def main():
                          PEER_AGENT_PAIRING="0",
                          PEER_AGENT_LOG_DIR=str(work / "agent-logs"),
                          PEER_AGENT_STATE_DIR=str(work / "agent-state"))
+        if args.source:
+            pp = str(ROOT / "peer_agent")
+            agent_env["PYTHONPATH"] = (
+                pp + os.pathsep + (agent_env.get("PYTHONPATH") or ""))
+            agent_cmd = [sys.executable, "-m", "llama_peer_agent"]
+        else:
+            agent_cmd = [args.agent]
         agent_proc = subprocess.Popen(
-            [args.agent, "--host", "127.0.0.1", "--port", str(AGENT_PORT),
-             "--token", TOKEN, "--no-discovery"],
+            agent_cmd + ["--host", "127.0.0.1", "--port", str(AGENT_PORT),
+                         "--token", TOKEN, "--no-discovery"],
             env=agent_env, stdout=agent_log, stderr=subprocess.STDOUT)
         health = wait_json(f"http://127.0.0.1:{AGENT_PORT}/health", 60,
                            token=TOKEN, what="agent /health")
@@ -305,8 +330,14 @@ def main():
                        # otherwise the host's real GPUs get auto-detected and
                        # a CPU llama.cpp build is launched with --device CUDA*.
                        LLAMA_FARM_NO_HW_WATCH="1")
+        if args.source:
+            app_cmd = [sys.executable, "-m", "uvicorn", "app:app",
+                       "--app-dir", str(ROOT / "src"), "--host", "0.0.0.0",
+                       "--port", str(APP_PORT)]
+        else:
+            app_cmd = [args.app]
         app_proc = subprocess.Popen(
-            [args.app], cwd=str(data), env=app_env, stdout=app_log,
+            app_cmd, cwd=str(data), env=app_env, stdout=app_log,
             stderr=subprocess.STDOUT)
         wait_json(f"http://127.0.0.1:{APP_PORT}/api/machines", 90,
                   what="app UI")
