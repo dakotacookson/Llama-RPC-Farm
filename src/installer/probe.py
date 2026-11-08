@@ -200,7 +200,8 @@ def probe(info: SystemInfo, fs: FS, run: RunCmd,
           role: str = "main", pinned: Optional[Dict] = None,
           force_settings: bool = False,
           manifest: Optional[Dict] = None,
-          resolved: Optional[Dict] = None) -> Plan:
+          resolved: Optional[Dict] = None,
+          source_probe: Optional[Dict] = None) -> Plan:
     """Pure: decide skip/install/repair per tool + settings prefill steps.
 
     `resolved` is the network-resolved latest-release plan from bootstrap
@@ -243,23 +244,42 @@ def probe(info: SystemInfo, fs: FS, run: RunCmd,
                          "base": r_lc.get("base") or "",
                          "note": r_lc.get("note") or ""})
     lc_dest = r_lc.get("dest") or "~/llama.cpp/bin"
-    found, ver = probe_llama_cpp(fs, run, role)
-    lc_current = bool(found and ver and version_cmp(ver, need_lcpp))
-    if lc_current:
-        plan.append(SkipTool("llama.cpp", "present-current", found, ver))
-    elif found and not ver:
-        plan.append(PlanNote("warn", "llama.cpp",
-                             f"{found} exists but --version fails — repair"))
-        plan.append(RepairTool("llama.cpp", "prebuilt", need_lcpp,
-                               backend=lc_backend, dest=found,
-                               broken_version=None, extra=dict(lc_extra)))
+    sp = source_probe or {}
+    if sp.get("kind") == "source" and sp.get("src_root") and sp.get("build_dir"):
+        # Existing source build: rebuild in place so every CMakeCache flag
+        # (backend, CUDA arch list, GGML_RPC/FA/NCCL, compiler) is preserved.
+        # Never replace it with a prebuilt — that is how custom builds get
+        # silently downgraded to Vulkan/CPU and lose RPC.
+        src_bin = sp.get("llama_bin") or (sp["build_dir"] + "/bin")
+        src_ver = sp.get("version") or need_lcpp
+        plan.append(InstallTool(
+            "llama.cpp", "source", src_ver, backend=lc_backend,
+            dest=src_bin,
+            extra={"src_root": sp["src_root"],
+                   "build_dir": sp["build_dir"],
+                   "flags": sp.get("flags") or {},
+                   "rpc_required": True}))
+        plan.append(ManifestUpdate(
+            "llama.cpp", {"version": src_ver, "method": "source"}))
     else:
-        plan.append(InstallTool("llama.cpp", "prebuilt", need_lcpp,
-                                backend=lc_backend, dest=lc_dest,
-                                extra=dict(lc_extra)))
-    plan.append(ManifestUpdate("llama.cpp",
-                {"version": ver if lc_current else need_lcpp,
-                 "method": "prebuilt"}))
+        found, ver = probe_llama_cpp(fs, run, role)
+        lc_current = bool(found and ver and version_cmp(ver, need_lcpp))
+        if lc_current:
+            plan.append(SkipTool("llama.cpp", "present-current", found, ver))
+        elif found and not ver:
+            plan.append(PlanNote("warn", "llama.cpp",
+                                 f"{found} exists but --version fails — repair"))
+            plan.append(RepairTool("llama.cpp", "prebuilt", need_lcpp,
+                                   backend=lc_backend, dest=found,
+                                   broken_version=None, extra=dict(lc_extra)))
+        else:
+            plan.append(InstallTool("llama.cpp", "prebuilt", need_lcpp,
+                                    backend=lc_backend, dest=lc_dest,
+                                    extra=dict(lc_extra)))
+        plan.append(ManifestUpdate(
+            "llama.cpp",
+            {"version": ver if lc_current else need_lcpp,
+             "method": "prebuilt"}))
 
     # --- llama-swap (main only) -------------------------------------------
     if role == "main":

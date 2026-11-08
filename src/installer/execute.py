@@ -120,12 +120,11 @@ class RealDownloader:
                            f"{url}: {last}")
 
 
-def _run(cmd, log):
+def _run(cmd, log, timeout=1800):
     """Shell-out wrapper used by the tool executors (POSIX bash -c; the
     installer entry scripts own the Windows path)."""
-    import shlex as _shlex
     p = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True,
-                       timeout=1800)
+                       timeout=timeout)
     out = (p.stdout or "") + (p.stderr or "")
     if p.returncode != 0:
         log(f"cmd exit {p.returncode}: {cmd[:120]} :: {out[-200:]}")
@@ -152,7 +151,8 @@ class Executor:
         self.manifest_path = manifest_path or DEFAULT_MANIFEST_PATH
         # command runner: prod shells out (_run); tests inject a recording
         # stub so the hermetic suite never executes real commands
-        self.runner = runner or (lambda cmd: _run(cmd, self.log))
+        self.runner = runner or (
+            lambda cmd, timeout=1800: _run(cmd, self.log, timeout=timeout))
 
     # ---- public -----------------------------------------------------------
     def execute(self, plan) -> dict:

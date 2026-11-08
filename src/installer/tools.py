@@ -152,7 +152,9 @@ def install_llcpp(step, downloader, run, log, os_name, arch):
         names = llcpp_assets_for(step)
         base = LLCPP_BASE.rsplit("/download/", 1)[0]
         urls = [f"{base}/download/{step.version}/{n}" for n in names]
-    dest = step.dest
+    # Bootstrap runs on the target host: expand ~ (POSIX) / %VAR% (Windows)
+    # before any shell command. Tilde inside quotes never expands.
+    dest = os.path.expanduser(os.path.expandvars(step.dest))
     log(f"llama.cpp: {', '.join(names)} (backend={step.backend})")
     for i, (name, url) in enumerate(zip(names, urls)):
         pkg = f"/tmp/llamabin{i}.pkg"
@@ -171,8 +173,125 @@ def install_llcpp(step, downloader, run, log, os_name, arch):
                                f"{(r.stderr or r.stdout)[-300:]}")
         run(f"rm -f {shlex.quote(pkg)}")
     run(f"chmod +x {shlex.quote(dest)}/* 2>/dev/null; true")
+
+    # Both binaries are part of an install: llama-server serves models and
+    # ggml-rpc-server is what peers expose to the cluster. A partial extract
+    # used to "succeed" and only fail on first launch.
+    server = os.path.join(dest, "llama-server.exe" if os_name == "windows"
+                          else "llama-server")
+    rpc = os.path.join(dest, "ggml-rpc-server.exe" if os_name == "windows"
+                       else "ggml-rpc-server")
+    if os_name == "windows":
+        r = run(f'if exist "{server}" (exit 0) else (exit 1)')
+        if r.exit_code != 0:
+            raise RuntimeError(f"llama.cpp install incomplete: {server} missing")
+        r = run(f'if exist "{rpc}" (exit 0) else (exit 1)')
+        if r.exit_code != 0:
+            raise RuntimeError(f"llama.cpp install incomplete: {rpc} missing")
+    else:
+        r = run(f'test -x "{server}" && test -x "{rpc}"')
+        if r.exit_code != 0:
+            raise RuntimeError(
+                f"llama.cpp install incomplete: need {server} and {rpc}")
+    r = run(f'"{server}" --version 2>&1')
+    if r.exit_code != 0:
+        raise RuntimeError(f"llama-server --version failed: "
+                           f"{(r.stdout or r.stderr or '')[-300:]}")
+    if os_name == "windows":
+        try:
+            from llamacpp_installer import _ensure_win_firewall
+
+            def fw_run(cmd, timeout=30):
+                rr = run(cmd, timeout)
+                return rr.exit_code, (rr.stdout or "") + (rr.stderr or "")
+            _ensure_win_firewall(fw_run, log)
+        except Exception as e:
+            log(f"llama.cpp: firewall rules not updated: {e}")
     log(f"llama.cpp: installed {step.version} ({step.backend}) -> {dest}")
     return {"version": step.version, "method": "prebuilt",
+            "backend": step.backend, "dest": dest}
+
+
+def install_llcpp_source(step, run, log):
+    """Rebuild an existing llama.cpp source checkout in place.
+
+    Preserves the CMakeCache (backend, CUDA arch list, GGML_RPC/FA/NCCL,
+    compiler) and builds BOTH llama-server and ggml-rpc-server. Refuses on
+    local-only commits or dirty tracked files instead of silently changing
+    the build configuration.
+    """
+    extra = step.extra or {}
+    src = os.path.expanduser(os.path.expandvars(extra.get("src_root") or ""))
+    build = os.path.expanduser(os.path.expandvars(extra.get("build_dir") or ""))
+    dest = os.path.expanduser(os.path.expandvars(step.dest))
+    if not src or not build:
+        raise RuntimeError("source step missing src_root/build_dir")
+
+    def pair(cmd, timeout=60):
+        r = run(cmd, timeout)
+        return r.exit_code, (r.stdout or "") + (r.stderr or "")
+
+    code, out = pair(f"cd {shlex.quote(src)} && "
+                     "git fetch origin master 2>&1 | tail -1", 300)
+    if code != 0:
+        raise RuntimeError(f"git fetch failed: {out[-300:]}")
+    code, out = pair(f"cd {shlex.quote(src)} && "
+                     "(git merge-base --is-ancestor HEAD origin/master "
+                     "&& echo CLEAN-ANCESTOR || echo LOCAL-ONLY)")
+    if "CLEAN-ANCESTOR" not in out:
+        raise RuntimeError("source tree has local-only commits — "
+                           "update refused, merge manually")
+    code, out = pair(f"cd {shlex.quote(src)} && git status --porcelain "
+                     "| grep -v '^??' | head -5")
+    if out.strip():
+        raise RuntimeError(f"tracked files modified: {out.strip()[:200]}")
+    code, out = pair(f"cd {shlex.quote(src)} && "
+                     "git checkout origin/master 2>&1 | tail -1", 300)
+    if code != 0:
+        raise RuntimeError(f"git checkout failed: {out[-300:]}")
+
+    code, out = pair("nproc; free -m | awk '/^Mem:/{print $7}'")
+    parts = out.split()
+    try:
+        cores = int(parts[0])
+    except (ValueError, IndexError):
+        cores = 2
+    try:
+        ram_mb = int(parts[1])
+    except (ValueError, IndexError):
+        ram_mb = 4096
+    jobs = max(1, min(cores, ram_mb // 2048))
+    log(f"llama.cpp source: rebuilding {build} with -j{jobs} "
+        f"(CMakeCache preserved)")
+
+    code, out = pair(
+        f"cd {shlex.quote(src)} && cmake --build {shlex.quote(build)} "
+        f"-j {jobs} > /tmp/llamacpp-build.log 2>&1; "
+        "_ec=$?; tail -3 /tmp/llamacpp-build.log; exit $_ec", 7200)
+    if code != 0:
+        raise RuntimeError(f"source build failed (exit {code}): {out[-400:]}")
+
+    server = os.path.join(dest, "llama-server.exe" if os.name == "nt"
+                          else "llama-server")
+    rpc = os.path.join(dest, "ggml-rpc-server.exe" if os.name == "nt"
+                       else "ggml-rpc-server")
+    if os.name == "nt":
+        ok = run(f'if exist "{server}" (exit 0) else (exit 1)').exit_code == 0
+        ok_rpc = run(f'if exist "{rpc}" (exit 0) else (exit 1)').exit_code == 0
+    else:
+        ok = run(f'test -x "{server}"').exit_code == 0
+        ok_rpc = run(f'test -x "{rpc}"').exit_code == 0
+    if not ok or not ok_rpc:
+        raise RuntimeError(
+            "source build did not produce both binaries; enable "
+            "GGML_RPC=ON in the build cache (need llama-server + "
+            "ggml-rpc-server)")
+    code, out = pair(f'"{server}" --version 2>&1 | head -1', 120)
+    if code != 0:
+        raise RuntimeError(f"llama-server --version failed: {out[-300:]}")
+    version = out.strip()
+    log(f"llama.cpp source: installed {version} -> {dest}")
+    return {"version": version, "method": "source",
             "backend": step.backend, "dest": dest}
 
 
@@ -203,6 +322,8 @@ def install_tool(step, downloader, run, log, info, offline=False):
     if name == "llama-swap":
         return install_swap(step, downloader, run, log, info.os, info.arch)
     if name == "llama.cpp":
+        if (step.source or "") == "source":
+            return install_llcpp_source(step, run, log)
         return install_llcpp(step, downloader, run, log, info.os, info.arch)
     if name == "uv":
         return ensure_uv(run, log, downloader)
