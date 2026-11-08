@@ -5010,6 +5010,17 @@ def _rpc_verify_remote(machine, path):
             last = str(r.get("output") or "verify failed")
         except Exception as e:
             last = str(e)
+            if "not allowed" in last:
+                # Older agents only allow llama-server/swap in /install/verify.
+                # Fall back to presence for those agents; installs after the
+                # agent update use the real run check above.
+                try:
+                    st = agent_client.file_stat(machine, path) or {}
+                    if st.get("exists") and st.get("is_file"):
+                        return True, None
+                except Exception:
+                    pass
+                break
     return False, (last or "RPC verify failed")[-300:]
 
 
