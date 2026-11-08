@@ -41,6 +41,20 @@ run.bat         # Windows
 Open `http://localhost:8199`. Stop later with
 `fuser -k 8199/tcp` (Linux) or the dashboard's Restart button.
 
+### First launch: create the admin account
+
+A fresh install has **no default credentials** and no access keys, so the
+UI opens a **Create admin account** dialog instead of an unusable sign-in
+box. Pick a username and a password (8+ characters); this creates the
+first web login plus its admin access key and signs the browser in.
+
+- The dialog appears whenever `/api/auth/me` reports `needs_setup: true`
+  (no web logins and no access keys).
+- `POST /api/auth/bootstrap` is the same first-run path; once any login or
+  access key exists it is admin/console-only.
+- Later logins/keys are managed from the app (Access/User pages). There is
+  no built-in `admin/admin` account to forget to change.
+
 ### Tabs
 
 | Tab | What it does |

@@ -4802,8 +4802,12 @@ window.addEventListener("DOMContentLoaded", async () => {
     // from a cookie SESSION (user) or the loopback console. A bare
     // localStorage key still works (api() attaches it) but doesn't skip
     // the login prompt — humans sign in; keys are for API clients.
-    if (me && me.has_logins && !me.user && me.trust_via !== "loopback") {
-      showLogin(true);
+    if (me && me.needs_setup) {
+      // Fresh install: no login and no access key yet. Show the create-admin
+      // form instead of an unusable sign-in box.
+      showLogin(true, true);
+    } else if (me && me.has_logins && !me.user && me.trust_via !== "loopback") {
+      showLogin(true, false);
     }
     window.__me = me || null;
     renderLoginChip(me);
@@ -4820,11 +4824,24 @@ window.addEventListener("DOMContentLoaded", async () => {
 
 
 on("#login-go", "click", doLogin);
+on("#login-setup", "click", doBootstrap);
 wireKeyEditorChips();
 /* ---------------- web login (vault-backed, cookie session) --------- */
-function showLogin(force) {
+function showLogin(force, setupMode) {
   const m = $("#login-modal");
   if (!m) return;
+  const setup = Boolean(setupMode);
+  const title = $("#login-title");
+  if (title) title.innerHTML = setup
+    ? '<i class="fa-solid fa-user-plus"></i> Create admin account'
+    : '<i class="fa-solid fa-right-to-bracket"></i> Sign in';
+  const hint = $("#login-hint");
+  if (hint) hint.textContent = setup
+    ? "This farm has no account yet. Create the first admin account to sign in and manage access keys."
+    : "Your login maps to an access key — model visibility and admin powers follow it.";
+  const go = $("#login-go"), sb = $("#login-setup");
+  if (go) go.style.display = setup ? "none" : "";
+  if (sb) sb.style.display = setup ? "" : "none";
   m.classList.remove("hidden");
   // MODALITY: while sign-in is up the user must not interact with
   // anything else — page inert for pointer AND keyboard
@@ -4893,16 +4910,42 @@ async function doLogin() {
   }
 }
 
+function loginSubmit() {
+  const setup = $("#login-setup") &&
+    $("#login-setup").style.display !== "none";
+  return setup ? doBootstrap() : doLogin();
+}
+
 async function doBootstrap() {
   const u = $("#login-user")?.value.trim();
   const p = $("#login-pass")?.value || "";
   const err = $("#login-err");
+  const btn = $("#login-setup");
+  if (!u) {
+    if (err) { err.textContent = "Choose a username"; err.hidden = false; }
+    return;
+  }
+  if (p.length < 8) {
+    if (err) {
+      err.textContent = "Password must be at least 8 characters";
+      err.hidden = false;
+    }
+    return;
+  }
   try {
-    await api("POST", "/api/auth/bootstrap", { username: u, password: p, key_name: u });
+    if (btn) btn.disabled = true;
+    await api("POST", "/api/auth/bootstrap", {
+      username: u, password: p, key_name: u,
+    });
     $("#login-modal")?.classList.add("hidden");
     window.location.reload();
   } catch (e) {
     if (err) { err.textContent = e.message; err.hidden = false; }
+    if (btn) btn.disabled = false;
+    // A race (or another admin) may have completed setup meanwhile —
+    // switch the modal back to normal sign-in.
+    const me = await api("GET", "/api/auth/me").catch(() => null);
+    if (me && !me.needs_setup) showLogin(true, false);
   }
 }
 
