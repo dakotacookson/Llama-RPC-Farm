@@ -4845,6 +4845,128 @@ async def uninstall_llamacpp_machine(name: str = ""):
                         content=result)
 
 
+# ---------------- setup readiness (per machine) ---------------------------
+
+def _local_engine_readiness(machine):
+    """llama.cpp + ggml-rpc-server on this host, using the effective bin."""
+    from installer.env import RealFS
+    from installer.probe import _version_from_output
+
+    fs = RealFS()
+    is_win = (machine.get("os") or ("windows" if os.name == "nt" else "linux")) == "windows"
+    bin_dir = ((machine.get("llama_bin") or "").strip()
+               or rpc_manager._effective_bin_dir(machine) or "")
+    bin_dir = os.path.expanduser(os.path.expandvars(bin_dir))
+    server_name = "llama-server.exe" if is_win else "llama-server"
+    rpc_name = "ggml-rpc-server.exe" if is_win else "ggml-rpc-server"
+    if bin_dir.rstrip("/\\").endswith(server_name):
+        bin_dir = os.path.dirname(bin_dir)
+    server = os.path.join(bin_dir, server_name)
+    rpc = os.path.join(bin_dir, rpc_name)
+    version = None
+    if fs.isfile(server):
+        r = fs.file_exists_and_runs(server)
+        if r.ok:
+            version = _version_from_output(r.stdout + " " + r.stderr)
+    return {
+        "llama_cpp": {"installed": bool(fs.isfile(server)),
+                      "path": server if fs.isfile(server) else None,
+                      "version": version},
+        "llama_rpc": {"installed": bool(fs.isfile(rpc)),
+                      "path": rpc if fs.isfile(rpc) else None},
+    }
+
+
+def _readiness_for(machine, swap_host_name):
+    """One machine's setup checklist: agent, llama.cpp, RPC, llama-swap."""
+    name = machine.get("name") or "?"
+    is_local = local_node.is_local(machine)
+    out = {"machine": name, "local": is_local,
+           "is_swap_host": name == swap_host_name,
+           "agent": {"ok": is_local, "local": is_local,
+                     "version": None, "error": None},
+           "llama_cpp": {"installed": False, "path": None, "version": None},
+           "llama_rpc": {"installed": False, "path": None},
+           "llama_swap": {"installed": False, "path": None,
+                          "required": name == swap_host_name}}
+    if is_local:
+        out.update(_local_engine_readiness(machine))
+    else:
+        try:
+            h = agent_client.health(machine, timeout=4)
+            out["agent"] = {"ok": True, "local": False,
+                            "version": h.get("agent_version"),
+                            "protocol": h.get("protocol_version"),
+                            "error": None}
+        except Exception as e:
+            out["agent"]["error"] = str(e)
+        try:
+            caps = agent_client.capabilities(machine, timeout=8) or {}
+            lp = caps.get("llama_binary")
+            rp = caps.get("rpc_binary")
+            out["llama_cpp"]["installed"] = bool(
+                caps.get("llama_available") and lp)
+            out["llama_cpp"]["path"] = lp or None
+            out["llama_rpc"]["installed"] = bool(
+                caps.get("rpc_available") and rp)
+            out["llama_rpc"]["path"] = rp or None
+            if lp:
+                try:
+                    v = agent_client.install_verify(
+                        machine, lp, ["--version"], timeout=35) or {}
+                    if v.get("returncode") == 0:
+                        from installer.probe import _version_from_output
+                        out["llama_cpp"]["version"] = _version_from_output(
+                            str(v.get("output") or ""))
+                except Exception:
+                    pass
+        except Exception as e:
+            out["llama_cpp"]["error"] = str(e)
+    try:
+        import swap_installer
+        found, path = swap_installer.detect_on(machine)
+        out["llama_swap"] = {"installed": bool(found), "path": path,
+                             "required": name == swap_host_name}
+    except Exception:
+        pass
+    out["ready"] = bool(
+        out["agent"]["ok"]
+        and out["llama_cpp"]["installed"]
+        and out["llama_rpc"]["installed"]
+        and (not out["is_swap_host"] or out["llama_swap"]["installed"]))
+    return out
+
+
+@app.get("/api/readiness")
+async def readiness_all():
+    """Per-machine setup checklist for the dashboard/machine page.
+
+    Answers the new-user question: which peers still need llama.cpp +
+    ggml-rpc-server, and is llama-swap installed on the swap host?
+    """
+    machines = cfg.machines.all()
+    try:
+        import swap_manager
+        host_name = (swap_manager.get_host() or {}).get("name")
+    except Exception:
+        host_name = None
+    with ThreadPoolExecutor(max_workers=len(machines) or 1) as pool:
+        rows = list(pool.map(lambda m: _readiness_for(m, host_name), machines))
+    return {"machines": {r["machine"]: r for r in rows},
+            "ready_all": all(r["ready"] for r in rows)}
+
+
+@app.get("/api/machines/{name}/readiness")
+async def readiness_machine(name: str):
+    machine = cfg.machines.require(name)
+    try:
+        import swap_manager
+        host_name = (swap_manager.get_host() or {}).get("name")
+    except Exception:
+        host_name = None
+    return await run_in_threadpool(_readiness_for, machine, host_name)
+
+
 # ---------------- GET /api/tools/verify (UX-3, design §8) --------------------
 # The old REST install endpoints (install-llama-cpp{,/all,/install},
 # install-llama-swap, uninstall-llamacpp) are

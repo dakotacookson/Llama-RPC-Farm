@@ -27,6 +27,8 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 | `GET /api/machines/{name}/detail` | Machine detail card (kernel, cpu, disks, llama version, RDMA) |
 | `GET /api/stats` | Cluster stats snapshot (blocking: waits for every machine's collection; 5s cache) |
 | `GET /api/stats/stream` | **Per-machine stats as NDJSON**: one JSON line per machine as its collection completes, then a final `{totals, ts}` line. Dashboard consumes this so one slow/offline machine can't delay the others — each card paints the moment its own data lands |
+| `GET /api/readiness` | Setup checklist for every machine: agent reachability, `llama-server`, `ggml-rpc-server`, and (on the swap host) llama-swap. Drives the dashboard “Setup needed” panel and machine-page badges/buttons |
+| `GET /api/machines/{name}/readiness` | Same checklist for one machine |
 
 ## Discovery
 

@@ -972,6 +972,119 @@ function statCardHTML(m) {
     </div>`;
 }
 
+/* ---- setup readiness: what each machine still needs ---- */
+let _readinessCache = { ts: 0, data: null };
+async function fetchReadiness(force = false) {
+  if (!force && _readinessCache.data &&
+      Date.now() - _readinessCache.ts < 8000) return _readinessCache.data;
+  const data = await api("GET", "/api/readiness");
+  _readinessCache = { ts: Date.now(), data };
+  return data;
+}
+function _readyPill(label, ok) {
+  return `<span class="${ok ? "status-ok" : "status-warn"}">${escHtml(label)} ${ok ? "✓" : "✗"}</span>`;
+}
+function readinessBadgeHTML(r) {
+  if (!r) return "";
+  const bits = [_readyPill("llama.cpp", !!(r.llama_cpp || {}).installed),
+                _readyPill("RPC", !!(r.llama_rpc || {}).installed)];
+  if (r.is_swap_host) bits.push(_readyPill("llama-swap", !!(r.llama_swap || {}).installed));
+  if (!(r.agent || {}).ok) bits.unshift('<span class="status-warn">agent ✗</span>');
+  return ` <small class="hint">${bits.join(" · ")}</small>`;
+}
+function _readinessIssues(data) {
+  const out = [];
+  for (const [name, r] of Object.entries((data && data.machines) || {})) {
+    const missing = [];
+    if (!(r.agent || {}).ok) missing.push("agent unreachable");
+    if (!(r.llama_cpp || {}).installed) missing.push("llama.cpp");
+    if (!(r.llama_rpc || {}).installed) missing.push("llama RPC");
+    if (r.is_swap_host && !(r.llama_swap || {}).installed) missing.push("llama-swap");
+    if (missing.length) out.push({ name, r, missing });
+  }
+  return out;
+}
+async function loadReadiness(force = false) {
+  const host = $("#setup-readiness");
+  if (!host) return;
+  try {
+    const data = await fetchReadiness(force);
+    const issues = _readinessIssues(data);
+    if (!issues.length) {
+      host.style.display = "";
+      host.innerHTML = '<p class="status-ok" style="margin:0"><i class="fa-solid fa-circle-check"></i> Setup complete — every machine has its agent, llama.cpp, llama RPC, and llama-swap where needed.</p>';
+      return;
+    }
+    host.style.display = "";
+    const rows = issues.map(({ name, r, missing }) => {
+      const acts = [];
+      if (!(r.agent || {}).ok) {
+        acts.push(`<button class="small" data-ready-act="agent" data-machine="${escHtml(name)}">Machines tab</button>`);
+      } else {
+        if (!(r.llama_cpp || {}).installed || !(r.llama_rpc || {}).installed) {
+          acts.push(`<button class="small" data-ready-act="engines" data-machine="${escHtml(name)}">Install engines</button>`);
+        }
+        if (r.is_swap_host && !(r.llama_swap || {}).installed) {
+          acts.push(`<button class="small" data-ready-act="swap" data-machine="${escHtml(name)}">Install llama-swap</button>`);
+        }
+      }
+      return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border-soft)">
+        <span class="status-warn"><i class="fa-solid fa-triangle-exclamation"></i></span>
+        <span style="flex:1"><strong>${escHtml(name)}</strong>
+          <small class="hint">needs ${escHtml(missing.join(", "))}</small></span>
+        ${acts.join(" ")}
+      </div>`;
+    }).join("");
+    host.innerHTML = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        <strong><i class="fa-solid fa-list-check"></i> Setup needed</strong>
+        <small class="hint">install engines on each peer; llama-swap on the swap host</small>
+      </div>${rows}`;
+  } catch (_) {
+    host.style.display = "none";
+  }
+}
+on("#setup-readiness", "click", async (e) => {
+  const btn = e.target.closest("[data-ready-act]");
+  if (!btn) return;
+  const name = btn.dataset.machine;
+  const act = btn.dataset.readyAct;
+  if (act === "agent") {
+    document.querySelector('nav button[data-tab="machines"]')?.click();
+    return;
+  }
+  if (act === "engines") {
+    if (!window.confirm(`Install llama.cpp + llama RPC on ${name} through the peer agent?`)) return;
+    btn.disabled = true; btn.textContent = "Installing…";
+    try {
+      const job = await runLlamaCppUpdate(name, (state) => {
+        btn.textContent = state === "stopping" ? "Stopping…"
+          : state === "installing" ? "Installing…"
+          : state === "updating" ? "Rebuilding…" : btn.textContent;
+      });
+      if (job.state === "done") {
+        toast(`llama.cpp + RPC installed on ${name}`, "ok");
+      } else {
+        toast(`install failed on ${name}: ${(job.result && job.result.detail) || "failed"}`, "bad");
+      }
+    } catch (err) {
+      toast(err.message, "bad");
+    }
+    await loadReadiness(true); loadMachines(true); loadStatus();
+    return;
+  }
+  if (act === "swap") {
+    if (!window.confirm(`Install llama-swap on ${name}?`)) return;
+    btn.disabled = true; btn.textContent = "Installing…";
+    try {
+      const r = await api("POST", `/api/install-llama-swap?name=${encodeURIComponent(name)}`);
+      toast(r.detail || `llama-swap installed on ${name}`, "ok");
+    } catch (err) {
+      toast(`llama-swap install failed: ${err.message}`, "bad");
+    }
+    await loadReadiness(true); loadMachines(true); loadStatus();
+  }
+});
+
 /* ---- machine detail modal (dashboard card click) ---- */
 // per-machine detail cache: render the last result INSTANTLY on reopen,
 // then swap in fresh data when the fetch lands (same pattern the
@@ -1526,6 +1639,7 @@ function startAutoRefresh() {
   if (autoRefreshOn()) statsTimer = setInterval(loadStatus, 1000);
   paintRefreshChip();
   loadStatus();
+  loadReadiness();
 }
 // pause ALL polling while the tab is hidden — background tabs kept
 // rebuilding DOM + holding WebSockets alive forever, which is how a
@@ -1890,6 +2004,8 @@ async function loadMachines(skipCaps = false) {
   const machines = await api("GET", "/api/machines");
   let groups = [];
   try { groups = await api("GET", "/api/groups"); } catch (_) {}
+  let readiness = {};
+  try { readiness = (await fetchReadiness()).machines || {}; } catch (_) {}
   body.innerHTML = "";
   // build machine -> groups map
   const machineGroups = new Map();
@@ -1921,14 +2037,21 @@ async function loadMachines(skipCaps = false) {
     const { sec, archBody: secBody } = makeArchSection(body, "machines:" + title, title, secMachines.length);
     for (const m of secMachines) {
       const tr = document.createElement("div");
+      const rr = readiness[m.name];
+      const needsEngines = !!(rr && (!(rr.llama_cpp || {}).installed
+                                    || !(rr.llama_rpc || {}).installed));
+      const needsSwap = !!(rr && rr.is_swap_host
+                           && !(rr.llama_swap || {}).installed);
       tr.innerHTML = `
       <div class="scan-main"><div class="scan-title">${osIcon(m.os)}${m.name}${m.role === "master" ? ' <span class="badge badge-master">master</span>' : ""}</div>
-        <small>${m.ip} · ${m.role} (${m.os}) · GPUs: ${m.gpu || "-"} · ${exposeHTML(m)} · ${connectionBadge(m)}</small>
+        <small>${m.ip} · ${m.role} (${m.os}) · GPUs: ${m.gpu || "-"} · ${exposeHTML(m)} · ${connectionBadge(m)}</small>${readinessBadgeHTML(rr)}
         ${detectedHTML(m)}</div>
       <div class="scan-model-actions">
         <button class="small" data-act="edit">Edit</button>
         <button class="small" data-act="detect">Detect</button>
         <button class="small" data-act="update">Update</button>
+        ${needsEngines ? '<button class="small" data-act="install-engines">Install engines</button>' : ""}
+        ${needsSwap ? '<button class="small" data-act="install-swap">Install llama-swap</button>' : ""}
         ${(m.role === "master" || m.is_local) ? "" : '<button class="small" data-act="agent-update" title="Install or update the peer agent on this machine">Agent ⟳</button>'}
         <button class="small danger" data-act="delete">Delete</button>
       </div>`;
@@ -1955,6 +2078,40 @@ async function loadMachines(skipCaps = false) {
           btn.textContent = "Update"; btn.disabled = false;
           toast(err.message, "bad");
         }
+      };
+      const installEnginesBtn = tr.querySelector('[data-act="install-engines"]');
+      if (installEnginesBtn) installEnginesBtn.onclick = async (e) => {
+        const btn = e.currentTarget;
+        if (!window.confirm(`Install llama.cpp + llama RPC on ${m.name} through the peer agent?`)) return;
+        btn.disabled = true; btn.textContent = "Installing…";
+        try {
+          const job = await runLlamaCppUpdate(m.name, (state) => {
+            btn.textContent = state === "stopping" ? "Stopping…"
+              : state === "installing" ? "Installing…"
+              : state === "updating" ? "Rebuilding…" : btn.textContent;
+          });
+          if (job.state === "done") {
+            toast(`llama.cpp + RPC installed on ${m.name}`, "ok");
+          } else {
+            toast(`install failed on ${m.name}: ${(job.result && job.result.detail) || "failed"}`, "bad");
+          }
+        } catch (err) {
+          toast(err.message, "bad");
+        }
+        await loadReadiness(true); loadMachines();
+      };
+      const installSwapBtn = tr.querySelector('[data-act="install-swap"]');
+      if (installSwapBtn) installSwapBtn.onclick = async (e) => {
+        const btn = e.currentTarget;
+        if (!window.confirm(`Install llama-swap on ${m.name}?`)) return;
+        btn.disabled = true; btn.textContent = "Installing…";
+        try {
+          const r = await api("POST", `/api/install-llama-swap?name=${encodeURIComponent(m.name)}`);
+          toast(r.detail || `llama-swap installed on ${m.name}`, "ok");
+        } catch (err) {
+          toast(`llama-swap install failed: ${err.message}`, "bad");
+        }
+        await loadReadiness(true); loadMachines();
       };
       const agentUpdateBtn = tr.querySelector('[data-act="agent-update"]');
       if (agentUpdateBtn) agentUpdateBtn.onclick = async (e) => {

@@ -55,6 +55,14 @@ first web login plus its admin access key and signs the browser in.
 - Later logins/keys are managed from the app (Access/User pages). There is
   no built-in `admin/admin` account to forget to change.
 
+### First-run setup checklist
+
+The Dashboard shows a **Setup needed** panel whenever a machine is missing
+something: the peer agent, llama.cpp, `ggml-rpc-server`, or llama-swap on the
+swap host. Each row has an install button (engines via the app/peer agent,
+llama-swap on its host). The Machines page shows the same status as badges on
+each machine row.
+
 ### Tabs
 
 | Tab | What it does |
