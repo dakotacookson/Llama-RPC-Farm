@@ -2342,7 +2342,9 @@ def _render_rpc(model_cfg, master, peers, cmd=None):
             "env": _agent_env_dict(n["machine"]),
         }, separators=(",", ":"))
         payload = '{"port":__PORT__,' + body[1:]
-        agent_payload_pairs.append((n["tag"], _shlex.quote(payload)))
+        # _case_fn emits `echo "<escaped>"`; pass the raw JSON. Pre-quoting
+        # with shlex made the single quotes part of the HTTP body (400).
+        agent_payload_pairs.append((n["tag"], payload))
     peer_devices_decl = _case_fn("peer_devices", peer_dev_pairs)
     rpc_ports_decl = _case_fn("rpc_port_of", peer_port_pairs, default="50052")
     rpc_logs_decl = (
