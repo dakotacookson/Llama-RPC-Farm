@@ -360,56 +360,6 @@
       </div>
     </div>
 
-    <!-- Installer modal (UX-2): node + tools + role -> /api/tools/install -->
-    <div id="inst-modal" class="modal hidden" aria-hidden="true">
-      <div class="modal-backdrop" id="inst-modal-backdrop"></div>
-      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="inst-modal-title" style="max-width:620px">
-        <div class="modal-header">
-          <h3 id="inst-modal-title"><i class="fa-solid fa-download"></i> Run installer</h3>
-          <button class="small" id="inst-modal-close" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
-        </div>
-        <div class="modal-body">
-          <div id="inst-form">
-            <div class="row">
-              <label class="wide">Node
-                <select id="inst-machine"></select>
-                <small class="hint">machines.yaml entries; "this machine" = the host running this UI</small>
-              </label>
-            </div>
-            <div class="row">
-              <label class="wide">Tools
-                <select id="inst-tools">
-                  <option value="all">All offered tools (skip what's present)</option>
-                  <option value="llama.cpp">llama.cpp only</option>
-                  <option value="llama-swap">llama-swap only</option>
-                </select>
-              </label>
-            </div>
-            <div class="row">
-              <label>Role
-                <select id="inst-role">
-                  <option value="main">main (installs llama-swap + settings prefill)</option>
-                  <option value="client">client (RPC peer — llama.cpp only)</option>
-                </select>
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;margin-top:18px">
-                <input type="checkbox" id="inst-dry-run"> Dry run (plan only, no changes)
-              </label>
-            </div>
-          </div>
-          <div id="inst-progress" hidden>
-            <p class="hint" id="inst-progress-head"><i class="fa-solid fa-spinner fa-spin"></i> Planning…</p>
-            <div id="inst-log" class="card" style="padding:8px 10px;max-height:260px;overflow:auto;white-space:pre-wrap;font-size:12px;font-family:var(--mono);margin-top:6px"></div>
-          </div>
-          <div id="inst-result" style="margin-top:8px"></div>
-        </div>
-        <div class="modal-footer" style="display:flex; gap:8px; justify-content:flex-end; padding:10px 14px; border-top:1px solid var(--border-soft)">
-          <button type="button" class="small" id="inst-modal-done">Close</button>
-          <button type="button" id="inst-submit" style="background:var(--accent-dim); color:var(--accent); border-color:var(--accent)">Run install</button>
-        </div>
-      </div>
-    </div>
-
     <!-- Flow Visualizer -->
     <section id="tab-visualizer" class="tab">
       <h2>Flow Visualizer <span id="flow-status" class="serving-ind">…</span></h2>
@@ -1197,24 +1147,7 @@ technical | bugs, errors, login problems</textarea></label>
               <small class="hint" id="set-hf-token-hint">Not set — gated downloads will 401.</small>
             </label>
           </div>
-          <p class="hint" style="margin:-8px 0 10px">Saved to <code>config/settings.yaml</code> as <code>hf_token</code> (or set <code>HF_TOKEN</code> env). Needed only after you've clicked “Agree and access repository” on the gated HF page.</p>          <div class="row">
-            <label class="wide">Farm agent token (shared by all peers)
-              <div style="display:flex;gap:6px;align-items:center">
-                <input id="set-farm-agent-token" type="password" placeholder="one token for every agent" autocomplete="off">
-                <button type="button" class="small" id="set-farm-agent-token-toggle" title="Show/hide token"><i class="fa-solid fa-eye"></i></button>
-                <button type="button" class="small danger" id="set-farm-agent-token-clear" title="Remove the saved farm token">Clear</button>
-              </div>
-              <small class="hint" id="set-farm-agent-token-hint">Not set — per-machine tokens are used.</small>
-            </label>
-          </div>
-          <p class="hint" style="margin:-8px 0 10px">When set, every discovered/new agent verifies automatically if it uses the same token. Stored encrypted in the vault, never in YAML.</p>
-        <div data-engine="llama_cpp">
-        <div class="row" style="margin-top:12px">
-          <button id="install-open-modal" class="small" style="width:100%;background:var(--accent-dim);color:var(--accent);border:2px solid var(--accent);padding:8px;font-size:13px;font-weight:550;border-radius:var(--r-md);"><i class="fa-solid fa-download" style="margin-right:6px"></i>Run installer…</button>
-        </div>
-        <div class="row" style="margin-top:8px">
-          <button id="install-llama-cpp-others" class="small" style="width:100%;background:var(--surface);color:var(--text);border:2px solid var(--border-strong);padding:8px;font-size:13px;font-weight:550;border-radius:var(--r-md);"><i class="fa-solid fa-server" style="margin-right:6px"></i>Install on other machines…</button>
-        </div>
+          <p class="hint" style="margin:-8px 0 10px">Saved to <code>config/settings.yaml</code> as <code>hf_token</code> (or set <code>HF_TOKEN</code> env). Needed only after you've clicked “Agree and access repository” on the gated HF page.</p>        <div data-engine="llama_cpp">
         </div>
         <div id="install-all-status" style="margin-top:8px" hidden></div>
         <div class="row" style="margin-top:12px">
@@ -1334,26 +1267,6 @@ technical | bugs, errors, login problems</textarea></label>
 
   </main>
 
-  <!-- Install-on-machines modal: tick one or more remote hosts, check
-       their install state, install where missing. -->
-  <div id="install-modal" class="modal hidden" aria-hidden="true">
-    <div class="modal-backdrop" id="install-modal-backdrop"></div>
-    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="install-modal-title">
-      <div class="modal-header">
-        <h3 id="install-modal-title"><i class="fa-solid fa-server"></i> Install on other machines</h3>
-        <button class="small" id="install-modal-close" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
-      </div>
-      <div class="modal-body" style="flex:1; overflow:auto; padding:14px">
-        <p class="hint" id="install-modal-sub">Tick machines, check their state, install where missing.</p>
-        <div id="install-modal-list"></div>
-      </div>
-      <div class="modal-footer" style="display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--border-soft)">
-        <span style="flex:1"></span>
-        <button class="small" id="install-modal-check">Check selected</button>
-        <button class="small" id="install-modal-install" style="background:var(--accent-dim);border-color:var(--accent);color:var(--accent)">Install selected</button>
-      </div>
-    </div>
-  </div>
   <!-- File explorer modal (used for model_dir + llama_bin, local or per-machine remote) -->
   <div id="fs-modal" class="modal hidden" aria-hidden="true">
     <div class="modal-backdrop" id="fs-modal-backdrop"></div>
