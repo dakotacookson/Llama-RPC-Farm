@@ -44,7 +44,11 @@ jobs:
           import sys
           base = tuple(int(p) for p in sys.argv[1].split("."))
           latest = sys.argv[2].strip()
-          cur = tuple(int(p) for p in latest.split(".")) if latest else base
+          if not latest:
+              # First build on this line: VERSION is the release itself.
+              print("{}.{}.{}".format(*base))
+              raise SystemExit
+          cur = tuple(int(p) for p in latest.split("."))
           if cur[:2] != base[:2]:
               nxt = (base[0], base[1], base[2] + 1)
           else:

@@ -1,6 +1,6 @@
 # Optional peer agent (design plan)
 
-Status: **agent-only** in `peer_agent/` (agent 0.3.4). RPC + native
+Status: **agent-only** in `peer_agent/` (agent 1.0.0). RPC + native
 llama-server lifecycle, remote-local models, multi-host RPC scripts,
 custom Windows runtimes, process/status views, logs,
 files, service control, installers, stats/tuner probes, discovery, and
