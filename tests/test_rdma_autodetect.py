@@ -16,7 +16,7 @@ def test_detect_hardware_auto_enables_rdma(tmp_path, monkeypatch):
         "machines:\n"
         "- id: n1\n"
         "  name: node1\n"
-        "  ip: 10.0.0.9\n"
+        "  ip: 127.0.0.1\n"
         "  role: peer\n"
         "  os: linux\n"
         "  gpu_vendor: nvidia\n"

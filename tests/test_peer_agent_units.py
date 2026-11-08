@@ -615,6 +615,8 @@ def test_agent_client_error_and_branch_paths(monkeypatch):
     assert ac.transport({"transport": "bad"}) == "agent"
     monkeypatch.setattr(ac.secrets_vault, "get_machine_agent_token",
                         lambda m: (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setattr(ac.secrets_vault, "get_farm_agent_token",
+                        lambda: "")
     monkeypatch.setenv("AGENT_TOKEN", "a")
     assert ac._token({}) == "a"
     monkeypatch.delenv("AGENT_TOKEN")

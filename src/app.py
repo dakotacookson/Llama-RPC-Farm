@@ -863,6 +863,35 @@ async def machine_agent_check(p: AgentCheckIn):
     return {"ok": True, **out}
 
 
+def _ensure_agent_ready(machine, token_override="", timeout=4):
+    """Health-check a peer agent, auto-pairing a fresh agent with the farm
+    token when possible. Returns (health_or_None, error_or_None)."""
+    m = dict(machine)
+    if token_override:
+        m["_agent_token"] = token_override
+    try:
+        return agent_client.health(m, timeout=timeout), None
+    except Exception as first:
+        if token_override:
+            return None, str(first)
+        try:
+            import secrets_vault as _vault
+            farm = _vault.get_farm_agent_token()
+        except Exception:
+            farm = ""
+        if farm:
+            try:
+                agent_client.pair(m, farm)
+            except Exception:
+                pass
+            m["_agent_token"] = farm
+            try:
+                return agent_client.health(m, timeout=timeout), None
+            except Exception:
+                pass
+        return None, str(first)
+
+
 def _agent_guard(machine):
     """Fail fast with an actionable error when a new (non-local) machine's
     peer agent is unreachable. Agent-only: there is no shell preflight."""
@@ -871,11 +900,8 @@ def _agent_guard(machine):
             return None
     except Exception:
         pass
-    try:
-        agent_client.health(machine, timeout=4)
-        return None
-    except Exception as e:
-        return f"peer agent unreachable: {e}"
+    ok, err = _ensure_agent_ready(machine)
+    return None if ok else f"peer agent unreachable: {err}"
 
 
 
@@ -965,6 +991,12 @@ async def detect_hardware(name: str):
     """Discover GPUs/cores/RAM on a machine and persist into its config,
     so expose defaults to everything available with no manual entry."""
     machine = cfg.machines.require(name)
+    # A saved machine may pre-date its agent's token: pair/verify first so
+    # the stats call itself cannot fail on an unpaired fresh agent.
+    if not local_node.is_local(machine):
+        detail = _agent_guard(machine)
+        if detail:
+            raise HTTPException(status_code=503, detail=detail)
     stats = await run_in_threadpool(stats_collector.machine_stats, machine)
     if stats["status"] != "online":
         detail = _agent_guard(machine)
