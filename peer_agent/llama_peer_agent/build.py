@@ -106,6 +106,35 @@ def update(config: AgentConfig, src_root, build_dir, bin_path,
                 timeout=120)
     if proc.returncode != 0:
         raise AgentBuildError("git checkout failed: " + (proc.stderr or "")[-300:])
+    # A CMakeCache records the absolute CMAKE_COMMAND used when it was
+    # configured. Snap/venv/upgraded CMake leaves that path behind, and
+    # gmake then dies with `CMAKE_COMMAND: No such file or directory`
+    # before building anything. Reconfigure once with the cmake on PATH;
+    # CMake preserves every cached option while rewriting the Makefiles
+    # and CMAKE_COMMAND.
+    stale_cmake = ""
+    try:
+        cache = (build / "CMakeCache.txt").read_text(
+            encoding="utf-8", errors="replace")
+        m = re.search(r"^CMAKE_COMMAND:[^=]*=(.+)$", cache, re.M)
+        stale_cmake = m.group(1).strip() if m else ""
+    except OSError:
+        pass
+    if stale_cmake and not Path(stale_cmake).is_file():
+        home = str(src)
+        try:
+            h = re.search(r"^CMAKE_HOME_DIRECTORY:[^=]*=(.+)$",
+                          cache, re.M)
+            if h and Path(h.group(1).strip()).is_dir():
+                home = h.group(1).strip()
+        except Exception:
+            pass
+        proc = _run(["cmake", "-S", home, "-B", str(build)], timeout=900)
+        if proc.returncode != 0:
+            out = ((proc.stdout or "") + (proc.stderr or ""))[-1000:]
+            return {"ok": False,
+                    "error": f"cmake reconfigure failed after stale cache "
+                             f"({stale_cmake}): {out}"}
     if jobs is None:
         try:
             mem = 0

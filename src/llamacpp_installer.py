@@ -792,6 +792,28 @@ def update_source_on(machine, probe=None, log=lambda m: None):
         log(f"building with -j{jobs} (cores={cores}, "
             f"available_ram={ram_avail_mb}MB)")
 
+        # A stale CMAKE_COMMAND in the cache (snap/venv path deleted)
+        # makes gmake fail before compiling. Reconfigure with the cmake on
+        # PATH; cached CMake options are preserved.
+        stale_cmake = ""
+        try:
+            with open(os.path.join(build_dir, "CMakeCache.txt"),
+                      encoding="utf-8", errors="replace") as _cf:
+                for _line in _cf:
+                    if _line.startswith("CMAKE_COMMAND:"):
+                        stale_cmake = _line.split("=", 1)[-1].strip()
+                        break
+        except OSError:
+            pass
+        if stale_cmake and not os.path.isfile(stale_cmake):
+            log(f"{name}: CMake cache points at missing {stale_cmake} — "
+                "reconfiguring with cmake on PATH")
+            code, out = run(f"cmake -S '{src_root}' -B '{build_dir}' "
+                            "2>&1 | tail -3", timeout=900)
+            if code != 0:
+                return {"ok": False, "machine": name,
+                        "detail": f"cmake reconfigure failed: "
+                                  f"{(out or '')[-300:]}"}
         build_cmd = (f"cd '{src_root}' && cmake --build '{build_dir}' "
                      f"-j {jobs} > /tmp/llamacpp-build.log 2>&1; "
                      "_ec=$?; tail -3 /tmp/llamacpp-build.log; exit $_ec")
