@@ -206,6 +206,7 @@ jobs:
             *.deb
             *.sha256
             dist/llama-peer-agent-linux-x86_64
+            agent-wheel/*.whl
 
   macos:
     name: Build (macOS)
