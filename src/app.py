@@ -4464,7 +4464,7 @@ async def update_agent_machine(name: str):
 
 
 @app.post("/api/machines/{name}/update-llama-cpp")
-async def update_llama_cpp_machine(name: str):
+async def update_llama_cpp_machine(name: str, force: bool = False):
     """One-click llama.cpp UPDATE for one machine (machine-page button).
 
     Background job that: (1) stops that machine's llama processes —
@@ -4501,7 +4501,34 @@ async def update_llama_cpp_machine(name: str):
             # rebuild still costs a fetch + cmake pass, and the UI
             # shows 'on latest' for these machines anyway.
             vp = _llama_version_payload(machine)
-            if vp.get("on_latest"):
+            if force:
+                job["log"].append(
+                    f"{name}: forced clean reinstall of llama.cpp + RPC "
+                    "(existing binaries will be overwritten)")
+                try:
+                    if name == (swap_manager.get_host() or {}).get("name"):
+                        port = int(swap_manager.load_settings().get("listen_port") or 8080)
+                        with urllib.request.urlopen(
+                                f"http://127.0.0.1:{port}/health", timeout=3) as r:
+                            was_swap_up = (r.status == 200)
+                        job["log"].append(
+                            f"llama-swap on {name}: "
+                            + ("running — will restart after the install"
+                               if was_swap_up else "not running"))
+                except Exception:
+                    was_swap_up = False
+                job["log"].append(f"stopping llama processes on {name} …")
+                try:
+                    rep = rpc_manager.stop_rpc(name)
+                    job["log"].append("stop_rpc: " + json.dumps(rep)[:400])
+                except Exception as e:
+                    job["log"].append(f"stop_rpc failed (continuing anyway): {e}")
+                job["state"] = "installing"
+                res = llamacpp_installer.install_on(
+                    machine, log=lambda m: job["log"].append(str(m)))
+                job["result"] = res
+                job["state"] = "done" if res.get("ok") else "failed"
+            elif vp.get("on_latest"):
                 job["log"].append(
                     f"{name} already on the latest release "
                     f"({vp.get('latest')}) — nothing to do")
@@ -5002,13 +5029,10 @@ def _local_engine_readiness(machine):
         except Exception as e:
             cpp_error = str(e)
     if fs.isfile(rpc):
-        try:
-            r = fs.file_exists_and_runs(rpc)
-            rpc_ok = bool(r.ok)
-            if not rpc_ok:
-                rpc_error = (r.stderr or r.stdout or "ggml-rpc-server verify failed").strip()[-300:]
-        except Exception as e:
-            rpc_error = str(e)
+        # ggml-rpc-server versions differ on --version semantics; presence
+        # is the portable check (llama-swap/rpc launch will surface a truly
+        # broken binary).
+        rpc_ok = True
     return {
         "llama_cpp": {"installed": cpp_ok,
                       "path": server if fs.isfile(server) else None,
@@ -5067,17 +5091,10 @@ def _readiness_for(machine, swap_host_name):
                             str(v.get("output") or "verify failed"))[-300:]
                 except Exception as e:
                     out["llama_cpp"]["error"] = str(e)
-            if rp:
-                try:
-                    rv = agent_client.install_verify(
-                        machine, rp, ["--version"], timeout=35) or {}
-                    out["llama_rpc"]["installed"] = (
-                        rv.get("returncode") == 0)
-                    if not out["llama_rpc"]["installed"]:
-                        out["llama_rpc"]["error"] = (
-                            str(rv.get("output") or "verify failed"))[-300:]
-                except Exception as e:
-                    out["llama_rpc"]["error"] = str(e)
+            # Do not gate RPC on --version: some ggml-rpc-server builds
+            # exit nonzero/print usage while being perfectly usable.
+            out["llama_rpc"]["installed"] = bool(
+                (caps or {}).get("rpc_available") and rp)
     try:
         import swap_installer
         found, path = swap_installer.detect_on(machine)

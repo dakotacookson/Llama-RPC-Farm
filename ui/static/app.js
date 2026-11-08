@@ -1305,8 +1305,9 @@ function mdUpdateBadge(d) {
    receives "stopping"/"installing" as the job progresses; resolves with
    the finished job (state "done" or "failed"). Used by both the machine
    grid's inline Update button and the detail modal's. */
-async function runLlamaCppUpdate(mid, setState = () => {}) {
-  const start = await api("POST", `/api/machines/${encodeURIComponent(mid)}/update-llama-cpp`);
+async function runLlamaCppUpdate(mid, setState = () => {}, force = false) {
+  const q = force ? "?force=true" : "";
+  const start = await api("POST", `/api/machines/${encodeURIComponent(mid)}/update-llama-cpp${q}`);
   let job = { state: "stopping", log: [] };
   for (;;) {
     job = await api("GET", start.status_url);
@@ -2051,6 +2052,7 @@ async function loadMachines(skipCaps = false) {
         <button class="small" data-act="detect">Detect</button>
         <button class="small" data-act="update">Update</button>
         ${needsEngines ? '<button class="small" data-act="install-engines">Install engines</button>' : ""}
+        <button class="small" data-act="reinstall-engines" title="Overwrite existing llama.cpp + RPC with a fresh install">Reinstall engines</button>
         ${needsSwap ? '<button class="small" data-act="install-swap">Install llama-swap</button>' : ""}
         ${(m.role === "master" || m.is_local) ? "" : '<button class="small" data-act="agent-update" title="Install or update the peer agent on this machine">Agent ⟳</button>'}
         <button class="small danger" data-act="delete">Delete</button>
@@ -2094,6 +2096,27 @@ async function loadMachines(skipCaps = false) {
             toast(`llama.cpp + RPC installed on ${m.name}`, "ok");
           } else {
             toast(`install failed on ${m.name}: ${(job.result && job.result.detail) || "failed"}`, "bad");
+          }
+        } catch (err) {
+          toast(err.message, "bad");
+        }
+        await loadReadiness(true); loadMachines();
+      };
+      const reinstallEnginesBtn = tr.querySelector('[data-act="reinstall-engines"]');
+      if (reinstallEnginesBtn) reinstallEnginesBtn.onclick = async (e) => {
+        const btn = e.currentTarget;
+        if (!window.confirm(`Cleanly reinstall llama.cpp + RPC on ${m.name}?\n\nExisting binaries will be overwritten.`)) return;
+        btn.disabled = true; btn.textContent = "Reinstalling…";
+        try {
+          const job = await runLlamaCppUpdate(m.name, (state) => {
+            btn.textContent = state === "stopping" ? "Stopping…"
+              : state === "installing" ? "Installing…"
+              : state === "updating" ? "Rebuilding…" : btn.textContent;
+          }, true);
+          if (job.state === "done") {
+            toast(`llama.cpp + RPC reinstalled on ${m.name}`, "ok");
+          } else {
+            toast(`reinstall failed on ${m.name}: ${(job.result && job.result.detail) || "failed"}`, "bad");
           }
         } catch (err) {
           toast(err.message, "bad");
