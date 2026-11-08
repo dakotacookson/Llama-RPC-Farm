@@ -4079,24 +4079,31 @@ def _detect_bin_on_machine(machine):
             seen.add(c)
             uniq.append(c)
     if is_local:
+        from installer.env import RealFS
+        fs = RealFS()
         for cand in uniq:
             try:
                 expanded = (os.path.expandvars(os.path.expanduser(cand))
                             if is_win else os.path.expanduser(cand))
                 if _Path(expanded).exists():
-                    return True, cand, f"found at {cand}"
+                    r = fs.file_exists_and_runs(expanded)
+                    if r.ok:
+                        return True, cand, f"found at {cand}"
             except Exception:
                 continue
-        return False, None, "no bin found (checked: " + ", ".join(uniq) + ")"
+        return False, None, "no runnable bin found (checked: " + ", ".join(uniq) + ")"
     for cand in uniq:
         probe = cand.replace("%USERPROFILE%", "~")
         try:
-            st = agent_client.file_stat(machine, probe)
-            if st.get("exists") and st.get("is_file"):
+            res = agent_client.install_verify(
+                machine, probe, ["--version"], timeout=35) or {}
+            if res.get("returncode") == 0:
                 return True, cand, f"found at {cand}"
         except Exception as e:
-            return False, None, f"agent bin probe failed: {e}"
-    return False, None, "no bin found (checked: " + ", ".join(uniq) + ")"
+            if "401" in str(e) or "403" in str(e):
+                return False, None, f"agent bin probe failed: {e}"
+            continue
+    return False, None, "no runnable bin found (checked: " + ", ".join(uniq) + ")"
 
 class InstallAllIn(pydantic.BaseModel):
     install_missing: bool = False  # actually install on missing nodes
@@ -4126,14 +4133,10 @@ async def install_llama_cpp_all(p: InstallAllIn | None = None):
         is_local = local_node.is_local(m)
         # quick reachability for remote
         if not is_local:
-            try:
-                agent_client.health(m, timeout=4)
-                reachable = True
-            except Exception:
-                reachable = False
-            if not reachable:
+            _caps, auth_err = _ensure_agent_ready(m)
+            if auth_err:
                 return {"machine": name, "ip": ip, "os": os_type, "status": "offline",
-                        "skipped": True, "reason": "offline/unreachable — skipped",
+                        "skipped": True, "reason": auth_err,
                         "bin": m.get("llama_bin") or None}
         found, bin_path, detail = _detect_bin_on_machine(m)
         if found:
@@ -4168,6 +4171,8 @@ async def install_llama_cpp_all(p: InstallAllIn | None = None):
             r["skipped"] = bool(res.get("ok"))
             r["reason"] = res.get("detail") or res.get("error", "")
             r["bin"] = res.get("bin")
+            with _LLAMA_UPDATES_LOCK:
+                _LLAMA_VER_CACHE.pop(r["machine"], None)
 
     skipped = sum(1 for r in results if r.get("skipped") and r["status"] in ("already-installed", "offline", "installed"))
     missing = [r for r in results if r["status"] == "missing"]
@@ -4234,6 +4239,8 @@ def _llama_version_on(machine):
                     else f"{lb}/llama-server")
             res = agent_client.install_verify(
                 machine, path, ["--version"], timeout=35)
+            if res.get("returncode") != 0:
+                return None
             out = res.get("output") or ""
             for line in out.splitlines():
                 if line.strip():
@@ -4249,6 +4256,8 @@ def _llama_version_on(machine):
         else:
             cmd = rf'p="{lb}/llama-server"; p="${{p/#\~/$HOME}}"; "$p" --version 2>&1'
         code, out = run(cmd, timeout=30)
+        if code != 0:
+            return None
     except Exception:
         return None
     for line in (out or "").splitlines():
@@ -4978,16 +4987,35 @@ def _local_engine_readiness(machine):
     server = os.path.join(bin_dir, server_name)
     rpc = os.path.join(bin_dir, rpc_name)
     version = None
+    cpp_error = None
+    rpc_error = None
+    cpp_ok = False
+    rpc_ok = False
     if fs.isfile(server):
-        r = fs.file_exists_and_runs(server)
-        if r.ok:
-            version = _version_from_output(r.stdout + " " + r.stderr)
+        try:
+            r = fs.file_exists_and_runs(server)
+            cpp_ok = bool(r.ok)
+            if cpp_ok:
+                version = _version_from_output(r.stdout + " " + r.stderr)
+            else:
+                cpp_error = (r.stderr or r.stdout or "llama-server verify failed").strip()[-300:]
+        except Exception as e:
+            cpp_error = str(e)
+    if fs.isfile(rpc):
+        try:
+            r = fs.file_exists_and_runs(rpc)
+            rpc_ok = bool(r.ok)
+            if not rpc_ok:
+                rpc_error = (r.stderr or r.stdout or "ggml-rpc-server verify failed").strip()[-300:]
+        except Exception as e:
+            rpc_error = str(e)
     return {
-        "llama_cpp": {"installed": bool(fs.isfile(server)),
+        "llama_cpp": {"installed": cpp_ok,
                       "path": server if fs.isfile(server) else None,
-                      "version": version},
-        "llama_rpc": {"installed": bool(fs.isfile(rpc)),
-                      "path": rpc if fs.isfile(rpc) else None},
+                      "version": version, "error": cpp_error},
+        "llama_rpc": {"installed": rpc_ok,
+                      "path": rpc if fs.isfile(rpc) else None,
+                      "error": rpc_error},
     }
 
 
@@ -5021,22 +5049,35 @@ def _readiness_for(machine, swap_host_name):
                             "error": None}
             lp = (caps or {}).get("llama_binary")
             rp = (caps or {}).get("rpc_binary")
-            out["llama_cpp"]["installed"] = bool(
-                (caps or {}).get("llama_available") and lp)
             out["llama_cpp"]["path"] = lp or None
-            out["llama_rpc"]["installed"] = bool(
-                (caps or {}).get("rpc_available") and rp)
             out["llama_rpc"]["path"] = rp or None
+            # A path existing on the agent is not enough — old/partial
+            # binaries must not be reported as installed. Run each one.
             if lp:
                 try:
                     v = agent_client.install_verify(
                         machine, lp, ["--version"], timeout=35) or {}
                     if v.get("returncode") == 0:
+                        out["llama_cpp"]["installed"] = True
                         from installer.probe import _version_from_output
                         out["llama_cpp"]["version"] = _version_from_output(
                             str(v.get("output") or ""))
-                except Exception:
-                    pass
+                    else:
+                        out["llama_cpp"]["error"] = (
+                            str(v.get("output") or "verify failed"))[-300:]
+                except Exception as e:
+                    out["llama_cpp"]["error"] = str(e)
+            if rp:
+                try:
+                    rv = agent_client.install_verify(
+                        machine, rp, ["--version"], timeout=35) or {}
+                    out["llama_rpc"]["installed"] = (
+                        rv.get("returncode") == 0)
+                    if not out["llama_rpc"]["installed"]:
+                        out["llama_rpc"]["error"] = (
+                            str(rv.get("output") or "verify failed"))[-300:]
+                except Exception as e:
+                    out["llama_rpc"]["error"] = str(e)
     try:
         import swap_installer
         found, path = swap_installer.detect_on(machine)
