@@ -98,13 +98,21 @@ def llcpp_assets_for(step, info=None):
 # ---------------------------------------------------------------------------
 
 def install_swap(step, downloader, run, log, os_name, arch):
-    names = swap_asset_names(os_name, arch, step.version)
-    urls = [f"{SWAP_BASE}/v{_tag_number(step.version)}/{n}" for n in names]
+    extra = step.extra or {}
+    explicit = list(extra.get("assets") or [])
+    if explicit:
+        names = explicit
+        base = (extra.get("base") or "").rstrip("/")
+        url = (f"{base}/{names[0]}" if base
+               else f"{SWAP_BASE}/v{_tag_number(step.version)}/{names[0]}")
+    else:
+        names = swap_asset_names(os_name, arch, step.version)
+        url = f"{SWAP_BASE}/v{_tag_number(step.version)}/{names[0]}"
     tmp = "/tmp/llama-swap-installer"
     bin_dest = "llama-swap.exe" if os_name == "windows" else "llama-swap"
     dest = os.path.join(step.dest, bin_dest)
     log(f"swap: downloading {names[0]}")
-    downloader(urls[0], tmp + ".pkg")
+    downloader(url, tmp + ".pkg")
     if os_name == "windows":
         r = run(f'powershell -NoProfile -Command "Expand-Archive -Force '
                 f"'{tmp}.pkg' '{tmp}'\"")
@@ -132,9 +140,18 @@ def install_swap(step, downloader, run, log, os_name, arch):
 # ---------------------------------------------------------------------------
 
 def install_llcpp(step, downloader, run, log, os_name, arch):
-    names = llcpp_assets_for(step)
-    base = LLCPP_BASE.rsplit("/download/", 1)[0]
-    urls = [f"{base}/download/{step.version}/{n}" for n in names]
+    extra = step.extra or {}
+    explicit = list(extra.get("assets") or [])
+    if explicit:
+        names = explicit
+        base = (extra.get("base") or "").rstrip("/")
+        urls = ([f"{base}/{n}" for n in names] if base
+                else [f"{LLCPP_BASE.rsplit('/download/', 1)[0]}"
+                      f"/download/{step.version}/{n}" for n in names])
+    else:
+        names = llcpp_assets_for(step)
+        base = LLCPP_BASE.rsplit("/download/", 1)[0]
+        urls = [f"{base}/download/{step.version}/{n}" for n in names]
     dest = step.dest
     log(f"llama.cpp: {', '.join(names)} (backend={step.backend})")
     for i, (name, url) in enumerate(zip(names, urls)):
