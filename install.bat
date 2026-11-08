@@ -26,7 +26,7 @@ if not defined PY (
   python -c "import sys; sys.exit(0 if sys.version_info >= (3, %MIN_MINOR%) else 1)" >nul 2>&1 && set "PY=python"
 )
 if not defined PY (
-  echo ERROR: no Python 3.%MIN_MINOR%+ found. Install from https://python.org (check "Add to PATH").
+  echo ERROR: no Python 3.%MIN_MINOR%+ found. Install from https://python.org ^(check "Add to PATH"^).
   exit /b 1
 )
 

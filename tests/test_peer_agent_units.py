@@ -1129,3 +1129,33 @@ def test_metrics_amd_intel_apple_windows(monkeypatch):
 def test_agent_client_token_override():
     import agent_client as ac
     assert ac._token({"name": "x", "_agent_token": "typed"}) == "typed"
+
+
+def test_main_loads_persisted_agent_env(monkeypatch, tmp_path):
+    """A token saved by pairing (save_token -> agent.env) and binary paths
+    written there must be picked up on the next agent start; real env vars
+    still win over the file."""
+    from llama_peer_agent import __main__ as agent_main
+    from llama_peer_agent import config as agent_config
+    from llama_peer_agent import selfservice
+
+    env_file = tmp_path / "agent.env"
+    env_file.write_text("PEER_AGENT_TOKEN=paired-token\n"
+                        "PEER_AGENT_LLAMA_BIN=/opt/llama/llama-server\n",
+                        encoding="utf-8")
+    monkeypatch.setattr(agent_config, "env_file_path", lambda: env_file)
+    monkeypatch.setattr(selfservice, "maybe_auto_install", lambda argv=None: None)
+    for k in ("PEER_AGENT_TOKEN", "AGENT_TOKEN", "PEER_AGENT_LLAMA_BIN"):
+        monkeypatch.delenv(k, raising=False)
+    seen = {}
+    monkeypatch.setattr(agent_main, "serve",
+                        lambda c: seen.setdefault("config", c))
+
+    assert agent_main.main([]) == 0
+    assert seen["config"].token == "paired-token"
+    assert seen["config"].llama_bin == "/opt/llama/llama-server"
+
+    seen.clear()
+    monkeypatch.setenv("PEER_AGENT_TOKEN", "env-token")
+    assert agent_main.main([]) == 0
+    assert seen["config"].token == "env-token"
