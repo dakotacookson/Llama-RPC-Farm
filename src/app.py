@@ -4997,6 +4997,22 @@ async def uninstall_llamacpp_machine(name: str = ""):
 
 # ---------------- setup readiness (per machine) ---------------------------
 
+def _rpc_verify_remote(machine, path):
+    """RPC binaries disagree on --version; --help is the reliable probe.
+    Returns (ok, error)."""
+    last = None
+    for args in (["--help"], ["--version"]):
+        try:
+            r = agent_client.install_verify(
+                machine, path, args, timeout=30) or {}
+            if r.get("returncode") == 0:
+                return True, None
+            last = str(r.get("output") or "verify failed")
+        except Exception as e:
+            last = str(e)
+    return False, (last or "RPC verify failed")[-300:]
+
+
 def _local_engine_readiness(machine):
     """llama.cpp + ggml-rpc-server on this host, using the effective bin."""
     from installer.env import RealFS
@@ -5029,10 +5045,17 @@ def _local_engine_readiness(machine):
         except Exception as e:
             cpp_error = str(e)
     if fs.isfile(rpc):
-        # ggml-rpc-server versions differ on --version semantics; presence
-        # is the portable check (llama-swap/rpc launch will surface a truly
-        # broken binary).
-        rpc_ok = True
+        # --version is not universal for ggml-rpc-server; try --help too.
+        for arg in ("--help", "--version"):
+            try:
+                rr = fs.file_exists_and_runs(rpc, arg)
+                if rr.ok:
+                    rpc_ok = True
+                    break
+                rpc_error = (rr.stderr or rr.stdout
+                             or "ggml-rpc-server verify failed").strip()[-300:]
+            except Exception as e:
+                rpc_error = str(e)
     return {
         "llama_cpp": {"installed": cpp_ok,
                       "path": server if fs.isfile(server) else None,
@@ -5091,10 +5114,11 @@ def _readiness_for(machine, swap_host_name):
                             str(v.get("output") or "verify failed"))[-300:]
                 except Exception as e:
                     out["llama_cpp"]["error"] = str(e)
-            # Do not gate RPC on --version: some ggml-rpc-server builds
-            # exit nonzero/print usage while being perfectly usable.
-            out["llama_rpc"]["installed"] = bool(
-                (caps or {}).get("rpc_available") and rp)
+            if rp:
+                rpc_ok, rpc_err = _rpc_verify_remote(machine, rp)
+                out["llama_rpc"]["installed"] = rpc_ok
+                if not rpc_ok:
+                    out["llama_rpc"]["error"] = rpc_err
     try:
         import swap_installer
         found, path = swap_installer.detect_on(machine)
