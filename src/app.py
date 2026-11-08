@@ -4398,12 +4398,16 @@ def _agent_version_payload(machine):
         return {"current": None, "latest": latest, "on_latest": True,
                 "local": True}
     current = None
+    packaged = False
     try:
-        current = agent_client.version(machine, timeout=4).get("agent_version")
+        v = agent_client.version(machine, timeout=4) or {}
+        current = v.get("agent_version")
+        packaged = bool(v.get("packaged"))
     except Exception:
         current = None
     return {"current": current, "latest": latest,
-            "on_latest": bool(current and latest and current == latest)}
+            "on_latest": bool(current and latest and current == latest),
+            "packaged": packaged}
 
 
 def _update_agent_remote(machine):
@@ -4414,6 +4418,12 @@ def _update_agent_remote(machine):
                 "detail": "local master uses the app directly; no peer agent"}
     wheel = _agent_wheel_path()
     version = _agent_latest_version()
+    av = _agent_version_payload(machine)
+    if av.get("packaged"):
+        return {"ok": False, "machine": name, "frozen": True,
+                "detail": "this is a standalone agent build and cannot be "
+                          "updated in place — reinstall the peer agent "
+                          "package to update it"}
     if True:
         try:
             with open(wheel, "rb") as f:
@@ -4438,10 +4448,16 @@ def _update_agent_remote(machine):
                         "method": "agent",
                         "detail": "agent accepted update but did not come back healthy"}
         except Exception as e:
-            return {"ok": False, "machine": name,
+            msg = str(e)
+            frozen = ("unrecognized arguments" in msg and "pip" in msg) or \
+                     ("pip install failed" in msg) or \
+                     ("No module named pip" in msg)
+            return {"ok": False, "machine": name, "frozen": frozen,
                     "wheel": os.path.basename(wheel),
                     "method": "agent",
-                    "detail": f"agent update failed: {e}"}
+                    "detail": ("standalone agent build cannot be updated "
+                               "in place — reinstall the peer agent package"
+                               if frozen else f"agent update failed: {e}")}
 
 @app.get("/api/machines/{name}/agent-version")
 async def agent_version_machine(name: str):
