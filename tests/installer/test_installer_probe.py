@@ -122,6 +122,7 @@ class TestPresentCurrent:
         good = home + "/llama.cpp/bin/llama-server"
         stub_fs.add_file(good, "#!/bin/sh\necho llama.cpp\n")
         stub_fs.add_file("__ver__:" + good, "b10934 (test)")
+        stub_fs.add_file(home + "/llama.cpp/bin/ggml-rpc-server", "#!/bin/sh\n")
         swap = home + "/.local/bin/llama-swap"
         stub_fs.add_file(swap, "#!/bin/sh\n")
         stub_fs.add_file("__ver__:" + swap, "255")
@@ -187,6 +188,7 @@ class TestSettingsMerge:
         good = home + "/llama.cpp/bin/llama-server"
         stub_fs.add_file(good, "#!/bin/sh\n")
         stub_fs.add_file("__ver__:" + good, "b10934")
+        stub_fs.add_file(home + "/llama.cpp/bin/ggml-rpc-server", "#!/bin/sh\n")
         stub_fs.add_file("config/settings.yaml", text)
         return probe(sysinfo(), stub_fs, StubRun({}))
 
@@ -237,6 +239,7 @@ class TestIdempotency:
         good = home + "/llama.cpp/bin/llama-server"
         stub_fs.add_file(good, "#!/bin/sh\n")
         stub_fs.add_file("__ver__:" + good, "b10934")
+        stub_fs.add_file(home + "/llama.cpp/bin/ggml-rpc-server", "#!/bin/sh\n")
         swap = home + "/.local/bin/llama-swap"
         stub_fs.add_file(swap, "#!/bin/sh\n")
         stub_fs.add_file("__ver__:" + swap, "255")

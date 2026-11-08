@@ -4100,7 +4100,10 @@ def _llama_version_on(machine):
     """First line of '<llama_bin>/llama-server --version' on a machine
     (local bash or the peer agent). POSIX: leading ~ expands via $HOME on the
     target; Windows: cmd.exe expands %USERPROFILE% inside the path."""
-    lb = (machine.get("llama_bin") or "").strip().rstrip("/\\")
+    import rpc_manager
+    # Per-machine override wins; empty falls back to Settings' global
+    # llama_bin (same resolver the launch path uses).
+    lb = (rpc_manager._effective_bin_dir(machine) or "").strip().rstrip("/\\")
     if not lb:
         return None
     is_win = machine.get("os", "linux") == "windows"
@@ -4791,30 +4794,51 @@ async def tools_verify():
         swap_bin = (swap_manager.load_settings() or {}).get("binary")
     except Exception:
         swap_bin = None
+    local_machine = next(
+        (m for m in cfg.machines.all() if local_node.is_local(m)), {})
+    configured_llcpp = ((local_machine.get("llama_bin") or "").strip()
+                        or settings_bin)
 
     def _entry(found, path, version, expected, configured):
         return {"found": bool(found), "path": path, "version": version,
                 "expected": expected, "configured": configured or None}
 
-    out = {}
-    # llama.cpp — well-known prebuilt/source locations, then settings record
-    p, ver = installer_probe.probe_llama_cpp(fs, run, role="main")
-    if not p and settings_bin:
-        cand = settings_bin
-        if not (cand.endswith("llama-server") or cand.endswith("llama-server.exe")):
-            cand = cand.rstrip("/\\") + "/llama-server"
-        if fs.isfile(cand):
-            r = fs.file_exists_and_runs(cand)
-            p, ver = cand, (installer_probe._version_from_output(
-                r.stdout + " " + r.stderr) if r.ok else None)
-    out["llama.cpp"] = _entry(p, p, ver, "b10000+", settings_bin)
-    # llama-swap
-    p, ver = installer_probe.probe_swap(fs, run)
-    if not p and swap_bin and swap_bin != "llama-swap" and fs.isfile(swap_bin):
-        r = fs.file_exists_and_runs(swap_bin)
-        p, ver = swap_bin, (installer_probe._version_from_output(
+    def _configured_probe(configured, exe):
+        """Probe EXACTLY the configured path (dir or file). Never substitute
+        a well-known location — per-machine settings are authoritative."""
+        if not configured:
+            return "", None
+        cand = os.path.expanduser(os.path.expandvars(str(configured)))
+        if not cand.rstrip("/\\").endswith(exe):
+            cand = os.path.join(cand, exe)
+        if not fs.isfile(cand):
+            return cand, None
+        r = fs.file_exists_and_runs(cand)
+        ver = (installer_probe._version_from_output(
             r.stdout + " " + r.stderr) if r.ok else None)
-    out["llama-swap"] = _entry(p, p, ver, "255+", swap_bin)
+        return cand, ver
+
+    out = {}
+    # llama.cpp — configured local-machine path wins; otherwise probe the
+    # well-known prebuilt/source locations.
+    if configured_llcpp:
+        exe = "llama-server.exe" if os.name == "nt" else "llama-server"
+        p, ver = _configured_probe(configured_llcpp, exe)
+        found = bool(p and fs.isfile(p))
+    else:
+        p, ver = installer_probe.probe_llama_cpp(fs, run, role="main")
+        found = bool(p)
+    out["llama.cpp"] = _entry(found, p, ver, "b10000+", configured_llcpp)
+    # llama-swap — an explicit path in swap.yaml wins; bare "llama-swap"
+    # still resolves through PATH/well-known locations, as configured.
+    if swap_bin and swap_bin != "llama-swap":
+        exe = "llama-swap.exe" if os.name == "nt" else "llama-swap"
+        p, ver = _configured_probe(swap_bin, exe)
+        found = bool(p and fs.isfile(p))
+    else:
+        p, ver = installer_probe.probe_swap(fs, run)
+        found = bool(p)
+    out["llama-swap"] = _entry(found, p, ver, "255+", swap_bin)
     return out
 
 
