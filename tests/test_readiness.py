@@ -82,13 +82,13 @@ def test_ensure_agent_ready_pairs_fresh_agent(monkeypatch):
     import secrets_vault
     import agent_client as ac
 
-    def health(machine, timeout=4, token=None):
-        if not (machine.get("_agent_token") or token):
+    def caps(machine, timeout=5):
+        if machine.get("_agent_token") != "farm-tok":
             raise ac.AgentError("agent HTTP 401")
-        return {"ok": True, "agent_version": "1.0.0"}
+        return {"ok": True, "llama_available": True}
 
     paired = []
-    monkeypatch.setattr(ac, "health", health)
+    monkeypatch.setattr(ac, "capabilities", caps)
     monkeypatch.setattr(ac, "pair",
                         lambda machine, token, timeout=8: paired.append(token)
                         or {"ok": True})
@@ -96,7 +96,7 @@ def test_ensure_agent_ready_pairs_fresh_agent(monkeypatch):
                         lambda: "farm-tok")
     ok, err = app_module._ensure_agent_ready(
         {"name": "fresh", "ip": "10.0.0.178"}, "")
-    assert err is None and ok["ok"] is True
+    assert err is None and ok["llama_available"] is True
     assert paired == ["farm-tok"]
 
 
@@ -105,8 +105,8 @@ def test_auto_agent_token_pairs_fresh_agent_with_farm(monkeypatch):
     import agent_client as ac
     state = {"paired": False}
 
-    def health(machine, timeout=4, token=None):
-        if token == "farm-tok" and state["paired"]:
+    def caps(machine, timeout=5):
+        if machine.get("_agent_token") == "farm-tok" and state["paired"]:
             return {"ok": True}
         raise ac.AgentError("agent HTTP 401")
 
@@ -114,7 +114,7 @@ def test_auto_agent_token_pairs_fresh_agent_with_farm(monkeypatch):
         state["paired"] = True
         return {"ok": True}
 
-    monkeypatch.setattr(ac, "health", health)
+    monkeypatch.setattr(ac, "capabilities", caps)
     monkeypatch.setattr(ac, "pair", pair)
     monkeypatch.setattr(secrets_vault, "get_machine_agent_token",
                         lambda m: "")
@@ -129,9 +129,9 @@ def test_auto_agent_token_pairs_fresh_agent_with_farm(monkeypatch):
 def test_auto_agent_token_keeps_existing_machine_token(monkeypatch):
     import secrets_vault
     import agent_client as ac
-    monkeypatch.setattr(ac, "health",
-                        lambda m, timeout=4, token=None:
-                        {"ok": True} if token == "machine-tok"
+    monkeypatch.setattr(ac, "capabilities",
+                        lambda m, timeout=5:
+                        {"ok": True} if m.get("_agent_token") == "machine-tok"
                         else (_ for _ in ()).throw(ac.AgentError("401")))
     monkeypatch.setattr(ac, "pair",
                         lambda *a, **k: (_ for _ in ()).throw(
@@ -148,7 +148,7 @@ def test_auto_agent_token_fails_when_agent_has_unknown_token(monkeypatch):
     import secrets_vault
     import agent_client as ac
     import pytest
-    monkeypatch.setattr(ac, "health",
+    monkeypatch.setattr(ac, "capabilities",
                         lambda *a, **k: (_ for _ in ()).throw(
                             ac.AgentError("401")))
     monkeypatch.setattr(ac, "pair",
@@ -158,6 +158,25 @@ def test_auto_agent_token_fails_when_agent_has_unknown_token(monkeypatch):
                         lambda m: "")
     monkeypatch.setattr(secrets_vault, "get_farm_agent_token",
                         lambda: "farm-tok")
-    with pytest.raises(ValueError, match="already be paired"):
+    with pytest.raises(ValueError, match="could not auto-pair"):
         app_module._auto_agent_token(
             {"id": "m1", "name": "m1", "ip": "10.0.0.178"})
+
+
+def test_delete_machine_clears_vault_agent_token(monkeypatch):
+    import asyncio
+    import secrets_vault
+    calls = []
+    monkeypatch.setattr(app_module.cfg.machines, "get",
+                        lambda n: {"id": "m1", "name": "node1"})
+    monkeypatch.setattr(app_module.cfg.machines, "delete", lambda n: [])
+    monkeypatch.setattr(secrets_vault, "set_machine_agent_token",
+                        lambda ident, tok: calls.append(("tok", ident, tok)))
+    monkeypatch.setattr(secrets_vault, "delete_env_value",
+                        lambda key: calls.append(("env", key)))
+    monkeypatch.setattr(secrets_vault, "machine_env_key",
+                        lambda ident: f"MACHINE_{ident}_PASSWORD_ENC")
+    asyncio.run(app_module.delete_machine("node1"))
+    ids = {c[1] for c in calls if c[0] == "tok"}
+    assert {"m1", "node1"} <= ids
+    assert all(c[2] == "" for c in calls if c[0] == "tok")
