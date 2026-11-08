@@ -106,6 +106,11 @@ Microsoft Trusted Signing improves this immediately. HSM/cloud signing
 (Azure Trusted Signing, DigiCert KeyLocker) needs a different signtool
 invocation than the `.pfx` path used here.
 
+Without the two secrets the build is unsigned and SmartScreen shows
+"Windows protected your PC". See [windows-signing.md](windows-signing.md)
+for the safe "More info → Run anyway" path, hash verification, and the
+certificate options (including free SignPath signing for open source).
+
 ## Local release smoke test
 
 ```bash

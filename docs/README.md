@@ -22,6 +22,7 @@ Frontend is vanilla JS; all state lives in `config/*.yaml`.
 | [development.md](development.md) | Running, testing, the string-assertion test style, common pitfalls (see also `AGENTS.md`) |
 | [peer-agent.md](peer-agent.md) | Peer agent: agent-first transport, endpoints, discovery, auto-start, in-place updates, packaging roadmap |
 | [release.md](release.md) | Rolling `main-latest` build pipelines and native artifacts |
+| [windows-signing.md](windows-signing.md) | Windows SmartScreen, code-signing options, and how to run an unsigned build safely |
 
 ## Quick orientation
 

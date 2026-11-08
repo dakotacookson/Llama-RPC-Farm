@@ -544,7 +544,10 @@ jobs:
           2. The installer registers login auto-start; launch the app from your menu/shortcut if it is not already open.
           3. Open http://127.0.0.1:8199 and follow `docs/setup.md`.
 
-          Binaries are unsigned: on macOS use **right-click → Open** the first time.
+          Builds are signed when signing secrets are configured. If yours is
+          unsigned: on macOS use **right-click → Open** the first time; on
+          Windows SmartScreen needs **More info → Run anyway** after checking
+          the `.sha256` asset. See `docs/windows-signing.md`.
           """
           pointer_notes = f"""# Llama RPC Farm — main rolling (current)
 

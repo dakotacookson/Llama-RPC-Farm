@@ -59,6 +59,10 @@ That's the entire setup path — the full walkthrough (vault, machines,
 stores, llama.cpp build, llama-swap, gateway, client config) is in
 **[docs/setup.md](docs/setup.md)**.
 
+Windows SmartScreen warning on the unsigned installer? See
+**[docs/windows-signing.md](docs/windows-signing.md)** for the safe
+"More info → Run anyway" steps and how to sign future builds.
+
 ### Try it with your AI agent in one prompt
 
 This repo ships an agent playbook (`AGENTS.md`), so any coding agent that
