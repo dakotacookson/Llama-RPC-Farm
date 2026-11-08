@@ -6887,7 +6887,53 @@ const _loadSettings = loadSettings;
 loadSettings = async function () {
   await _loadSettings();
   loadToolStatus();
+  loadAppVersion();
 };
+
+async function loadAppVersion() {
+  const pill = $("#app-version-pill");
+  const btn = $("#app-update-btn");
+  const hint = $("#app-update-hint");
+  if (!pill) return;
+  try {
+    const d = await api("GET", "/api/app-version");
+    pill.textContent = d.current || "?";
+    pill.title = d.latest ? `latest release: ${d.latest}` : "";
+    if (d.source) {
+      if (btn) btn.hidden = true;
+      if (hint) hint.textContent = d.latest
+        ? `source install — latest release is ${d.latest}; update with git pull or the installer`
+        : "source install — update with git pull or the installer";
+    } else if (d.latest && !d.on_latest) {
+      if (btn) btn.hidden = false;
+      if (hint) hint.textContent = `update available: ${d.current} → ${d.latest}`;
+    } else {
+      if (btn) btn.hidden = true;
+      if (hint) hint.textContent = "on the latest release";
+    }
+  } catch (e) {
+    if (hint) hint.textContent = "version check failed: " + e.message;
+  }
+}
+
+on("#app-update-btn", "click", async (e) => {
+  const btn = e.currentTarget;
+  if (!window.confirm("Download and install the latest farm-app release? The app will restart.")) return;
+  btn.disabled = true; btn.textContent = "updating…";
+  try {
+    const r = await api("POST", "/api/app/update", {});
+    if (r.ok) {
+      toast(`Updated to ${r.version || "latest"} — restarting`, "ok");
+      setTimeout(() => location.reload(), 4000);
+    } else {
+      toast(r.detail || "update failed", "bad");
+      btn.disabled = false; btn.textContent = "Update farm app";
+    }
+  } catch (err) {
+    toast(err.message, "bad");
+    btn.disabled = false; btn.textContent = "Update farm app";
+  }
+});
 
 /* ---------------- file explorer modal (Settings + per-machine) ---------------- */
 let fsTargetInput = null;

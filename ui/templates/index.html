@@ -1147,7 +1147,16 @@ technical | bugs, errors, login problems</textarea></label>
               <small class="hint" id="set-hf-token-hint">Not set — gated downloads will 401.</small>
             </label>
           </div>
-          <p class="hint" style="margin:-8px 0 10px">Saved to <code>config/settings.yaml</code> as <code>hf_token</code> (or set <code>HF_TOKEN</code> env). Needed only after you've clicked “Agree and access repository” on the gated HF page.</p>        <div data-engine="llama_cpp">
+          <p class="hint" style="margin:-8px 0 10px">Saved to <code>config/settings.yaml</code> as <code>hf_token</code> (or set <code>HF_TOKEN</code> env). Needed only after you've clicked “Agree and access repository” on the gated HF page.</p>        <div class="row">
+          <label class="wide">Farm app version
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <span class="badge" id="app-version-pill">…</span>
+              <button type="button" class="small" id="app-update-btn" hidden>Update farm app</button>
+            </div>
+            <small class="hint" id="app-update-hint">checking GitHub releases…</small>
+          </label>
+        </div>
+        <div data-engine="llama_cpp">
         </div>
         <div id="install-all-status" style="margin-top:8px" hidden></div>
         <div class="row" style="margin-top:12px">

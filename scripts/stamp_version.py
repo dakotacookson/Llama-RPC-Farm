@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 VERSION_FILE = ROOT / "VERSION"
 AGENT_PYPROJECT = ROOT / "peer_agent" / "pyproject.toml"
 AGENT_INIT = ROOT / "peer_agent" / "llama_peer_agent" / "__init__.py"
+APP_VERSION = ROOT / "src" / "version.py"
 
 
 def main() -> int:
@@ -40,7 +41,16 @@ def main() -> int:
         print(f"could not update {AGENT_INIT}", file=sys.stderr)
         return 1
     AGENT_INIT.write_text(text, encoding="utf-8")
-    print(f"stamped {version}: VERSION, agent pyproject, agent __version__")
+
+    text = APP_VERSION.read_text(encoding="utf-8")
+    text, n3 = re.subn(r'(?m)^__version__\s*=\s*"[^"]+"',
+                       f'__version__ = "{version}"', text)
+    if n3 != 1:
+        print(f"could not update {APP_VERSION}", file=sys.stderr)
+        return 1
+    APP_VERSION.write_text(text, encoding="utf-8")
+    print(f"stamped {version}: VERSION, app version, agent pyproject, "
+          f"agent __version__")
     return 0
 
 
