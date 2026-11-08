@@ -2629,6 +2629,10 @@ _LOAD_FAULT_RULES = (
         r"\b(?:mmproj|clip_model_load|projector)\b",
         re.IGNORECASE),
      "Vision projector (mmproj) failed to load or does not match the model."),
+    ("rpc_connect", re.compile(
+        r"Failed to connect to \S+:\d+", re.IGNORECASE),
+     "Cannot reach an RPC peer. Check that its rpc-server is running and "
+     "that the peer's firewall allows the port from this host."),
     ("load_error", re.compile(
         r"failed to load model|error loading model|"
         r"exiting due to model loading error",
