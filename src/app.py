@@ -40,6 +40,8 @@ import rpc_manager
 import agent_client
 import reaper
 import gguf_inspect
+import platform as _platform
+import version as app_version
 
 from runtime_paths import asset_dir, data_dir, ensure_runtime_layout
 BASE_DIR = data_dir()
@@ -4508,6 +4510,149 @@ def _agent_release_info(machine):
     if best:
         return best
     return {"asset": asset, "url": None, "version": None}
+
+
+_APP_RELEASE_CACHE = {"ts": 0.0, "by_asset": {}}
+
+
+def _app_binary_asset():
+    """Raw farm-app release asset for this host platform."""
+    os_name = _platform.system().lower()
+    arch = _platform.machine().lower()
+    if os_name == "windows":
+        return "llama-rpc-farm-windows-x64.exe"
+    if os_name == "darwin":
+        return ("llama-rpc-farm-macos-arm64"
+                if arch in ("arm64", "aarch64") else None)
+    if os_name == "linux":
+        return ("llama-rpc-farm-linux-x86_64"
+                if arch in ("x86_64", "amd64") else None)
+    return None
+
+
+def _app_release_info():
+    """Live GitHub check for the newest raw farm-app binary."""
+    asset = _app_binary_asset()
+    if not asset:
+        return {"asset": None, "url": None, "version": None}
+    now = time.time()
+    with _LLAMA_UPDATES_LOCK:
+        if now - _APP_RELEASE_CACHE["ts"] < 60:
+            hit = _APP_RELEASE_CACHE["by_asset"].get(asset)
+            if hit:
+                return dict(hit)
+    import urllib.request
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{_AGENT_REPO}/releases?per_page=100",
+        headers={"User-Agent": "llama-rpc-farm",
+                 "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        releases = json.load(r)
+    best = None
+    best_key = None
+    for rel in releases:
+        tag = str(rel.get("tag_name") or "")
+        m = re.fullmatch(r"release-(\d+\.\d+\.\d+)", tag)
+        if not m:
+            continue
+        key = tuple(int(p) for p in m.group(1).split("."))
+        for a in rel.get("assets") or []:
+            if (a.get("name") == asset
+                    and a.get("browser_download_url")
+                    and (best_key is None or key > best_key)):
+                best_key = key
+                best = {"asset": asset,
+                        "url": a["browser_download_url"],
+                        "version": m.group(1)}
+                break
+    with _LLAMA_UPDATES_LOCK:
+        _APP_RELEASE_CACHE["ts"] = now
+        if best:
+            _APP_RELEASE_CACHE["by_asset"][asset] = dict(best)
+    return best or {"asset": asset, "url": None, "version": None}
+
+
+def _app_version_payload():
+    current = getattr(app_version, "__version__", "")
+    packaged = bool(getattr(sys, "frozen", False))
+    try:
+        info = _app_release_info()
+        latest = info.get("version")
+    except Exception:
+        latest = None
+    return {"current": current, "latest": latest,
+            "on_latest": bool(latest and current == latest),
+            "packaged": packaged, "source": not packaged}
+
+
+def _restart_app_binary():
+    import time as _t
+    _t.sleep(1.5)
+    exe = os.path.abspath(sys.executable)
+    args = [exe] + list(sys.argv[1:])
+    try:
+        if os.name == "nt":
+            subprocess.Popen(args, close_fds=True)
+            os._exit(0)
+        os.execv(exe, args)
+    except Exception:
+        pass
+
+
+def _update_app_binary():
+    if not getattr(sys, "frozen", False):
+        return {"ok": False, "source": True,
+                "detail": "source install — update with git pull or the "
+                          "release installer"}
+    info = _app_release_info()
+    url = info.get("url")
+    version = info.get("version")
+    if not url:
+        return {"ok": False, "detail": "no published farm-app binary for "
+                                       "this platform"}
+    exe = os.path.abspath(sys.executable)
+    dest_dir = os.path.dirname(exe)
+    tmp = None
+    try:
+        import urllib.request
+        fd, tmp = tempfile.mkstemp(prefix=".farm-update-", dir=dest_dir)
+        os.close(fd)
+        with urllib.request.urlopen(url, timeout=180) as r, \
+                open(tmp, "wb") as out:
+            shutil.copyfileobj(r, out)
+        size = os.path.getsize(tmp)
+        if size < 1024 * 1024 or size > 500 * 1024 * 1024:
+            raise RuntimeError(f"unexpected app size: {size} bytes")
+        if os.name != "nt":
+            os.chmod(tmp, 0o755)
+            os.replace(tmp, exe)
+        else:
+            backup = exe + ".old"
+            try:
+                os.replace(exe, backup)
+            except OSError:
+                pass
+            os.replace(tmp, exe)
+    except Exception as e:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+        return {"ok": False, "detail": f"app update failed: {e}"}
+    threading.Thread(target=_restart_app_binary, daemon=True).start()
+    return {"ok": True, "version": version, "asset": info.get("asset"),
+            "restarting": True}
+
+
+@app.get("/api/app-version")
+async def app_version_info():
+    return await run_in_threadpool(_app_version_payload)
+
+
+@app.post("/api/app/update")
+async def app_update():
+    return await run_in_threadpool(_update_app_binary)
 
 
 def _agent_version_payload(machine):
