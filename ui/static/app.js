@@ -6819,7 +6819,7 @@ async function loadToolStatus() {
       return '<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0">'
         + '<span><i class="fa-solid ' + icon + '"></i> <strong>' + escHtml(label) + '</strong>'
         + '<small style="color:var(--muted)">' + ver + '</small></span>'
-        + '<small style="color:var(--muted);text-align:right">' + escHtml(loc) + escHtml(stale) + '</small>'
+        + '<small style="color:var(--muted);text-align:right">' + escHtml(loc) + '</small>'
         + '</div>';
     }).join('');
   } catch (err) {

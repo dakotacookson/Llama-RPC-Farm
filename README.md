@@ -222,7 +222,7 @@ llama.cpp, llama-swap, and every other wrapped tool:
 
 ## Status
 
-v0.01. llama.cpp RPC + llama-swap is the supported engine.
+v1.0.0. llama.cpp RPC + llama-swap is the supported engine.
 
 Licensed under **Apache-2.0** (this project's own code; download engines
 llama.cpp and llama-swap remain MIT under their own terms) — free for
