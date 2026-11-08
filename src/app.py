@@ -4496,6 +4496,31 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
         import urllib.request
         was_swap_up = False
         try:
+            # Install/update the peer agent first when it is older than the
+            # app's wheel. Older agents cannot verify RPC and (critically)
+            # drop .so symlinks when extracting prebuilt archives.
+            if not local_node.is_local(machine):
+                try:
+                    av = _agent_version_payload(machine)
+                    if (av.get("latest") and av.get("current")
+                            and not av.get("on_latest")):
+                        job["log"].append(
+                            f"updating peer agent {av.get('current')} → "
+                            f"{av.get('latest')} before engine install")
+                        up = _update_agent_remote(machine)
+                        if not up.get("ok"):
+                            job["result"] = {
+                                "ok": False, "machine": name,
+                                "detail": "agent update failed before "
+                                          "engine install: "
+                                          + str(up.get("detail") or "unknown")}
+                            job["state"] = "failed"
+                            return
+                        job["log"].append(
+                            f"peer agent updated to {up.get('agent_version')}")
+                except Exception as e:
+                    job["log"].append(
+                        f"agent pre-update check failed (continuing): {e}")
             # Already current? Skip the whole update (probe the running
             # binary's build vs the newest release tag) — a no-op
             # rebuild still costs a fetch + cmake pass, and the UI
