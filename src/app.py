@@ -1720,6 +1720,8 @@ class VariantIn(pydantic.BaseModel):
     flags: dict | None = None
     pinned: bool | None = None
     ttl: int | None = None
+    launch_mode: str | None = None          # auto | local | rpc
+    launch_mode_local_port: int | None = None
 
 
 class ModelConfigIn(pydantic.BaseModel):
@@ -1738,6 +1740,8 @@ class ModelConfigIn(pydantic.BaseModel):
     ttl: int = 0                     # auto-unload after ttl seconds idle (0 = swap default, pinned forces 0)
     device_order: str = ""
     device_order_policy: str = "as-selected"  # as-selected | vram-first
+    launch_mode: str = "auto"        # auto | local | rpc (swap deployment)
+    launch_mode_local_port: int | None = None
     expose: dict = {}
     flags: dict = {}
     # custom runtime (external server, e.g. winbox .bat passthrough):
