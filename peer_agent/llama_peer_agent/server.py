@@ -107,8 +107,10 @@ class AgentHandler(BaseHTTPRequestHandler):
                 "arch": platform.machine(),
             }
         if path == "/version":
+            import sys as _sys
             return 200, {"agent_version": __version__,
-                         "protocol_version": PROTOCOL_VERSION}
+                         "protocol_version": PROTOCOL_VERSION,
+                         "packaged": bool(getattr(_sys, "frozen", False))}
         if path == "/capabilities":
             return 200, processes.capabilities(config)
         if path == "/info":
