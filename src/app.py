@@ -6518,14 +6518,27 @@ async def swap_load_model(model_id: str, request: Request):
         # identity (session cookie → access key), exactly like API clients.
         base = _gateway_url("")
         is_embed = False
+        is_decision = False
         try:
             engine = engine_registry.get_engine()
+            base_id = model_id.split("--")[0]
             emb_ids = {m.get("model_id") for m in
                        (engine.filter_embedding_models(cfg.list_models()) or [])}
-            is_embed = model_id.split("--")[0] in emb_ids
+            dec_ids = {m.get("model_id") for m in
+                       (engine.filter_decision_models(cfg.list_models()) or [])}
+            is_embed = base_id in emb_ids
+            is_decision = base_id in dec_ids
         except Exception:
             pass
-        if is_embed:
+        if is_decision:
+            payload = _json.dumps({
+                "model": model_id, "state": "warmup",
+                "questions": {"route": {"type": "choice",
+                                        "instructions": "Pick one",
+                                        "criteria": {"yes": 1, "no": 2}}},
+            }).encode()
+            path = "/v1/systemone"
+        elif is_embed:
             payload = _json.dumps(
                 {"model": model_id, "input": "hi"}).encode()
             path = "/v1/embeddings"
