@@ -117,11 +117,14 @@ SETTINGS_KEYS = {
 }
 
 
-def _settings_merge_step(tool, found_path, current_value, fs, force=False):
+def _settings_merge_step(tool, found_path, current_value, fs, force=False,
+                         settings_root=""):
     """One WriteSettings step or None, per §6 rules a/b/c."""
     if tool not in SETTINGS_KEYS or not found_path:
         return None
     path, key = SETTINGS_KEYS[tool]
+    if settings_root and not os.path.isabs(path):
+        path = os.path.join(settings_root, path)
     resolved = fs.expanduser(found_path)
     if force:
         reason = "force"
@@ -202,7 +205,8 @@ def probe(info: SystemInfo, fs: FS, run: RunCmd,
           force_settings: bool = False,
           manifest: Optional[Dict] = None,
           resolved: Optional[Dict] = None,
-          source_probe: Optional[Dict] = None) -> Plan:
+          source_probe: Optional[Dict] = None,
+          settings_root: str = "") -> Plan:
     """Pure: decide skip/install/repair per tool + settings prefill steps.
 
     `resolved` is the network-resolved latest-release plan from bootstrap
@@ -326,15 +330,27 @@ def probe(info: SystemInfo, fs: FS, run: RunCmd,
         for step in list(plan):
             found_path = getattr(step, "found_path", None)
             if found_path is None and isinstance(step, InstallTool):
-                found_path = step.dest
+                if (step.name == "llama-swap"
+                        and not isinstance(step, RepairTool)):
+                    # swap.yaml `binary` is the executable FILE; the step
+                    # dest is its directory. Writing the dir here made
+                    # llama-swap's ExecStart point at a directory.
+                    exe = ("llama-swap.exe" if info.os == "windows"
+                           else "llama-swap")
+                    found_path = os.path.join(step.dest, exe)
+                else:
+                    found_path = step.dest
             if found_path is None:
                 continue
             tool = getattr(step, "name", None)
             if tool not in SETTINGS_KEYS:
                 continue
             path, key = SETTINGS_KEYS[tool]
+            if settings_root and not os.path.isabs(path):
+                path = os.path.join(settings_root, path)
             cur = _read_setting(fs, path, key)
-            s = _settings_merge_step(tool, found_path, cur, fs, force_settings)
+            s = _settings_merge_step(tool, found_path, cur, fs,
+                                     force_settings, settings_root)
             if s:
                 plan.append(s)
 

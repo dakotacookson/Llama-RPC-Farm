@@ -72,12 +72,16 @@ def test_install_sync_runs_plan_with_stubbed_executor(client, monkeypatch):
     given and returns a canned summary — no real install ever runs."""
     calls = {}
 
-    def fake_execute(plan, info, dry_run):
+    def fake_execute(plan, info, dry_run, runner=None):
         calls["plan"] = [type(s).__name__ for s in plan]
         calls["dry_run"] = dry_run
+        calls["runner"] = runner
         return dict(_CANNED_SUMMARY)
 
     monkeypatch.setattr(app_module, "_execute_plan", fake_execute)
+    monkeypatch.setattr(app_module, "_tools_plan",
+                        lambda m, role, log: ([object()], object(),
+                                              object(), object()))
     r = client.post("/api/tools/install/sync",
                     json={"machine": "aibox1", "tools": [],
                           "role": "main", "dry_run": True})
@@ -93,6 +97,8 @@ def test_install_sync_runs_plan_with_stubbed_executor(client, monkeypatch):
 def test_install_sync_unknown_machine_404(client, monkeypatch):
     monkeypatch.setattr(app_module, "_execute_plan",
                         lambda *a, **k: dict(_CANNED_SUMMARY))
+    monkeypatch.setattr(app_module, "_tools_plan",
+                        lambda m, role, log: ([], object(), object(), object()))
     r = client.post("/api/tools/install/sync",
                     json={"machine": "ghost"})
     assert r.status_code == 404
