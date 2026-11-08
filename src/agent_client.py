@@ -59,10 +59,22 @@ def _token(machine) -> str:
     if override:
         return override
     try:
-        return secrets_vault.get_machine_agent_token(machine)
+        tok = secrets_vault.get_machine_agent_token(machine)
+        if tok:
+            return tok
     except Exception:
-        return (os.environ.get("FARM_AGENT_TOKEN")
-                or os.environ.get("AGENT_TOKEN") or "").strip()
+        pass
+    # Farm-wide token (vault): paired agents accept this when no
+    # per-machine token is stored. This is what lets a freshly discovered
+    # agent be health-checked/paird without restarting the app.
+    try:
+        tok = secrets_vault.get_farm_agent_token()
+        if tok:
+            return tok
+    except Exception:
+        pass
+    return (os.environ.get("FARM_AGENT_TOKEN")
+            or os.environ.get("AGENT_TOKEN") or "").strip()
 
 
 def _base(machine) -> str:

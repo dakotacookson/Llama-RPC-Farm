@@ -67,3 +67,34 @@ def test_readiness_reports_missing_rpc_and_agent(monkeypatch):
     assert r["ready"] is False
     assert r["llama_cpp"]["installed"] is True
     assert r["llama_rpc"]["installed"] is False
+
+
+def test_agent_token_falls_back_to_farm_vault(monkeypatch):
+    import secrets_vault
+    monkeypatch.setattr(secrets_vault, "get_machine_agent_token", lambda m: "")
+    monkeypatch.setattr(secrets_vault, "get_farm_agent_token", lambda: "farm-tok")
+    monkeypatch.delenv("FARM_AGENT_TOKEN", raising=False)
+    monkeypatch.delenv("AGENT_TOKEN", raising=False)
+    assert agent_client._token({"name": "fresh"}) == "farm-tok"
+
+
+def test_ensure_agent_ready_pairs_fresh_agent(monkeypatch):
+    import secrets_vault
+    import agent_client as ac
+
+    def health(machine, timeout=4, token=None):
+        if not (machine.get("_agent_token") or token):
+            raise ac.AgentError("agent HTTP 401")
+        return {"ok": True, "agent_version": "1.0.0"}
+
+    paired = []
+    monkeypatch.setattr(ac, "health", health)
+    monkeypatch.setattr(ac, "pair",
+                        lambda machine, token, timeout=8: paired.append(token)
+                        or {"ok": True})
+    monkeypatch.setattr(secrets_vault, "get_farm_agent_token",
+                        lambda: "farm-tok")
+    ok, err = app_module._ensure_agent_ready(
+        {"name": "fresh", "ip": "10.0.0.178"}, "")
+    assert err is None and ok["ok"] is True
+    assert paired == ["farm-tok"]
