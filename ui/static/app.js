@@ -2072,6 +2072,11 @@ async function loadMachines(skipCaps = false) {
             ? `Update llama.cpp on ${m.name}?\n\nSource builds are rebuilt in place (custom flags kept); prebuilt installs stop that machine's llama processes first. Continue?`
             : `Cleanly reinstall llama.cpp + RPC on ${m.name}?\n\nExisting binaries will be overwritten.`;
         if (!window.confirm(confirmMsg)) return;
+        const prevRaw = parseInt(btn.dataset.build || "", 10);
+        const prevBuild = Number.isFinite(prevRaw) ? prevRaw : null;
+        const expRaw = mode === "update"
+          ? parseInt(btn.dataset.latestBuild || "", 10) : NaN;
+        const expected = Number.isFinite(expRaw) ? expRaw : null;
         btn.disabled = true; btn.textContent = mode === "install" ? "Installing…" : mode === "update" ? "Updating…" : "Reinstalling…";
         try {
           const job = await runLlamaCppUpdate(m.name, (state) => {
@@ -2079,15 +2084,23 @@ async function loadMachines(skipCaps = false) {
               : state === "installing" ? "Installing…"
               : state === "updating" ? "Rebuilding…" : btn.textContent;
           }, mode === "reinstall");
-          if (job.state === "done") {
-            toast(mode === "install" ? `llama.cpp + RPC installed on ${m.name}`
-                  : mode === "update" ? `llama.cpp updated on ${m.name}`
-                  : `llama.cpp + RPC reinstalled on ${m.name}`, "ok");
-          } else {
+          if (job.state !== "done") {
             toast(`${mode} failed on ${m.name}: ${(job.result && job.result.detail) || "failed"}`, "bad");
+            btn.disabled = false;
+            await loadReadiness(true); loadMachines();
+            return;
           }
+          // Do not allow a second click until the new binary is proven
+          // serving the expected build. Large builds can take minutes.
+          btn.disabled = true;
+          btn.textContent = "Verifying… (up to 30 min)";
+          await waitForEngineVersion(m.name, expected, prevBuild, mode);
+          toast(mode === "install" ? `llama.cpp + RPC installed on ${m.name}`
+                : mode === "update" ? `llama.cpp updated on ${m.name}`
+                : `llama.cpp + RPC reinstalled on ${m.name}`, "ok");
         } catch (err) {
           toast(err.message, "bad");
+          btn.disabled = false;
         }
         await loadReadiness(true); loadMachines();
       };
@@ -2193,6 +2206,29 @@ function fillAgentUpdateState(tr, name) {
     }).catch(() => { /* keep the plain Agent button */ });
 }
 
+async function waitForEngineVersion(name, expectedBuild, previousBuild, mode,
+                                     timeoutMs = 30 * 60 * 1000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const v = await api("GET",
+        `/api/machines/${encodeURIComponent(name)}/llama-cpp-version`);
+      const build = v.build;
+      if (build != null) {
+        if (expectedBuild != null && build >= expectedBuild) return v;
+        if (expectedBuild == null && mode === "install" && build > 0) return v;
+        if (expectedBuild == null && mode === "update"
+            && previousBuild != null && build !== previousBuild) return v;
+        if (expectedBuild == null && mode === "reinstall"
+            && previousBuild != null && build !== previousBuild) return v;
+        if (expectedBuild == null && previousBuild == null && build > 0) return v;
+      }
+    } catch (_) {}
+    await new Promise(r => setTimeout(r, 5000));
+  }
+  throw new Error(`timed out after 30 min waiting for the new llama.cpp build on ${name}`);
+}
+
 function fillInlineUpdateState(tr, name) {
   const btn = tr.querySelector('[data-act="engine-action"]');
   if (!btn) return;
@@ -2200,6 +2236,8 @@ function fillInlineUpdateState(tr, name) {
   api("GET", `/api/machines/${encodeURIComponent(name)}/llama-cpp-version`)
     .then(v => {
       if (!btn.isConnected) return;          // grid re-rendered meanwhile
+      btn.dataset.build = v.build != null ? String(v.build) : "";
+      btn.dataset.latestBuild = v.latest_build != null ? String(v.latest_build) : "";
       if (v.on_latest) {
         btn.textContent = "Reinstall engines";
         btn.dataset.mode = "reinstall";
