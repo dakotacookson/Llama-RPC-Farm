@@ -5480,7 +5480,7 @@ async function loadLaunch() {
     const hint = card.querySelector(".launch-ready-hint");
     const notReady = down.length > 0;
     if (btn) {
-      btn.disabled = notReady;
+      btn.disabled = notReady || card.dataset.loading === "1";
       btn.title = notReady ? `unavailable — down: ${down.join(", ")}` : "Launch";
     }
     card.classList.toggle("not-ready", notReady);
@@ -5497,6 +5497,14 @@ async function loadLaunch() {
       const on = loadedSet.has(key);
       cst.className = `serving-ind card-loaded ${on ? "status-ok" : "status-warn"}`;
       cst.textContent = on ? "loaded" : "idle";
+      // nothing to evict unless the model is loaded (or loading: evict
+      // then aborts the load)
+      const ev = card.querySelector('[data-act="stop"]');
+      if (ev) {
+        const busy = card.dataset.loading === "1";
+        ev.disabled = !on && !busy;
+        ev.title = ev.disabled ? "not loaded" : "Unload from llama-swap";
+      }
     }
   }
   const grid = $("#launch-grid");
@@ -5597,6 +5605,8 @@ async function loadLaunch() {
       const headers = {"Content-Type": "application/json"};
       if (_accessKey) headers["Authorization"] = `Bearer ${_accessKey}`;
       btn.disabled = true; btn.textContent = "loading…";
+      card.dataset.loading = "1";
+      refreshLaunchCard(card);
       try {
         // Ensure llama-swap has the current model config, then call the
         // REAL API exactly like a client would (same endpoints the Chat /
@@ -5645,6 +5655,8 @@ async function loadLaunch() {
         if (hint) hint.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> ' + escHtml(err.message);
         toast(err.message, "bad");
       }
+      delete card.dataset.loading;
+      refreshLaunchCard(card);
       btn.disabled = false; btn.textContent = "Load";
     };
   });
