@@ -333,6 +333,12 @@ def agent_update(machine, wheel_bytes, version="", timeout=200.0) -> dict:
     }, timeout=timeout)
 
 
+def agent_update_binary(machine, url, version="", sha256="", timeout=300.0) -> dict:
+    return _request(machine, "POST", "/agent/update-binary", {
+        "url": url, "version": version, "sha256": sha256,
+    }, timeout=timeout)
+
+
 def build_probe(machine, llama_bin, timeout=30.0) -> dict:
     query = urllib.parse.urlencode({"llama_bin": llama_bin})
     return _request(machine, "GET", f"/build/probe?{query}",
