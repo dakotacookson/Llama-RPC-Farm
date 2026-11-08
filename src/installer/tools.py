@@ -111,7 +111,11 @@ def install_swap(step, downloader, run, log, os_name, arch):
         url = f"{SWAP_BASE}/v{_tag_number(step.version)}/{names[0]}"
     tmp = os.path.join(tempfile.gettempdir(), "llama-swap-installer")
     bin_dest = "llama-swap.exe" if os_name == "windows" else "llama-swap"
-    dest = os.path.join(step.dest, bin_dest)
+    # Windows step.dest is "%USERPROFILE%\llama-swap": expand %VARS% too,
+    # not just ~ (expanduser alone left a literal %USERPROFILE% directory
+    # and the installed exe was never found at the configured path).
+    dest = os.path.expanduser(os.path.expandvars(
+        os.path.join(step.dest, bin_dest)))
     log(f"swap: downloading {names[0]}")
     downloader(url, tmp + ".pkg")
     if os_name == "windows":
@@ -128,7 +132,6 @@ def install_swap(step, downloader, run, log, os_name, arch):
     if code != 0:
         raise RuntimeError(f"llama-swap tarball extraction failed (exit {code})")
     # atomic convergence: temp file + replace (design §5)
-    dest = os.path.expanduser(dest)
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     os.replace(os.path.expanduser(src), dest)
     run(f"chmod +x {shlex.quote(dest)}")
