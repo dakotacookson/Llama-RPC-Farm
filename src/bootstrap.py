@@ -19,6 +19,7 @@ import io
 import json
 import os
 import sys
+import time
 
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
 if SRC not in sys.path:
@@ -60,7 +61,7 @@ class TeeLog:
                 f.write(line + "\n")
 
 
-def _detect_source_build(info, fs, log):
+def _detect_source_build(info, fs, log, settings_file="config/settings.yaml"):
     """Classify an existing llama.cpp install as a source tree.
 
     The UI machine card updates source builds in place (preserving every
@@ -74,7 +75,7 @@ def _detect_source_build(info, fs, log):
     except Exception as e:  # pragma: no cover - import shape safety
         log(f"WARN source-build probe unavailable: {e}")
         return None
-    cur = _read_setting(fs, "config/settings.yaml", "llama_bin") or ""
+    cur = _read_setting(fs, settings_file, "llama_bin") or ""
     default_bin = ("%USERPROFILE%\\llama.cpp\\bin" if info.os == "windows"
                    else "~/llama.cpp/bin")
     machine = {
@@ -124,8 +125,21 @@ def _resolve_latest(info, role, log):
         _pick_assets as _pick_lcpp,
         _driver_tuple,
     )
+    def _fetch_retry(fetch, what):
+        last = None
+        for attempt in range(3):
+            try:
+                return fetch()
+            except Exception as e:      # transient GitHub/network errors
+                last = e
+                if attempt < 2:
+                    log(f"WARN {what} release lookup failed "
+                        f"({attempt + 1}/3): {e}; retrying")
+                    time.sleep(1.5 * (attempt + 1))
+        raise last
+
     try:
-        tag, assets, base = _fetch_lcpp()
+        tag, assets, base = _fetch_retry(_fetch_lcpp, "llama.cpp")
         if not tag:
             raise RuntimeError("no llama.cpp release with bin assets")
         names, dest, note, _zip = _pick_lcpp(
@@ -150,7 +164,7 @@ def _resolve_latest(info, role, log):
                 _fetch_latest_assets as _fetch_swap,
                 _pick_asset as _pick_swap,
             )
-            tag, assets, base = _fetch_swap()
+            tag, assets, base = _fetch_retry(_fetch_swap, "llama-swap")
             if not tag:
                 raise RuntimeError("no llama-swap release with assets")
             name, dest, version = _pick_swap(machine, tag, assets)

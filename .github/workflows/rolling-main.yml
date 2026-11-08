@@ -179,7 +179,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.hf-cache
-          key: hf-${{ runner.os }}-qwen2.5-0.5b-q4
+          key: hf-${{ runner.os }}-qwen3-0.6b-q4
       - name: E2E - install .deb + tiny model load
         env:
           HF_HOME: ${{ github.workspace }}/.hf-cache
@@ -327,7 +327,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.hf-cache
-          key: hf-${{ runner.os }}-qwen2.5-0.5b-q4
+          key: hf-${{ runner.os }}-qwen3-0.6b-q4
       - name: E2E - install .pkg + tiny model load
         env:
           HF_HOME: ${{ github.workspace }}/.hf-cache
@@ -438,7 +438,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.hf-cache
-          key: hf-${{ runner.os }}-qwen2.5-0.5b-q4
+          key: hf-${{ runner.os }}-qwen3-0.6b-q4
       - name: E2E - install setup.exe + tiny model load
         shell: pwsh
         env:

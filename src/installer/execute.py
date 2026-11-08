@@ -121,10 +121,12 @@ class RealDownloader:
 
 
 def _run(cmd, log, timeout=1800):
-    """Shell-out wrapper used by the tool executors (POSIX bash -c; the
-    installer entry scripts own the Windows path)."""
-    p = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True,
-                       timeout=timeout)
+    """Shell-out wrapper used by the tool executors. POSIX: bash -c.
+    Windows: cmd.exe (the tool executors emit PowerShell/`if exist` forms
+    there, so cmd.exe is the correct outer shell)."""
+    argv = cmd if os.name == "nt" else ["bash", "-c", cmd]
+    p = subprocess.run(argv, shell=(os.name == "nt"),
+                       capture_output=True, text=True, timeout=timeout)
     out = (p.stdout or "") + (p.stderr or "")
     if p.returncode != 0:
         log(f"cmd exit {p.returncode}: {cmd[:120]} :: {out[-200:]}")

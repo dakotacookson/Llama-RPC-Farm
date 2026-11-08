@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import tempfile
 
 # ---------------------------------------------------------------------------
 # Asset maps (design §2, mirrored from llamacpp_installer / swap_installer —
@@ -108,7 +109,7 @@ def install_swap(step, downloader, run, log, os_name, arch):
     else:
         names = swap_asset_names(os_name, arch, step.version)
         url = f"{SWAP_BASE}/v{_tag_number(step.version)}/{names[0]}"
-    tmp = "/tmp/llama-swap-installer"
+    tmp = os.path.join(tempfile.gettempdir(), "llama-swap-installer")
     bin_dest = "llama-swap.exe" if os_name == "windows" else "llama-swap"
     dest = os.path.join(step.dest, bin_dest)
     log(f"swap: downloading {names[0]}")
@@ -146,18 +147,18 @@ def install_llcpp(step, downloader, run, log, os_name, arch):
         names = explicit
         base = (extra.get("base") or "").rstrip("/")
         urls = ([f"{base}/{n}" for n in names] if base
-                else [f"{LLCPP_BASE.rsplit('/download/', 1)[0]}"
+                else [f"{LLCPP_BASE.rsplit('/download', 1)[0]}"
                       f"/download/{step.version}/{n}" for n in names])
     else:
         names = llcpp_assets_for(step)
-        base = LLCPP_BASE.rsplit("/download/", 1)[0]
+        base = LLCPP_BASE.rsplit("/download", 1)[0]
         urls = [f"{base}/download/{step.version}/{n}" for n in names]
     # Bootstrap runs on the target host: expand ~ (POSIX) / %VAR% (Windows)
     # before any shell command. Tilde inside quotes never expands.
     dest = os.path.expanduser(os.path.expandvars(step.dest))
     log(f"llama.cpp: {', '.join(names)} (backend={step.backend})")
     for i, (name, url) in enumerate(zip(names, urls)):
-        pkg = f"/tmp/llamabin{i}.pkg"
+        pkg = os.path.join(tempfile.gettempdir(), f"llamabin{i}.pkg")
         downloader(url, pkg)
         if os_name == "windows":
             r = run(f"powershell -NoProfile -Command \"Expand-Archive -Force "
@@ -171,8 +172,12 @@ def install_llcpp(step, downloader, run, log, os_name, arch):
         if r.exit_code != 0:
             raise RuntimeError(f"llama.cpp extraction failed for {name}: "
                                f"{(r.stderr or r.stdout)[-300:]}")
-        run(f"rm -f {shlex.quote(pkg)}")
-    run(f"chmod +x {shlex.quote(dest)}/* 2>/dev/null; true")
+        try:
+            os.remove(pkg)
+        except OSError:
+            pass
+    if os_name != "windows":
+        run(f"chmod +x {shlex.quote(dest)}/* 2>/dev/null; true")
 
     # Both binaries are part of an install: llama-server serves models and
     # ggml-rpc-server is what peers expose to the cluster. A partial extract

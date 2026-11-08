@@ -1293,6 +1293,11 @@ def _hw_watcher_loop():
 
 @app.on_event("startup")
 async def start_hw_watcher():
+    if (os.environ.get("LLAMA_FARM_NO_HW_WATCH") or "").lower() in (
+            "1", "true", "yes", "on"):
+        # E2E/CI (or an operator pinning hardware by hand) needs the
+        # declared machine record to win over host autodetection.
+        return
     if _hw_watcher_state["running"]:
         return
     _hw_watcher_state["running"] = True
@@ -4538,6 +4543,25 @@ def _machine_env(machine):
     return info, run
 
 
+def _tools_plan(machine, role, log=lambda m: None):
+    """Build the SAME dynamic install plan the bootstrap uses: newest
+    llama.cpp/llama-swap releases with matching assets, plus source-build
+    detection, so the UI installer and bootstrap cannot drift."""
+    from installer.env import RealFS
+    from installer.probe import probe as installer_probe
+    import bootstrap
+
+    info, run = _machine_env(machine)
+    fs = RealFS()
+    resolved = bootstrap._resolve_latest(info, role, log)
+    source_probe = bootstrap._detect_source_build(
+        info, fs, log, settings_file=SETTINGS_FILE)
+    plan = installer_probe(info, fs, run, role=role, resolved=resolved,
+                           source_probe=source_probe,
+                           settings_root=BASE_DIR)
+    return plan, info, run, fs
+
+
 class _ToolsProgress:
     """Per-step install progress collector: Executor.log lines are
     appended as NDJSON events; the StreamingResponse consumer reads
@@ -4587,13 +4611,9 @@ async def tools_install(p: ToolsInstallIn):
 
     def run_install():
         try:
-            info, run = _machine_env(m)
-            from installer.env import RealFS
-            from installer.probe import probe as installer_probe
             from installer.execute import Executor
 
-            fs = RealFS() if local_node.is_local(m) else _RemoteFS(run, is_win=getattr(run, '_win', False))
-            plan = installer_probe(info, fs, run, role=role)
+            plan, info, run, fs = _tools_plan(m, role, progress.log)
             if p.tools:
                 keep = set(p.tools)
                 # keep only the requested tools' steps; settings/manifest
@@ -4610,7 +4630,8 @@ async def tools_install(p: ToolsInstallIn):
                           manifest_path=os.path.join(
                               os.path.expanduser("~"),
                               ".llama-rpc-farm", "installer-state.yaml"),
-                          runner=lambda cmd: run.run(cmd))
+                          runner=lambda cmd, timeout=1800:
+                              run.run(cmd, timeout=timeout))
             summary = ex.execute(plan)
             ex.write_manifest(summary, detected={})
             progress.finish(summary)
@@ -4702,24 +4723,26 @@ async def tools_install_sync(p: ToolsInstallIn):
         m = cfg.machines.require(machine)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    from installer.env import RealFS
-    from installer.probe import probe as installer_probe
-    from installer.execute import Executor
-    info, run = _machine_env(m)
-    fs = RealFS() if local_node.is_local(m) else _RemoteFS(run, is_win=getattr(run, '_win', False))
-    plan = installer_probe(info, fs, run, role=p.role if p.role in ("main", "client") else "main")
+    from installer.execute import Executor  # noqa: F401
+    role = p.role if p.role in ("main", "client") else "main"
+    plan, info, run, fs = await run_in_threadpool(
+        _tools_plan, m, role, lambda msg: print(msg, flush=True))
     summary = await run_in_threadpool(
-        _execute_plan, plan, info, p.dry_run)
+        _execute_plan, plan, info, p.dry_run, run)
     ok = not summary.get("failures")
     return JSONResponse(status_code=200 if ok else 502, content=summary)
 
 
-def _execute_plan(plan, info, dry_run):
+def _execute_plan(plan, info, dry_run, runner=None):
     from installer.execute import Executor
+    runner_fn = None
+    if runner is not None:
+        runner_fn = lambda cmd, timeout=1800: runner.run(cmd, timeout=timeout)
     ex = Executor(log=lambda m: None, dry_run=dry_run, info=info,
                   manifest_path=os.path.join(
                       os.path.expanduser("~"),
-                      ".llama-rpc-farm", "installer-state.yaml"))
+                      ".llama-rpc-farm", "installer-state.yaml"),
+                  runner=runner_fn)
     summary = ex.execute(plan)
     ex.write_manifest(summary, detected={})
     return summary
