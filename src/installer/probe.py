@@ -199,10 +199,17 @@ def probe_swap(fs, run) -> Tuple[Optional[str], Optional[str]]:
 def probe(info: SystemInfo, fs: FS, run: RunCmd,
           role: str = "main", pinned: Optional[Dict] = None,
           force_settings: bool = False,
-          manifest: Optional[Dict] = None) -> Plan:
-    """Pure: decide skip/install/repair per tool + settings prefill steps."""
+          manifest: Optional[Dict] = None,
+          resolved: Optional[Dict] = None) -> Plan:
+    """Pure: decide skip/install/repair per tool + settings prefill steps.
+
+    `resolved` is the network-resolved latest-release plan from bootstrap
+    ({tool: {version, assets, base, dest, note}}). probe stays hermetic:
+    it never fetches; callers pass the resolved data. When absent, the
+    pinned fallback is used (offline / lookup failure)."""
     pinned = pinned or {}
     manifest = manifest or {}
+    resolved = resolved or {}
     plan: Plan = []
 
     def version_cmp(have, want):
@@ -223,36 +230,60 @@ def probe(info: SystemInfo, fs: FS, run: RunCmd,
         return h == w
 
     # --- llama.cpp --------------------------------------------------------
-    need_lcpp = pinned.get("llama.cpp", {}).get("version", "b10000")
+    r_lc = resolved.get("llama.cpp") or {}
+    need_lcpp = r_lc.get("version") or pinned.get(
+        "llama.cpp", {}).get("version", "b10000")
+    lc_backend = r_lc.get("backend") or LLCPP_BACKEND.get(
+        (info.os, info.gpu_vendor), "cpu")
+    lc_extra = {"arch": info.arch}
+    if info.glibc:
+        lc_extra["glibc"] = info.glibc
+    if r_lc.get("assets"):
+        lc_extra.update({"assets": r_lc["assets"],
+                         "base": r_lc.get("base") or "",
+                         "note": r_lc.get("note") or ""})
+    lc_dest = r_lc.get("dest") or "~/llama.cpp/bin"
     found, ver = probe_llama_cpp(fs, run, role)
-    if found and ver and version_cmp(ver, need_lcpp):
+    lc_current = bool(found and ver and version_cmp(ver, need_lcpp))
+    if lc_current:
         plan.append(SkipTool("llama.cpp", "present-current", found, ver))
     elif found and not ver:
         plan.append(PlanNote("warn", "llama.cpp",
                              f"{found} exists but --version fails — repair"))
         plan.append(RepairTool("llama.cpp", "prebuilt", need_lcpp,
-                               backend=LLCPP_BACKEND.get((info.os, info.gpu_vendor), "cpu"),
-                               dest=found, broken_version=None))
+                               backend=lc_backend, dest=found,
+                               broken_version=None, extra=dict(lc_extra)))
     else:
         plan.append(InstallTool("llama.cpp", "prebuilt", need_lcpp,
-                                backend=LLCPP_BACKEND.get((info.os, info.gpu_vendor), "cpu"),
-                                dest="~/llama.cpp/bin"))
+                                backend=lc_backend, dest=lc_dest,
+                                extra=dict(lc_extra)))
     plan.append(ManifestUpdate("llama.cpp",
-                {"version": ver or need_lcpp, "method": "prebuilt"}))
+                {"version": ver if lc_current else need_lcpp,
+                 "method": "prebuilt"}))
 
     # --- llama-swap (main only) -------------------------------------------
     if role == "main":
-        need_swap = pinned.get("llama-swap", {}).get("version", "255")
+        r_sw = resolved.get("llama-swap") or {}
+        need_swap = r_sw.get("version") or pinned.get(
+            "llama-swap", {}).get("version", "255")
+        sw_extra = {}
+        if r_sw.get("assets"):
+            sw_extra.update({"assets": r_sw["assets"],
+                             "base": r_sw.get("base") or ""})
+        sw_dest = r_sw.get("dest") or "~/.local/bin"
         found, ver = probe_swap(fs, run)
-        if found and ver and version_cmp(ver, need_swap):
+        sw_current = bool(found and ver and version_cmp(ver, need_swap))
+        if sw_current:
             plan.append(SkipTool("llama-swap", "present-current", found, ver))
         elif found and not ver:
             plan.append(RepairTool("llama-swap", "prebuilt", need_swap,
-                                   dest=found, broken_version=ver))
+                                   dest=found, broken_version=ver,
+                                   extra=dict(sw_extra)))
         else:
             plan.append(InstallTool("llama-swap", "prebuilt", need_swap,
-                                    dest="~/.local/bin"))
-        plan.append(ManifestUpdate("llama-swap", {"version": ver or need_swap}))
+                                    dest=sw_dest, extra=dict(sw_extra)))
+        plan.append(ManifestUpdate("llama-swap",
+                    {"version": ver if sw_current else need_swap}))
 
     # --- settings prefill (§6): discovered path wins; user values kept -----
     if role == "main":
