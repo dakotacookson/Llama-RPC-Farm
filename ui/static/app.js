@@ -7791,6 +7791,116 @@ async function selectHfModel(modelId){
       : `<p class="status-bad">${escHtml(msg)}</p>`;
   }
 }
+/* Live token check for gated repos: 1-byte range GET proves the saved
+   token can download. Granted → green banner, warning dismissed.
+   Denied → warning with the concrete reason + a Re-check button (use
+   right after clicking Agree on the HF page). */
+async function checkHfAccess(data, testFile) {
+  const box = $("#hf-access-box");
+  if (!box) return;
+  const hfLink = `https://huggingface.co/${data.id}`;
+  const deniedHTML = (reason) => `
+    <div class="hint-box" style="border-left:3px solid var(--warn); padding-left:8px">
+      <i class="fa-solid fa-lock"></i> <strong>Gated model</strong> — requires agreement.
+      Visit <a href="${escHtml(hfLink)}" target="_blank">${escHtml(data.id)}</a>, click “Agree and access repository”,
+      then paste your token in <code>Settings → Defaults → Hugging Face token</code> and retry.
+      <br><small class="hint">Check: ${escHtml(reason)}</small>
+      <div style="margin-top:6px"><button class="small" id="hf-recheck">Re-check access</button></div>
+    </div>`;
+  try {
+    const parts = (data.id || "").split("/");
+    const author = parts.shift() || "";
+    const name = parts.join("/");
+    const q = testFile ? `?file=${encodeURIComponent(testFile)}` : "";
+    const r = await api("GET", `/api/hf/access/${encodeURIComponent(author)}/${encodeURIComponent(name)}${q}`);
+    if (r.access === "granted") {
+      box.innerHTML = `
+        <div class="hint-box" style="border-left:3px solid var(--ok); padding-left:8px">
+          <i class="fa-solid fa-circle-check" style="color:var(--ok)"></i>
+          <strong>Access granted</strong> — your saved token works for this repo. Downloads will succeed.
+        </div>`;
+    } else {
+      box.innerHTML = deniedHTML(r.reason || `HF answered ${r.status || "denied"}`);
+      on("#hf-recheck", "click", () => {
+        box.innerHTML = `<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Checking saved token against this repo…</p>`;
+        checkHfAccess(data, testFile);
+      });
+    }
+  } catch (e) {
+    box.innerHTML = deniedHTML(`couldn't verify: ${e.message}`);
+    on("#hf-recheck", "click", () => {
+      box.innerHTML = `<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Checking saved token against this repo…</p>`;
+      checkHfAccess(data, testFile);
+    });
+  }
+}
+function hfSetQuant(q){
+  hfQuant = q||"";
+  document.querySelectorAll("#hf-quant-chips .hw-chip").forEach(b=> b.classList.toggle("active", b.dataset.quant===hfQuant));
+  // reflective: company/collection lists depend on quant
+  loadHfCompanies();
+  if(hfCompany) loadHfCollections(hfCompany);
+  doHfSearch(true);
+}
+function hfSetTask(t){
+  hfTask = t||"";
+  document.querySelectorAll("#hf-task-chips .hw-chip").forEach(b=> b.classList.toggle("active", b.dataset.task===hfTask));
+  const sel=$("#hf-pipeline-select"); if(sel) sel.value = hfTask;
+  // reflective: company/collection lists depend on task
+  loadHfCompanies();
+  if(hfCompany) loadHfCollections(hfCompany);
+  doHfSearch(true);
+}
+on("#hf-search-btn","click", ()=> doHfSearch(true));
+on("#hf-query","keydown", (e)=>{ if(e.key==="Enter") doHfSearch(true); });
+on("#hf-query","input", ()=>{
+  clearTimeout(hfDebounce);
+  hfDebounce = setTimeout(()=> doHfSearch(true), 400);
+});
+on("#hf-sort","change", ()=> doHfSearch(true));
+on("#hf-store","change", ()=>{
+  const v=$("#hf-store").value; if(v && $("#dl-store")) $("#dl-store").value=v;
+  // re-render detail to update store hint
+  if(hfActiveId) selectHfModel(hfActiveId);
+});
+document.querySelectorAll("#hf-quant-chips .hw-chip").forEach(b=>{
+  b.addEventListener("click", ()=> hfSetQuant(b.dataset.quant||""));
+});
+document.querySelectorAll("#hf-task-chips .hw-chip").forEach(b=>{
+  b.addEventListener("click", ()=> hfSetTask(b.dataset.task||""));
+});
+on("#hf-pipeline-select","change", ()=>{
+  const v=$("#hf-pipeline-select").value || "";
+  hfTask = v;
+  document.querySelectorAll("#hf-task-chips .hw-chip").forEach(b=> b.classList.toggle("active", b.dataset.task===hfTask));
+  loadHfCompanies();
+  if(hfCompany) loadHfCollections(hfCompany);
+  doHfSearch(true);
+});
+on("#hf-recommended","click", ()=>{
+  hfRecommended = !hfRecommended;
+  const chip=$("#hf-recommended"); if(chip){ chip.classList.toggle("active", hfRecommended); chip.dataset.recommended = hfRecommended?"true":"false"; }
+  loadHfCompanies();
+  if(hfCompany) loadHfCollections(hfCompany);
+  doHfSearch(true);
+});
+on("#hf-company","change", async ()=>{
+  hfCompany = $("#hf-company").value || "";
+  hfCollection = "";
+  const sel=$("#hf-collection"); if(sel) sel.value="";
+  await loadHfCollections(hfCompany);
+  doHfSearch(true);
+});
+on("#hf-collection","change", ()=>{
+  hfCollection = $("#hf-collection").value || "";
+  doHfSearch(true);
+});
+on("#hf-company-search","input", (e)=>{
+  clearTimeout(hfCompanyFilterDebounce);
+  hfCompanyFilterDebounce = setTimeout(()=> filterHfCompaniesLocal(e.target.value), 200);
+});
+on("#hf-prev","click", ()=>{ if(hfPage>0){ hfPage--; doHfSearch(false); } });
+on("#hf-next","click", ()=>{ hfPage++; doHfSearch(false); });
 /* format is always GGUF quants (llama.cpp). */
 function hfSetFormat(fmt){
   hfFormat = "gguf";
