@@ -1523,12 +1523,28 @@ def _start_windows_remote(host, binary, config_path, port):
     return {"method": "win32-remote", "pid": pid}
 
 
+def _installer_swap_path(host):
+    """Where swap_installer installs llama-swap on this host's OS."""
+    import swap_installer
+    if host.get("os", "linux") == "windows":
+        return os.path.join(os.path.expandvars(swap_installer.DEST_WIN),
+                            "llama-swap.exe")
+    return os.path.join(os.path.expanduser(swap_installer.DEST_POSIX),
+                        "llama-swap")
+
+
 def _resolve_binary(host, binary):
     """systemd ExecStart needs an absolute path; bare 'llama-swap' is
-    rejected as a bad unit setting. Resolve via PATH on the target host,
-    falling back to the literal value (setsid fallback still works)."""
+    rejected as a bad unit setting. A bare 'llama-swap' resolves to where
+    swap_installer installs it; otherwise resolve via PATH on the target
+    host, falling back to the literal value (setsid fallback still
+    works)."""
     import shutil
     if local_node.is_local(host):
+        if binary == "llama-swap":
+            installed = _installer_swap_path(host)
+            if os.path.isfile(installed):
+                return installed
         expanded = os.path.expanduser(os.path.expandvars(binary))
         found = shutil.which(expanded)
         if found:
@@ -1732,6 +1748,11 @@ def launch(binary=None, listen_port=None, config_path=None,
     host = cfg.machines.require(gen["host"])
     is_local = local_node.is_local(host)
     os_type = gen["host_os"]
+    if is_local:
+        # validate/start run the binary as given; a bare "llama-swap" is
+        # not on PATH on Windows (the installer puts it in
+        # %USERPROFILE%\llama-swap), so use the resolved path
+        settings["binary"] = _resolve_binary(host, settings["binary"])
     # Busy listen port (leftover daemon, unrelated app) must not fail the
     # launch outright: roll forward to the first free port on the host.
     # DEC-14: the roll is per-launch ONLY — never saved. Persisting the
