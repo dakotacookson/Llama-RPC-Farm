@@ -5511,29 +5511,49 @@ def _readiness_for(machine, swap_host_name):
                             "error": None}
             lp = (caps or {}).get("llama_binary")
             rp = (caps or {}).get("rpc_binary")
-            out["llama_cpp"]["path"] = lp or None
-            out["llama_rpc"]["path"] = rp or None
-            # A path existing on the agent is not enough — old/partial
-            # binaries must not be reported as installed. Run each one.
-            if lp:
+            # The machine's configured llama_bin is the launch path; the
+            # agent's capability search can point at a different (stale)
+            # build tree. Prefer the configured dir, then fall back to the
+            # agent-discovered path.
+            os_type = (machine.get("os") or "linux").lower()
+            server_name = "llama-server.exe" if os_type == "windows" else "llama-server"
+            rpc_name = "ggml-rpc-server.exe" if os_type == "windows" else "ggml-rpc-server"
+            sep = "\\" if os_type == "windows" else "/"
+            cfg_cpp = cfg_rpc = None
+            lb = (machine.get("llama_bin") or "").strip()
+            if lb:
+                base = lb.rstrip("/\\")
+                if base.endswith(server_name):
+                    cfg_cpp = base
+                    base = base.rsplit(sep, 1)[0]
+                else:
+                    cfg_cpp = base + sep + server_name
+                cfg_rpc = base + sep + rpc_name
+            last_err = None
+            for cand in dict.fromkeys([c for c in (cfg_cpp, lp) if c]):
                 try:
                     v = agent_client.install_verify(
-                        machine, lp, ["--version"], timeout=35) or {}
+                        machine, cand, ["--version"], timeout=35) or {}
                     if v.get("returncode") == 0:
                         out["llama_cpp"]["installed"] = True
+                        out["llama_cpp"]["path"] = cand
                         from installer.probe import _version_from_output
                         out["llama_cpp"]["version"] = _version_from_output(
                             str(v.get("output") or ""))
-                    else:
-                        out["llama_cpp"]["error"] = (
-                            str(v.get("output") or "verify failed"))[-300:]
+                        break
+                    last_err = (str(v.get("output") or "verify failed"))[-300:]
                 except Exception as e:
-                    out["llama_cpp"]["error"] = str(e)
-            if rp:
-                rpc_ok, rpc_err = _rpc_verify_remote(machine, rp)
-                out["llama_rpc"]["installed"] = rpc_ok
-                if not rpc_ok:
-                    out["llama_rpc"]["error"] = rpc_err
+                    last_err = str(e)
+            out["llama_cpp"]["error"] = None if out["llama_cpp"]["installed"] else last_err
+            last_rpc_err = None
+            for cand in dict.fromkeys([c for c in (cfg_rpc, rp) if c]):
+                rpc_ok, rpc_err = _rpc_verify_remote(machine, cand)
+                if rpc_ok:
+                    out["llama_rpc"]["installed"] = True
+                    out["llama_rpc"]["path"] = cand
+                    break
+                last_rpc_err = rpc_err
+            out["llama_rpc"]["error"] = None if out["llama_rpc"]["installed"] else last_rpc_err
     try:
         import swap_installer
         found, path = swap_installer.detect_on(machine)

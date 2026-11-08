@@ -1054,6 +1054,13 @@ on("#setup-readiness", "click", async (e) => {
   }
   if (act === "engines") {
     if (!window.confirm(`Install llama.cpp + llama RPC on ${name} through the peer agent?`)) return;
+    let prevBuild = null, expectedBuild = null;
+    try {
+      const v = await api("GET",
+        `/api/machines/${encodeURIComponent(name)}/llama-cpp-version`);
+      if (Number.isFinite(v.build)) prevBuild = v.build;
+      if (Number.isFinite(v.latest_build)) expectedBuild = v.latest_build;
+    } catch (_) {}
     btn.disabled = true; btn.textContent = "Installing…";
     try {
       const job = await runLlamaCppUpdate(name, (state) => {
@@ -1061,13 +1068,18 @@ on("#setup-readiness", "click", async (e) => {
           : state === "installing" ? "Installing…"
           : state === "updating" ? "Rebuilding…" : btn.textContent;
       });
-      if (job.state === "done") {
-        toast(`llama.cpp + RPC installed on ${name}`, "ok");
-      } else {
+      if (job.state !== "done") {
         toast(`install failed on ${name}: ${(job.result && job.result.detail) || "failed"}`, "bad");
+        btn.disabled = false;
+      } else {
+        btn.disabled = true;
+        btn.textContent = "Verifying… (up to 30 min)";
+        await waitForEngineVersion(name, expectedBuild, prevBuild, "install");
+        toast(`llama.cpp + RPC installed on ${name}`, "ok");
       }
     } catch (err) {
       toast(err.message, "bad");
+      btn.disabled = false;
     }
     await loadReadiness(true); loadMachines(true); loadStatus();
     return;
@@ -2216,7 +2228,10 @@ async function waitForEngineVersion(name, expectedBuild, previousBuild, mode,
       const build = v.build;
       if (build != null) {
         if (expectedBuild != null && build >= expectedBuild) return v;
-        if (expectedBuild == null && mode === "install" && build > 0) return v;
+        if (expectedBuild == null && mode === "install"
+            && previousBuild != null && build !== previousBuild) return v;
+        if (expectedBuild == null && mode === "install"
+            && previousBuild == null && build > 0) return v;
         if (expectedBuild == null && mode === "update"
             && previousBuild != null && build !== previousBuild) return v;
         if (expectedBuild == null && mode === "reinstall"
