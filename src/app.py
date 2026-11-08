@@ -1788,7 +1788,35 @@ async def list_saved_models(full: bool = False):
         engine = engine_registry.get_engine()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
-    return _access_filter_models(engine.filter_models(cfg.list_models()))
+    models = engine.filter_models(cfg.list_models())
+
+    def _ids(fn):
+        try:
+            return {m.get("model_id") for m in (fn(models) or [])}
+        except Exception:
+            return set()
+
+    emb_ids = _ids(engine.filter_embedding_models)
+    aud_ids = _ids(engine.filter_audio_models)
+    vis_ids = _ids(engine.filter_vision_models)
+    dec_ids = _ids(engine.filter_decision_models)
+    for m in models:
+        mid = m.get("model_id") or ""
+        base = mid.split("--")[0]
+        tags = []
+        if m.get("decision_type") or base in dec_ids:
+            tags.append("decision")
+        else:
+            if base in aud_ids:
+                tags.append("speech")
+            if base in vis_ids:
+                tags.append("vision")
+            if base in emb_ids:
+                tags.append("embedding")
+            if not tags:
+                tags.append("chat")
+        m["model_tags"] = tags
+    return _access_filter_models(models)
 
 
 @app.get("/api/rpc-map")
