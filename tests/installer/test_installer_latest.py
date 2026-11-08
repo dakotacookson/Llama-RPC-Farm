@@ -135,7 +135,8 @@ def test_bootstrap_resolves_latest_via_ui_selectors(monkeypatch):
     monkeypatch.setattr(lcpp, "_fetch_latest_assets",
                         lambda limit=30: ("b20000", LC_NAMES, LC_BASE))
     monkeypatch.setattr(lcpp, "_pick_assets",
-                        lambda machine, tag, assets, glibc=None:
+                        lambda machine, tag, assets, glibc=None,
+                        driver_version=None:
                         (LC_NAMES, "~/llama.cpp/bin", "CUDA 13.4", False))
     monkeypatch.setattr(swp, "_fetch_latest_assets",
                         lambda limit=10: ("v300", [SW_NAME], SW_BASE))

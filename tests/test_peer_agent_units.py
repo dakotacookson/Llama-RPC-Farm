@@ -254,6 +254,7 @@ def test_build_probe_and_update(monkeypatch, tmp_path):
                             "stderr": ""})())
     p = agent_build.probe(c, str(build / "bin" / "llama-server"))
     assert p["kind"] == "source" and p["flags"]["GGML_CUDA"] == "ON"
+    assert p["rpc"] is True and p["version"]
     assert agent_build.probe(c, "")["kind"] == "missing"
     def fake_run(args, **k):
         cmd = " ".join(args)

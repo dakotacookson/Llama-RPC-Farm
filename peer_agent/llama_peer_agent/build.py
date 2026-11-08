@@ -27,21 +27,37 @@ def _run(args, timeout=120, cwd=None):
         raise AgentBuildError(str(e)) from e
 
 
+def _bin_meta(llama_bin):
+    """(version line, ggml-rpc-server present?) for a llama.cpp bin dir."""
+    base = Path(str(llama_bin or ""))
+    server = base / ("llama-server.exe" if os.name == "nt" else "llama-server")
+    rpc = base / ("ggml-rpc-server.exe" if os.name == "nt"
+                  else "ggml-rpc-server")
+    version = ""
+    if server.is_file():
+        v = _run([str(server), "--version"], timeout=60)
+        lines = ((v.stdout or "") + (v.stderr or "")).strip().splitlines()
+        version = lines[0] if lines else ""
+    return version, rpc.is_file()
+
+
 def probe(config: AgentConfig, llama_bin) -> dict:
     lb = str(llama_bin or "").strip()
     if not lb:
-        return {"kind": "missing", "llama_bin": None}
+        return {"kind": "missing", "llama_bin": None, "version": "",
+                "rpc": False, "build_dir": None, "src_root": None,
+                "flags": {}}
     p = files._path(config, lb)
     build = p.parent.parent if p.parent.name == "bin" else p.parent
-    out = {"kind": "prebuilt", "llama_bin": lb,
-           "build_dir": None, "src_root": None, "flags": {}}
+    out = {"kind": "prebuilt", "llama_bin": lb, "version": "",
+           "rpc": False, "build_dir": None, "src_root": None, "flags": {}}
     if not build.is_dir():
         out["kind"] = "missing"
         return out
     out["build_dir"] = str(build)
     if (build / "bin" / "llama-server").is_file():
         out["llama_bin"] = str(build / "bin")
-    out["rpc"] = (Path(out["llama_bin"]) / "ggml-rpc-server").is_file()
+    out["version"], out["rpc"] = _bin_meta(out["llama_bin"])
     if not (build / "CMakeCache.txt").is_file():
         return out
     proc = _run(["git", "-C", str(build), "rev-parse", "--show-toplevel"],

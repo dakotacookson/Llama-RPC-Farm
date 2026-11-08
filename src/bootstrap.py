@@ -122,13 +122,15 @@ def _resolve_latest(info, role, log):
     from llamacpp_installer import (
         _fetch_latest_assets as _fetch_lcpp,
         _pick_assets as _pick_lcpp,
+        _driver_tuple,
     )
     try:
         tag, assets, base = _fetch_lcpp()
         if not tag:
             raise RuntimeError("no llama.cpp release with bin assets")
         names, dest, note, _zip = _pick_lcpp(
-            machine, tag, assets, glibc=info.glibc)
+            machine, tag, assets, glibc=info.glibc,
+            driver_version=_driver_tuple(info.driver_version))
         missing = [n for n in names if n not in assets]
         if missing:
             raise RuntimeError(f"llama.cpp assets missing upstream: {missing}")
