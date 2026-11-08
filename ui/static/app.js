@@ -4392,7 +4392,7 @@ async function loadModels() {
       tr.dataset.modelId = m.model_id;
       if (selectedModelId === m.model_id) tr.classList.add("row-selected");
       const sub1 = `${escHtml((m.base_path || "").split("/").pop())}${m.group ? ` · group: ${escHtml(m.group)}` : ""} · servers: ${escHtml((m.servers || []).join(", ")) || "-"}${m.pinned ? ' · <span class="badge" style="background:var(--ok-dim);color:var(--ok)">pinned</span>' : ""}`;
-      const sub2 = `${escHtml(((m.tensor_split_mode === "manual" ? "fit" : m.tensor_split_mode || "auto")) + " " + Object.entries(m.flags || {}).map(([k, v]) => `${k}=${v}`).join(" ").trim() || "-")}${(m.variants||[]).length ? ` · variants: ${escHtml((m.variants||[]).map(v=>`${v.label}(${(v.servers||[]).join(",")})`).join(" | "))}` : ""}`;
+      const sub2 = `${escHtml(((m.tensor_split_mode === "manual" ? "fit" : m.tensor_split_mode || "auto")) + " " + Object.entries(m.flags || {}).map(([k, v]) => `${k}=${v}`).join(" ").trim() || "-")}`;
       tr.innerHTML = `
       <div class="scan-main"><div class="scan-title">${modelIconHTML(m.model_id)}${escHtml(m.model_id)} ${(m.variants||[]).length ? `<span class="badge" style="background:var(--accent-dim);color:var(--accent)" title="${escHtml((m.variants||[]).map(v=>v.label).join(", "))}">+${(m.variants||[]).length} config${(m.variants||[]).length>1?"s":""}</span>` : ""} ${modelTagsHTML(m)}</div>
         <small>${sub1}</small>
