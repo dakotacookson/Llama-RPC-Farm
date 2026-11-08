@@ -344,13 +344,20 @@ async def auth_me(request: Request, response: Response):
     # everything loopback silently disabled the login screen).
     peer = ((request.scope.get("client") or (None,))[0] or "")
     is_console = peer in access._TRUSTED_ANCHORS
+    has_logins = bool(_vault.list_web_logins())
+    has_keys = bool(access.access_keys())
     return {"name": name, "user": user, "admin": admin, "scoped": scoped,
             "models": sorted(access.view_allow() or []),
             "logged_in": bool(user) or bool(tok),
             "trust_via": "session-cookie" if user else
                          ("key" if tok else
                           ("loopback" if is_console else "unauthenticated")),
-            "has_logins": bool(_vault.list_web_logins())}
+            "has_logins": has_logins,
+            "has_keys": has_keys,
+            # First boot on a fresh install: no web login AND no access key.
+            # The UI uses this to show the "create admin" setup form rather
+            # than an unusable sign-in box.
+            "needs_setup": (not has_logins and not has_keys)}
 
 
 @app.get("/api/auth/my-key")
@@ -670,13 +677,18 @@ class FirstLoginIn(pydantic.BaseModel):
 @app.post("/api/auth/bootstrap")
 async def auth_bootstrap(l: FirstLoginIn, response: Response):
     import secrets_vault as _vault, access as _a
-    if _vault.list_web_logins():
-        # logins exist: this endpoint is admin/console-only from now on
+    has_logins = bool(_vault.list_web_logins())
+    has_keys = bool(access.access_keys())
+    if has_logins or has_keys:
+        # This is a FIRST-RUN endpoint only once the farm has any identity
+        # (a web login or an access key). After that it is admin/console-only.
         if not (access.gate_open() and access.view_allow() is None):
             raise HTTPException(404, "not found")
     name = (l.username or "").strip()
     if not name or not l.password:
         raise HTTPException(400, "username and password required")
+    if len(l.password) < 8:
+        raise HTTPException(400, "password must be at least 8 characters")
     # admin key for the login (reuse existing by name or create)
     tok = access.generate_token()
     current = _load_settings_yaml_preserving(SETTINGS_FILE)

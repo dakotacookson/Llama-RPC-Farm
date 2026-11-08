@@ -1299,15 +1299,16 @@ technical | bugs, errors, login problems</textarea></label>
   <div id="login-modal" class="modal hidden" aria-hidden="true">
     <div class="modal-backdrop"></div>
     <div class="modal-dialog" role="dialog" aria-modal="true" style="max-width:360px">
-      <div class="modal-header"><h3><i class="fa-solid fa-right-to-bracket"></i> Sign in</h3></div>
+      <div class="modal-header"><h3 id="login-title"><i class="fa-solid fa-right-to-bracket"></i> Sign in</h3></div>
       <div class="modal-body" style="padding:14px">
-        <p class="hint" style="margin:0 0 8px">Your login maps to an access key — model visibility and admin powers follow it.</p>
+        <p class="hint" id="login-hint" style="margin:0 0 8px">Your login maps to an access key — model visibility and admin powers follow it.</p>
         <label class="auto-refresh">Username <input type="text" id="login-user" autocomplete="username"></label>
-        <label class="auto-refresh">Password <input type="password" id="login-pass" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></label>
+        <label class="auto-refresh">Password <input type="password" id="login-pass" autocomplete="current-password" onkeydown="if(event.key==='Enter')loginSubmit()"></label>
         <p class="status-bad" id="login-err" style="margin:6px 0 0" hidden></p>
       </div>
       <div class="modal-footer" style="display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--border-soft)">
         <span style="flex:1"></span>
+        <button class="small" id="login-setup" style="display:none"><i class="fa-solid fa-user-plus"></i> Create admin</button>
         <button class="small" id="login-go"><i class="fa-solid fa-right-to-bracket"></i> Sign in</button>
       </div>
     </div>
