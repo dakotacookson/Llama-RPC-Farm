@@ -4847,7 +4847,7 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
     machine = cfg.machines.require(name)
     with _LLAMA_UPDATES_LOCK:
         for j in _LLAMA_UPDATES.values():
-            if j["machine"] == name and j["state"] in ("stopping", "installing"):
+            if j["machine"] == name and j["state"] in ("stopping", "installing", "updating"):
                 return JSONResponse(
                     status_code=409,
                     content={"detail": f"update already running on {name}",
