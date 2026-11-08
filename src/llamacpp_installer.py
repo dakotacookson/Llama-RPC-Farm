@@ -580,6 +580,20 @@ def probe_setup(machine, log=lambda m: None):
                     # strip the cmake type prefix (BOOL=/FILEPATH=/…)
                     v = v.split("=", 1)[1]
                 out["flags"][k.strip()] = v
+        # Record the current binaries so bootstrap/manifest can report
+        # them without re-probing. Both are required: llama-server serves
+        # models, ggml-rpc-server is the peer's RPC backend.
+        try:
+            _c, vout = run(f'"{out["llama_bin"]}/llama-server" --version 2>&1 | head -1')
+            out["version"] = (vout or "").strip()
+        except Exception:
+            out["version"] = ""
+        try:
+            _c, rout = run(f'test -x "{out["llama_bin"]}/ggml-rpc-server" '
+                           '&& echo RPC || echo NORPC')
+            out["rpc"] = "RPC" in (rout or "")
+        except Exception:
+            out["rpc"] = False
         out["kind"] = "source"
         return out
     except Exception as e:

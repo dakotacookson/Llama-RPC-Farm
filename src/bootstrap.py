@@ -60,6 +60,39 @@ class TeeLog:
                 f.write(line + "\n")
 
 
+def _detect_source_build(info, fs, log):
+    """Classify an existing llama.cpp install as a source tree.
+
+    The UI machine card updates source builds in place (preserving every
+    CMakeCache flag); bootstrap must do the same instead of replacing them
+    with a prebuilt. Uses the current settings `llama_bin` (or the default
+    prebuilt dir) and only local commands.
+    """
+    try:
+        from installer.probe import _read_setting
+        from llamacpp_installer import probe_setup
+    except Exception as e:  # pragma: no cover - import shape safety
+        log(f"WARN source-build probe unavailable: {e}")
+        return None
+    cur = _read_setting(fs, "config/settings.yaml", "llama_bin") or ""
+    default_bin = ("%USERPROFILE%\\llama.cpp\\bin" if info.os == "windows"
+                   else "~/llama.cpp/bin")
+    machine = {
+        "name": "local",
+        "ip": "127.0.0.1",
+        "os": info.os,
+        "role": "master",
+        "gpu_vendor": info.gpu_vendor or "none",
+        "detected": {"arch": info.arch},
+        "llama_bin": cur or default_bin,
+    }
+    try:
+        return probe_setup(machine, log=log)
+    except Exception as e:
+        log(f"WARN source-build probe failed: {e}")
+        return None
+
+
 def _backend_from_assets(names):
     """Backend key for logs/manifest from the resolved asset names."""
     blob = " ".join(names)
@@ -146,9 +179,11 @@ def cmd_install(args) -> int:
     manifest = _read_manifest(log)
     resolved = {} if args.offline else _resolve_latest(
         info, args.role, log)
+    source_probe = _detect_source_build(info, fs, log)
     plan = probe(info, fs, run, role=args.role, pinned=DEFAULT_PINS,
                  force_settings=args.force_settings,
-                 manifest=manifest, resolved=resolved)
+                 manifest=manifest, resolved=resolved,
+                 source_probe=source_probe)
     if args.dry_run:
         log("dry-run plan:")
         for s in plan:
