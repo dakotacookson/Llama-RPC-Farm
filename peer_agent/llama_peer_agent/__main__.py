@@ -3,7 +3,7 @@ import argparse
 import sys
 
 from . import PROTOCOL_VERSION, __version__
-from .config import AgentConfig
+from .config import AgentConfig, load_env_file
 from .server import serve
 
 
@@ -46,6 +46,10 @@ def main(argv=None) -> int:
     if args.version:
         print(f"llama-peer-agent {__version__} protocol={PROTOCOL_VERSION}")
         return 0
+    # Pick up PEER_AGENT_* values persisted by pairing (save_token) or by an
+    # install step; real environment variables still win. Without this, an
+    # auto-paired agent forgets its token on the next restart.
+    load_env_file()
     try:
         config = AgentConfig.from_env(
             token=args.token, host=args.host, port=args.port,
