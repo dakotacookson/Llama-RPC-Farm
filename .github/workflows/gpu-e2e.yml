@@ -1,0 +1,57 @@
+name: GPU backend E2E
+
+# Manual only: GPU runners are not available on standard GitHub-hosted
+# labels. Use a GitHub larger GPU runner (Tesla T4, Team/Enterprise) by
+# passing its runner name, or a self-hosted runner with the matching GPU.
+#
+# Examples:
+#   GitHub T4 larger runner : ["gpu-t4"]
+#   self-hosted NVIDIA     : ["self-hosted","linux","x64","gpu-nvidia"]
+#   self-hosted AMD ROCm   : ["self-hosted","linux","x64","gpu-rocm"]
+#   self-hosted Intel XPU  : ["self-hosted","linux","x64","gpu-intel"]
+#   self-hosted Apple Metal: ["self-hosted","macos","arm64","gpu-metal"]
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_labels:
+        description: "JSON array of runs-on labels for the GPU runner"
+        required: true
+        default: '["self-hosted","linux","x64","gpu-nvidia"]'
+      gpu_vendor:
+        description: "Backend to install/test"
+        type: choice
+        required: true
+        default: nvidia
+        options: [nvidia, amd, intel, apple, auto]
+      n_gpu_layers:
+        description: "llama.cpp n-gpu-layers (99 = offload all)"
+        required: true
+        default: "99"
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: E2E (${{ inputs.gpu_vendor }})
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Backend E2E (app install flow + Qwen3-0.6B)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python tests/e2e/single_node.py --source \
+            --gpu-vendor "${{ inputs.gpu_vendor }}" \
+            --n-gpu-layers "${{ inputs.n_gpu_layers }}"

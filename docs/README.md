@@ -23,6 +23,7 @@ Frontend is vanilla JS; all state lives in `config/*.yaml`.
 | [peer-agent.md](peer-agent.md) | Peer agent: agent-first transport, endpoints, discovery, auto-start, in-place updates, packaging roadmap |
 | [release.md](release.md) | Rolling `main-latest` build pipelines and native artifacts |
 | [windows-signing.md](windows-signing.md) | Windows SmartScreen, code-signing options, and how to run an unsigned build safely |
+| [gpu-e2e.md](gpu-e2e.md) | GPU backend E2E: hosted runner limits, self-hosted labels, ROCm/XPU/Metal |
 
 ## Quick orientation
 
