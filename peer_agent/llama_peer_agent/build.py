@@ -8,8 +8,10 @@ from . import files
 from .config import AgentConfig
 
 _FLAG_RE = re.compile(
-    r"^(GGML_CUDA:BOOL|GGML_HIP:BOOL|GGML_VULKAN:BOOL|GGML_RPC:BOOL|"
-    r"GGML_CUDA_FA:BOOL|GGML_CUDA_NCCL:BOOL|CMAKE_CUDA_ARCHITECTURES:|"
+    r"^(GGML_CUDA:BOOL|GGML_HIP:BOOL|GGML_VULKAN:BOOL|GGML_SYCL:BOOL|"
+    r"GGML_METAL:BOOL|GGML_OPENCL:BOOL|GGML_RPC:BOOL|GGML_CUDA_FA:BOOL|"
+    r"GGML_CUDA_NCCL:BOOL|GGML_BLAS:BOOL|GGML_NATIVE:BOOL|LLAMA_CURL:BOOL|"
+    r"CMAKE_BUILD_TYPE:STRING|CMAKE_CUDA_ARCHITECTURES:|"
     r"CMAKE_CUDA_COMPILER:FILEPATH|GGML_CUDA_COMPRESSION_MODE:STRING)")
 
 
@@ -39,6 +41,7 @@ def probe(config: AgentConfig, llama_bin) -> dict:
     out["build_dir"] = str(build)
     if (build / "bin" / "llama-server").is_file():
         out["llama_bin"] = str(build / "bin")
+    out["rpc"] = (Path(out["llama_bin"]) / "ggml-rpc-server").is_file()
     if not (build / "CMakeCache.txt").is_file():
         return out
     proc = _run(["git", "-C", str(build), "rev-parse", "--show-toplevel"],
@@ -103,7 +106,12 @@ def update(config: AgentConfig, src_root, build_dir, bin_path,
     output = ((proc.stdout or "") + (proc.stderr or ""))[-1000:]
     if proc.returncode != 0:
         return {"ok": False, "error": f"build failed: {output}"}
+    rpc = binp.parent / "ggml-rpc-server"
+    if not rpc.is_file():
+        return {"ok": False,
+                "error": "build did not produce ggml-rpc-server "
+                         "(enable GGML_RPC=ON in the build cache)"}
     v = _run([str(binp), "--version"], timeout=120)
     version = ((v.stdout or "") + (v.stderr or "")).strip().splitlines()
     return {"ok": True, "version": version[0] if version else "",
-            "output": output}
+            "rpc": str(rpc), "output": output}

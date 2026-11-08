@@ -115,3 +115,45 @@ def tmp_machine(client, os_name):
         machines.append({"id": name, "name": name, "ip": "127.0.0.1",
                          "os": os_name})
     return name
+
+def test_verify_respects_configured_paths(client, settings_file, tmp_path,
+                                          monkeypatch):
+    """Configured per-machine / swap paths are authoritative: the status
+    probe must not substitute a different well-known install."""
+    bin_dir = tmp_path / "custom-llama"
+    bin_dir.mkdir()
+    server = bin_dir / "llama-server"
+    server.write_text("#!/bin/sh\necho 'version: 0.7.0 (build 12209)'\n")
+    server.chmod(0o755)
+    rpc = bin_dir / "ggml-rpc-server"
+    rpc.write_text("#!/bin/sh\n")
+    rpc.chmod(0o755)
+
+    # local machine's llama_bin wins over the global setting
+    settings_file.write_text(
+        "machines:\n"
+        "- id: aibox1\n"
+        "  name: aibox1\n"
+        "  ip: 127.0.0.1\n"
+        "  role: master\n"
+        "  os: linux\n"
+        "  rpc_port: 50052\n"
+        f"  llama_bin: {bin_dir}\n",
+        encoding="utf-8",
+    )
+    swap_dir = tmp_path / "custom-swap"
+    swap_dir.mkdir()
+    swap = swap_dir / "llama-swap"
+    swap.write_text("#!/bin/sh\necho 'v271'\n")
+    swap.chmod(0o755)
+    import swap_manager
+    monkeypatch.setattr(swap_manager, "load_settings",
+                        lambda: {"binary": str(swap)})
+
+    body = client.get("/api/tools/verify").json()
+    assert body["llama.cpp"]["found"] is True
+    assert body["llama.cpp"]["path"] == str(server)
+    assert body["llama.cpp"]["configured"] == str(bin_dir)
+    assert body["llama-swap"]["found"] is True
+    assert body["llama-swap"]["path"] == str(swap)
+    assert body["llama-swap"]["configured"] == str(swap)

@@ -1334,7 +1334,11 @@ def _swap_env(host_name):
     except Exception:
         pass
     v = gpu_vendor.normalize_vendor((host or {}).get("gpu_vendor"))
-    base = {"GGML_SCHED_DEBUG": "3"}
+    # Generic debug flags apply to every backend/OS. Vendor env only where
+    # it means something: Metal/CPU need none; AMD/Intel get their own.
+    base = {"GGML_SCHED_DEBUG": "3", "GGML_RPC_DEBUG": "3"}
+    if v in ("apple", "cpu"):
+        return base
     if v == "amd":
         return {**base, "GGML_CUDA_P2P": "1"}
     if v == "intel":

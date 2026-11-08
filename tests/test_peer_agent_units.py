@@ -247,6 +247,7 @@ def test_build_probe_and_update(monkeypatch, tmp_path):
     (build / "bin").mkdir(parents=True)
     (build / "CMakeCache.txt").write_text("GGML_CUDA:BOOL=ON\n")
     (build / "bin" / "llama-server").write_text("x")
+    (build / "bin" / "ggml-rpc-server").write_text("x")
     monkeypatch.setattr(agent_build.subprocess, "run",
                         lambda *a, **k: type("P", (), {
                             "returncode": 0, "stdout": str(tmp_path) + "\n",
@@ -862,6 +863,8 @@ def test_build_remaining(monkeypatch, tmp_path):
         out = "v" if "--version" in cmd else ""
         return type("P", (), {"returncode": 0, "stdout": out,
                               "stderr": ""})()
+    (build / "bin").mkdir(exist_ok=True)
+    (build / "bin" / "ggml-rpc-server").write_text("x")
     monkeypatch.setattr(b.subprocess, "run", run)
     assert b.update(c, str(tmp_path), str(build),
                     str(build / "bin" / "llama-server"), None)["ok"] is True

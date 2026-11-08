@@ -2033,26 +2033,20 @@ def _rpc_env_exports(machine):
     a UUID list. No UUIDs -> the order pin (status quo)."""
     pre = "GGML_SCHED_DEBUG=3 GGML_RPC_DEBUG=3 "
     try:
-        _vis = gpu_vendor.cuda_visible_devices(machine)
+        _vv = gpu_vendor.normalize_vendor((machine or {}).get("gpu_vendor"))
     except Exception:
-        _vis = ""
-    if _vis:
-        pre += f"CUDA_VISIBLE_DEVICES={_vis} "
-    else:
-        try:
-            _vv = gpu_vendor.normalize_vendor((machine or {}).get("gpu_vendor"))
-        except Exception:
-            _vv = ""
-        if _vv not in ("amd", "intel", "apple", "cpu"):
-            # Unknown/empty vendor defaults to NVIDIA (same as gpu_prefix):
-            # CUDA_DEVICE_ORDER is a no-op on non-NVIDIA runtimes anyway.
-            pre += "CUDA_DEVICE_ORDER=PCI_BUS_ID "
-    if not machine.get("rdma"):
-        return pre + "GGML_RPC_NO_RDMA=1 "
+        _vv = ""
+    # CUDA_* vars are NVIDIA-only. Unknown/empty vendor defaults to NVIDIA
+    # (same as gpu_prefix); AMD/Intel/Apple/CPU never get them.
     if _vv not in ("amd", "intel", "apple", "cpu"):
-        # Unknown/empty vendor defaults to NVIDIA (same as gpu_prefix):
-        # CUDA_DEVICE_ORDER is a no-op on non-NVIDIA runtimes anyway.
-        pre += "CUDA_DEVICE_ORDER=PCI_BUS_ID "
+        try:
+            _vis = gpu_vendor.cuda_visible_devices(machine)
+        except Exception:
+            _vis = ""
+        if _vis:
+            pre += f"CUDA_VISIBLE_DEVICES={_vis} "
+        else:
+            pre += "CUDA_DEVICE_ORDER=PCI_BUS_ID "
     if not machine.get("rdma"):
         return pre + "GGML_RPC_NO_RDMA=1 "
     dev = machine.get("rdma_dev") or ""
@@ -2162,6 +2156,10 @@ def _device_env_exports(master):
             rdma += f"\nexport GGML_RDMA_GID={master['rdma_gid']}"
         if master.get("rdma_cm"):
             rdma += "\nexport GGML_RDMA_USE_CM=1"
+    if v in ("apple", "cpu"):
+        # Metal and CPU need no CUDA/HIP/SYCL device env — just the debug
+        # flags (+ RDMA when enabled) that every backend uses.
+        return sched + rdma
     if v == "amd":
         return f"export GGML_CUDA_P2P=1\n{sched}{rdma}"
     if v == "intel":

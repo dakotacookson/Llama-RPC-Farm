@@ -6658,7 +6658,6 @@ async function loadToolStatus() {
       const ok = e.found;
       const icon = ok ? "fa-circle-check status-ok" : "fa-circle-question status-warn";
       const loc = e.path || e.configured || "not found";
-      const stale = ok && e.configured && e.configured !== e.path ? " (configured path differs)" : "";
       const ver = e.version ? " · " + escHtml(e.version) : (ok ? " · version unknown" : "");
       return '<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0">'
         + '<span><i class="fa-solid ' + icon + '"></i> <strong>' + escHtml(label) + '</strong>'

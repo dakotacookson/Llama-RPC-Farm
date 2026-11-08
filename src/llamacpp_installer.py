@@ -357,20 +357,28 @@ def install_on(machine, log=lambda m: None):
                 archive="zip" if is_win else "tar.gz",
                 strip_components=1, mode=None if is_win else 0o755)
             bin_name = "llama-server.exe" if is_win else "llama-server"
+            rpc_name = "ggml-rpc-server.exe" if is_win else "ggml-rpc-server"
             v = agent_client.install_verify(machine, f"{dest}/{bin_name}")
-            if v.get("returncode") == 0:
-                bin_path = f"{dest}/{bin_name}"
-                try:
-                    cfg.machines.update(name, {"llama_bin": dest})
-                except Exception:
-                    pass
-                return {"ok": True, "machine": name, "bin": bin_path,
-                        "backend": plan_info["backend"],
-                        "detail": f"installed {', '.join(plan_info['assets'])} "
-                                  f"({plan_info['tag']}) to {dest}"}
-            return {"ok": False, "machine": name,
-                    "detail": f"installed but verify failed: "
-                              f"{v.get('output', '')[-300:]}"}
+            if v.get("returncode") != 0:
+                return {"ok": False, "machine": name,
+                        "detail": f"installed but llama-server verify failed: "
+                                  f"{v.get('output', '')[-300:]}"}
+            rv = agent_client.install_verify(machine, f"{dest}/{rpc_name}")
+            if rv.get("returncode") != 0:
+                return {"ok": False, "machine": name,
+                        "detail": f"installed but llama RPC verify failed "
+                                  f"({rpc_name}): "
+                                  f"{rv.get('output', '')[-300:]}"}
+            bin_path = f"{dest}/{bin_name}"
+            try:
+                cfg.machines.update(name, {"llama_bin": dest})
+            except Exception:
+                pass
+            return {"ok": True, "machine": name, "bin": bin_path,
+                    "backend": plan_info["backend"],
+                    "detail": f"installed {', '.join(plan_info['assets'])} "
+                              f"({plan_info['tag']}) to {dest} (llama-server + "
+                              f"ggml-rpc-server)"}
         except Exception as e:
             return {"ok": False, "machine": name,
                     "detail": f"agent install failed: {e}"}
@@ -436,9 +444,22 @@ def install_on(machine, log=lambda m: None):
         vcode, vout = 1, f"verify crashed: {e}"
     if vcode != 0:
         return {"ok": False, "machine": name,
-                "detail": f"installed but verify failed "
+                "detail": f"installed but llama-server verify failed "
                           f"(exit {vcode}): {(vout or '')[-300:]}"}
     bin_dir = DEST_WIN if is_win else DEST_POSIX
+    rpc_name = "ggml-rpc-server.exe" if is_win else "ggml-rpc-server"
+    if is_win:
+        rpc_cmd = f'if exist "{bin_dir}\\{rpc_name}" (exit 0) else (exit 1)'
+    else:
+        rpc_cmd = f'test -x "{bin_dir}/{rpc_name}"'
+    try:
+        rcode, rout = run(rpc_cmd, timeout=60)
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+        rcode, rout = 1, f"verify crashed: {e}"
+    if rcode != 0:
+        return {"ok": False, "machine": name,
+                "detail": f"installed but llama RPC verify failed "
+                          f"({rpc_name}): {(rout or '')[-300:]}"}
     bin_path = (f"{bin_dir}\\llama-server.exe" if is_win
                 else f"{bin_dir}/llama-server")
     # Windows: the upgrade just (re)wrote the exes — re-ensure the
@@ -463,7 +484,8 @@ def install_on(machine, log=lambda m: None):
     except Exception:
         pass
     detail = (f"installed {', '.join(plan_info['assets'])} "
-              f"({plan_info['tag']}) to {bin_dir}")
+              f"({plan_info['tag']}) to {bin_dir} (llama-server + "
+              f"ggml-rpc-server)")
     if fw_note:
         detail += f"; {fw_note}"
     return {"ok": True, "machine": name, "bin": bin_path,
@@ -567,8 +589,11 @@ def probe_setup(machine, log=lambda m: None):
         out["src_root"] = root
         # Read the flags this build carries, for the log + sanity.
         cmd = (f'grep -E "^(GGML_CUDA:BOOL|GGML_HIP:BOOL|GGML_VULKAN:BOOL|'
+               f'GGML_SYCL:BOOL|GGML_METAL:BOOL|GGML_OPENCL:BOOL|'
                f'GGML_RPC:BOOL|GGML_CUDA_FA:BOOL|GGML_CUDA_NCCL:BOOL|'
-               f'CMAKE_CUDA_ARCHITECTURES:|CMAKE_CUDA_COMPILER:FILEPATH|'
+               f'GGML_BLAS:BOOL|GGML_NATIVE:BOOL|LLAMA_CURL:BOOL|'
+               f'CMAKE_BUILD_TYPE:STRING|CMAKE_CUDA_ARCHITECTURES:|'
+               f'CMAKE_CUDA_COMPILER:FILEPATH|'
                f'GGML_CUDA_COMPRESSION_MODE:STRING)" '
                f'"{out["build_dir"]}/CMakeCache.txt" 2>/dev/null')
         _c, flags_blob = run(cmd)
@@ -697,11 +722,18 @@ def update_source_on(machine, probe=None, log=lambda m: None):
                               f"{(out or '')[-400:]}"}
 
         bin_path = f"{probe.get('llama_bin') or build_dir + '/bin'}/llama-server"
+        rpc_path = f"{probe.get('llama_bin') or build_dir + '/bin'}/ggml-rpc-server"
         code, out = run(f"'{bin_path}' --version 2>&1 | head -1")
         version = (out or "").strip()
-        log(f"{name} now: {version}")
+        code, out = run(f"test -x '{rpc_path}' && echo RPC || echo NORPC")
+        if "RPC" not in (out or ""):
+            return {"ok": False, "machine": name,
+                    "detail": "source build did not produce ggml-rpc-server "
+                              "(enable GGML_RPC=ON in the build cache)"}
+        log(f"{name} now: {version} (llama-server + ggml-rpc-server)")
         return {"ok": True, "machine": name, "bin": bin_path,
-                "detail": f"source build updated to {version}"}
+                "detail": f"source build updated to {version} "
+                          f"(llama-server + ggml-rpc-server)"}
     except Exception as e:
         return {"ok": False, "machine": name,
                 "detail": f"source update failed: {e}"}

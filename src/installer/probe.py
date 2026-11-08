@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -263,9 +264,24 @@ def probe(info: SystemInfo, fs: FS, run: RunCmd,
             "llama.cpp", {"version": src_ver, "method": "source"}))
     else:
         found, ver = probe_llama_cpp(fs, run, role)
-        lc_current = bool(found and ver and version_cmp(ver, need_lcpp))
+        rpc_ok = True
+        if found and role != "client":
+            rpc_name = ("ggml-rpc-server.exe" if info.os == "windows"
+                        else "ggml-rpc-server")
+            rpc_ok = fs.isfile(fs.expanduser(
+                os.path.join(os.path.dirname(found), rpc_name)))
+        lc_current = bool(found and ver and version_cmp(ver, need_lcpp)
+                          and rpc_ok)
         if lc_current:
             plan.append(SkipTool("llama.cpp", "present-current", found, ver))
+        elif found and ver and not rpc_ok:
+            plan.append(PlanNote(
+                "warn", "llama.cpp",
+                f"{found} exists but ggml-rpc-server is missing — "
+                "reinstalling the llama.cpp bundle"))
+            plan.append(InstallTool("llama.cpp", "prebuilt", need_lcpp,
+                                    backend=lc_backend, dest=lc_dest,
+                                    extra=dict(lc_extra)))
         elif found and not ver:
             plan.append(PlanNote("warn", "llama.cpp",
                                  f"{found} exists but --version fails — repair"))
