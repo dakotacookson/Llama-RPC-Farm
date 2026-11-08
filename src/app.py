@@ -863,6 +863,73 @@ async def machine_agent_check(p: AgentCheckIn):
     return {"ok": True, **out}
 
 
+def _persist_farm_token_if_missing(machine):
+    """A successfully reached agent with no per-machine vault token is using
+    the farm token; persist it so the machine shows agent_token_set=true and
+    its generated scripts get AGENT_TOKEN_<NAME>."""
+    try:
+        import secrets_vault as _vault
+        mid = machine.get("id")
+        if mid and not _vault.get_machine_agent_token(machine):
+            farm = _vault.get_farm_agent_token()
+            if farm:
+                _vault.set_machine_agent_token(mid, farm)
+    except Exception:
+        pass
+
+
+def _auto_agent_token(machine, requested=""):
+    """Auto-generate/assign a peer-agent token on first save.
+
+    Uses an explicit token if given, else an existing per-machine vault
+    token, else the farm token (auto-generated at app startup), pairing a
+    fresh unpaired agent as needed. Returns the effective token.
+    """
+    if local_node.is_local(machine):
+        return ""
+    import secrets as _secrets
+    import secrets_vault as _vault
+
+    def _health(tok):
+        try:
+            agent_client.health(machine, timeout=4, token=tok)
+            return True
+        except Exception:
+            return False
+
+    requested = (requested or "").strip()
+    if requested:
+        if _health(requested):
+            return requested
+        try:
+            agent_client.pair(machine, requested)
+            return requested
+        except Exception as e:
+            raise ValueError(
+                f"peer agent rejected the token: {e}") from e
+
+    existing = _vault.get_machine_agent_token(machine)
+    if existing and _health(existing):
+        return existing
+    farm = _vault.get_farm_agent_token()
+    if farm:
+        if _health(farm):
+            return farm
+        try:
+            agent_client.pair(machine, farm)
+            return farm
+        except Exception:
+            pass
+    tok = _secrets.token_urlsafe(32)
+    try:
+        agent_client.pair(machine, tok)
+        return tok
+    except Exception as e:
+        raise ValueError(
+            "could not auto-pair the peer agent — it may already be paired "
+            "with another token; enter that token in the machine editor") from e
+
+
 def _ensure_agent_ready(machine, token_override="", timeout=4):
     """Health-check a peer agent, auto-pairing a fresh agent with the farm
     token when possible. Returns (health_or_None, error_or_None)."""
@@ -870,7 +937,10 @@ def _ensure_agent_ready(machine, token_override="", timeout=4):
     if token_override:
         m["_agent_token"] = token_override
     try:
-        return agent_client.health(m, timeout=timeout), None
+        out = agent_client.health(m, timeout=timeout)
+        if not token_override:
+            _persist_farm_token_if_missing(machine)
+        return out, None
     except Exception as first:
         if token_override:
             return None, str(first)
@@ -886,7 +956,9 @@ def _ensure_agent_ready(machine, token_override="", timeout=4):
                 pass
             m["_agent_token"] = farm
             try:
-                return agent_client.health(m, timeout=timeout), None
+                out = agent_client.health(m, timeout=timeout)
+                _persist_farm_token_if_missing(machine)
+                return out, None
             except Exception:
                 pass
         return None, str(first)
@@ -929,20 +1001,26 @@ def _validate_machine_connection(payload):
 async def add_machine(m: MachineIn):
     try:
         payload = m.model_dump()
-        agent_token = payload.pop("agent_token", "")
-        if agent_token:
-            import uuid
-            payload.setdefault("id", uuid.uuid4().hex[:8])
-            import secrets_vault as _vault
-            _vault.set_machine_agent_token(payload["id"], agent_token)
+        requested_token = (payload.pop("agent_token", "") or "").strip()
+        import uuid
+        payload.setdefault("id", uuid.uuid4().hex[:8])
         _validate_machine_swap_config(payload)
         _validate_machine_connection(payload)
+        if not local_node.is_local(payload):
+            import secrets_vault as _vault
+            try:
+                tok = _auto_agent_token(payload, requested_token)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+            if tok:
+                _vault.set_machine_agent_token(payload["id"], tok)
+                payload["_agent_token"] = tok
         detail = _agent_guard(payload)
         if detail:
             raise HTTPException(status_code=400, detail=detail)
         saved = cfg.machines.add(payload)
         saved = dict(saved)
-        saved["agent_token_set"] = bool(agent_token) or bool(
+        saved["agent_token_set"] = bool(
             __import__("secrets_vault").machine_agent_token_set(saved))
         saved.pop("password", None)
         return saved

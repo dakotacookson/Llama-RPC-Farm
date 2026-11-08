@@ -98,3 +98,66 @@ def test_ensure_agent_ready_pairs_fresh_agent(monkeypatch):
         {"name": "fresh", "ip": "10.0.0.178"}, "")
     assert err is None and ok["ok"] is True
     assert paired == ["farm-tok"]
+
+
+def test_auto_agent_token_pairs_fresh_agent_with_farm(monkeypatch):
+    import secrets_vault
+    import agent_client as ac
+    state = {"paired": False}
+
+    def health(machine, timeout=4, token=None):
+        if token == "farm-tok" and state["paired"]:
+            return {"ok": True}
+        raise ac.AgentError("agent HTTP 401")
+
+    def pair(machine, token, timeout=8):
+        state["paired"] = True
+        return {"ok": True}
+
+    monkeypatch.setattr(ac, "health", health)
+    monkeypatch.setattr(ac, "pair", pair)
+    monkeypatch.setattr(secrets_vault, "get_machine_agent_token",
+                        lambda m: "")
+    monkeypatch.setattr(secrets_vault, "get_farm_agent_token",
+                        lambda: "farm-tok")
+    tok = app_module._auto_agent_token(
+        {"id": "fresh", "name": "fresh", "ip": "10.0.0.178"})
+    assert tok == "farm-tok"
+    assert state["paired"] is True
+
+
+def test_auto_agent_token_keeps_existing_machine_token(monkeypatch):
+    import secrets_vault
+    import agent_client as ac
+    monkeypatch.setattr(ac, "health",
+                        lambda m, timeout=4, token=None:
+                        {"ok": True} if token == "machine-tok"
+                        else (_ for _ in ()).throw(ac.AgentError("401")))
+    monkeypatch.setattr(ac, "pair",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("must not re-pair")))
+    monkeypatch.setattr(secrets_vault, "get_machine_agent_token",
+                        lambda m: "machine-tok")
+    monkeypatch.setattr(secrets_vault, "get_farm_agent_token",
+                        lambda: "farm-tok")
+    assert app_module._auto_agent_token(
+        {"id": "m1", "name": "m1", "ip": "10.0.0.178"}) == "machine-tok"
+
+
+def test_auto_agent_token_fails_when_agent_has_unknown_token(monkeypatch):
+    import secrets_vault
+    import agent_client as ac
+    import pytest
+    monkeypatch.setattr(ac, "health",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            ac.AgentError("401")))
+    monkeypatch.setattr(ac, "pair",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            ac.AgentError("already paired")))
+    monkeypatch.setattr(secrets_vault, "get_machine_agent_token",
+                        lambda m: "")
+    monkeypatch.setattr(secrets_vault, "get_farm_agent_token",
+                        lambda: "farm-tok")
+    with pytest.raises(ValueError, match="already be paired"):
+        app_module._auto_agent_token(
+            {"id": "m1", "name": "m1", "ip": "10.0.0.178"})
