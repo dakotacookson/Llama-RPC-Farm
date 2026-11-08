@@ -1782,6 +1782,26 @@ async def list_saved_models(full: bool = False):
             if "variants" not in d or d["variants"] is None:
                 d["variants"] = []
             d["architecture"] = cfg._get_model_architecture(d.get("base_path"))
+            d["decision_type"] = cfg._get_decision_type(d.get("base_path"))
+            mid = (d.get("model_id") or "").lower()
+            name = (d.get("name") or "").lower()
+            arch = (d.get("architecture") or "").lower()
+            flags = d.get("flags") or {}
+            tags = []
+            if d["decision_type"]:
+                tags.append("decision")
+            else:
+                if ("asr" in mid or "whisper" in mid or "audio" in mid
+                        or flags.get("audio")):
+                    tags.append("speech")
+                if "embed" in mid or "embed" in name or "bert" in arch:
+                    tags.append("embedding")
+                if (flags.get("mmproj") or "vision" in mid
+                        or ("vl" in arch and arch != "unknown")):
+                    tags.append("vision")
+                if not tags or tags == ["vision"]:
+                    tags.append("chat")
+            d["model_tags"] = tags
             out.append(d)
         return out
     try:
