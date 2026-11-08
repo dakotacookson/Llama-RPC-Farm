@@ -1803,17 +1803,18 @@ async def list_saved_models(full: bool = False):
     for m in models:
         mid = m.get("model_id") or ""
         base = mid.split("--")[0]
+        arch = (m.get("architecture") or "").lower()
         tags = []
         if m.get("decision_type") or base in dec_ids:
             tags.append("decision")
         else:
             if base in aud_ids:
                 tags.append("speech")
-            if base in vis_ids:
+            if (base in vis_ids or "mmproj" in (m.get("flags") or {})):
                 tags.append("vision")
-            if base in emb_ids:
+            if base in emb_ids or "bert" in arch or "embed" in arch:
                 tags.append("embedding")
-            if not tags:
+            if not tags or (tags == ["vision"]):
                 tags.append("chat")
         m["model_tags"] = tags
     return _access_filter_models(models)
@@ -7017,6 +7018,21 @@ async def scan_models(path: str, recursive: bool = False):
         m["architecture"] = cfg._get_model_architecture(m["base_path"])
         # TypeSafe decision models surface in the wizard the same way
         m["decision_type"] = cfg._get_decision_type(m["base_path"])
+        mid = (m.get("model_id") or m.get("base_path") or "").lower()
+        arch = (m.get("architecture") or "").lower()
+        tags = []
+        if m["decision_type"]:
+            tags.append("decision")
+        else:
+            if "asr" in mid or "whisper" in mid or "audio" in mid:
+                tags.append("speech")
+            if "embed" in mid or "bert" in arch:
+                tags.append("embedding")
+            if "vision" in mid or "vl" in arch or "-vl" in mid:
+                tags.append("vision")
+            if not tags or tags == ["vision"]:
+                tags.append("chat")
+        m["model_tags"] = tags
     return {"models": filtered_models, "projectors": projectors}
 
 

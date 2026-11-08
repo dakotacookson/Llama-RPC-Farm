@@ -4394,7 +4394,7 @@ async function loadModels() {
       const sub1 = `${escHtml((m.base_path || "").split("/").pop())}${m.group ? ` · group: ${escHtml(m.group)}` : ""} · servers: ${escHtml((m.servers || []).join(", ")) || "-"}${m.pinned ? ' · <span class="badge" style="background:var(--ok-dim);color:var(--ok)">pinned</span>' : ""}`;
       const sub2 = `${escHtml(((m.tensor_split_mode === "manual" ? "fit" : m.tensor_split_mode || "auto")) + " " + Object.entries(m.flags || {}).map(([k, v]) => `${k}=${v}`).join(" ").trim() || "-")}${(m.variants||[]).length ? ` · variants: ${escHtml((m.variants||[]).map(v=>`${v.label}(${(v.servers||[]).join(",")})`).join(" | "))}` : ""}`;
       tr.innerHTML = `
-      <div class="scan-main"><div class="scan-title">${modelIconHTML(m.model_id)}${escHtml(m.model_id)} ${(m.variants||[]).length ? `<span class="badge" style="background:var(--accent-dim);color:var(--accent)" title="${escHtml((m.variants||[]).map(v=>v.label).join(", "))}">+${(m.variants||[]).length} config${(m.variants||[]).length>1?"s":""}</span>` : ""} ${modelTagsHTML(m)}</div>
+      <div class="scan-main"><div class="scan-title">${modelIconHTML(m.model_id)}${escHtml(m.model_id)} ${(m.variants||[]).length ? `<span class="badge" style="background:var(--accent-dim);color:var(--accent)" title="Additional configs">+${(m.variants||[]).length} config${(m.variants||[]).length>1?"s":""}</span>` + (m.variants||[]).map(v=>`<span class="badge" style="background:var(--surface-dim,#0001);color:var(--muted)">${escHtml(v.label)}</span>`).join(" ") : ""} ${modelTagsHTML(m)}</div>
         <small>${sub1}</small>
         <small>${sub2}</small></div>
       <div class="scan-model-actions">
