@@ -70,6 +70,10 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements.txt
+      - name: Stamp release version
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: python scripts/stamp_version.py "$VERSION"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -216,6 +220,10 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements.txt
+      - name: Stamp release version
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: python scripts/stamp_version.py "$VERSION"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -372,6 +380,10 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements.txt
+      - name: Stamp release version
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: python scripts/stamp_version.py "$VERSION"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -589,7 +601,6 @@ jobs:
             echo "no release assets found under release-assets/" >&2
             exit 1
           fi
-
           TAG="release-${VERSION}"
           # 1. Immutable per-build release. Older versions are never deleted;
           #    only a rebuild that reuses an existing tag is replaced.
