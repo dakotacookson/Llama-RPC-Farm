@@ -4491,14 +4491,20 @@ def _agent_release_info(machine):
         if not m:
             continue
         key = tuple(int(p) for p in m.group(1).split("."))
+        agent_url = None
+        wheel_url = None
         for a in rel.get("assets") or []:
-            if a.get("name") == asset and a.get("browser_download_url"):
-                if best_key is None or key > best_key:
-                    best_key = key
-                    best = {"asset": asset,
-                            "url": a["browser_download_url"],
-                            "version": m.group(1)}
-                break
+            name = str(a.get("name") or "")
+            if name == asset:
+                agent_url = a.get("browser_download_url")
+            elif (name.startswith("llama_rpc_farm_agent-")
+                  and name.endswith(".whl")):
+                wheel_url = a.get("browser_download_url")
+        if agent_url and (best_key is None or key > best_key):
+            best_key = key
+            best = {"asset": asset, "url": agent_url,
+                    "wheel_url": wheel_url,
+                    "version": m.group(1)}
     with _LLAMA_UPDATES_LOCK:
         _AGENT_RELEASE_CACHE["ts"] = now
         if best:
@@ -4539,17 +4545,55 @@ def _update_agent_remote(machine):
         return {"ok": True, "machine": name, "skipped": True, "local": True,
                 "detail": "local master uses the app directly; no peer agent"}
     av = _agent_version_payload(machine)
-    if not av.get("packaged"):
-        return {"ok": False, "machine": name, "reinstall": True,
-                "detail": "peer agent is not a standalone release build — "
-                          "reinstall the peer agent package from the latest "
-                          "release"}
+    prev_version = str(av.get("current") or "")
     try:
         info = _agent_release_info(machine)
     except Exception as e:
         return {"ok": False, "machine": name, "frozen": True,
                 "detail": f"could not check GitHub releases: {e}"}
-    asset, url, version = info.get("asset"), info.get("url"), info.get("version")
+    version = info.get("version")
+    if not av.get("packaged"):
+        # Pip/source-installed agents update through the release wheel.
+        wheel_url = info.get("wheel_url")
+        if not wheel_url:
+            return {"ok": False, "machine": name, "reinstall": True,
+                    "detail": "no release agent wheel is published — "
+                              "reinstall the peer agent package"}
+        try:
+            import urllib.request
+            with urllib.request.urlopen(wheel_url, timeout=120) as r:
+                blob = r.read()
+            res = agent_client.agent_update(machine, blob, version or "")
+        except Exception as e:
+            return {"ok": False, "machine": name,
+                    "detail": f"could not install release wheel: {e}"}
+        if not res.get("ok"):
+            return {"ok": False, "machine": name,
+                    "detail": res.get("error") or "agent wheel update failed"}
+        for _ in range(20):
+            import time as _t
+            _t.sleep(1)
+            try:
+                h = agent_client.health(machine, timeout=3)
+                hver = h.get("agent_version")
+                if hver and (hver == version or hver != prev_version):
+                    if version:
+                        try:
+                            cfg.machines.update(name,
+                                                {"agent_release": version})
+                        except Exception:
+                            pass
+                    return {"ok": True, "machine": name,
+                            "agent_version": hver,
+                            "agent_release": version,
+                            "method": "wheel"}
+            except Exception:
+                continue
+        return {"ok": False, "machine": name,
+                "detail": "agent installed the release wheel but did not "
+                          "come back healthy"}
+    asset = info.get("asset")
+    url = info.get("url")
     if not asset:
         return {"ok": False, "machine": name, "frozen": True,
                 "detail": "no standalone agent asset is published for this "
@@ -4573,14 +4617,15 @@ def _update_agent_remote(machine):
         _t.sleep(1)
         try:
             h = agent_client.health(machine, timeout=3)
-            if h.get("agent_version"):
+            hver = h.get("agent_version")
+            if hver and (hver == version or hver != prev_version):
                 if version:
                     try:
                         cfg.machines.update(name, {"agent_release": version})
                     except Exception:
                         pass
                 return {"ok": True, "machine": name,
-                        "agent_version": h.get("agent_version"),
+                        "agent_version": hver,
                         "agent_release": version,
                         "protocol_version": h.get("protocol_version"),
                         "method": "binary", "asset": asset}

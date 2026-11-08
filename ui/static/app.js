@@ -3595,7 +3595,7 @@ function variantModalNext(){
   }
   variantModalShow(step + 1);
 }
-function variantModalSave(){
+async function variantModalSave(){
   const modal = $("#variant-modal");
   if (!modal || !variantModalCard) return;
   const label = modal.querySelector(".v-label").value.trim();
@@ -3663,7 +3663,9 @@ function variantModalSave(){
       if (!Object.keys(vFlags).length) vFlags = null;
     } catch (_) {}
   }
+  const _prevVar = variantModalCard._data || {};
   variantModalCard._data = {
+    ..._prevVar,
     label,
     servers: Array.from(machineNames),
     device_order: (deviceOrder || null),
@@ -3681,7 +3683,9 @@ function variantModalSave(){
   };
   refreshVariantSummary(variantModalCard);
   closeVariantModal();
-  toast(`Saved config ${label}`, "ok");
+  // Saving an additional config persists the WHOLE model (primary + every
+  // variant) immediately — no second "Save model" click required.
+  await saveModelForm($("#model-save"), true);
 }
 /* mirrors the primary applyTensorModeUI: fit shows margins, split shows
    weights. Blank (inherit) falls back to the primary's live mode so the
@@ -3882,7 +3886,9 @@ function collectVariants(){
       llama_bin: d.llama_bin || null,
       flags: d.flags || null,
       pinned: d.pinned ? true : null,
-      ttl: d.ttl || null
+      ttl: d.ttl || null,
+      launch_mode: d.launch_mode || null,
+      launch_mode_local_port: d.launch_mode_local_port ?? null
     });
   });
   return out;
