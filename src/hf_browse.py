@@ -816,7 +816,9 @@ async def get_gguf_files(author: str, name: str):
         return cached
     url = f"{HF_API}/models/{quote(author)}/{quote(name)}"
     async with httpx.AsyncClient(timeout=20, headers=_headers(), follow_redirects=True) as client:
-        resp = await client.get(url)
+        # Siblings carry per-file sizes only with blobs=true; without it
+        # every size is null and the UI shows "0 MB".
+        resp = await client.get(url, params={"blobs": "true"})
         resp.raise_for_status()
         m = resp.json()
         siblings = m.get("siblings") or []
