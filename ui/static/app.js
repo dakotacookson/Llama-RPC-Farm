@@ -2054,15 +2054,15 @@ async function loadMachines(skipCaps = false) {
         ${needsEngines ? '<button class="small" data-act="install-engines">Install engines</button>' : ""}
         <button class="small" data-act="reinstall-engines" title="Overwrite existing llama.cpp + RPC with a fresh install">Reinstall engines</button>
         ${needsSwap ? '<button class="small" data-act="install-swap">Install llama-swap</button>' : ""}
-        ${(m.role === "master" || m.is_local) ? '<span class="badge" data-app-version>app …</span><button class="small" data-act="app-update" hidden>App ⟳</button>' : ""}
+        ${(m.role === "master" || m.is_local) ? '<button type="button" class="badge" data-app-version data-act="app-update" style="border:0;background:var(--accent-dim);color:var(--accent);cursor:pointer;font-family:inherit" title="Update farm app">app …</button>' : ""}
         ${(m.role === "master" || m.is_local) ? "" : '<button class="small" data-act="agent-update" title="Install or update the peer agent on this machine">Agent ⟳</button>'}
         <button class="small danger" data-act="delete">Delete</button>
       </div>`;
       tr.classList.add("scan-model");
       if (m.role === "master" || m.is_local) {
-        hydrateAppVersion(tr.querySelector('[data-app-version]'),
-                          tr.querySelector('[data-act="app-update"]'));
-        wireAppUpdate(tr.querySelector('[data-act="app-update"]'));
+        const appPill = tr.querySelector('[data-app-version]');
+        hydrateAppVersion(appPill);
+        wireAppUpdate(appPill);
       }
       tr.querySelector('[data-act="update"]').onclick = async (e) => {
         const btn = e.currentTarget;
@@ -6889,23 +6889,22 @@ on("#install-llama-cpp", "click", async (e) => {
 });
 
 /* Farm-app version/update lives on the master machine row. */
-async function hydrateAppVersion(pill, btn) {
+async function hydrateAppVersion(pill) {
   if (!pill) return;
   try {
     const d = await api("GET", "/api/app-version");
-    pill.textContent = `app ${d.current || "?"}${d.latest && d.latest !== d.current ? ` → ${d.latest}` : ""}`;
-    pill.title = d.source
-      ? "source install — Update app runs a clean git fast-forward"
-      : (d.latest ? `latest release: ${d.latest}` : "");
-    if (btn) {
-      const updatable = !!(d.latest && !d.on_latest);
-      btn.hidden = !updatable;
-      btn.dataset.source = d.source ? "1" : "";
-      btn.title = updatable
-        ? (d.source ? `Update source to ${d.latest} and restart`
-                    : `Update to ${d.latest} and restart`)
-        : "farm app is current";
-    }
+    const label = `app ${d.current || "?"}${d.latest && d.latest !== d.current ? ` → ${d.latest}` : ""}`;
+    const updatable = !!(d.latest && !d.on_latest);
+    pill.textContent = label;
+    pill.dataset.label = label;
+    pill.dataset.source = d.source ? "1" : "";
+    pill.disabled = !updatable;
+    pill.style.cursor = updatable ? "pointer" : "default";
+    pill.style.opacity = updatable ? "1" : "0.75";
+    pill.title = updatable
+      ? (d.source ? `Update source to ${d.latest} and restart`
+                  : `Update to ${d.latest} and restart`)
+      : "farm app is current";
   } catch (_) {
     pill.textContent = "app ?";
   }
@@ -6928,11 +6927,11 @@ function wireAppUpdate(btn) {
         setTimeout(() => location.reload(), 4000);
       } else {
         toast(r.detail || "update failed", "bad");
-        b.disabled = false; b.textContent = "App ⟳";
+        b.disabled = false; b.textContent = b.dataset.label || "app";
       }
     } catch (err) {
       toast(err.message, "bad");
-      b.disabled = false; b.textContent = "App ⟳";
+      b.disabled = false; b.textContent = b.dataset.label || "app";
     }
   };
 }
