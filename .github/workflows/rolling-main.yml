@@ -10,7 +10,9 @@ permissions:
 
 concurrency:
   group: rolling-main
-  cancel-in-progress: false
+  # Batch quick merges into ONE release: a newer main push cancels the
+  # superseded run instead of queuing another release for every merge.
+  cancel-in-progress: true
 
 jobs:
   prepare:
@@ -20,6 +22,13 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+      - name: Debounce burst merges
+        env:
+          DEBOUNCE_SECONDS: ${{ vars.RELEASE_DEBOUNCE_SECONDS || 60 }}
+        run: |
+          set -euo pipefail
+          echo "Waiting ${DEBOUNCE_SECONDS}s for a possible newer merge..."
+          sleep "$DEBOUNCE_SECONDS"
       - id: version
         name: Compute next patch version
         env:
