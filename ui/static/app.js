@@ -6915,18 +6915,24 @@ async function hydrateAppVersion(pill) {
   if (!pill) return;
   try {
     const d = await api("GET", "/api/app-version");
-    const label = `app ${d.current || "?"}${d.latest && d.latest !== d.current ? ` → ${d.latest}` : ""}`;
-    const updatable = !!(d.latest && !d.on_latest);
+    const label = d.source
+      ? `app ${d.current || "?"} · source ${d.head || "?"}${d.behind ? ` +${d.behind}` : ""}`
+      : `app ${d.current || "?"}${d.latest && d.latest !== d.current ? ` → ${d.latest}` : ""}`;
+    const updatable = d.source
+      ? (d.behind > 0 && !d.dirty)
+      : !!(d.latest && !d.on_latest);
     pill.textContent = label;
     pill.dataset.label = label;
     pill.dataset.source = d.source ? "1" : "";
     pill.disabled = !updatable;
     pill.style.cursor = updatable ? "pointer" : "default";
     pill.style.opacity = updatable ? "1" : "0.75";
-    pill.title = updatable
-      ? (d.source ? `Update source to ${d.latest} and restart`
-                  : `Update to ${d.latest} and restart`)
-      : "farm app is current";
+    pill.title = d.source
+      ? (d.dirty ? "source tree has local changes — commit or stash before updating"
+                 : updatable ? `Fast-forward ${d.behind} commit(s) and restart`
+                             : "source checkout is current")
+      : (updatable ? `Update to ${d.latest} and restart`
+                   : "farm app is current");
   } catch (_) {
     pill.textContent = "app ?";
   }

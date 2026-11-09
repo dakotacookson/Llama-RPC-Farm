@@ -4576,6 +4576,28 @@ def _app_release_info():
 def _app_version_payload():
     current = getattr(app_version, "__version__", "")
     packaged = bool(getattr(sys, "frozen", False))
+    if not packaged:
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        head = behind = 0
+        dirty = False
+        try:
+            h = subprocess.run(["git", "-C", repo, "rev-parse", "--short", "HEAD"],
+                               capture_output=True, text=True, timeout=10)
+            head = (h.stdout or "").strip()
+            b = subprocess.run(
+                ["git", "-C", repo, "rev-list", "--count",
+                 "HEAD..origin/main"],
+                capture_output=True, text=True, timeout=10)
+            behind = int((b.stdout or "0").strip() or 0)
+            d = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
+                               capture_output=True, text=True, timeout=10)
+            dirty = bool((d.stdout or "").strip())
+        except Exception:
+            pass
+        return {"current": current, "latest": current,
+                "on_latest": behind == 0, "packaged": False,
+                "source": True, "head": head, "behind": behind,
+                "dirty": dirty}
     try:
         info = _app_release_info()
         latest = info.get("version")
@@ -4583,7 +4605,7 @@ def _app_version_payload():
         latest = None
     return {"current": current, "latest": latest,
             "on_latest": bool(latest and current == latest),
-            "packaged": packaged, "source": not packaged}
+            "packaged": True, "source": False}
 
 
 def _restart_app_binary():
