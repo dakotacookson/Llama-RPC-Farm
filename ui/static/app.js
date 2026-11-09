@@ -9616,13 +9616,16 @@ function perfChart(series, opts) {
   return `<div class="pf-chart" data-chart="${opts.id}"><div class="pf-title">${escHtml(opts.title)}</div>${legend}
     <div class="pf-plot"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${escHtml(opts.title)}">${g}</svg><div class="pf-tip" hidden></div></div></div>`;
 }
-function perfHover(e) {
-  const box = e.target.closest(".pf-chart");
+/* hover: only inside a chart's plot area (the .pf-hit rect); leaving it
+   hides the tip at once. The position is remembered so the tip comes
+   back right after the periodic re-render instead of vanishing. */
+let perfHoverAt = null;            // {chart, clientX} while the pointer is on a plot
+function perfShowAt(box, clientX) {
   const c = box && perfCharts[box.dataset.chart];
   if (!c) return;
   const svg = box.querySelector("svg"), tip = box.querySelector(".pf-tip"), cross = box.querySelector(".pf-cross");
   const r = svg.getBoundingClientRect();
-  const sx = (e.clientX - r.left) * (c.W / r.width);
+  const sx = (clientX - r.left) * (c.W / r.width);
   const t = c.t0 + Math.max(0, Math.min(1, (sx - c.padL) / c.iw)) * c.span;
   const rows = c.series.map(s => {
     let best = null;
@@ -9635,15 +9638,29 @@ function perfHover(e) {
   tip.innerHTML = `<div class="pf-tip-time">${escHtml(perfClock(tt, true))}</div>` + rows.map(({s, p}) =>
     `<div><i style="background:${s.color}"></i>${escHtml(s.label)} <b>${escHtml(c.opts.fmt(p.v))}${escHtml(c.opts.unit)}</b>${p.note ? ` <span class="hint">${escHtml(p.note)}</span>` : ""}</div>`).join("");
   tip.hidden = false;
-  const left = (e.clientX - r.left);
+  const left = clientX - r.left;
   tip.style.left = left > r.width / 2 ? "" : `${left + 14}px`;
   tip.style.right = left > r.width / 2 ? `${r.width - left + 14}px` : "";
 }
-function perfLeave(e) {
+function perfHideAll() {
+  document.querySelectorAll("#perf-machines .pf-tip").forEach(t => { t.hidden = true; });
+  document.querySelectorAll("#perf-machines .pf-cross").forEach(l => l.setAttribute("opacity", "0"));
+}
+function perfHover(e) {
+  if (!e.target.classList?.contains("pf-hit")) {      // title, legend, axes, gaps
+    if (perfHoverAt) { perfHoverAt = null; perfHideAll(); }
+    return;
+  }
   const box = e.target.closest(".pf-chart");
-  if (!box) return;
-  box.querySelector(".pf-tip").hidden = true;
-  box.querySelector(".pf-cross")?.setAttribute("opacity", "0");
+  if (perfHoverAt && perfHoverAt.chart !== box.dataset.chart) perfHideAll();
+  perfHoverAt = {chart: box.dataset.chart, clientX: e.clientX};
+  perfShowAt(box, e.clientX);
+}
+function perfLeave() { perfHoverAt = null; perfHideAll(); }
+function perfRestoreHover() {
+  if (!perfHoverAt) return;
+  const box = document.querySelector(`#perf-machines .pf-chart[data-chart="${perfHoverAt.chart}"]`);
+  if (box) perfShowAt(box, perfHoverAt.clientX);
 }
 function perfRender(h) {
   const box = $("#perf-machines");
@@ -9694,6 +9711,7 @@ function perfRender(h) {
       {id: "ram", title: "RAM used (%)", unit: " %", max: 100, fmt: pct}),
   ].join("");
   box.innerHTML = `<div class="sm-tiles">${tiles}</div><div class="pf-grid">${charts}</div>`;
+  perfRestoreHover();
 }
 async function perfRefresh() {
   if (perfBusy) return;
@@ -9735,4 +9753,7 @@ on("#perf-sample", "change", async (e) => {
 });
 on("#perf-machines", "mousemove", perfHover);
 on("#perf-machines", "mouseleave", perfLeave);
-document.getElementById("perf-machines")?.addEventListener("mouseout", (e) => { if (e.target.classList?.contains("pf-hit")) perfLeave(e); });
+document.getElementById("perf-machines")?.addEventListener("mouseout", (e) => {
+  // left a plot area for something that is not a plot area: hide now
+  if (e.target.classList?.contains("pf-hit") && !e.relatedTarget?.classList?.contains("pf-hit")) perfLeave();
+});
