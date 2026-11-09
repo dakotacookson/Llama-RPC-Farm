@@ -4,15 +4,17 @@ A download now lands in a PER-MODEL folder under the store:
 
     store://llm-models/<model-stem>/
         <weights>.gguf              # selected quant + all its shards
-        mmproj-*.gguf               # every vision projector in the repo
-        mtp-*.gguf / *draft*.gguf   # every MTP/draft head in the repo
+        mmproj-*.gguf               # ONE vision projector (F16 preferred)
+        mtp-*.gguf / *draft*.gguf   # ONE MTP/draft head, matching quant only
         config.json / tokenizer*    # metadata for pure-Python use
         LICENSE* / README*          # license + model card
         farm-bundle.json            # manifest: source repo/revision/files
 
 The selected file's split shards are fetched together (llama.cpp split
-convention), and companion GGUFs (mmproj / MTP / draft) are auto-added
-whenever they exist in the repo. HF metadata files needed to load the
+convention). Companion GGUFs are added conservatively: a single mmproj
+and a single MTP/draft head whose quant matches the selection (repos
+often ship one per quant plus "shared" variants; grabbing all of them
+silently multiplies the download). HF metadata files needed to load the
 model from Python (config/tokenizer/generation config, remote code,
 license, README) are downloaded too; if the selected repo is a GGUF-only
 quant repo that omits them, the HF `base_model` is consulted and just
@@ -250,6 +252,106 @@ def _is_companion_gguf(name):
     return False
 
 
+def _companion_kind(name):
+    """'mmproj' | 'draft' | '' for a companion GGUF.
+
+    `draft` covers MTP / DFlash / Eagle / Medusa heads: all are small
+    side-models paired with the main weights, never another full quant.
+    """
+    base = os.path.basename(str(name or "")).lower()
+    if not base.endswith(".gguf"):
+        return ""
+    if "mmproj" in base:
+        return "mmproj"
+    if base.startswith(("mtp-", "mtp_", "draft", "dflash", "eagle")):
+        return "draft"
+    if any(t in base for t in ("mtp", "dflash", "eagle", "draft")):
+        return "draft"
+    return ""
+
+
+def _quant_tag(name):
+    """Normalized quant tag from a filename ('UD-IQ1_S' -> 'IQ1S',
+    'Q4_K_M' -> 'Q4KM', 'BF16' -> 'BF16'), or '' when none is present.
+    Used to pair a draft/MTP head with the quant the user selected."""
+    m = _QUANT_RE.search(os.path.basename(str(name or "")))
+    if not m:
+        return ""
+    return re.sub(r"[^A-Z0-9]", "", m.group(0).upper())
+
+
+def _select_companions(filename, repo_files, main):
+    """Pick at most one mmproj + one matching draft/MTP head.
+
+    Some repos (e.g. unsloth/Qwen3.8-Flash-Next-GGUF) ship an mmproj in
+    two precisions and an MTP head PER QUANT plus 'shared' variants.
+    Downloading every companion silently ballooned a 28 GB pick into
+    tens of GB of draft heads the user never asked for. Rules:
+      - never another full-model quant (exclude the selected shards)
+      - mmproj: exactly one, preferring F16 (works on every backend)
+      - MTP/draft: only one whose quant matches the selection; if the
+        repo has exactly one draft file, take it; otherwise skip and
+        warn (fetch a specific head manually for speculative decoding)
+    """
+    main_bases = {os.path.basename(f).lower() for f in (main or [])}
+    sel_q = _quant_tag(filename)
+    groups = {"mmproj": [], "draft": []}
+    for f in repo_files or []:
+        if not _is_companion_gguf(f):
+            continue
+        if f in (main or []) or os.path.basename(f).lower() in main_bases:
+            continue
+        kind = _companion_kind(f)
+        if kind in groups:
+            groups[kind].append(f)
+
+    warnings = []
+    chosen = []
+
+    # mmproj: one file; F16 is the safest default, then BF16.
+    if groups["mmproj"]:
+        def _mm_key(f):
+            b = os.path.basename(f).lower()
+            pref = 0 if ("f16" in b and "bf16" not in b) else (
+                1 if "bf16" in b else 2)
+            return (pref, f.count("/"), len(b), b)
+        pick = sorted(groups["mmproj"], key=_mm_key)[0]
+        chosen.append(pick)
+        if len(groups["mmproj"]) > 1:
+            warnings.append(
+                f"repo has {len(groups['mmproj'])} mmproj precision(s); "
+                f"downloaded one ({os.path.basename(pick)})")
+
+    # MTP/draft: only the matching quant (dedupe same basename across
+    # folders — repos often keep a root copy and an MTP/ copy).
+    drafts = groups["draft"]
+    if drafts:
+        def _draft_rank(f):
+            b = os.path.basename(f).lower()
+            return (1 if "shared" in b else 0, f.count("/"), len(b), b)
+        matching = [f for f in drafts if sel_q and _quant_tag(f) == sel_q]
+        if matching:
+            by_base = {}
+            for f in sorted(matching, key=_draft_rank):
+                by_base.setdefault(os.path.basename(f).lower(), f)
+            pick = sorted(by_base.values(), key=_draft_rank)[0]
+            chosen.append(pick)
+            if len(matching) > 1:
+                warnings.append(
+                    f"repo has {len(matching)} {sel_q} MTP/draft head(s); "
+                    f"downloaded one ({os.path.basename(pick)})")
+        elif len(drafts) == 1:
+            chosen.append(drafts[0])
+        else:
+            tags = sorted({_quant_tag(f) for f in drafts if _quant_tag(f)})
+            warnings.append(
+                "repo MTP/draft heads exist for "
+                f"{', '.join(tags) or 'other quants'} but not for "
+                f"{sel_q or 'this quant'}; none downloaded — add one "
+                "manually for speculative decoding")
+    return chosen, warnings
+
+
 def _is_metadata_file(name):
     """Small files needed to load/identify the model from Python."""
     base = os.path.basename(str(name or "")).lower()
@@ -465,7 +567,6 @@ def _plan_bundle(repo_id, filename, store, all_shards):
 
     main = sibling_shards(repo_id, filename) if all_shards else [filename]
     main = list(dict.fromkeys(main))
-    main_bases = {os.path.basename(f).lower() for f in main}
 
     repo_files = _list_repo_files(repo_id)
     warnings = []
@@ -473,12 +574,9 @@ def _plan_bundle(repo_id, filename, store, all_shards):
         warnings.append(
             "could not list repo files — companions/metadata were not "
             "discovered (main download still runs)")
-    companions = [
-        f for f in repo_files
-        if _is_companion_gguf(f)
-        and f not in main
-        and os.path.basename(f).lower() not in main_bases
-    ]
+    companions, comp_warnings = _select_companions(
+        filename, repo_files, main)
+    warnings += comp_warnings
     metadata = [f for f in repo_files if _is_metadata_file(f)]
 
     info = _repo_info(repo_id)

@@ -7713,7 +7713,7 @@ async function selectHfModel(modelId){
           </div>
           <button class="small" data-file="${escHtml(e.file)}" style="background:var(--accent-dim);border-color:var(--accent);color:var(--accent); margin-left:8px">${label}</button>
         </div>`;}).join("")}
-      <small class="hint" style="display:block; margin-top:8px">Downloads via <code>hf://</code> into its own folder under <code>store://${escHtml(storeVal)}</code> — selected weights + all shards, every <code>mmproj</code>/MTP/draft GGUF in the repo, plus config/tokenizer, LICENSE and README. Streamed to disk, bypasses the HF cache.</small>`;
+      <small class="hint" style="display:block; margin-top:8px">Downloads via <code>hf://</code> into its own folder under <code>store://${escHtml(storeVal)}</code> — selected weights + all shards, <strong>one</strong> <code>mmproj</code> (F16 when available) and the matching-quant MTP/draft head if the repo has one, plus config/tokenizer, LICENSE and README. Other quant/MTP variants are skipped. Streamed to disk, bypasses the HF cache.</small>`;
     detail.querySelectorAll("button[data-file]").forEach(btn=>{
       const origLabel = btn.textContent;
       btn.onclick = async ()=>{
