@@ -6019,7 +6019,7 @@ async def get_stats(light: bool = False):
 
 
 @app.get("/api/stats/history")
-async def get_stats_history(minutes: int = 15, points: int = 180):
+async def get_stats_history(minutes: int = 15, points: int = 400):
     """Rolling per-machine hardware samples (GPU util/VRAM/temp, CPU, RAM)
     kept in memory by stats_history for the Performance tab, cut to the
     last `minutes` and thinned to at most `points` per machine."""
@@ -6033,7 +6033,23 @@ async def get_stats_history(minutes: int = 15, points: int = 180):
                          "samples": hist.get(name, [])})
     return {"enabled": stats_history.INTERVAL > 0,
             "interval": stats_history.INTERVAL, "minutes": minutes,
+            "min_interval": stats_history.MIN_INTERVAL,
+            "max_interval": stats_history.MAX_INTERVAL,
+            "can_set_interval": bool(access.is_admin(None)),
             "machines": machines}
+
+
+@app.post("/api/stats/history/interval")
+async def set_stats_history_interval(body: dict):
+    """Change how often the Performance sampler measures every machine
+    (admin only; clamped to the sampler's MIN..MAX)."""
+    if not access.is_admin(None):
+        raise HTTPException(status_code=403, detail="admin only")
+    try:
+        sec = int(body.get("seconds"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="seconds must be a number")
+    return {"interval": stats_history.set_interval(sec)}
 
 
 @app.get("/api/stats/stream")

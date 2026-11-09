@@ -9567,33 +9567,133 @@ on("#sm-refresh", "click", smRefresh);
 /* ---------------- Performance (farm's own per-machine history) ----------------
    /api/stats/history: every machine sampled in the background by
    stats_history (master locally, peers through their agents). One chart
-   per measure, no dual axes; each machine gets its own block. */
-let perfTimer = null, perfBusy = false;
-function perfRenderMachine(m) {
-  const rows = (m.samples || []).map(s => ({...s, ts: s.ts * 1000}));
-  const last = rows[rows.length - 1];
-  const role = m.role === "master" ? ' <span class="badge badge-master">master</span>' : "";
-  const head = `<h3>${escHtml(m.name)}${role}${last && last.status && last.status !== "online" ? ` <span class="status-bad">${escHtml(last.status)}</span>` : ""}</h3>`;
-  if (rows.length < 2) return `<div class="card">${head}<p class="hint">Collecting samples… the first chart points appear after two samples.</p></div>`;
-  const c = "var(--accent)";
-  const pct = v => Math.round(v), gb = v => Number(v).toFixed(1);
-  let charts = "";
-  const gpuIdx = [...new Set(rows.flatMap(r => (r.gpus || []).map(g => g.index)))];
-  for (const idx of gpuIdx) {
-    const series = rows.map(r => {
-      const g = (r.gpus || []).find(x => x.index === idx) || {};
-      return {ts: r.ts, util: g.util, mem: g.mem_used_gb, temp: g.temp > 0 ? g.temp : null, name: g.name, total: g.mem_total_gb};
-    });
-    const info = series.filter(s => s.name).pop() || {};
-    const name = info.name || `GPU ${idx}`;
-    charts += smLine(series, "util", {max: 100, color: c, fmt: pct, unit: " %", title: `${name} — utilization`});
-    charts += smLine(series, "mem", {max: info.total || null, color: c, fmt: gb, unit: " GB", title: `${name} — VRAM used`});
-    if (series.filter(s => s.temp != null).length > 1)
-      charts += smLine(series, "temp", {max: 100, color: c, fmt: pct, unit: " °C", title: `${name} — temperature`});
+   per measure, one line per device, a single y-axis; gridlines and
+   ticks on both axes; hovering shows every device's value at that time. */
+let perfTimer = null, perfBusy = false, perfRefreshSec = 10;
+const PERF_COLORS = ["#3987e5", "#d95926", "#199e70", "#c98500"];   // validated categorical slots 1-4
+const perfCharts = {};                                                // chart id -> {series, opts, geometry}
+function perfClock(ms, withSec) {
+  const d = new Date(ms);
+  return d.toLocaleTimeString([], withSec ? {hour: "2-digit", minute: "2-digit", second: "2-digit"} : {hour: "2-digit", minute: "2-digit"});
+}
+/* series: [{label, color, pts: [{t, v, note}]}]; opts: {id, title, unit, max, fmt} */
+function perfChart(series, opts) {
+  const W = 640, H = 240, padL = 40, padR = 12, padT = 12, padB = 26;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const all = series.flatMap(s => s.pts);
+  const legend = `<div class="pf-legend">${series.map(s => `<span><i style="background:${s.color}"></i>${escHtml(s.label)}</span>`).join("")}</div>`;
+  if (all.length < 2) return `<div class="pf-chart"><div class="pf-title">${escHtml(opts.title)}</div>${legend}<p class="hint">collecting samples…</p></div>`;
+  const t0 = Math.min(...all.map(p => p.t)), t1 = Math.max(...all.map(p => p.t));
+  const span = Math.max(1, t1 - t0);
+  const ymax = opts.max || Math.max(1, ...all.map(p => p.v)) * 1.1;
+  const x = t => padL + ((t - t0) / span) * iw;
+  const y = v => padT + ih - (Math.min(v, ymax) / ymax) * ih;
+  let g = "";
+  // y grid: 10 steps, label every other line
+  for (let i = 0; i <= 10; i++) {
+    const v = ymax * i / 10, yy = y(v).toFixed(1);
+    g += `<line x1="${padL}" x2="${W - padR}" y1="${yy}" y2="${yy}" stroke="var(--text-2)" stroke-opacity="${i % 2 ? 0.12 : 0.25}" stroke-width="1"${i % 2 ? ' stroke-dasharray="2 4"' : ""}/>`;
+    if (i % 2 === 0) g += `<text x="${padL - 6}" y="${(+yy + 3).toFixed(1)}" font-size="10" text-anchor="end" fill="var(--text-2)">${escHtml(opts.fmt(v))}</text>`;
   }
-  charts += smLine(rows, "cpu", {max: 100, color: c, fmt: pct, unit: " %", title: "CPU (all cores)"});
-  charts += smLine(rows, "ram_used_gb", {max: last.ram_total_gb || null, color: c, fmt: gb, unit: " GB", title: "RAM used"});
-  return `<div class="card">${head}<div class="sm-charts">${charts}</div></div>`;
+  // x ticks: about 6, on round seconds/minutes
+  const steps = [10, 15, 30, 60, 120, 300, 600, 900, 1800].map(s => s * 1000);
+  const step = steps.find(s => span / s <= 6) || 3600000;
+  const withSec = step < 60000;
+  for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+    const xx = x(t).toFixed(1);
+    g += `<line x1="${xx}" x2="${xx}" y1="${padT}" y2="${padT + ih}" stroke="var(--text-2)" stroke-opacity="0.18" stroke-width="1" stroke-dasharray="2 4"/>
+      <text x="${xx}" y="${H - 8}" font-size="10" text-anchor="middle" fill="var(--text-2)">${escHtml(perfClock(t, withSec))}</text>`;
+  }
+  g += `<line x1="${padL}" x2="${W - padR}" y1="${padT + ih}" y2="${padT + ih}" stroke="var(--text-2)" stroke-width="1"/>`;
+  for (const s of series) {
+    if (s.pts.length < 2) continue;
+    const d = s.pts.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`).join(" ");
+    g += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  }
+  g += `<line class="pf-cross" x1="0" x2="0" y1="${padT}" y2="${padT + ih}" stroke="var(--text)" stroke-width="1" opacity="0"/>
+    <rect class="pf-hit" x="${padL}" y="${padT}" width="${iw}" height="${ih}" fill="transparent"/>`;
+  perfCharts[opts.id] = {series, opts, t0, span, padL, iw, W};
+  return `<div class="pf-chart" data-chart="${opts.id}"><div class="pf-title">${escHtml(opts.title)}</div>${legend}
+    <div class="pf-plot"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${escHtml(opts.title)}">${g}</svg><div class="pf-tip" hidden></div></div></div>`;
+}
+function perfHover(e) {
+  const box = e.target.closest(".pf-chart");
+  const c = box && perfCharts[box.dataset.chart];
+  if (!c) return;
+  const svg = box.querySelector("svg"), tip = box.querySelector(".pf-tip"), cross = box.querySelector(".pf-cross");
+  const r = svg.getBoundingClientRect();
+  const sx = (e.clientX - r.left) * (c.W / r.width);
+  const t = c.t0 + Math.max(0, Math.min(1, (sx - c.padL) / c.iw)) * c.span;
+  const rows = c.series.map(s => {
+    let best = null;
+    for (const p of s.pts) if (!best || Math.abs(p.t - t) < Math.abs(best.t - t)) best = p;
+    return best ? {s, p: best} : null;
+  }).filter(Boolean);
+  if (!rows.length) return;
+  const tt = rows[0].p.t, cx = c.padL + ((tt - c.t0) / c.span) * c.iw;
+  cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("opacity", "0.5");
+  tip.innerHTML = `<div class="pf-tip-time">${escHtml(perfClock(tt, true))}</div>` + rows.map(({s, p}) =>
+    `<div><i style="background:${s.color}"></i>${escHtml(s.label)} <b>${escHtml(c.opts.fmt(p.v))}${escHtml(c.opts.unit)}</b>${p.note ? ` <span class="hint">${escHtml(p.note)}</span>` : ""}</div>`).join("");
+  tip.hidden = false;
+  const left = (e.clientX - r.left);
+  tip.style.left = left > r.width / 2 ? "" : `${left + 14}px`;
+  tip.style.right = left > r.width / 2 ? `${r.width - left + 14}px` : "";
+}
+function perfLeave(e) {
+  const box = e.target.closest(".pf-chart");
+  if (!box) return;
+  box.querySelector(".pf-tip").hidden = true;
+  box.querySelector(".pf-cross")?.setAttribute("opacity", "0");
+}
+function perfRender(h) {
+  const box = $("#perf-machines");
+  const machines = h.machines || [];
+  // devices: one per GPU, labelled by machine (and GPU when a machine has several)
+  const gpuSeries = [], hostSeries = [];
+  let ci = 0;
+  for (const m of machines) {
+    const rows = m.samples || [];
+    const idxs = [...new Set(rows.flatMap(r => (r.gpus || []).map(g => String(g.index))))];
+    for (const idx of idxs) {
+      const name = (rows.flatMap(r => r.gpus || []).find(g => String(g.index) === idx) || {}).name || `GPU ${idx}`;
+      gpuSeries.push({m, idx, name, color: PERF_COLORS[ci++ % PERF_COLORS.length],
+        label: idxs.length > 1 ? `${m.name} · GPU ${idx}` : m.name});
+    }
+  }
+  machines.forEach((m, i) => hostSeries.push({m, color: PERF_COLORS[i % PERF_COLORS.length], label: m.name}));
+  const gpuPts = (d, f) => (d.m.samples || []).map(r => {
+    const g = (r.gpus || []).find(x => String(x.index) === d.idx);
+    const v = g ? f(g) : null;
+    return v == null ? null : {t: r.ts * 1000, v: v.v, note: v.note};
+  }).filter(Boolean);
+  const hostPts = (d, f) => (d.m.samples || []).map(r => { const v = f(r); return v == null ? null : {t: r.ts * 1000, v: v.v, note: v.note}; }).filter(Boolean);
+  const pct = v => `${Math.round(v)}`;
+  const gb = v => Number(v).toFixed(1);
+  // current values per machine
+  const tiles = machines.map(m => {
+    const r = (m.samples || [])[m.samples.length - 1];
+    if (!r) return `<div class="sm-tile"><div class="sm-tile-label">${escHtml(m.name)}</div><div class="sm-tile-sub">no samples yet</div></div>`;
+    const gl = (r.gpus || []).map(g => {
+      const vp = g.mem_total_gb ? Math.round(100 * g.mem_used_gb / g.mem_total_gb) : null;
+      return `<div class="sm-tile-sub">${escHtml(g.name || "GPU")}: <b>${pct(g.util || 0)} %</b> · VRAM ${gb(g.mem_used_gb || 0)}/${gb(g.mem_total_gb || 0)} GB${vp != null ? ` (${vp} %)` : ""}${g.temp > 0 ? ` · ${g.temp} °C` : ""}</div>`;
+    }).join("");
+    const rp = r.ram_total_gb ? Math.round(100 * r.ram_used_gb / r.ram_total_gb) : null;
+    return `<div class="sm-tile"><div class="sm-tile-label">${escHtml(m.name)}${m.role === "master" ? ' <span class="badge badge-master">master</span>' : ""}</div>${gl}
+      <div class="sm-tile-sub">CPU <b>${pct(r.cpu || 0)} %</b> · RAM ${gb(r.ram_used_gb || 0)}/${gb(r.ram_total_gb || 0)} GB${rp != null ? ` (<b>${rp} %</b>)` : ""}</div></div>`;
+  }).join("");
+  const charts = [
+    perfChart(gpuSeries.map(d => ({...d, pts: gpuPts(d, g => g.util == null ? null : {v: g.util})})),
+      {id: "gpu-util", title: "GPU utilization (%)", unit: " %", max: 100, fmt: pct}),
+    perfChart(gpuSeries.map(d => ({...d, pts: gpuPts(d, g => g.mem_total_gb ? {v: 100 * g.mem_used_gb / g.mem_total_gb, note: `${gb(g.mem_used_gb)}/${gb(g.mem_total_gb)} GB`} : null)})),
+      {id: "gpu-vram", title: "VRAM used (%)", unit: " %", max: 100, fmt: pct}),
+    perfChart(gpuSeries.map(d => ({...d, pts: gpuPts(d, g => g.temp > 0 ? {v: g.temp} : null)})),
+      {id: "gpu-temp", title: "GPU temperature (°C)", unit: " °C", max: 100, fmt: pct}),
+    perfChart(hostSeries.map(d => ({...d, pts: hostPts(d, r => r.cpu == null ? null : {v: r.cpu})})),
+      {id: "cpu", title: "CPU (%)", unit: " %", max: 100, fmt: pct}),
+    perfChart(hostSeries.map(d => ({...d, pts: hostPts(d, r => r.ram_total_gb ? {v: 100 * r.ram_used_gb / r.ram_total_gb, note: `${gb(r.ram_used_gb)}/${gb(r.ram_total_gb)} GB`} : null)})),
+      {id: "ram", title: "RAM used (%)", unit: " %", max: 100, fmt: pct}),
+  ].join("");
+  box.innerHTML = `<div class="sm-tiles">${tiles}</div><div class="pf-grid">${charts}</div>`;
 }
 async function perfRefresh() {
   if (perfBusy) return;
@@ -9602,19 +9702,37 @@ async function perfRefresh() {
   const minutes = $("#perf-minutes")?.value || 15;
   try {
     const h = await api("GET", `/api/stats/history?minutes=${minutes}`);
-    if (!h.enabled) {
-      box.innerHTML = `<p class="hint">The background sampler is off (FARM_STATS_HISTORY_SEC=0).</p>`;
-    } else {
-      box.innerHTML = h.machines.map(perfRenderMachine).join("") || `<p class="hint">No machines configured.</p>`;
+    if (!h.enabled) box.innerHTML = `<p class="hint">The background sampler is off — pick a sampling interval to start it.</p>`;
+    else perfRender(h);
+    const smp = $("#perf-sample");
+    if (smp) {
+      if (h.enabled && document.activeElement !== smp) smp.value = String(h.interval);
+      smp.disabled = !h.can_set_interval;
+      smp.title = h.can_set_interval ? "How often the farm measures every machine" : "admin only";
     }
-    if (st) { st.textContent = h.enabled ? `every ${h.interval} s` : "off"; st.className = `serving-ind ${h.enabled ? "status-ok" : "status-warn"}`; }
+    if (st) { st.textContent = h.enabled ? `sampled every ${h.interval} s` : "sampler off"; st.className = `serving-ind ${h.enabled ? "status-ok" : "status-warn"}`; }
   } catch (e) {
     if (st) { st.textContent = "error"; st.className = "serving-ind status-bad"; }
     toast(e.message, "bad");
   }
   perfBusy = false;
 }
-function perfStart() { perfRefresh(); clearInterval(perfTimer); perfTimer = setInterval(perfRefresh, 10000); }
+function perfSchedule() {
+  clearInterval(perfTimer); perfTimer = null;
+  if (perfRefreshSec > 0) perfTimer = setInterval(perfRefresh, perfRefreshSec * 1000);
+}
+function perfStart() { perfRefresh(); perfSchedule(); }
 function perfStop() { clearInterval(perfTimer); perfTimer = null; }
 on("#perf-refresh", "click", perfRefresh);
 on("#perf-minutes", "change", perfRefresh);
+on("#perf-every", "change", (e) => { perfRefreshSec = Number(e.target.value) || 0; perfSchedule(); });
+on("#perf-sample", "change", async (e) => {
+  try {
+    const r = await api("POST", "/api/stats/history/interval", {seconds: Number(e.target.value)});
+    toast(`Sampling every ${r.interval} s`, "ok");
+  } catch (err) { toast(err.message, "bad"); }
+  perfRefresh();
+});
+on("#perf-machines", "mousemove", perfHover);
+on("#perf-machines", "mouseleave", perfLeave);
+document.getElementById("perf-machines")?.addEventListener("mouseout", (e) => { if (e.target.classList?.contains("pf-hit")) perfLeave(e); });

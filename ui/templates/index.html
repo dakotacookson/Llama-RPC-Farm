@@ -420,10 +420,25 @@
               <option value="60">60 min</option>
             </select>
           </label>
+          <label class="hint" style="display:flex; align-items:center; gap:6px">refresh
+            <select id="perf-every" style="width:auto">
+              <option value="0">off</option>
+              <option value="5">5 s</option>
+              <option value="10" selected>10 s</option>
+              <option value="30">30 s</option>
+            </select>
+          </label>
+          <label class="hint" style="display:flex; align-items:center; gap:6px">sample every
+            <select id="perf-sample" style="width:auto">
+              <option value="5">5 s</option>
+              <option value="10">10 s</option>
+              <option value="30">30 s</option>
+            </select>
+          </label>
           <button class="flow-ctrl-btn" id="perf-refresh" title="Refresh now"><i class="fa-solid fa-rotate"></i></button>
         </div>
       </div>
-      <p class="hint" id="perf-hint">GPU, CPU and RAM of every machine, sampled in the background by the farm (master locally, peers through their agents). History starts when the app starts and covers the last hour.</p>
+      <p class="hint" id="perf-hint">GPU, CPU and RAM of every machine, measured in the background by the farm (master locally, peers through their agents) and kept for the last hour. Hover a chart to read every device at that moment.</p>
       <div id="perf-machines"></div>
     </section>
 

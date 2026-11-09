@@ -6,8 +6,11 @@ collects the same per-machine stats (stats_collector.machine_stats: local
 probes for the master, the peer agent for the others) every INTERVAL
 seconds in a background thread and keeps the last KEEP_SECONDS in memory.
 
-FARM_STATS_HISTORY_SEC sets the interval (default 10; 0 disables the
-sampler). Nothing is written to disk: history starts when the app does.
+FARM_STATS_HISTORY_SEC sets the starting interval (default 5; 0 disables
+the sampler); set_interval() changes it at runtime (Performance tab).
+One round over all machines takes a few seconds (peers answer through
+their agents), so the interval is kept at MIN_INTERVAL or above.
+Nothing is written to disk: history starts when the app does.
 """
 import os
 import threading
@@ -18,7 +21,10 @@ from concurrent.futures import ThreadPoolExecutor
 import config_loader as cfg
 import stats_collector
 
-INTERVAL = int(os.environ.get("FARM_STATS_HISTORY_SEC", "10") or 10)
+MIN_INTERVAL, MAX_INTERVAL = 5, 60
+INTERVAL = int(os.environ.get("FARM_STATS_HISTORY_SEC", "5") or 0)
+if INTERVAL > 0:
+    INTERVAL = max(MIN_INTERVAL, min(INTERVAL, MAX_INTERVAL))
 KEEP_SECONDS = 3600
 
 _lock = threading.Lock()
@@ -80,6 +86,15 @@ def _loop():
         t0 = time.time()
         collect_once()
         time.sleep(max(1.0, INTERVAL - (time.time() - t0)))
+
+
+def set_interval(seconds):
+    """Change the sampling interval (clamped to MIN..MAX); starts the
+    sampler if it was disabled. Returns the interval now in effect."""
+    global INTERVAL
+    INTERVAL = max(MIN_INTERVAL, min(int(seconds), MAX_INTERVAL))
+    start()
+    return INTERVAL
 
 
 def start():
