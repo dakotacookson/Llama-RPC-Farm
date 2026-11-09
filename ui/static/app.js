@@ -6915,11 +6915,9 @@ async function hydrateAppVersion(pill) {
   if (!pill) return;
   try {
     const d = await api("GET", "/api/app-version");
-    const label = d.source
-      ? `app ${d.current || "?"} · source ${d.head || "?"}${d.behind ? ` +${d.behind}` : ""}`
-      : `app ${d.current || "?"}${d.latest && d.latest !== d.current ? ` → ${d.latest}` : ""}`;
+    const label = `app ${d.current || "?"}${d.latest && d.latest !== d.current ? ` → ${d.latest}` : ""}`;
     const updatable = d.source
-      ? (d.behind > 0 && !d.dirty)
+      ? (!!(d.latest && !d.on_latest) && !d.dirty)
       : !!(d.latest && !d.on_latest);
     pill.textContent = label;
     pill.dataset.label = label;
@@ -6929,7 +6927,7 @@ async function hydrateAppVersion(pill) {
     pill.style.opacity = updatable ? "1" : "0.75";
     pill.title = d.source
       ? (d.dirty ? "source tree has local changes — commit or stash before updating"
-                 : updatable ? `Fast-forward ${d.behind} commit(s) and restart`
+                 : updatable ? `Download release ${d.latest} source and restart`
                              : "source checkout is current")
       : (updatable ? `Update to ${d.latest} and restart`
                    : "farm app is current");
@@ -6944,7 +6942,7 @@ function wireAppUpdate(btn) {
     const b = e.currentTarget;
     const source = b.dataset.source === "1";
     const msg = source
-      ? "Fast-forward this source checkout to the latest main and restart the app?"
+      ? "Download the latest release source, update this checkout, and restart the app?"
       : "Download and install the latest farm-app release? The app will restart.";
     if (!window.confirm(msg)) return;
     b.disabled = true; b.textContent = "Updating…";
