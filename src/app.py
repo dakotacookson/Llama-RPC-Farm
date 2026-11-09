@@ -4539,6 +4539,100 @@ def _release_commit(version):
         return _RELEASE_FEED_CACHE["commits"].get(version)
 
 
+# Paths whose last-touching commit defines the app's build identity. Tests
+# and docs are deliberately excluded: a docs-only merge must not prompt
+# every app for an update. The agent identity is the last commit touching
+# peer_agent/ (see the rolling workflow's prepare job).
+APP_COMMIT_PATHS = (
+    "src", "ui", "packaging", "scripts", "requirements.txt",
+    "run.sh", "run.bat", "install.sh", "install.bat",
+    "restart.sh", "restart-llama-swap.sh", ".github/workflows",
+)
+
+
+def _component_on_latest(current_commit, latest_commit, current_version,
+                         latest_version, applied=""):
+    """Update decision for one component.
+
+    Commit fingerprints are exact: an app-only release keeps a peer agent's
+    agent_commit unchanged, so the agent stays "on latest" even though the
+    release tag moved. Fall back to tag/version comparison when either side
+    has no fingerprint (older releases/agents)."""
+    current_commit = (current_commit or "").strip()
+    latest_commit = (latest_commit or "").strip()
+    if latest_commit and current_commit:
+        return current_commit == latest_commit
+    return bool(latest_version and (current_version == latest_version
+                                    or applied == latest_version))
+
+
+def _repo_root():
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _git_component_commit(paths):
+    try:
+        out = subprocess.run(["git", "-C", _repo_root(), "log", "-1",
+                             "--format=%H", "--", *paths],
+                            capture_output=True, text=True, timeout=10)
+        return (out.stdout or "").strip() if out.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _current_app_commit():
+    try:
+        import build_info
+        commit = (getattr(build_info, "APP_COMMIT", "") or "").strip()
+        if commit:
+            return commit
+    except Exception:
+        pass
+    return _git_component_commit(APP_COMMIT_PATHS)
+
+
+_RELEASE_MANIFEST_CACHE = {"ts": 0.0, "version": None, "data": None}
+
+
+def _release_manifest():
+    """Newest release's component manifest (app/agent build commits).
+
+    Published next to the release assets. Returns None for older releases,
+    which makes callers fall back to the legacy tag comparison. Cached 5 min
+    to stay well inside GitHub's public download limits.
+    """
+    versions = _release_feed_versions()
+    if not versions:
+        return None
+    version = versions[0]
+    now = time.time()
+    with _LLAMA_UPDATES_LOCK:
+        if (now - _RELEASE_MANIFEST_CACHE["ts"] < 300
+                and _RELEASE_MANIFEST_CACHE["version"] == version):
+            return _RELEASE_MANIFEST_CACHE["data"]
+    import urllib.request
+    data = None
+    try:
+        url = (f"https://github.com/{_AGENT_REPO}/releases/download/"
+               f"release-{version}/release-manifest.json")
+        req = urllib.request.Request(url, headers={"User-Agent":
+                                                   "llama-rpc-farm"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        if not isinstance(data, dict):
+            data = None
+    except Exception:
+        data = None
+    with _LLAMA_UPDATES_LOCK:
+        _RELEASE_MANIFEST_CACHE.update(ts=now, version=version, data=data)
+    return data
+
+
+def _manifest_commit(field):
+    manifest = _release_manifest() or {}
+    return (manifest.get(field) or "").strip()
+
+
 def _agent_release_info(machine):
     """Latest release agent asset (release tag is the authoritative version)."""
     asset = _agent_binary_asset(machine)
@@ -4552,7 +4646,8 @@ def _agent_release_info(machine):
             f"release-{version}")
     wheel = f"llama_rpc_farm_agent-{version}-py3-none-any.whl"
     return {"asset": asset, "url": f"{base}/{asset}",
-            "wheel_url": f"{base}/{wheel}", "version": version}
+            "wheel_url": f"{base}/{wheel}", "version": version,
+            "commit": _manifest_commit("agent_commit")}
 
 
 _APP_RELEASE_CACHE = {"ts": 0.0, "by_asset": {}}
@@ -4585,17 +4680,19 @@ def _app_release_info():
     return {"asset": asset,
             "url": (f"https://github.com/{_AGENT_REPO}/releases/download/"
                     f"release-{version}/{asset}"),
-            "version": version}
+            "version": version, "commit": _manifest_commit("app_commit")}
 
 
 def _app_version_payload():
     current = getattr(app_version, "__version__", "")
     packaged = bool(getattr(sys, "frozen", False))
+    own_commit = _current_app_commit()
     try:
         info = _app_release_info()
         latest = info.get("version")
+        latest_commit = info.get("commit")
     except Exception:
-        latest = None
+        latest, latest_commit = None, None
     dirty = False
     if not packaged:
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -4606,7 +4703,9 @@ def _app_version_payload():
         except Exception:
             pass
     return {"current": current, "latest": latest,
-            "on_latest": bool(latest and current == latest),
+            "on_latest": _component_on_latest(
+                own_commit, latest_commit, current, latest),
+            "build_commit": own_commit, "latest_commit": latest_commit,
             "packaged": packaged, "source": not packaged,
             "dirty": dirty}
 
@@ -4771,22 +4870,26 @@ def _agent_version_payload(machine):
         return {"current": None, "latest": None, "on_latest": True,
                 "local": True, "packaged": False}
     current = None
+    build_commit = None
     packaged = False
     try:
         v = agent_client.version(machine, timeout=4) or {}
         current = v.get("agent_version")
+        build_commit = v.get("build_commit")
         packaged = bool(v.get("packaged"))
     except Exception:
         current = None
     try:
         info = _agent_release_info(machine)
         latest = info.get("version")
+        latest_commit = info.get("commit")
     except Exception:
-        latest = None
+        latest, latest_commit = None, None
     applied = str(machine.get("agent_release") or "").strip()
     return {"current": current, "latest": latest,
-            "on_latest": bool(latest and (current == latest
-                                          or applied == latest)),
+            "on_latest": _component_on_latest(
+                build_commit, latest_commit, current, latest, applied),
+            "build_commit": build_commit, "latest_commit": latest_commit,
             "packaged": packaged}
 
 

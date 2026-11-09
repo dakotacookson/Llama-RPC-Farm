@@ -2255,8 +2255,10 @@ function fillAgentUpdateState(tr, name) {
       }
       if (v.on_latest) {
         btn.disabled = true;
-        btn.textContent = `Agent on latest (${v.latest})`;
-        btn.title = "peer agent is already on the current version";
+        btn.textContent = "Agent on latest";
+        btn.title = v.current
+          ? `peer agent ${v.current} already contains the latest agent changes`
+          : "peer agent is already on the current version";
       } else if (v.current && v.latest) {
         btn.disabled = false;
         btn.textContent = `Agent ${v.current}→${v.latest}`;
@@ -6980,7 +6982,7 @@ async function hydrateAppVersion(pill) {
   if (!pill) return;
   try {
     const d = await api("GET", "/api/app-version");
-    const label = `app ${d.current || "?"}${d.latest && d.latest !== d.current ? ` → ${d.latest}` : ""}`;
+    const label = `app ${d.current || "?"}${!d.on_latest && d.latest && d.latest !== d.current ? ` → ${d.latest}` : ""}`;
     const updatable = d.source
       ? (!!(d.latest && !d.on_latest) && !d.dirty)
       : !!(d.latest && !d.on_latest);

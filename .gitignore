@@ -85,3 +85,7 @@ generated/agent-wheel/
 /build/
 /agent-wheel/
 /llama-peer-agent.spec
+
+# generated per-build component commits (scripts/stamp_build_info.py)
+src/build_info.py
+peer_agent/llama_peer_agent/build_info.py
