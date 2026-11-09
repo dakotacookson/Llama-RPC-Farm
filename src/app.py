@@ -4576,36 +4576,24 @@ def _app_release_info():
 def _app_version_payload():
     current = getattr(app_version, "__version__", "")
     packaged = bool(getattr(sys, "frozen", False))
-    if not packaged:
-        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        head = behind = 0
-        dirty = False
-        try:
-            h = subprocess.run(["git", "-C", repo, "rev-parse", "--short", "HEAD"],
-                               capture_output=True, text=True, timeout=10)
-            head = (h.stdout or "").strip()
-            b = subprocess.run(
-                ["git", "-C", repo, "rev-list", "--count",
-                 "HEAD..origin/main"],
-                capture_output=True, text=True, timeout=10)
-            behind = int((b.stdout or "0").strip() or 0)
-            d = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
-                               capture_output=True, text=True, timeout=10)
-            dirty = bool((d.stdout or "").strip())
-        except Exception:
-            pass
-        return {"current": current, "latest": current,
-                "on_latest": behind == 0, "packaged": False,
-                "source": True, "head": head, "behind": behind,
-                "dirty": dirty}
     try:
         info = _app_release_info()
         latest = info.get("version")
     except Exception:
         latest = None
+    dirty = False
+    if not packaged:
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        try:
+            d = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
+                               capture_output=True, text=True, timeout=10)
+            dirty = bool((d.stdout or "").strip())
+        except Exception:
+            pass
     return {"current": current, "latest": latest,
             "on_latest": bool(latest and current == latest),
-            "packaged": True, "source": False}
+            "packaged": packaged, "source": not packaged,
+            "dirty": dirty}
 
 
 def _restart_app_binary():
@@ -4637,19 +4625,54 @@ def _update_app_binary():
                 return {"ok": False, "source": True,
                         "detail": "source tree has local changes — commit or "
                                   "stash them before updating"}
-            pull = subprocess.run(
-                ["git", "-C", repo, "pull", "--ff-only", "origin", "main"],
-                capture_output=True, text=True, timeout=600)
-            if pull.returncode != 0:
+            info = _app_release_info()
+            version = info.get("version")
+            if not version:
                 return {"ok": False, "source": True,
-                        "detail": "git pull failed: "
-                                  + ((pull.stderr or pull.stdout or "")[-400:])}
+                        "detail": "could not determine the latest release"}
+            archive = (f"https://github.com/{_AGENT_REPO}/archive/refs/tags/"
+                       f"release-{version}.tar.gz")
+            import tarfile
+            import urllib.request
+            with tempfile.TemporaryDirectory(prefix="farm-src-") as tmp:
+                tarpath = os.path.join(tmp, "src.tar.gz")
+                with urllib.request.urlopen(archive, timeout=180) as r, \
+                        open(tarpath, "wb") as out:
+                    shutil.copyfileobj(r, out)
+                with tarfile.open(tarpath, "r:gz") as tar:
+                    members = tar.getmembers()
+                    for mem in members:
+                        pth = os.path.normpath(mem.name)
+                        if pth.startswith("..") or os.path.isabs(pth):
+                            raise RuntimeError("unsafe archive path")
+                    tar.extractall(tmp)
+                roots = [os.path.join(tmp, d) for d in os.listdir(tmp)
+                         if os.path.isdir(os.path.join(tmp, d))]
+                if not roots:
+                    raise RuntimeError("release archive has no source dir")
+                src = roots[0]
+                for name in ("src", "ui", "peer_agent", "scripts",
+                             "packaging"):
+                    sdir = os.path.join(src, name)
+                    ddir = os.path.join(repo, name)
+                    if os.path.isdir(sdir):
+                        shutil.copytree(sdir, ddir, dirs_exist_ok=True)
+                for name in ("VERSION", "requirements.txt", "install.sh",
+                             "install.bat", "run.sh", "run.bat",
+                             "restart.sh", "restart-llama-swap.sh"):
+                    sp = os.path.join(src, name)
+                    if os.path.isfile(sp):
+                        shutil.copy2(sp, os.path.join(repo, name))
+            subprocess.run([sys.executable,
+                            os.path.join(repo, "scripts", "stamp_version.py"),
+                            version], capture_output=True, text=True,
+                           timeout=120)
             subprocess.run([sys.executable, "-m", "pip", "install", "-q",
                             "-r", os.path.join(repo, "requirements.txt")],
                            capture_output=True, text=True, timeout=600)
         except Exception as e:
             return {"ok": False, "source": True,
-                    "detail": f"source update failed: {e}"}
+                    "detail": f"source release update failed: {e}"}
 
         def _restart_source():
             import time as _t
@@ -4660,8 +4683,9 @@ def _update_app_binary():
             except Exception:
                 pass
         threading.Thread(target=_restart_source, daemon=True).start()
-        return {"ok": True, "source": True, "restarting": True,
-                "detail": "source tree fast-forwarded; restarting"}
+        return {"ok": True, "source": True, "version": version,
+                "restarting": True,
+                "detail": f"source updated to release {version}; restarting"}
     info = _app_release_info()
     url = info.get("url")
     version = info.get("version")
