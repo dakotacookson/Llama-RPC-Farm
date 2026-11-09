@@ -232,10 +232,13 @@ function switchToTab(name) {
 
 document.querySelectorAll("nav button").forEach((btn) => {
   btn.addEventListener("click", () => {
+    const tabName = btn.dataset.tab;
+    if (!tabName) return;
+    const tabEl = $(`#tab-${tabName}`);
+    if (!tabEl) return;               // non-tab nav button / stale panel
     document.querySelectorAll("nav button").forEach(b => b.classList.remove("active"));
     document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
     btn.classList.add("active");
-    const tabEl = $(`#tab-${btn.dataset.tab}`);
     tabEl.classList.add("active");
     triggerTabEnter(tabEl);
     if (btn.dataset.tab === "dashboard") startAutoRefresh();
