@@ -63,19 +63,30 @@ else
 fi
 
 # ---------------------------------------------------------------- venv
-if [ ! -x "$VENV_DIR/bin/python" ] && [ ! -x "$VENV_DIR/Scripts/python.exe" ]; then
-  log "Creating virtualenv at $VENV_DIR"
-  "$PY" -m venv "$VENV_DIR"
+if command -v uv >/dev/null 2>&1; then
+  log "Using uv for virtual environment and dependencies"
+  uv venv --python 3.12 "$VENV_DIR"
+  uv pip install \
+    --python "$VENV_DIR/bin/python" \
+    -r "$REQ"
+else
+  if [ ! -x "$VENV_DIR/bin/python" ] && [ ! -x "$VENV_DIR/Scripts/python.exe" ]; then
+    log "Creating virtualenv at $VENV_DIR"
+    "$PY" -m venv "$VENV_DIR"
+  fi
+
+  VENV_PY="$VENV_DIR/bin/python"
+  if [ -x "$VENV_DIR/Scripts/python.exe" ]; then
+    VENV_PY="$VENV_DIR/Scripts/python.exe"
+  fi
+
+  "$VENV_PY" -m pip --version >/dev/null 2>&1 ||
+    "$VENV_PY" -m ensurepip >/dev/null 2>&1 || true
+
+  log "Installing requirements"
+  "$VENV_PY" -m pip install --upgrade pip -q
+  "$VENV_PY" -m pip install -r "$REQ"
 fi
-
-# pip bootstrap (venvs created by uv-managed pythons may lack it)
-VENV_PY="$VENV_DIR/bin/python"
-if [ -x "$VENV_DIR/Scripts/python.exe" ]; then VENV_PY="$VENV_DIR/Scripts/python.exe"; fi
-"$VENV_PY" -m pip --version >/dev/null 2>&1 || "$VENV_PY" -m ensurepip >/dev/null 2>&1 || true
-
-log "Installing requirements"
-"$VENV_PY" -m pip install --upgrade pip -q
-"$VENV_PY" -m pip install -r "$REQ"
 
 log "Done."
 echo

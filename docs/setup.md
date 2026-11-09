@@ -45,6 +45,8 @@ run.bat         # Windows
 Open `http://localhost:8199`. Stop later with
 `fuser -k 8199/tcp` (Linux) or the dashboard's Restart button.
 
+For a quick smoke test see [examples.md](examples.md)
+
 ### First launch: create the admin account
 
 A fresh install has **no default credentials** and no access keys, so the
