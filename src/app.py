@@ -3230,12 +3230,13 @@ async def hf_search(
     pipeline_tag: str = "",
     author: str = "",
     recommended: bool = False,
+    cursor: str = "",
 ):
     try:
         return await hf_browse.search_gguf(
             query=query, sort=sort, limit=limit, page=page,
             quant=quant, pipeline_tag=pipeline_tag, author=author,
-            recommended=recommended
+            recommended=recommended, cursor=cursor
         )
     except Exception as e:
         # surface HF errors as 502 so UI can show hint
@@ -3443,9 +3444,13 @@ async def hf_pipeline_tags(limit: int = 200):
         raise HTTPException(status_code=502, detail=str(e))
 
 @app.get("/api/hf/collections")
-async def hf_collections(owner: str, limit: int = 20, pipeline_tag: str = "", quant: str = ""):
+async def hf_collections(owner: str, limit: int = 20, pipeline_tag: str = "",
+                         quant: str = "", gguf_only: bool = True):
     try:
-        return await hf_browse.list_collections(owner=owner, limit=limit, pipeline_tag=pipeline_tag, quant=quant)
+        return await hf_browse.list_collections(owner=owner, limit=limit,
+                                                pipeline_tag=pipeline_tag,
+                                                quant=quant,
+                                                gguf_only=gguf_only)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
