@@ -2272,9 +2272,16 @@ function fillInlineUpdateState(tr, name) {
 function detectedHTML(m) {
   const d = m.detected;
   if (!d) return '<span class="status-warn">not detected</span>';
+  const gpus = d.gpu_names || [];
+  if (!gpus.length) {
+    return `<div class="detected">
+      <div>CPU only</div>
+      <small>${d.cores || "?"} cores, ${d.ram_total_gb || "?"} GB RAM</small>
+    </div>`;
+  }
   return `<div class="detected">
-    <div>${(d.gpu_names || []).length} GPU(s), ${d.vram_total_gb} GB VRAM</div>
-    <small>${(d.gpu_names || []).join(", ")}</small>
+    <div>${gpus.length} GPU(s), ${d.vram_total_gb} GB VRAM</div>
+    <small>${gpus.join(", ")}</small>
     <small>${d.cores} cores, ${d.ram_total_gb} GB RAM</small>
   </div>`;
 }
