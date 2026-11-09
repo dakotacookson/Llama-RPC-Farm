@@ -8,7 +8,7 @@ MODEL_DIR="${MODEL_DIR:-$HOME/models}"
 MODEL_FILE="${MODEL_FILE:-Qwen_Qwen3.5-0.8B-Q4_K_M.gguf}"
 MODEL_PATH="$MODEL_DIR/$MODEL_FILE"
 
-LLAMA_SERVER="${LLAMA_SERVER:-$HOME/llama.cpp/build/bin/llama-server}"
+LLAMA_SERVER="${LLAMA_SERVER:-$HOME/llama.cpp/bin/llama-server}"
 RPC_PORT="${RPC_PORT:-50052}"
 HTTP_PORT="${HTTP_PORT:-8084}"
 
@@ -36,6 +36,6 @@ exec "$LLAMA_SERVER" \
   --flash-attn on \
   --jinja \
   --rpc "$WORKER_IP:$RPC_PORT" \
-  --device "Metal,RPC0" \
+  --device "MTL0,RPC0" \
   --host 127.0.0.1 \
   --port "$HTTP_PORT"
