@@ -447,7 +447,7 @@ async def auth_login(l: LoginIn, response: Response):
     response.set_cookie(LOGIN_COOKIE, sid, max_age=30 * 24 * 3600,
                         httponly=True, samesite="lax",
                         path="/")
-    return {"ok": True, "user": user}
+    return {"ok": True, "user": user, "session": sid}
 
 
 @app.post("/api/auth/logout")
@@ -703,7 +703,7 @@ async def auth_bootstrap(l: FirstLoginIn, response: Response):
     _vault.set_web_session(sid, name)
     response.set_cookie(LOGIN_COOKIE, sid, max_age=30 * 24 * 3600,
                         httponly=True, samesite="lax", path="/")
-    return {"ok": True, "user": name, "key_created": True}
+    return {"ok": True, "user": name, "session": sid, "key_created": True}
 
 
 # ---------------- pages ----------------
