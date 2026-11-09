@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 
-from . import PROTOCOL_VERSION, __version__
+from . import BUILD_COMMIT, PROTOCOL_VERSION, __version__
 from .config import AgentConfig, ensure_dirs
 from . import processes
 from . import discovery
@@ -110,6 +110,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             import sys as _sys
             return 200, {"agent_version": __version__,
                          "protocol_version": PROTOCOL_VERSION,
+                         "build_commit": BUILD_COMMIT,
                          "packaged": bool(getattr(_sys, "frozen", False))}
         if path == "/capabilities":
             return 200, processes.capabilities(config)

@@ -27,6 +27,7 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 | `GET /api/machines/{name}/detail` | Machine detail card (kernel, cpu, disks, llama version, RDMA) |
 | `GET /api/stats` | Cluster stats snapshot (blocking: waits for every machine's collection; 5s cache) |
 | `GET /api/stats/stream` | **Per-machine stats as NDJSON**: one JSON line per machine as its collection completes, then a final `{totals, ts}` line. Dashboard consumes this so one slow/offline machine can't delay the others — each card paints the moment its own data lands |
+| `GET /api/stats/history?minutes=15&points=180` | Rolling per-machine GPU/CPU/RAM samples for the Performance tab, kept in memory for the last hour by a background sampler (`FARM_STATS_HISTORY_SEC`, default 10 s; `0` disables) |
 | `GET /api/readiness` | Setup checklist for every machine: agent reachability, `llama-server`, `ggml-rpc-server`, and (on the swap host) llama-swap. Drives the dashboard “Setup needed” panel and machine-page badges/buttons |
 | `GET /api/machines/{name}/readiness` | Same checklist for one machine |
 
@@ -85,6 +86,7 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 | `POST /api/swap/stop` | Stop daemon (peers stay up) |
 | `GET /api/swap/status` | Running + port |
 | `GET /api/swap/loaded` | Currently loaded model ids (from llama-swap) |
+| `GET /api/swap/activity?limit=200` | Recent requests from llama-swap's activity log + per-model totals (scoped keys: granted models only, no client address) |
 | `POST /api/swap/evict/{model_id}`, `/api/swap/evict-all` | Evict loaded models |
 | `GET /api/swap/reload-status` | Async reload progress |
 

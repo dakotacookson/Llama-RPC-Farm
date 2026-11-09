@@ -260,6 +260,8 @@ document.querySelectorAll("nav button").forEach((btn) => {
     if (btn.dataset.tab === "groups") { loadGroups(); renderGroupMachines([]); }
     if (btn.dataset.tab === "visualizer") { initFlowVisualizer(); }
     if (btn.dataset.tab === "logs") { initLogsTab(); }
+    if (btn.dataset.tab === "swapmetrics") smStart(); else smStop();
+    if (btn.dataset.tab === "perf") perfStart(); else perfStop();
     if (btn.dataset.tab === "models") {
       loadModels();
       getAppSettings().then(s => {
@@ -930,6 +932,16 @@ navCollapseInit();
 function barColor(pct) { return pct >= 90 ? "red" : pct >= 70 ? "yellow" : "green"; }
 function valColor(pct) { return pct >= 90 ? "var(--bad)" : pct >= 70 ? "var(--warn)" : "var(--ok)"; }
 
+/* "NVIDIA GeForce RTX 5060 Laptop GPU" -> "RTX 5060 Laptop": the vendor
+   prefix and trailing "GPU" add width, not information, on a narrow card
+   (the full name stays in the cell's title). */
+function shortGpuName(name) {
+  return String(name || "")
+    .replace(/^(NVIDIA\s+(GeForce\s+)?|AMD\s+(Radeon\s+)?|Intel(\(R\))?\s+)/i, "")
+    .replace(/\s+GPU$/i, "")
+    .trim() || String(name || "");
+}
+
 function statCardHTML(m) {
   const online = m.status === "online";
   const gpus = m.gpus || [];
@@ -945,7 +957,7 @@ function statCardHTML(m) {
         <span class="card-label">
           <span class="status-dot ${online ? "on" : "off"}"></span>
           <i class="fa-solid fa-server card-label-icon"></i>
-          ${m.name}
+          <span class="card-name">${m.name}</span>
           ${m.is_master ? '<span class="badge badge-master">master</span>' : ""}
         </span>
         <div class="card-actions">
@@ -956,12 +968,12 @@ function statCardHTML(m) {
       <div class="card-sub">${cardSub}</div>
       ${gpus.length ? `
         <table class="gpu-table">
-          <thead><tr><th>Idx</th><th>GPU</th><th>Util</th><th>VRAM</th><th>Temp</th></tr></thead>
+          <thead><tr><th class="gpu-idx">Idx</th><th>GPU</th><th>Util</th><th>VRAM</th><th>Temp</th></tr></thead>
           <tbody>
             ${gpus.map(g => `
               <tr>
-                <td>${g.index}</td>
-                <td class="gpu-name">${g.name}</td>
+                <td class="gpu-idx">${g.index}</td>
+                <td class="gpu-name" title="${escHtml(g.name)}">${escHtml(shortGpuName(g.name))}</td>
                 <td class="gpu-util">${g.util}%</td>
                 <td class="gpu-vram">${g.mem_used_gb}/${g.mem_total_gb}GB</td>
                 <td class="gpu-temp ${g.temp >= 75 ? "hot" : ""}">${g.temp}°C</td>
@@ -971,7 +983,7 @@ function statCardHTML(m) {
       <div class="card-metrics">
         <div class="card-metric">
           <div class="card-metric-label"><i class="fa-solid fa-gauge-high"></i> CPU</div>
-          <div class="card-metric-value" style="color:${valColor(m.cpu_pct)}">${Math.round(m.cpu_pct || 0)}%${m.cores ? ` · ${m.cores} cores` : ""}</div>
+          <div class="card-metric-value" style="color:${valColor(m.cpu_pct)}">${Math.round(m.cpu_pct || 0)}%</div>
           <div class="metric-bar"><div class="metric-fill" style="width:${m.cpu_pct || 0}%; background:${valColor(m.cpu_pct)}"></div></div>
           ${m.cores ? `<div class="card-metric-label">${((m.cpu_pct || 0) / 100 * m.cores).toFixed(1)} / ${m.cores} cores</div>` : ""}
         </div>
@@ -1113,6 +1125,25 @@ on("#setup-readiness", "click", async (e) => {
     await loadReadiness(true); loadMachines(true); loadStatus();
   }
 });
+
+/* Lightweight live refresh for the Machines page: agent/app version
+   pills update in place every few seconds without re-rendering rows. */
+let _liveRefreshBusy = false;
+async function refreshLiveMachineState() {
+  if (_liveRefreshBusy) return;
+  if (!document.querySelector("#tab-machines.active")) return;
+  _liveRefreshBusy = true;
+  try {
+    const appPill = document.querySelector("[data-app-version]");
+    if (appPill) hydrateAppVersion(appPill);
+    document.querySelectorAll(".scan-model[data-machine-name]").forEach(tr => {
+      fillAgentUpdateState(tr, tr.dataset.machineName);
+    });
+  } finally {
+    _liveRefreshBusy = false;
+  }
+}
+setInterval(refreshLiveMachineState, 3000);
 
 /* ---- machine detail modal (dashboard card click) ---- */
 // per-machine detail cache: render the last result INSTANTLY on reopen,
@@ -2086,6 +2117,7 @@ async function loadMachines(skipCaps = false) {
         <button class="small danger" data-act="delete">Delete</button>
       </div>`;
       tr.classList.add("scan-model");
+      tr.dataset.machineName = m.name;
       if (m.role === "master" || m.is_local) {
         const appPill = tr.querySelector('[data-app-version]');
         hydrateAppVersion(appPill);
@@ -2151,6 +2183,7 @@ async function loadMachines(skipCaps = false) {
         const btn = e.currentTarget;
         if (!window.confirm(`Install/update the peer agent on ${m.name}?\n\nThe agent will be restarted.`)) return;
         btn.disabled = true;
+        btn.dataset.busy = "1";
         const old = btn.textContent;
         btn.textContent = "Updating agent…";
         try {
@@ -2161,6 +2194,7 @@ async function loadMachines(skipCaps = false) {
           loadMachines(true);
         } catch (err) {
           toast(`Agent update failed on ${m.name}: ${err.message}`, "bad");
+          delete btn.dataset.busy;
           btn.disabled = false;
           btn.textContent = old;
         }
@@ -2209,7 +2243,7 @@ async function loadMachines(skipCaps = false) {
    Update button when the version can't be probed (offline machine). */
 function fillAgentUpdateState(tr, name) {
   const btn = tr.querySelector('[data-act="agent-update"]');
-  if (!btn) return;
+  if (!btn || btn.dataset.busy === "1") return;
   api("GET", `/api/machines/${encodeURIComponent(name)}/agent-version`)
     .then(v => {
       if (!btn.isConnected) return;
@@ -2221,8 +2255,10 @@ function fillAgentUpdateState(tr, name) {
       }
       if (v.on_latest) {
         btn.disabled = true;
-        btn.textContent = `Agent on latest (${v.latest})`;
-        btn.title = "peer agent is already on the current version";
+        btn.textContent = "Agent on latest";
+        btn.title = v.current
+          ? `peer agent ${v.current} already contains the latest agent changes`
+          : "peer agent is already on the current version";
       } else if (v.current && v.latest) {
         btn.disabled = false;
         btn.textContent = `Agent ${v.current}→${v.latest}`;
@@ -5148,7 +5184,10 @@ async function doLogin() {
   const btn = $("#login-go");
   try {
     if (btn) btn.disabled = true;
-    await api("POST", "/api/auth/login", { username: u, password: p });
+    const lr = await api("POST", "/api/auth/login", { username: u, password: p });
+    if (lr && lr.session) setFarmSession(lr.session);
+    // old localStorage API key would shadow the cookie session
+    setAccessKey("");
     // verify the cookie actually landed BEFORE reloading — Firefox
     // HTTPS-only upgrades / cookie denials would otherwise loop
     const me = await api("GET", "/api/auth/me");
@@ -5190,9 +5229,11 @@ async function doBootstrap() {
   }
   try {
     if (btn) btn.disabled = true;
-    await api("POST", "/api/auth/bootstrap", {
+    const br = await api("POST", "/api/auth/bootstrap", {
       username: u, password: p, key_name: u,
     });
+    if (br && br.session) setFarmSession(br.session);
+    setAccessKey("");
     $("#login-modal")?.classList.add("hidden");
     window.location.reload();
   } catch (e) {
@@ -5541,9 +5582,15 @@ async function loadLaunch() {
     const btn = card.querySelector('[data-act="launch"]');
     const hint = card.querySelector(".launch-ready-hint");
     const notReady = down.length > 0;
+    const key = card.dataset.variant
+      ? `${card.dataset.model}--${card.dataset.variant}`
+      : card.dataset.model;
+    const on = loadedSet.has(key);
     if (btn) {
-      btn.disabled = notReady || card.dataset.loading === "1";
-      btn.title = notReady ? `unavailable — down: ${down.join(", ")}` : "Launch";
+      // already loaded: nothing to load (Evict first to reload)
+      btn.disabled = notReady || on || card.dataset.loading === "1";
+      btn.title = notReady ? `unavailable — down: ${down.join(", ")}`
+        : on ? "already loaded" : "Launch";
     }
     card.classList.toggle("not-ready", notReady);
     if (hint) {
@@ -5553,10 +5600,6 @@ async function loadLaunch() {
     }
     const cst = card.querySelector(".card-loaded");
     if (cst) {
-      const key = card.dataset.variant
-        ? `${card.dataset.model}--${card.dataset.variant}`
-        : card.dataset.model;
-      const on = loadedSet.has(key);
       cst.className = `serving-ind card-loaded ${on ? "status-ok" : "status-warn"}`;
       cst.textContent = on ? "loaded" : "idle";
       // nothing to evict unless the model is loaded (or loading: evict
@@ -6939,7 +6982,7 @@ async function hydrateAppVersion(pill) {
   if (!pill) return;
   try {
     const d = await api("GET", "/api/app-version");
-    const label = `app ${d.current || "?"}${d.latest && d.latest !== d.current ? ` → ${d.latest}` : ""}`;
+    const label = `app ${d.current || "?"}${!d.on_latest && d.latest && d.latest !== d.current ? ` → ${d.latest}` : ""}`;
     const updatable = d.source
       ? (!!(d.latest && !d.on_latest) && !d.dirty)
       : !!(d.latest && !d.on_latest);
@@ -7261,11 +7304,13 @@ on("#dl-start", "click", async (e) => {
 
 /* ---------------- HF GGUF browser (amazing search) ---------------- */
 let hfPage = 0, hfQuery = "", hfQuant = "", hfTask = "", hfCompany = "", hfCollection = "", hfSort = "downloads", hfActiveId = null, hfDebounce = null;
+let hfCursor = null, hfNextCursor = null, hfCursorMode = false, hfCursorStack = [];
 let hfFormat = "gguf"; // "gguf" | "safetensors" — which HF repo flavor the browse pane lists
 let hfVramTotal = 0; // for recommended highlight
 let hfAvatarCache = {}; // author -> url
 let hfCompaniesFull = [];
 let hfCompanyFilterDebounce = null;
+let hfCompaniesPoll = null;
 let hfRecommended = false;
 const HF_RECOMMENDED = ["openai","google","Qwen","deepseek-ai","microsoft","meta-llama","mistralai","huihui-ai","orcarouter","unsloth","ornith-ai"];
 async function getHfAvatar(author){
@@ -7283,8 +7328,12 @@ async function getHfAvatar(author){
 }
 async function loadHfCompanies(search=""){
   const sel=$("#hf-company"); if(!sel) return;
+  if(hfCompaniesPoll){ clearTimeout(hfCompaniesPoll); hfCompaniesPoll=null; }
   try{
-    const params = new URLSearchParams({limit:"150"});
+    // Backend "All companies" is backed by a complete GGUF publisher index;
+    // search is an exhaustive substring match over it, so typing reaches any
+    // author even though the visible picker is capped to keep the DOM sane.
+    const params = new URLSearchParams({limit: search ? "2000" : "1000"});
     if(search) params.set("search", search);
     if(hfTask) params.set("pipeline_tag", hfTask);
     if(hfQuant) params.set("quant", hfQuant);
@@ -7302,7 +7351,20 @@ async function loadHfCompanies(search=""){
     }
     if(cur && [...sel.options].some(o=>o.value===cur)) sel.value=cur;
     const hint=$("#hf-results-hint");
-    if(hint && data.totalUnique) hint.textContent = `${toShow.length} companies · ${data.totalUnique} total unique`;
+    if(hint && data.totalUnique != null){
+      const total = Number(data.totalUnique).toLocaleString();
+      const scan = data.scanning
+        ? ` · indexing GGUF publishers… ${Number(data.scanned_models||0).toLocaleString()} models`
+        : "";
+      hint.textContent = `${toShow.length} shown · ${total} companies${scan}`;
+    }
+    // The index builds in the background (~1–2 min, persisted). Keep the
+    // picker growing until it is complete, but never clobber an active search.
+    if(data.scanning && !search && !hfRecommended){
+      hfCompaniesPoll = setTimeout(()=>{
+        if(!($("#hf-company-search")?.value||"").trim()) loadHfCompanies("");
+      }, 5000);
+    }
   }catch(e){ console.warn("companies load failed", e.message); }
 }
 function filterHfCompaniesLocal(q){
@@ -7395,25 +7457,27 @@ async function initHfBrowse(){
     const st = await api("GET","/api/stats");
     hfVramTotal = (st.totals?.vram?.total) || 0;
   }catch(_){ hfVramTotal = 0; }
-  // defaults per user request: empty search, Q4_K_M, Text, trending, Recommended
+  // Broad-discovery defaults: All quants, All tasks, Most downloads,
+  // All companies, Recommended OFF. Recommended is an opt-in curated
+  // shortlist; defaulting it on hid every GGUF publisher not in it.
   $("#hf-query").value = "";
-  hfQuant = "Q4_K_M";
+  hfQuant = "";
   document.querySelectorAll("#hf-quant-chips .hw-chip").forEach(b=> b.classList.toggle("active", b.dataset.quant===hfQuant));
-  hfTask = "text-generation";
+  hfTask = "";
   document.querySelectorAll("#hf-task-chips .hw-chip").forEach(b=> b.classList.toggle("active", b.dataset.task===hfTask));
   const pipeSel=$("#hf-pipeline-select"); if(pipeSel) pipeSel.value = hfTask;
-  const sortSel=$("#hf-sort"); if(sortSel) sortSel.value = "trending";
-  hfSort = "trending";
-  hfRecommended = true;
-  const recChip=$("#hf-recommended"); if(recChip){ recChip.classList.add("active"); recChip.dataset.recommended="true"; }
-  // reset company/collection to All (recommended filter will limit to curated)
+  const sortSel=$("#hf-sort"); if(sortSel) sortSel.value = "downloads";
+  hfSort = "downloads";
+  hfRecommended = false;
+  const recChip=$("#hf-recommended"); if(recChip){ recChip.classList.remove("active"); recChip.dataset.recommended="false"; }
   hfCompany = ""; const compSel=$("#hf-company"); if(compSel) compSel.value="";
   hfCollection = ""; const collSel=$("#hf-collection"); if(collSel) collSel.value="";
   if(compSel) await loadHfCollections("");
   doHfSearch(true);
 }
 async function doHfSearch(resetPage){
-  if(resetPage) hfPage = 0;
+  if(resetPage){ hfPage = 0; hfCursor = null; hfNextCursor = null;
+                 hfCursorMode = false; hfCursorStack = []; }
   hfQuery = $("#hf-query")?.value.trim() || "";
   hfSort = $("#hf-sort")?.value || "downloads";
   hfCompany = $("#hf-company")?.value || "";
@@ -7433,7 +7497,14 @@ async function doHfSearch(resetPage){
       const models = (data.items||[]).map(it=> ({
         id: it.id, author: it.author, downloads: it.downloads||0, likes: it.likes||0, pipeline_tag: it.pipeline_tag||"", tags: it.tags||[], ggufCount: it.ggufCount||0, gated: false
       }));
-      renderHfResults({models, total: models.length});
+      if(models.length){
+        renderHfResults({models, total: models.length});
+      } else {
+        // renderHfResults' generic empty state uses the search query, which
+        // reads as "No GGUF models found for “”" in collection mode.
+        list.innerHTML = `<p class="hint" style="padding:14px">No GGUF models in “${escHtml(data.title||hfCollection)}” — this collection is source/safetensors weights only. Search the model name for community GGUF quants.</p>`;
+        $("#hf-detail").style.display="none";
+      }
       if(status) status.textContent = models.length
         ? `${models.length} GGUF models in "${data.title||hfCollection}"`
         : `No GGUF models in "${data.title||hfCollection}" — only source/safetensors repos`;
@@ -7450,24 +7521,28 @@ async function doHfSearch(resetPage){
   list.innerHTML = `<div style="padding:12px"><div class="hf-skeleton" style="width:80%"></div><div class="hf-skeleton" style="width:60%"></div><div class="hf-skeleton" style="width:90%"></div></div>`.repeat(3);
   if(status) status.textContent = "Searching Hugging Face…";
   try{
-    const qs = new URLSearchParams({query: hfQuery, sort: hfSort, limit:"20", page:String(hfPage), quant: hfQuant, pipeline_tag: hfTask, author: hfCompany, recommended: hfRecommended ? "true" : "false", fmt: hfFormat});
+    const qs = new URLSearchParams({query: hfQuery, sort: hfSort, limit:"50", page:String(hfPage), quant: hfQuant, pipeline_tag: hfTask, author: hfCompany, recommended: hfRecommended ? "true" : "false", fmt: hfFormat});
+    if(hfCursor) qs.set("cursor", hfCursor);
     const data = await api("GET", `/api/hf/search?${qs}`);
     renderHfResults(data);
     // gated hint
-    // chunked pagination: backend returns exact_total only when it knows
-    // the full count (snapshot path / HF exhausted). Otherwise page with
-    // has_more — Next fetches the next chunk on demand.
+    // Pagination is cursor-based against HF's Link: rel="next" chain (the
+    // deprecated skip offset silently lost rows on deep pages). Cursor
+    // pages are batch-aligned and may be empty when a quant filter is
+    // sparse; the backend advances and refills, so nothing is skipped.
+    hfNextCursor = data.next_cursor || null;
+    hfCursorMode = data.paged_by === "cursor";
     const gatedCount = (data.models||[]).filter(m=>m.gated).length;
     const recHint = hfRecommended ? " · ★ Recommended" : "";
     const exact = data.exact_total && data.total != null;
     const totalAll = data.total ?? 0;
-    const hasMore = data.has_more ?? ((data.models||[]).length >= 20);
-    const lastPage = exact ? Math.max(1, Math.ceil(totalAll/20)) : null;
+    const hasMore = data.has_more ?? !!hfNextCursor;
+    const lastPage = exact ? Math.max(1, Math.ceil(totalAll/50)) : null;
     const pageLabel = exact ? `page ${hfPage+1}/${lastPage}` : `page ${hfPage+1}${hasMore ? "" : " (end)"}`;
     const countLabel = exact ? `${data.models?.length||0} of ${totalAll} models` : `${data.models?.length||0} models${hasMore ? " · more…" : ""}`;
     if(status) status.textContent = `${countLabel} · ${pageLabel}` + (gatedCount?` · ${gatedCount} gated`:"") + recHint;
     if(hint) hint.textContent = exact ? `${totalAll} ${hfFormat === "safetensors" ? "safetensors" : "GGUF"} models` + (hfCompany?` — ${hfCompany}`: hfRecommended?` — Recommended`:"") : `${hfFormat === "safetensors" ? "safetensors" : "GGUF"} models${hasMore ? " · more available" : ""}` + (hfCompany?` — ${hfCompany}`: hfRecommended?` — Recommended`:"");
-    $("#hf-prev").disabled = hfPage===0;
+    $("#hf-prev").disabled = hfCursorMode ? !hfCursorStack.length : hfPage===0;
     $("#hf-next").disabled = !hasMore;
   }catch(e){
     const msg = e.message||"";
@@ -7482,7 +7557,11 @@ function renderHfResults(data){
   const list=$("#hf-results"); if(!list) return;
   const models = data.models||[];
   const st = hfFormat === "safetensors";
-  if(!models.length){ list.innerHTML = `<p class="hint" style="padding:14px">No ${st?"safetensors":"GGUF"} models found for “${escHtml(hfQuery)}”. Try Qwen, Mistral, Phi.</p>`; $("#hf-detail").style.display="none"; return; }
+  if(!models.length){
+    const forQ = hfQuery ? ` for “${escHtml(hfQuery)}”` : "";
+    list.innerHTML = `<p class="hint" style="padding:14px">No ${st?"safetensors":"GGUF"} models found${forQ}. Try Qwen, Mistral, Phi.</p>`;
+    $("#hf-detail").style.display="none"; return;
+  }
   list.innerHTML = models.map(m=>`
     <div class="hf-card ${hfActiveId===m.id?'active':''}" data-id="${escHtml(m.id)}">
       <img class="hf-avatar" data-author="${escHtml(m.author)}" src="${escHtml(proxiedImgSrc(`https://ui-avatars.com/api/?name=${encodeURIComponent(m.author)}&background=171c29&color=9aa5bd&size=56&bold=true`))}" alt="${escHtml(m.author)}" loading="lazy">
@@ -7743,10 +7822,29 @@ on("#hf-collection","change", ()=>{
 });
 on("#hf-company-search","input", (e)=>{
   clearTimeout(hfCompanyFilterDebounce);
-  hfCompanyFilterDebounce = setTimeout(()=> filterHfCompaniesLocal(e.target.value), 200);
+  hfCompanyFilterDebounce = setTimeout(()=> loadHfCompanies((e.target.value||"").trim()), 250);
 });
-on("#hf-prev","click", ()=>{ if(hfPage>0){ hfPage--; doHfSearch(false); } });
-on("#hf-next","click", ()=>{ hfPage++; doHfSearch(false); });
+on("#hf-prev","click", ()=>{
+  if(hfCursorMode){
+    if(!hfCursorStack.length) return;
+    hfCursor = hfCursorStack.pop();
+    hfPage = Math.max(0, hfPage - 1);
+    doHfSearch(false);
+  } else if(hfPage>0){
+    hfPage--; doHfSearch(false);
+  }
+});
+on("#hf-next","click", ()=>{
+  if(hfCursorMode){
+    if(!hfNextCursor) return;
+    hfCursorStack.push(hfCursor);
+    hfCursor = hfNextCursor;
+    hfPage++;
+    doHfSearch(false);
+  } else {
+    hfPage++; doHfSearch(false);
+  }
+});
 /* format is always GGUF quants (llama.cpp). */
 function hfSetFormat(fmt){
   hfFormat = "gguf";
@@ -9437,3 +9535,338 @@ async function loadDecodeSpeed() {
     if (box) box.textContent = "speed data failed: " + err.message;
   }
 }
+
+/* ---------------- Activity & Performance (llama-swap metrics) ----------------
+   llama-swap records every request it proxies and samples the swap host's
+   GPUs/CPU/RAM. /api/swap/activity and /api/swap/performance read those
+   (scoped keys see only their granted models); peers' GPUs come from the
+   farm's own /api/stats. One chart per measure, no dual axes. */
+let smTimer = null, smBusy = false;
+const smNum = (v) => (v == null ? "–" : Number(v).toLocaleString());
+function smTime(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? "" : d.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+}
+function smTimeS(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? "" : d.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+}
+function smDur(ms) {
+  if (ms == null) return "–";
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms)} ms`;
+}
+/* single-series line: max top-left, latest value top-right, first/last
+   time under the plot, full-height hover columns with the exact value */
+function smLine(samples, key, {max, color, fmt, unit, title}) {
+  const W = 360, H = 120, padL = 8, padR = 8, padT = 24, padB = 18;
+  const pts = samples.filter(s => s[key] != null);
+  if (pts.length < 2) return `<div class="sm-chart"><div class="sm-chart-title">${escHtml(title)}</div><div class="hint">no samples yet</div></div>`;
+  const vals = pts.map(s => Number(s[key]));
+  const top = max || Math.max(1, ...vals);
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const x = i => padL + (i / (pts.length - 1)) * iw;
+  const y = v => padT + ih - (Math.min(v, top) / top) * ih;
+  const line = pts.map((s, i) => `${i ? "L" : "M"} ${x(i).toFixed(1)} ${y(vals[i]).toFixed(1)}`).join(" ");
+  const last = vals[vals.length - 1];
+  let svg = `<text x="${padL}" y="12" font-size="10" font-weight="600" fill="var(--muted, #999)">max ${escHtml(fmt(top))}${escHtml(unit)}</text>
+    <text x="${W - padR}" y="13" font-size="13" font-weight="700" text-anchor="end" fill="var(--text)">${escHtml(fmt(last))}${escHtml(unit)}</text>
+    <line x1="${padL}" x2="${W - padR}" y1="${padT + ih}" y2="${padT + ih}" stroke="var(--border-soft)" stroke-width="1"/>
+    <path d="${line} L ${x(pts.length - 1).toFixed(1)} ${padT + ih} L ${padL} ${padT + ih} Z" fill="${color}" opacity="0.12"/>
+    <path d="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>`;
+  const colW = iw / pts.length;
+  pts.forEach((s, i) => {
+    svg += `<rect x="${(x(i) - colW / 2).toFixed(1)}" y="${padT}" width="${colW.toFixed(1)}" height="${ih}" fill="transparent"><title>${escHtml(smTime(s.ts))} — ${escHtml(fmt(vals[i]))}${escHtml(unit)}</title></rect>`;
+  });
+  svg += `<text x="${padL}" y="${H - 4}" font-size="10" fill="var(--muted, #999)">${escHtml(smTime(pts[0].ts))}</text>
+    <text x="${W - padR}" y="${H - 4}" font-size="10" text-anchor="end" fill="var(--muted, #999)">${escHtml(smTime(pts[pts.length - 1].ts))}</text>`;
+  return `<div class="sm-chart"><div class="sm-chart-title">${escHtml(title)}</div><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${escHtml(title)}" style="width:100%; height:auto; overflow:visible">${svg}</svg></div>`;
+}
+function smRenderActivity(a) {
+  const tiles = $("#sm-tiles"), models = $("#sm-models"), rows = $("#sm-rows");
+  if (!a.running) {
+    tiles.innerHTML = ""; models.innerHTML = `<p class="hint">llama-swap is not running — use Launch All.</p>`;
+    rows.innerHTML = ""; return;
+  }
+  if (a.error) { models.innerHTML = `<p class="status-bad">${escHtml(a.error)}</p>`; return; }
+  const sum = (k) => a.models.reduce((t, m) => t + (m[k] || 0), 0);
+  const req = sum("requests"), inTok = sum("input_tokens"), outTok = sum("output_tokens");
+  const sp = a.speed || {};
+  const gens = a.models.filter(m => m.gen_tps);
+  const tile = (label, value, sub) => `<div class="sm-tile"><div class="sm-tile-label">${escHtml(label)}</div><div class="sm-tile-value">${value}</div>${sub ? `<div class="sm-tile-sub">${escHtml(sub)}</div>` : ""}</div>`;
+  tiles.innerHTML =
+    tile("Requests", smNum(req), a.total != null && !a.scoped ? `last ${smNum(a.rows.length)} of ${smNum(a.total)}` : `last ${smNum(a.rows.length)}`) +
+    tile("Input tokens", smNum(inTok), "prompt / text sent in") +
+    tile("Output tokens", smNum(outTok), outTok ? "generated" : "none (embeddings generate none)") +
+    tile("Model speed", sp.median_tps ? `${smNum(Math.round(sp.median_tps))} <small>tok/s</small>` : "–", "input tok/s, median per request") +
+    tile("Throughput", sp.throughput_tps ? `${smNum(Math.round(sp.throughput_tps))} <small>tok/s</small>` : "–", sp.window_s ? `input tokens over ${smDur(sp.window_s * 1000)} of wall time` : "input tokens ÷ wall time") +
+    tile("Generation speed", gens.length ? `${smNum(Math.round(gens.reduce((t, m) => t + m.gen_tps, 0) / gens.length))} <small>tok/s</small>` : "–", gens.length ? "llama-server timings" : "no chat requests yet");
+  $("#sm-models-note").textContent = a.scoped ? "· only models your key can use" : `· over the last ${a.rows.length} requests`;
+  models.innerHTML = a.models.length ? `<table class="sm-table"><thead><tr><th>Model</th><th>Task</th><th>Requests</th><th>Errors</th><th>Input tok</th><th>Output tok</th><th>Input tok/s (median)</th><th>Throughput tok/s</th><th>Gen tok/s</th></tr></thead><tbody>${
+    a.models.map(m => `<tr><td>${escHtml(m.model)}</td><td>${escHtml(m.task || "–")}</td><td>${smNum(m.requests)}</td><td>${m.errors ? `<span class="status-bad">${smNum(m.errors)}</span>` : "0"}</td><td>${smNum(m.input_tokens)}</td><td>${smNum(m.output_tokens)}</td><td>${smNum(m.median_tps)}</td><td>${smNum(m.throughput_tps)}</td><td>${smNum(m.gen_tps)}</td></tr>`).join("")
+  }</tbody></table>` : `<p class="hint">No requests recorded yet.</p>`;
+  smLastActivity = a;
+  smRenderRows();
+}
+/* recent requests: click a row to open its headers/body underneath
+   (admins only). Failed requests are kept by the farm; others only
+   while llama-swap still has them (~30 s). The open row survives the
+   5 s refresh. */
+let smLastActivity = null, smOpenCap = null;
+const smDetails = {};
+function smDetailHtml(d) {
+  if (!d) return `<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> loading…</p>`;
+  if (d.error) return `<p class="status-bad">${escHtml(d.error)}</p>`;
+  const hdrs = h => Object.entries(h || {}).map(([k, v]) => `${escHtml(k)}: ${escHtml(String(v))}`).join("\n") || "–";
+  const enc = d.req_body_utf8 === false
+    ? `<p class="status-bad"><i class="fa-solid fa-triangle-exclamation"></i> The request body is not valid UTF-8 — the client sent text in another encoding (for example a Windows code page). llama-server rejects such JSON.</p>` : "";
+  const resp = d.resp_body != null
+    ? `<pre class="sm-pre">${escHtml(d.resp_body)}</pre>`
+    : `<p class="hint">llama-swap did not record the response body.</p>`;
+  return `${enc}
+    <div class="sm-detail-grid">
+      <div><div class="sm-chart-title">Request body (${smNum(d.req_body_bytes)} bytes)</div><pre class="sm-pre">${escHtml(d.req_body ?? "–")}</pre>
+        <div class="sm-chart-title">Request headers</div><pre class="sm-pre">${hdrs(d.req_headers)}</pre></div>
+      <div><div class="sm-chart-title">Response body</div>${resp}
+        <div class="sm-chart-title">Response headers</div><pre class="sm-pre">${hdrs(d.resp_headers)}</pre></div>
+    </div>
+    <p class="hint">${d.source === "kept" ? "Kept by the farm (failed request)." : "Fetched live from llama-swap."} Credentials are hidden.</p>`;
+}
+function smRenderRows() {
+  const a = smLastActivity, rows = $("#sm-rows");
+  if (!a || !rows) return;
+  const cols = a.scoped ? 8 : 9;
+  rows.innerHTML = a.rows.length ? `<table class="sm-table"><thead><tr><th>Time</th><th>Model</th><th>Path</th><th>Status</th><th>Input tok</th><th>Output tok</th><th>Duration</th><th>Speed</th>${a.scoped ? "" : "<th>Client</th>"}</tr></thead><tbody>${
+    a.rows.slice(0, 100).map(r => {
+      const ok = (r.status || 0) < 400;
+      const speed = r.gen_tps ? `${smNum(Math.round(r.gen_tps))} gen tok/s` : r.input_tps ? `${smNum(Math.round(r.input_tps))} in tok/s` : "–";
+      const cap = r.capture_id || "";
+      const open = cap && cap === smOpenCap;
+      const tr = `<tr class="${cap ? "sm-click" : ""}${open ? " sm-open" : ""}" data-cap="${escHtml(cap)}" title="${cap ? "Show request details" : ""}"><td>${cap ? `<i class="fa-solid ${open ? "fa-chevron-down" : "fa-chevron-right"} sm-caret"></i> ` : ""}${escHtml(smTimeS(r.ts))}</td><td>${escHtml(r.model || "–")}</td><td><code>${escHtml(r.path || "")}</code></td><td><span class="${ok ? "status-ok" : "status-bad"}"><i class="fa-solid ${ok ? "fa-circle-check" : "fa-triangle-exclamation"}"></i> ${escHtml(String(r.status ?? "–"))}</span></td><td>${smNum(r.input_tokens)}</td><td>${smNum(r.output_tokens)}</td><td>${smDur(r.duration_ms)}</td><td>${speed}</td>${a.scoped ? "" : `<td>${escHtml((r.src || "").replace(/^ip:/, ""))}</td>`}</tr>`;
+      return open ? tr + `<tr class="sm-detail"><td colspan="${cols}">${smDetailHtml(smDetails[cap])}</td></tr>` : tr;
+    }).join("")
+  }</tbody></table>` : "";
+}
+on("#sm-rows", "click", async (e) => {
+  const tr = e.target.closest("tr.sm-click");
+  if (!tr) return;
+  const cap = tr.dataset.cap;
+  smOpenCap = smOpenCap === cap ? null : cap;
+  smRenderRows();
+  if (!smOpenCap || (smDetails[cap] && !smDetails[cap].error)) return;
+  smDetails[cap] = null;
+  smRenderRows();
+  try { smDetails[cap] = await api("GET", `/api/swap/capture/${encodeURIComponent(cap)}`); }
+  catch (err) { smDetails[cap] = {error: err.message}; }
+  smRenderRows();
+});
+async function smRefresh() {
+  if (smBusy) return;
+  smBusy = true;
+  const st = $("#sm-status");
+  try {
+    const a = await api("GET", "/api/swap/activity?limit=200");
+    smRenderActivity(a);
+    if (st) { st.textContent = a.running ? "live" : "swap down"; st.className = `serving-ind ${a.running ? "status-ok" : "status-warn"}`; }
+  } catch (e) {
+    if (st) { st.textContent = "error"; st.className = "serving-ind status-bad"; }
+    toast(e.message, "bad");
+  }
+  smBusy = false;
+}
+function smStart() { smRefresh(); clearInterval(smTimer); smTimer = setInterval(smRefresh, 5000); }
+function smStop() { clearInterval(smTimer); smTimer = null; }
+on("#sm-refresh", "click", smRefresh);
+
+/* ---------------- Performance (farm's own per-machine history) ----------------
+   /api/stats/history: every machine sampled in the background by
+   stats_history (master locally, peers through their agents). One chart
+   per measure, one line per device, a single y-axis; gridlines and
+   ticks on both axes; hovering shows every device's value at that time. */
+let perfTimer = null, perfBusy = false, perfRefreshSec = 10;
+const PERF_COLORS = ["#3987e5", "#d95926", "#199e70", "#c98500"];   // validated categorical slots 1-4
+const perfCharts = {};                                                // chart id -> {series, opts, geometry}
+function perfClock(ms, withSec) {
+  const d = new Date(ms);
+  return d.toLocaleTimeString([], withSec ? {hour: "2-digit", minute: "2-digit", second: "2-digit"} : {hour: "2-digit", minute: "2-digit"});
+}
+/* series: [{label, color, pts: [{t, v, note}]}]; opts: {id, title, unit, max, fmt} */
+function perfChart(series, opts) {
+  const W = 640, H = 240, padL = 40, padR = 12, padT = 12, padB = 26;
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const all = series.flatMap(s => s.pts);
+  const legend = `<div class="pf-legend">${series.map(s => `<span><i style="background:${s.color}"></i>${escHtml(s.label)}</span>`).join("")}</div>`;
+  if (all.length < 2) return `<div class="pf-chart"><div class="pf-title">${escHtml(opts.title)}</div>${legend}<p class="hint">collecting samples…</p></div>`;
+  const t0 = Math.min(...all.map(p => p.t)), t1 = Math.max(...all.map(p => p.t));
+  const span = Math.max(1, t1 - t0);
+  const ymax = opts.max || Math.max(1, ...all.map(p => p.v)) * 1.1;
+  const x = t => padL + ((t - t0) / span) * iw;
+  const y = v => padT + ih - (Math.min(v, ymax) / ymax) * ih;
+  let g = "";
+  // y grid: 10 steps, label every other line
+  for (let i = 0; i <= 10; i++) {
+    const v = ymax * i / 10, yy = y(v).toFixed(1);
+    g += `<line x1="${padL}" x2="${W - padR}" y1="${yy}" y2="${yy}" stroke="var(--text-2)" stroke-opacity="${i % 2 ? 0.12 : 0.25}" stroke-width="1"${i % 2 ? ' stroke-dasharray="2 4"' : ""}/>`;
+    if (i % 2 === 0) g += `<text x="${padL - 6}" y="${(+yy + 3).toFixed(1)}" font-size="10" text-anchor="end" fill="var(--text-2)">${escHtml(opts.fmt(v))}</text>`;
+  }
+  // x ticks: about 6, on round seconds/minutes
+  const steps = [10, 15, 30, 60, 120, 300, 600, 900, 1800].map(s => s * 1000);
+  const step = steps.find(s => span / s <= 6) || 3600000;
+  const withSec = step < 60000;
+  for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+    const xx = x(t).toFixed(1);
+    g += `<line x1="${xx}" x2="${xx}" y1="${padT}" y2="${padT + ih}" stroke="var(--text-2)" stroke-opacity="0.18" stroke-width="1" stroke-dasharray="2 4"/>
+      <text x="${xx}" y="${H - 8}" font-size="10" text-anchor="middle" fill="var(--text-2)">${escHtml(perfClock(t, withSec))}</text>`;
+  }
+  g += `<line x1="${padL}" x2="${W - padR}" y1="${padT + ih}" y2="${padT + ih}" stroke="var(--text-2)" stroke-width="1"/>`;
+  for (const s of series) {
+    if (s.pts.length < 2) continue;
+    const d = s.pts.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`).join(" ");
+    g += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  }
+  g += `<line class="pf-cross" x1="0" x2="0" y1="${padT}" y2="${padT + ih}" stroke="var(--text)" stroke-width="1" opacity="0"/>
+    <rect class="pf-hit" x="${padL}" y="${padT}" width="${iw}" height="${ih}" fill="transparent"/>`;
+  perfCharts[opts.id] = {series, opts, t0, span, padL, iw, W};
+  return `<div class="pf-chart" data-chart="${opts.id}"><div class="pf-title">${escHtml(opts.title)}</div>${legend}
+    <div class="pf-plot"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${escHtml(opts.title)}">${g}</svg><div class="pf-tip" hidden></div></div></div>`;
+}
+/* hover: only inside a chart's plot area (the .pf-hit rect); leaving it
+   hides the tip at once. The position is remembered so the tip comes
+   back right after the periodic re-render instead of vanishing. */
+let perfHoverAt = null;            // {chart, clientX} while the pointer is on a plot
+function perfShowAt(box, clientX) {
+  const c = box && perfCharts[box.dataset.chart];
+  if (!c) return;
+  const svg = box.querySelector("svg"), tip = box.querySelector(".pf-tip"), cross = box.querySelector(".pf-cross");
+  const r = svg.getBoundingClientRect();
+  const sx = (clientX - r.left) * (c.W / r.width);
+  const t = c.t0 + Math.max(0, Math.min(1, (sx - c.padL) / c.iw)) * c.span;
+  const rows = c.series.map(s => {
+    let best = null;
+    for (const p of s.pts) if (!best || Math.abs(p.t - t) < Math.abs(best.t - t)) best = p;
+    return best ? {s, p: best} : null;
+  }).filter(Boolean);
+  if (!rows.length) return;
+  const tt = rows[0].p.t, cx = c.padL + ((tt - c.t0) / c.span) * c.iw;
+  cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("opacity", "0.5");
+  tip.innerHTML = `<div class="pf-tip-time">${escHtml(perfClock(tt, true))}</div>` + rows.map(({s, p}) =>
+    `<div><i style="background:${s.color}"></i>${escHtml(s.label)} <b>${escHtml(c.opts.fmt(p.v))}${escHtml(c.opts.unit)}</b>${p.note ? ` <span class="hint">${escHtml(p.note)}</span>` : ""}</div>`).join("");
+  tip.hidden = false;
+  const left = clientX - r.left;
+  tip.style.left = left > r.width / 2 ? "" : `${left + 14}px`;
+  tip.style.right = left > r.width / 2 ? `${r.width - left + 14}px` : "";
+}
+function perfHideAll() {
+  document.querySelectorAll("#perf-machines .pf-tip").forEach(t => { t.hidden = true; });
+  document.querySelectorAll("#perf-machines .pf-cross").forEach(l => l.setAttribute("opacity", "0"));
+}
+function perfHover(e) {
+  if (!e.target.classList?.contains("pf-hit")) {      // title, legend, axes, gaps
+    if (perfHoverAt) { perfHoverAt = null; perfHideAll(); }
+    return;
+  }
+  const box = e.target.closest(".pf-chart");
+  if (perfHoverAt && perfHoverAt.chart !== box.dataset.chart) perfHideAll();
+  perfHoverAt = {chart: box.dataset.chart, clientX: e.clientX};
+  perfShowAt(box, e.clientX);
+}
+function perfLeave() { perfHoverAt = null; perfHideAll(); }
+function perfRestoreHover() {
+  if (!perfHoverAt) return;
+  const box = document.querySelector(`#perf-machines .pf-chart[data-chart="${perfHoverAt.chart}"]`);
+  if (box) perfShowAt(box, perfHoverAt.clientX);
+}
+function perfRender(h) {
+  const box = $("#perf-machines");
+  const machines = h.machines || [];
+  // devices: one per GPU, labelled by machine (and GPU when a machine has several)
+  const gpuSeries = [], hostSeries = [];
+  let ci = 0;
+  for (const m of machines) {
+    const rows = m.samples || [];
+    const idxs = [...new Set(rows.flatMap(r => (r.gpus || []).map(g => String(g.index))))];
+    for (const idx of idxs) {
+      const name = (rows.flatMap(r => r.gpus || []).find(g => String(g.index) === idx) || {}).name || `GPU ${idx}`;
+      gpuSeries.push({m, idx, name, color: PERF_COLORS[ci++ % PERF_COLORS.length],
+        label: idxs.length > 1 ? `${m.name} · GPU ${idx}` : m.name});
+    }
+  }
+  machines.forEach((m, i) => hostSeries.push({m, color: PERF_COLORS[i % PERF_COLORS.length], label: m.name}));
+  const gpuPts = (d, f) => (d.m.samples || []).map(r => {
+    const g = (r.gpus || []).find(x => String(x.index) === d.idx);
+    const v = g ? f(g) : null;
+    return v == null ? null : {t: r.ts * 1000, v: v.v, note: v.note};
+  }).filter(Boolean);
+  const hostPts = (d, f) => (d.m.samples || []).map(r => { const v = f(r); return v == null ? null : {t: r.ts * 1000, v: v.v, note: v.note}; }).filter(Boolean);
+  const pct = v => `${Math.round(v)}`;
+  const gb = v => Number(v).toFixed(1);
+  // current values per machine
+  const tiles = machines.map(m => {
+    const r = (m.samples || [])[m.samples.length - 1];
+    if (!r) return `<div class="sm-tile"><div class="sm-tile-label">${escHtml(m.name)}</div><div class="sm-tile-sub">no samples yet</div></div>`;
+    const gl = (r.gpus || []).map(g => {
+      const vp = g.mem_total_gb ? Math.round(100 * g.mem_used_gb / g.mem_total_gb) : null;
+      return `<div class="sm-tile-sub">${escHtml(g.name || "GPU")}: <b>${pct(g.util || 0)} %</b> · VRAM ${gb(g.mem_used_gb || 0)}/${gb(g.mem_total_gb || 0)} GB${vp != null ? ` (${vp} %)` : ""}${g.temp > 0 ? ` · ${g.temp} °C` : ""}</div>`;
+    }).join("");
+    const rp = r.ram_total_gb ? Math.round(100 * r.ram_used_gb / r.ram_total_gb) : null;
+    return `<div class="sm-tile"><div class="sm-tile-label">${escHtml(m.name)}${m.role === "master" ? ' <span class="badge badge-master">master</span>' : ""}</div>${gl}
+      <div class="sm-tile-sub">CPU <b>${pct(r.cpu || 0)} %</b> · RAM ${gb(r.ram_used_gb || 0)}/${gb(r.ram_total_gb || 0)} GB${rp != null ? ` (<b>${rp} %</b>)` : ""}</div></div>`;
+  }).join("");
+  const charts = [
+    perfChart(gpuSeries.map(d => ({...d, pts: gpuPts(d, g => g.util == null ? null : {v: g.util})})),
+      {id: "gpu-util", title: "GPU utilization (%)", unit: " %", max: 100, fmt: pct}),
+    perfChart(gpuSeries.map(d => ({...d, pts: gpuPts(d, g => g.mem_total_gb ? {v: 100 * g.mem_used_gb / g.mem_total_gb, note: `${gb(g.mem_used_gb)}/${gb(g.mem_total_gb)} GB`} : null)})),
+      {id: "gpu-vram", title: "VRAM used (%)", unit: " %", max: 100, fmt: pct}),
+    perfChart(gpuSeries.map(d => ({...d, pts: gpuPts(d, g => g.temp > 0 ? {v: g.temp} : null)})),
+      {id: "gpu-temp", title: "GPU temperature (°C)", unit: " °C", max: 100, fmt: pct}),
+    perfChart(hostSeries.map(d => ({...d, pts: hostPts(d, r => r.cpu == null ? null : {v: r.cpu})})),
+      {id: "cpu", title: "CPU (%)", unit: " %", max: 100, fmt: pct}),
+    perfChart(hostSeries.map(d => ({...d, pts: hostPts(d, r => r.ram_total_gb ? {v: 100 * r.ram_used_gb / r.ram_total_gb, note: `${gb(r.ram_used_gb)}/${gb(r.ram_total_gb)} GB`} : null)})),
+      {id: "ram", title: "RAM used (%)", unit: " %", max: 100, fmt: pct}),
+  ].join("");
+  box.innerHTML = `<div class="sm-tiles">${tiles}</div><div class="pf-grid">${charts}</div>`;
+  perfRestoreHover();
+}
+async function perfRefresh() {
+  if (perfBusy) return;
+  perfBusy = true;
+  const st = $("#perf-status"), box = $("#perf-machines");
+  const minutes = $("#perf-minutes")?.value || 15;
+  try {
+    const h = await api("GET", `/api/stats/history?minutes=${minutes}`);
+    if (!h.enabled) box.innerHTML = `<p class="hint">The background sampler is off — pick a sampling interval to start it.</p>`;
+    else perfRender(h);
+    const smp = $("#perf-sample");
+    if (smp) {
+      if (h.enabled && document.activeElement !== smp) smp.value = String(h.interval);
+      smp.disabled = !h.can_set_interval;
+      smp.title = h.can_set_interval ? "How often the farm measures every machine" : "admin only";
+    }
+    if (st) { st.textContent = h.enabled ? `sampled every ${h.interval} s` : "sampler off"; st.className = `serving-ind ${h.enabled ? "status-ok" : "status-warn"}`; }
+  } catch (e) {
+    if (st) { st.textContent = "error"; st.className = "serving-ind status-bad"; }
+    toast(e.message, "bad");
+  }
+  perfBusy = false;
+}
+function perfSchedule() {
+  clearInterval(perfTimer); perfTimer = null;
+  if (perfRefreshSec > 0) perfTimer = setInterval(perfRefresh, perfRefreshSec * 1000);
+}
+function perfStart() { perfRefresh(); perfSchedule(); }
+function perfStop() { clearInterval(perfTimer); perfTimer = null; }
+on("#perf-refresh", "click", perfRefresh);
+on("#perf-minutes", "change", perfRefresh);
+on("#perf-every", "change", (e) => { perfRefreshSec = Number(e.target.value) || 0; perfSchedule(); });
+on("#perf-sample", "change", async (e) => {
+  try {
+    const r = await api("POST", "/api/stats/history/interval", {seconds: Number(e.target.value)});
+    toast(`Sampling every ${r.interval} s`, "ok");
+  } catch (err) { toast(err.message, "bad"); }
+  perfRefresh();
+});
+on("#perf-machines", "mousemove", perfHover);
+on("#perf-machines", "mouseleave", perfLeave);
+document.getElementById("perf-machines")?.addEventListener("mouseout", (e) => {
+  // left a plot area for something that is not a plot area: hide now
+  if (e.target.classList?.contains("pf-hit") && !e.relatedTarget?.classList?.contains("pf-hit")) perfLeave();
+});

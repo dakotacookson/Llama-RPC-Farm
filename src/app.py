@@ -39,6 +39,8 @@ import stats_collector
 import rpc_manager
 import agent_client
 import reaper
+import stats_history
+import swap_captures
 import gguf_inspect
 import platform as _platform
 import version as app_version
@@ -209,6 +211,20 @@ def seed_local_master():
         reaper.start()
     except Exception as e:
         print(f"[reaper] start skipped: {e}")
+
+    # Rolling per-machine hardware history for the Performance tab
+    # (FARM_STATS_HISTORY_SEC, 0 disables).
+    try:
+        stats_history.start()
+    except Exception as e:
+        print(f"[stats-history] start skipped: {e}")
+
+    # Keep llama-swap's short-lived captures of failed requests so the
+    # Activity tab can show why they failed.
+    try:
+        swap_captures.start(swap_manager.status, _swap_api_get)
+    except Exception as e:
+        print(f"[swap-captures] start skipped: {e}")
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -707,6 +723,17 @@ async def auth_bootstrap(l: FirstLoginIn, response: Response):
 
 
 # ---------------- pages ----------------
+@app.middleware("http")
+async def _no_cache_static(request: Request, call_next):
+    """Static assets are versioned by ?v=mtime+boot, but Firefox can still
+    serve a stale app.js after an upgrade and keep using old login logic.
+    Force revalidation for every static file."""
+    resp = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-store, max-age=0"
+    return resp
+
+
 import time as _time_mod
 _DAEMON_BOOT = str(int(_time_mod.time()))  # per-boot unique
 
@@ -3203,12 +3230,13 @@ async def hf_search(
     pipeline_tag: str = "",
     author: str = "",
     recommended: bool = False,
+    cursor: str = "",
 ):
     try:
         return await hf_browse.search_gguf(
             query=query, sort=sort, limit=limit, page=page,
             quant=quant, pipeline_tag=pipeline_tag, author=author,
-            recommended=recommended
+            recommended=recommended, cursor=cursor
         )
     except Exception as e:
         # surface HF errors as 502 so UI can show hint
@@ -3416,9 +3444,13 @@ async def hf_pipeline_tags(limit: int = 200):
         raise HTTPException(status_code=502, detail=str(e))
 
 @app.get("/api/hf/collections")
-async def hf_collections(owner: str, limit: int = 20, pipeline_tag: str = "", quant: str = ""):
+async def hf_collections(owner: str, limit: int = 20, pipeline_tag: str = "",
+                         quant: str = "", gguf_only: bool = True):
     try:
-        return await hf_browse.list_collections(owner=owner, limit=limit, pipeline_tag=pipeline_tag, quant=quant)
+        return await hf_browse.list_collections(owner=owner, limit=limit,
+                                                pipeline_tag=pipeline_tag,
+                                                quant=quant,
+                                                gguf_only=gguf_only)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -4507,6 +4539,100 @@ def _release_commit(version):
         return _RELEASE_FEED_CACHE["commits"].get(version)
 
 
+# Paths whose last-touching commit defines the app's build identity. Tests
+# and docs are deliberately excluded: a docs-only merge must not prompt
+# every app for an update. The agent identity is the last commit touching
+# peer_agent/ (see the rolling workflow's prepare job).
+APP_COMMIT_PATHS = (
+    "src", "ui", "packaging", "scripts", "requirements.txt",
+    "run.sh", "run.bat", "install.sh", "install.bat",
+    "restart.sh", "restart-llama-swap.sh", ".github/workflows",
+)
+
+
+def _component_on_latest(current_commit, latest_commit, current_version,
+                         latest_version, applied=""):
+    """Update decision for one component.
+
+    Commit fingerprints are exact: an app-only release keeps a peer agent's
+    agent_commit unchanged, so the agent stays "on latest" even though the
+    release tag moved. Fall back to tag/version comparison when either side
+    has no fingerprint (older releases/agents)."""
+    current_commit = (current_commit or "").strip()
+    latest_commit = (latest_commit or "").strip()
+    if latest_commit and current_commit:
+        return current_commit == latest_commit
+    return bool(latest_version and (current_version == latest_version
+                                    or applied == latest_version))
+
+
+def _repo_root():
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _git_component_commit(paths):
+    try:
+        out = subprocess.run(["git", "-C", _repo_root(), "log", "-1",
+                             "--format=%H", "--", *paths],
+                            capture_output=True, text=True, timeout=10)
+        return (out.stdout or "").strip() if out.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _current_app_commit():
+    try:
+        import build_info
+        commit = (getattr(build_info, "APP_COMMIT", "") or "").strip()
+        if commit:
+            return commit
+    except Exception:
+        pass
+    return _git_component_commit(APP_COMMIT_PATHS)
+
+
+_RELEASE_MANIFEST_CACHE = {"ts": 0.0, "version": None, "data": None}
+
+
+def _release_manifest():
+    """Newest release's component manifest (app/agent build commits).
+
+    Published next to the release assets. Returns None for older releases,
+    which makes callers fall back to the legacy tag comparison. Cached 5 min
+    to stay well inside GitHub's public download limits.
+    """
+    versions = _release_feed_versions()
+    if not versions:
+        return None
+    version = versions[0]
+    now = time.time()
+    with _LLAMA_UPDATES_LOCK:
+        if (now - _RELEASE_MANIFEST_CACHE["ts"] < 300
+                and _RELEASE_MANIFEST_CACHE["version"] == version):
+            return _RELEASE_MANIFEST_CACHE["data"]
+    import urllib.request
+    data = None
+    try:
+        url = (f"https://github.com/{_AGENT_REPO}/releases/download/"
+               f"release-{version}/release-manifest.json")
+        req = urllib.request.Request(url, headers={"User-Agent":
+                                                   "llama-rpc-farm"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        if not isinstance(data, dict):
+            data = None
+    except Exception:
+        data = None
+    with _LLAMA_UPDATES_LOCK:
+        _RELEASE_MANIFEST_CACHE.update(ts=now, version=version, data=data)
+    return data
+
+
+def _manifest_commit(field):
+    manifest = _release_manifest() or {}
+    return (manifest.get(field) or "").strip()
+
+
 def _agent_release_info(machine):
     """Latest release agent asset (release tag is the authoritative version)."""
     asset = _agent_binary_asset(machine)
@@ -4520,7 +4646,8 @@ def _agent_release_info(machine):
             f"release-{version}")
     wheel = f"llama_rpc_farm_agent-{version}-py3-none-any.whl"
     return {"asset": asset, "url": f"{base}/{asset}",
-            "wheel_url": f"{base}/{wheel}", "version": version}
+            "wheel_url": f"{base}/{wheel}", "version": version,
+            "commit": _manifest_commit("agent_commit")}
 
 
 _APP_RELEASE_CACHE = {"ts": 0.0, "by_asset": {}}
@@ -4553,17 +4680,19 @@ def _app_release_info():
     return {"asset": asset,
             "url": (f"https://github.com/{_AGENT_REPO}/releases/download/"
                     f"release-{version}/{asset}"),
-            "version": version}
+            "version": version, "commit": _manifest_commit("app_commit")}
 
 
 def _app_version_payload():
     current = getattr(app_version, "__version__", "")
     packaged = bool(getattr(sys, "frozen", False))
+    own_commit = _current_app_commit()
     try:
         info = _app_release_info()
         latest = info.get("version")
+        latest_commit = info.get("commit")
     except Exception:
-        latest = None
+        latest, latest_commit = None, None
     dirty = False
     if not packaged:
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -4574,7 +4703,9 @@ def _app_version_payload():
         except Exception:
             pass
     return {"current": current, "latest": latest,
-            "on_latest": bool(latest and current == latest),
+            "on_latest": _component_on_latest(
+                own_commit, latest_commit, current, latest),
+            "build_commit": own_commit, "latest_commit": latest_commit,
             "packaged": packaged, "source": not packaged,
             "dirty": dirty}
 
@@ -4739,22 +4870,26 @@ def _agent_version_payload(machine):
         return {"current": None, "latest": None, "on_latest": True,
                 "local": True, "packaged": False}
     current = None
+    build_commit = None
     packaged = False
     try:
         v = agent_client.version(machine, timeout=4) or {}
         current = v.get("agent_version")
+        build_commit = v.get("build_commit")
         packaged = bool(v.get("packaged"))
     except Exception:
         current = None
     try:
         info = _agent_release_info(machine)
         latest = info.get("version")
+        latest_commit = info.get("commit")
     except Exception:
-        latest = None
+        latest, latest_commit = None, None
     applied = str(machine.get("agent_release") or "").strip()
     return {"current": current, "latest": latest,
-            "on_latest": bool(latest and (current == latest
-                                          or applied == latest)),
+            "on_latest": _component_on_latest(
+                build_commit, latest_commit, current, latest, applied),
+            "build_commit": build_commit, "latest_commit": latest_commit,
             "packaged": packaged}
 
 
@@ -6002,6 +6137,40 @@ async def get_stats(light: bool = False):
     return result
 
 
+@app.get("/api/stats/history")
+async def get_stats_history(minutes: int = 15, points: int = 400):
+    """Rolling per-machine hardware samples (GPU util/VRAM/temp, CPU, RAM)
+    kept in memory by stats_history for the Performance tab, cut to the
+    last `minutes` and thinned to at most `points` per machine."""
+    minutes = max(1, min(int(minutes or 15), 60))
+    points = max(10, min(int(points or 180), 1000))
+    hist = stats_history.history(minutes, points)
+    machines = []
+    for m in cfg.machines.all():
+        name = m.get("name")
+        machines.append({"name": name, "role": m.get("role"),
+                         "samples": hist.get(name, [])})
+    return {"enabled": stats_history.INTERVAL > 0,
+            "interval": stats_history.INTERVAL, "minutes": minutes,
+            "min_interval": stats_history.MIN_INTERVAL,
+            "max_interval": stats_history.MAX_INTERVAL,
+            "can_set_interval": bool(access.is_admin(None)),
+            "machines": machines}
+
+
+@app.post("/api/stats/history/interval")
+async def set_stats_history_interval(body: dict):
+    """Change how often the Performance sampler measures every machine
+    (admin only; clamped to the sampler's MIN..MAX)."""
+    if not access.is_admin(None):
+        raise HTTPException(status_code=403, detail="admin only")
+    try:
+        sec = int(body.get("seconds"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="seconds must be a number")
+    return {"interval": stats_history.set_interval(sec)}
+
+
 @app.get("/api/stats/stream")
 async def get_stats_stream():
     """Per-machine stats, streamed as NDJSON: one JSON line per machine
@@ -6824,6 +6993,178 @@ async def swap_loaded_models(request: Request):
         return {"loaded": [], "running": True, "error": str(e)}
 
 
+# ---------------- llama-swap activity & performance ----------------
+# llama-swap records every proxied request (/api/metrics/activity); the
+# farm shows it on its own Activity tab. This endpoint only READS it.
+
+def _swap_api_url(st, path):
+    host = ("127.0.0.1"
+            if local_node.is_local(cfg.machines.require(st["host"]))
+            else st.get("host_ip"))
+    return f"http://{host}:{st['port']}{path}"
+
+
+def _swap_api_get(st, path, timeout=5):
+    import urllib.request, json as _json
+    with urllib.request.urlopen(_swap_api_url(st, path), timeout=timeout) as r:
+        return _json.load(r)
+
+
+def _caller_model_filter():
+    """None when the caller sees every model (console / unrestricted
+    admin / open gate); else a predicate over model ids built from the
+    caller's grants — the same rule /api/swap/loaded applies."""
+    import access as _a
+    if (_a.gate_open() and _a.view_allow() is None) \
+            or _a.admin_sees_everything():
+        return None
+    rec = _a.raw_key_record()
+    if rec is None:
+        return lambda mid: False
+    allow = rec.get("models") or set()
+    from swap_gateway import _mid_allowed
+    return lambda mid: _mid_allowed(str(mid or ""), allow)
+
+
+def _speed_stats(rows):
+    """Speeds over successful rows, in two honest forms:
+    median_tps     - median of per-request input tok/s: how fast the model
+                     works on a request; one cold-start load (a 60 s first
+                     request) cannot drag it down.
+    throughput_tps - input tokens / wall-clock time from the first
+                     request's start to the last one's end: what the
+                     server actually delivered, counting idle gaps and
+                     requests that ran at the same time correctly.
+    Summing per-request durations (the old figure) did neither."""
+    from datetime import datetime
+    import statistics as _stats
+    ok = [r for r in rows if (r.get("status") or 0) < 400
+          and (r.get("input_tokens") or 0) > 0 and (r.get("duration_ms") or 0) > 0]
+    tps = [r["input_tps"] for r in ok if r.get("input_tps")]
+    starts, ends = [], []
+    for r in ok:
+        try:
+            end = datetime.fromisoformat(str(r["ts"])).timestamp()
+        except (TypeError, ValueError):
+            continue
+        ends.append(end)
+        starts.append(end - r["duration_ms"] / 1000.0)
+    span = (max(ends) - min(starts)) if ends else 0
+    tokens = sum(r["input_tokens"] for r in ok)
+    return {"median_tps": round(_stats.median(tps), 1) if tps else None,
+            "throughput_tps": round(tokens / span, 1) if span > 0 else None,
+            "window_s": round(span, 1) if span else None}
+
+
+def _activity_row(r):
+    """One llama-swap activity row, trimmed to what the tab shows.
+    Embedding responses carry no llama-server timings (speeds are -1),
+    so input tokens per second is derived from the request duration."""
+    tok = r.get("tokens") or {}
+    def _n(k):
+        v = tok.get(k)
+        return v if isinstance(v, (int, float)) and v >= 0 else None
+    dur = r.get("duration_ms") or 0
+    inp, out = _n("input_tokens"), _n("output_tokens")
+    return {
+        "id": r.get("id"), "ts": r.get("timestamp"), "src": r.get("src"),
+        "model": r.get("model"), "task": r.get("task"),
+        "path": r.get("req_path"), "status": r.get("resp_status_code"),
+        "duration_ms": dur, "input_tokens": inp, "output_tokens": out,
+        "cache_tokens": _n("cache_tokens"),
+        "prompt_tps": _n("prompt_per_second"),
+        "gen_tps": _n("tokens_per_second"),
+        "input_tps": (round(inp / (dur / 1000.0), 1)
+                      if inp and dur > 0 else None),
+        "capture_id": r.get("capture_id") if r.get("has_capture") else None,
+        "kept": bool(r.get("capture_id")
+                     and swap_captures.get(r.get("capture_id"))),
+    }
+
+
+@app.get("/api/swap/activity")
+async def swap_activity(limit: int = 200):
+    """Recent llama-swap requests plus per-model totals over them.
+    Scoped keys see only rows for models they are granted, without the
+    client address."""
+    st = swap_manager.status()
+    if not st.get("running"):
+        return {"running": False, "rows": [], "models": []}
+    limit = max(1, min(int(limit or 200), 1000))
+    allowed = _caller_model_filter()
+
+    def fetch():
+        data = _swap_api_get(st, f"/api/metrics/activity?limit={limit}&page=1")
+        rows = [_activity_row(r) for r in (data.get("data") or [])]
+        if allowed is not None:
+            rows = [dict(r, src=None, capture_id=None, kept=False)
+                    for r in rows if allowed(r["model"])]
+        per, per_rows = {}, {}
+        for r in rows:
+            per_rows.setdefault(r["model"] or "?", []).append(r)
+            m = per.setdefault(r["model"] or "?", {
+                "model": r["model"] or "?", "requests": 0, "errors": 0,
+                "input_tokens": 0, "output_tokens": 0, "duration_ms": 0,
+                "gen_tps": [], "task": r["task"]})
+            m["requests"] += 1
+            if (r["status"] or 0) >= 400:
+                m["errors"] += 1
+            m["input_tokens"] += r["input_tokens"] or 0
+            m["output_tokens"] += r["output_tokens"] or 0
+            m["duration_ms"] += r["duration_ms"] or 0
+            if r["gen_tps"]:
+                m["gen_tps"].append(r["gen_tps"])
+        models = []
+        for m in per.values():
+            g = m.pop("gen_tps")
+            m.update(_speed_stats(per_rows[m["model"]]))
+            m["gen_tps"] = round(sum(g) / len(g), 1) if g else None
+            models.append(m)
+        models.sort(key=lambda m: -m["requests"])
+        return {"running": True, "host": st["host"], "rows": rows,
+                "models": models, "speed": _speed_stats(rows),
+                "total": data.get("total"),
+                "scoped": allowed is not None}
+    try:
+        return await run_in_threadpool(fetch)
+    except Exception as e:
+        return {"running": True, "rows": [], "models": [], "error": str(e)}
+
+
+@app.get("/api/swap/capture/{capture_id}")
+async def swap_capture(capture_id: str):
+    """Headers and body of one proxied request, for the Activity tab's
+    detail view. Failed requests come from the farm's own copy
+    (swap_captures); others are fetched live while llama-swap still has
+    them. Credentials are redacted. Request bodies can hold other users'
+    text, so only callers that see every model may read them."""
+    if _caller_model_filter() is not None:
+        raise HTTPException(status_code=403,
+                            detail="request details are admin-only")
+    kept = swap_captures.get(capture_id)
+    if kept:
+        return dict(kept, source="kept")
+    st = swap_manager.status()
+    if not st.get("running"):
+        raise HTTPException(status_code=503, detail="llama-swap is not running")
+    from urllib.parse import quote as _q
+
+    def fetch():
+        return _swap_api_get(st, f"/api/captures/{_q(capture_id, safe='')}")
+    try:
+        cap = await run_in_threadpool(fetch)
+    except Exception:
+        cap = None
+    if not isinstance(cap, dict) or "error" in cap:
+        raise HTTPException(
+            status_code=404,
+            detail="llama-swap no longer keeps this request (it drops "
+                   "captures within about 30 s; the farm keeps failed "
+                   "requests only)")
+    return dict(swap_captures.summarize(cap, {"capture_id": capture_id}),
+                source="live")
+
+
 @app.post("/api/swap/load/{model_id}")
 async def swap_load_model(model_id: str, request: Request):
     """Load one model through the running swap daemon: this fires a minimal
@@ -7384,7 +7725,28 @@ async def scan_models(path: str, recursive: bool = False):
 
 # ---------------- cluster ops ----------------
 
+def _ensure_stdio():
+    """Give a missing sys.stdout / sys.stderr a sink.
+
+    A detached start (Restart App on Windows, pythonw, a service) can run
+    with no standard streams; uvicorn's log formatter calls
+    sys.stdout.isatty() and the app died with "'NoneType' object has no
+    attribute 'isatty'" / "Unable to configure formatter 'default'".
+    Missing streams append to the same llama-web.log the restart paths
+    use, falling back to os.devnull."""
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name) is not None:
+            continue
+        try:
+            stream = open(os.path.join(tempfile.gettempdir(), "llama-web.log"),
+                          "a", encoding="utf-8", buffering=1)
+        except OSError:
+            stream = open(os.devnull, "w", encoding="utf-8")
+        setattr(sys, name, stream)
+
+
 if __name__ == "__main__":
+    _ensure_stdio()
     # SINGLETON GUARD: every restart path (/api/restart, engine save) spawns
     # this module detached while the old process was supposed to die — and
     # sometimes it doesn't (observed: 4 Oct-1 orphans lived for 3 days next

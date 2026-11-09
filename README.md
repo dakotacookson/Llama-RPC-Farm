@@ -142,9 +142,9 @@ scripts, same probe, same dashboard), it just needs real-world users**:
 | Setup | Status |
 |---|---|
 | x86_64 Linux (master & peers) | ✅ Tested — this is the daily-driver config |
-| NVIDIA GPUs, Linux (CUDA) | ✅ Tested — multi-GPU tensor-split, RPC + local GPU mix |
-| NVIDIA GPUs, Windows peers | ✅ Tested — RPC over the peer agent |
-| CPU + RAM sharing over RPC | 🧪 Code paths complete, needs contributors to test |
+| NVIDIA GPUs, Linux (CUDA) | ✅ Tested by @dakotacookson — multi-GPU tensor-split, RPC + local GPU mix |
+| NVIDIA GPUs, Windows peers | ✅ Tested by @dakotacookson — RPC over the peer agent |
+| CPU + RAM sharing over RPC | ✅ Tested by @dakotacookson |
 | AMD GPUs (ROCm/HIP, `rocm-smi` stats) | 🧪 Code paths complete, needs contributors to test |
 | Apple Silicon (Metal backend) | ✅ Tested by @joshuamsalazar — Metal backend |
 | Intel XPU (SYCL) | 🧪 Vendor supported in detection/scripts, untested |

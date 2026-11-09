@@ -1000,11 +1000,14 @@ tr.row-selected td:first-child {
 }
 .metric-values {
   display: flex;
+  flex-wrap: wrap;             /* wrap between "used / total %" pieces, never inside one */
   align-items: baseline;
-  gap: 5px;
-  margin-bottom: 6px;
+  gap: 0.3rem;
+  margin-bottom: 0.4rem;
 }
-.metric-value { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+/* scales with the window, readable at both ends; a number never splits from its unit */
+.metric-value { font-size: clamp(1.05rem, 0.55rem + 1.1vw, 1.4rem); font-weight: 650;
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
 .metric-slash { color: var(--muted); }
 .metric-percent { font-size: 13px; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .metric-percent-sub { font-size: 12px; color: var(--muted); margin-left: auto; }
@@ -1110,6 +1113,7 @@ tr.row-selected td:first-child {
   position: relative;
   overflow: hidden;
   box-shadow: 0 2px 10px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.04);
+  container-type: inline-size;   /* card contents size against the card, not the screen */
 }
 .machine-status-card:hover {
   border-color: var(--accent);
@@ -1166,45 +1170,56 @@ tr.row-selected td:first-child {
 
 .card-header {
   display: flex;
+  flex-wrap: wrap;               /* badges move under the name instead of being cut off */
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 4px;
+  gap: 0.35rem 0.5rem;
+  margin-bottom: 0.25rem;
 }
 .card-label {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0.5rem;
+  min-width: 0;
   font-weight: 600;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
+.card-name { overflow-wrap: anywhere; }
 .card-label-icon { color: var(--accent); font-size: 12px; }
 .card-sub {
   font-size: 12px;
   color: var(--muted);
   margin-bottom: var(--s-2);
 }
-.card-actions { display: flex; gap: var(--s-1); align-items: center; }
+.card-actions { display: flex; flex-wrap: wrap; gap: var(--s-1); align-items: center; margin-left: auto; }
 
-.gpu-table { font-size: 12px; margin: var(--s-2) 0; width: 100%; border-collapse: collapse; }
-.gpu-table th { padding: 4px 6px; font-size: 10px; text-align: left; color: var(--muted); font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
-.gpu-table td { padding: 5px 6px; border-top: 1px solid var(--border-soft); }
+.gpu-table { font-size: clamp(0.68rem, 3.9cqi, 0.75rem); margin: var(--s-2) 0; width: 100%; border-collapse: collapse; }
+.gpu-table th { padding: 0.25rem 0.35rem; font-size: 0.85em; text-align: left; color: var(--muted); font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; white-space: nowrap; }
+.gpu-table td { padding: 0.3rem 0.35rem; border-top: 1px solid var(--border-soft); white-space: nowrap; }
+/* very narrow card: the index column goes first, the measures stay */
+@container (max-width: 17rem) { .gpu-table .gpu-idx { display: none; } }
 .gpu-table tbody tr:first-child td { border-top: none; }
-.gpu-name {
-  max-width: 140px;
+.gpu-name { color: var(--text-2); }
+.gpu-table td.gpu-name {
+  width: 100%;                   /* takes the room the numbers leave */
+  max-width: 0;                  /* ...and never pushes them out of the card */
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-2);
 }
 .gpu-util, .gpu-vram, .gpu-temp { font-variant-numeric: tabular-nums; }
 .gpu-temp.hot { color: var(--bad); font-weight: 600; }
 .no-gpus { color: var(--muted); font-size: 12px; padding: var(--s-2) 0; }
 
-.card-metrics { display: flex; gap: var(--s-3); }
-.card-metric { flex: 1; min-width: 0; }
+/* Card width depends on the sidebar and how many cards share a row, not on
+   the screen, so the values scale with the card itself (container units).
+   A metric that still cannot fit moves to the next line instead of
+   running into its neighbour. */
+.card-metrics { display: flex; flex-wrap: wrap; gap: 0.5rem var(--s-3); container-type: inline-size; }
+.card-metric { flex: 1 1 6rem; min-width: 0; }
 .card-metric-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin: 2px 0; display: flex; align-items: center; gap: 5px; }
 .card-metric-label i { color: var(--accent); font-size: 10px; }
-.card-metric-value { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.card-metric-value { font-size: clamp(0.8rem, 4.6cqi, 0.95rem); font-weight: 600;
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* ============================== chips (machine/hw selection) ============================== */
 .machine-hw-group {
@@ -2724,3 +2739,46 @@ body.login-locked #login-modal * { pointer-events: auto !important; }
   border-radius: 6px;
   white-space: nowrap;
 }
+
+/* ---------------- Activity & Performance tab (llama-swap metrics) ---------------- */
+.sm-tiles {
+  display: grid; gap: 10px; margin-bottom: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+.sm-tile {
+  background: var(--surface); border: 1px solid var(--border-soft);
+  border-radius: 8px; padding: 10px 12px;
+}
+.sm-tile-label { font-size: 12px; color: var(--text-2); }
+.sm-tile-value { font-size: 22px; font-weight: 700; margin-top: 2px; }
+.sm-tile-value small { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.sm-tile-sub { font-size: 11px; color: var(--muted, var(--text-2)); margin-top: 2px; }
+.sm-charts {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+.sm-chart-title { font-size: 12px; color: var(--text-2); margin-bottom: 2px; }
+.sm-table { width: 100%; font-size: 12px; }
+.sm-table td, .sm-table th { white-space: nowrap; }
+.sm-rows { max-height: 420px; overflow: auto; }
+#sm-models, #sm-peers { overflow-x: auto; }
+.sm-table tr.sm-click { cursor: pointer; }
+.sm-table tr.sm-click:hover td, .sm-table tr.sm-open td { background: var(--hover, var(--raised)); }
+.sm-caret { font-size: 10px; color: var(--text-2); width: 10px; }
+.sm-table tr.sm-detail td { white-space: normal; background: var(--raised, var(--surface)); }
+.sm-detail-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.sm-pre { white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow: auto;
+  font-size: 11px; margin: 4px 0 10px; padding: 8px; border-radius: 6px;
+  background: var(--bg); border: 1px solid var(--border-soft); }
+
+/* Performance tab: detailed charts (one per measure, a line per device) */
+.pf-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); margin-top: 12px; }
+.pf-chart { background: var(--surface); border: 1px solid var(--border-soft); border-radius: 8px; padding: 10px 12px; }
+.pf-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.pf-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--text-2); margin-bottom: 4px; }
+.pf-legend i, .pf-tip i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.pf-plot { position: relative; }
+.pf-plot svg { width: 100%; height: auto; display: block; overflow: visible; }
+.pf-tip { position: absolute; top: 6px; pointer-events: none; background: var(--raised, var(--surface)); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 8px; font-size: 12px; white-space: nowrap; box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+.pf-tip-time { color: var(--text-2); margin-bottom: 2px; }
