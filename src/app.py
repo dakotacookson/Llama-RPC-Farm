@@ -40,6 +40,7 @@ import rpc_manager
 import agent_client
 import reaper
 import stats_history
+import swap_captures
 import gguf_inspect
 import platform as _platform
 import version as app_version
@@ -217,6 +218,13 @@ def seed_local_master():
         stats_history.start()
     except Exception as e:
         print(f"[stats-history] start skipped: {e}")
+
+    # Keep llama-swap's short-lived captures of failed requests so the
+    # Activity tab can show why they failed.
+    try:
+        swap_captures.start(swap_manager.status, _swap_api_get)
+    except Exception as e:
+        print(f"[swap-captures] start skipped: {e}")
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -6903,6 +6911,9 @@ def _activity_row(r):
         "gen_tps": _n("tokens_per_second"),
         "input_tps": (round(inp / (dur / 1000.0), 1)
                       if inp and dur > 0 else None),
+        "capture_id": r.get("capture_id") if r.get("has_capture") else None,
+        "kept": bool(r.get("capture_id")
+                     and swap_captures.get(r.get("capture_id"))),
     }
 
 
@@ -6921,7 +6932,8 @@ async def swap_activity(limit: int = 200):
         data = _swap_api_get(st, f"/api/metrics/activity?limit={limit}&page=1")
         rows = [_activity_row(r) for r in (data.get("data") or [])]
         if allowed is not None:
-            rows = [dict(r, src=None) for r in rows if allowed(r["model"])]
+            rows = [dict(r, src=None, capture_id=None, kept=False)
+                    for r in rows if allowed(r["model"])]
         per = {}
         for r in rows:
             m = per.setdefault(r["model"] or "?", {
@@ -6951,6 +6963,40 @@ async def swap_activity(limit: int = 200):
         return await run_in_threadpool(fetch)
     except Exception as e:
         return {"running": True, "rows": [], "models": [], "error": str(e)}
+
+
+@app.get("/api/swap/capture/{capture_id}")
+async def swap_capture(capture_id: str):
+    """Headers and body of one proxied request, for the Activity tab's
+    detail view. Failed requests come from the farm's own copy
+    (swap_captures); others are fetched live while llama-swap still has
+    them. Credentials are redacted. Request bodies can hold other users'
+    text, so only callers that see every model may read them."""
+    if _caller_model_filter() is not None:
+        raise HTTPException(status_code=403,
+                            detail="request details are admin-only")
+    kept = swap_captures.get(capture_id)
+    if kept:
+        return dict(kept, source="kept")
+    st = swap_manager.status()
+    if not st.get("running"):
+        raise HTTPException(status_code=503, detail="llama-swap is not running")
+    from urllib.parse import quote as _q
+
+    def fetch():
+        return _swap_api_get(st, f"/api/captures/{_q(capture_id, safe='')}")
+    try:
+        cap = await run_in_threadpool(fetch)
+    except Exception:
+        cap = None
+    if not isinstance(cap, dict) or "error" in cap:
+        raise HTTPException(
+            status_code=404,
+            detail="llama-swap no longer keeps this request (it drops "
+                   "captures within about 30 s; the farm keeps failed "
+                   "requests only)")
+    return dict(swap_captures.summarize(cap, {"capture_id": capture_id}),
+                source="live")
 
 
 @app.post("/api/swap/load/{model_id}")

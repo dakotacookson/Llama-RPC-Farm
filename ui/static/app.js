@@ -9489,14 +9489,61 @@ function smRenderActivity(a) {
   models.innerHTML = a.models.length ? `<table class="sm-table"><thead><tr><th>Model</th><th>Task</th><th>Requests</th><th>Errors</th><th>Input tok</th><th>Output tok</th><th>Input tok/s</th><th>Gen tok/s</th></tr></thead><tbody>${
     a.models.map(m => `<tr><td>${escHtml(m.model)}</td><td>${escHtml(m.task || "–")}</td><td>${smNum(m.requests)}</td><td>${m.errors ? `<span class="status-bad">${smNum(m.errors)}</span>` : "0"}</td><td>${smNum(m.input_tokens)}</td><td>${smNum(m.output_tokens)}</td><td>${smNum(m.input_tps)}</td><td>${smNum(m.gen_tps)}</td></tr>`).join("")
   }</tbody></table>` : `<p class="hint">No requests recorded yet.</p>`;
+  smLastActivity = a;
+  smRenderRows();
+}
+/* recent requests: click a row to open its headers/body underneath
+   (admins only). Failed requests are kept by the farm; others only
+   while llama-swap still has them (~30 s). The open row survives the
+   5 s refresh. */
+let smLastActivity = null, smOpenCap = null;
+const smDetails = {};
+function smDetailHtml(d) {
+  if (!d) return `<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> loading…</p>`;
+  if (d.error) return `<p class="status-bad">${escHtml(d.error)}</p>`;
+  const hdrs = h => Object.entries(h || {}).map(([k, v]) => `${escHtml(k)}: ${escHtml(String(v))}`).join("\n") || "–";
+  const enc = d.req_body_utf8 === false
+    ? `<p class="status-bad"><i class="fa-solid fa-triangle-exclamation"></i> The request body is not valid UTF-8 — the client sent text in another encoding (for example a Windows code page). llama-server rejects such JSON.</p>` : "";
+  const resp = d.resp_body != null
+    ? `<pre class="sm-pre">${escHtml(d.resp_body)}</pre>`
+    : `<p class="hint">llama-swap did not record the response body.</p>`;
+  return `${enc}
+    <div class="sm-detail-grid">
+      <div><div class="sm-chart-title">Request body (${smNum(d.req_body_bytes)} bytes)</div><pre class="sm-pre">${escHtml(d.req_body ?? "–")}</pre>
+        <div class="sm-chart-title">Request headers</div><pre class="sm-pre">${hdrs(d.req_headers)}</pre></div>
+      <div><div class="sm-chart-title">Response body</div>${resp}
+        <div class="sm-chart-title">Response headers</div><pre class="sm-pre">${hdrs(d.resp_headers)}</pre></div>
+    </div>
+    <p class="hint">${d.source === "kept" ? "Kept by the farm (failed request)." : "Fetched live from llama-swap."} Credentials are hidden.</p>`;
+}
+function smRenderRows() {
+  const a = smLastActivity, rows = $("#sm-rows");
+  if (!a || !rows) return;
+  const cols = a.scoped ? 8 : 9;
   rows.innerHTML = a.rows.length ? `<table class="sm-table"><thead><tr><th>Time</th><th>Model</th><th>Path</th><th>Status</th><th>Input tok</th><th>Output tok</th><th>Duration</th><th>Speed</th>${a.scoped ? "" : "<th>Client</th>"}</tr></thead><tbody>${
     a.rows.slice(0, 100).map(r => {
       const ok = (r.status || 0) < 400;
       const speed = r.gen_tps ? `${smNum(Math.round(r.gen_tps))} gen tok/s` : r.input_tps ? `${smNum(Math.round(r.input_tps))} in tok/s` : "–";
-      return `<tr><td>${escHtml(smTimeS(r.ts))}</td><td>${escHtml(r.model || "–")}</td><td><code>${escHtml(r.path || "")}</code></td><td><span class="${ok ? "status-ok" : "status-bad"}"><i class="fa-solid ${ok ? "fa-circle-check" : "fa-triangle-exclamation"}"></i> ${escHtml(String(r.status ?? "–"))}</span></td><td>${smNum(r.input_tokens)}</td><td>${smNum(r.output_tokens)}</td><td>${smDur(r.duration_ms)}</td><td>${speed}</td>${a.scoped ? "" : `<td>${escHtml((r.src || "").replace(/^ip:/, ""))}</td>`}</tr>`;
+      const cap = r.capture_id || "";
+      const open = cap && cap === smOpenCap;
+      const tr = `<tr class="${cap ? "sm-click" : ""}${open ? " sm-open" : ""}" data-cap="${escHtml(cap)}" title="${cap ? "Show request details" : ""}"><td>${cap ? `<i class="fa-solid ${open ? "fa-chevron-down" : "fa-chevron-right"} sm-caret"></i> ` : ""}${escHtml(smTimeS(r.ts))}</td><td>${escHtml(r.model || "–")}</td><td><code>${escHtml(r.path || "")}</code></td><td><span class="${ok ? "status-ok" : "status-bad"}"><i class="fa-solid ${ok ? "fa-circle-check" : "fa-triangle-exclamation"}"></i> ${escHtml(String(r.status ?? "–"))}</span></td><td>${smNum(r.input_tokens)}</td><td>${smNum(r.output_tokens)}</td><td>${smDur(r.duration_ms)}</td><td>${speed}</td>${a.scoped ? "" : `<td>${escHtml((r.src || "").replace(/^ip:/, ""))}</td>`}</tr>`;
+      return open ? tr + `<tr class="sm-detail"><td colspan="${cols}">${smDetailHtml(smDetails[cap])}</td></tr>` : tr;
     }).join("")
   }</tbody></table>` : "";
 }
+on("#sm-rows", "click", async (e) => {
+  const tr = e.target.closest("tr.sm-click");
+  if (!tr) return;
+  const cap = tr.dataset.cap;
+  smOpenCap = smOpenCap === cap ? null : cap;
+  smRenderRows();
+  if (!smOpenCap || (smDetails[cap] && !smDetails[cap].error)) return;
+  smDetails[cap] = null;
+  smRenderRows();
+  try { smDetails[cap] = await api("GET", `/api/swap/capture/${encodeURIComponent(cap)}`); }
+  catch (err) { smDetails[cap] = {error: err.message}; }
+  smRenderRows();
+});
 async function smRefresh() {
   if (smBusy) return;
   smBusy = true;

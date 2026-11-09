@@ -2747,3 +2747,11 @@ body.login-locked #login-modal * { pointer-events: auto !important; }
 .sm-table td, .sm-table th { white-space: nowrap; }
 .sm-rows { max-height: 420px; overflow: auto; }
 #sm-models, #sm-peers { overflow-x: auto; }
+.sm-table tr.sm-click { cursor: pointer; }
+.sm-table tr.sm-click:hover td, .sm-table tr.sm-open td { background: var(--hover, var(--raised)); }
+.sm-caret { font-size: 10px; color: var(--text-2); width: 10px; }
+.sm-table tr.sm-detail td { white-space: normal; background: var(--raised, var(--surface)); }
+.sm-detail-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.sm-pre { white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow: auto;
+  font-size: 11px; margin: 4px 0 10px; padding: 8px; border-radius: 6px;
+  background: var(--bg); border: 1px solid var(--border-soft); }
