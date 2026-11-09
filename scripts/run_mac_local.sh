@@ -6,10 +6,15 @@ set -euo pipefail
 #   ./run_mac_local.sh
 #   MODEL_FILE=my-model.gguf ./run_mac_local.sh
 #   MODEL_FILE=my-model.gguf HTTP_PORT=8085 ./run_mac_local.sh
+#   MODEL_FILE="$HOME/GGUF_models/my-model.gguf" ./run_mac_local.sh
+# Bare filenames use MODEL_DIR; paths containing / are used as supplied.
 
 MODEL_DIR="${MODEL_DIR:-$HOME/models}"
 MODEL_FILE="${MODEL_FILE:-Qwen_Qwen3.5-0.8B-Q4_K_M.gguf}"
-MODEL_PATH="$MODEL_DIR/$MODEL_FILE"
+case "$MODEL_FILE" in
+  /*|*/*) MODEL_PATH="$MODEL_FILE" ;;
+  *) MODEL_PATH="$MODEL_DIR/$MODEL_FILE" ;;
+esac
 
 LLAMA_SERVER="${LLAMA_SERVER:-$HOME/llama.cpp/bin/llama-server}"
 HOST="${HOST:-127.0.0.1}"
@@ -24,7 +29,7 @@ fi
 
 if [[ ! -s "$MODEL_PATH" ]]; then
   echo "ERROR: model not found: $MODEL_PATH" >&2
-  echo "Set MODEL_DIR and MODEL_FILE, or run ./get_dummy_model.sh first." >&2
+  echo 'Set MODEL_FILE to an absolute path, a path relative to the working directory, or a filename under MODEL_DIR.' >&2
   exit 1
 fi
 
