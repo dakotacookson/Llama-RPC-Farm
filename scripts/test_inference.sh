@@ -44,4 +44,4 @@ if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   RATE_COLOR=$'\033[94m'
   RESET=$'\033[0m'
 fi
-printf '%s\n' "$RESPONSE" | jq -r --arg elapsed "$ELAPSED" --arg color "$RATE_COLOR" --arg reset "$RESET" '"Request elapsed: " + $elapsed + " s\n", (.choices[0].message.content // .choices[0].message.reasoning_content // .error.message // ""), ("\n---\nTokens/sec: " + $color + "\(.timings.predicted_per_second // "n/a")" + $reset)'
+printf '%s\n' "$RESPONSE" | jq -r --arg elapsed "$ELAPSED" --arg color "$RATE_COLOR" --arg reset "$RESET" '"Request elapsed: " + (if $color == "" then "" else "\u001b[34m" end) + $elapsed + $reset + " s\n", (.choices[0].message.content // .choices[0].message.reasoning_content // .error.message // ""), ("\n---\nTokens/sec: " + $color + "\(.timings.predicted_per_second // "n/a")" + $reset)'
