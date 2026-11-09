@@ -4458,7 +4458,7 @@ def _agent_binary_asset(machine):
     return None
 
 
-_RELEASE_FEED_CACHE = {"ts": 0.0, "versions": []}
+_RELEASE_FEED_CACHE = {"ts": 0.0, "versions": [], "commits": {}}
 
 
 def _release_feed_versions():
@@ -4487,12 +4487,24 @@ def _release_feed_versions():
                 seen.append(v)
         seen.sort(key=lambda v: tuple(int(p) for p in v.split(".")),
                   reverse=True)
+        commits = {}
+        for entry in re.findall(r"<entry>.*?</entry>", body, re.S):
+            vm = re.search(r"release-(\d+\.\d+\.\d+)", entry)
+            cm = re.search(r"/commit/([0-9a-f]{7,40})", entry)
+            if vm and cm:
+                commits[vm.group(1)] = cm.group(1)
     except Exception:
         seen = []
     with _LLAMA_UPDATES_LOCK:
-        _RELEASE_FEED_CACHE["ts"] = now
-        _RELEASE_FEED_CACHE["versions"] = list(seen)
+        _RELEASE_FEED_CACHE.update(ts=now, versions=list(seen),
+                                   commits=locals().get("commits") or {})
     return seen
+
+
+def _release_commit(version):
+    _release_feed_versions()
+    with _LLAMA_UPDATES_LOCK:
+        return _RELEASE_FEED_CACHE["commits"].get(version)
 
 
 def _agent_release_info(machine):
@@ -4601,6 +4613,20 @@ def _update_app_binary():
             if not version:
                 return {"ok": False, "source": True,
                         "detail": "could not determine the latest release"}
+            rel_sha = _release_commit(version)
+            if rel_sha:
+                head = subprocess.run(
+                    ["git", "-C", repo, "rev-parse", "HEAD"],
+                    capture_output=True, text=True).stdout.strip()
+                if rel_sha != head:
+                    chk = subprocess.run(
+                        ["git", "-C", repo, "merge-base", "--is-ancestor",
+                         rel_sha, "HEAD"], capture_output=True, text=True)
+                    if chk.returncode == 0:
+                        return {"ok": False, "source": True,
+                                "detail": f"source is newer than release "
+                                          f"{version}; wait for the next "
+                                          f"release"}
             archive = (f"https://github.com/{_AGENT_REPO}/archive/refs/tags/"
                        f"release-{version}.tar.gz")
             import tarfile
