@@ -1114,6 +1114,25 @@ on("#setup-readiness", "click", async (e) => {
   }
 });
 
+/* Lightweight live refresh for the Machines page: agent/app version
+   pills update in place every few seconds without re-rendering rows. */
+let _liveRefreshBusy = false;
+async function refreshLiveMachineState() {
+  if (_liveRefreshBusy) return;
+  if (!document.querySelector("#tab-machines.active")) return;
+  _liveRefreshBusy = true;
+  try {
+    const appPill = document.querySelector("[data-app-version]");
+    if (appPill) hydrateAppVersion(appPill);
+    document.querySelectorAll(".scan-model[data-machine-name]").forEach(tr => {
+      fillAgentUpdateState(tr, tr.dataset.machineName);
+    });
+  } finally {
+    _liveRefreshBusy = false;
+  }
+}
+setInterval(refreshLiveMachineState, 3000);
+
 /* ---- machine detail modal (dashboard card click) ---- */
 // per-machine detail cache: render the last result INSTANTLY on reopen,
 // then swap in fresh data when the fetch lands (same pattern the
@@ -2086,6 +2105,7 @@ async function loadMachines(skipCaps = false) {
         <button class="small danger" data-act="delete">Delete</button>
       </div>`;
       tr.classList.add("scan-model");
+      tr.dataset.machineName = m.name;
       if (m.role === "master" || m.is_local) {
         const appPill = tr.querySelector('[data-app-version]');
         hydrateAppVersion(appPill);
@@ -2151,6 +2171,7 @@ async function loadMachines(skipCaps = false) {
         const btn = e.currentTarget;
         if (!window.confirm(`Install/update the peer agent on ${m.name}?\n\nThe agent will be restarted.`)) return;
         btn.disabled = true;
+        btn.dataset.busy = "1";
         const old = btn.textContent;
         btn.textContent = "Updating agent…";
         try {
@@ -2161,6 +2182,7 @@ async function loadMachines(skipCaps = false) {
           loadMachines(true);
         } catch (err) {
           toast(`Agent update failed on ${m.name}: ${err.message}`, "bad");
+          delete btn.dataset.busy;
           btn.disabled = false;
           btn.textContent = old;
         }
@@ -2209,7 +2231,7 @@ async function loadMachines(skipCaps = false) {
    Update button when the version can't be probed (offline machine). */
 function fillAgentUpdateState(tr, name) {
   const btn = tr.querySelector('[data-act="agent-update"]');
-  if (!btn) return;
+  if (!btn || btn.dataset.busy === "1") return;
   api("GET", `/api/machines/${encodeURIComponent(name)}/agent-version`)
     .then(v => {
       if (!btn.isConnected) return;
