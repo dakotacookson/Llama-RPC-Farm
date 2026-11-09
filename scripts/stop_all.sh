@@ -14,8 +14,10 @@ fi
 exec "$PYTHON" - "$ROOT" "$@" <<'PY'
 import argparse
 import os
+import signal
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.join(sys.argv.pop(1), "src"))
 
@@ -53,10 +55,35 @@ machine["agent_port"] = port(
 http_port = int(os.environ.get("HTTP_PORT") or 8084)
 
 print(f"Stopping local llama-server on port {http_port}...")
-subprocess.run(
-    ["lsof", "-ti", f"TCP:{http_port}", "-sTCP:LISTEN"],
-    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False
-)
+try:
+    out = subprocess.run(
+        ["lsof", "-ti", f"TCP:{http_port}", "-sTCP:LISTEN"],
+        capture_output=True, text=True, check=False,
+    ).stdout
+except FileNotFoundError:
+    print("WARN: lsof not found — cannot locate the local listener; "
+          "stop it manually (e.g. Ctrl-C).")
+    out = ""
+pids = [int(p) for p in out.split() if p.strip().isdigit()]
+for pid in pids:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as exc:
+        print(f"WARN: could not stop pid {pid}: {exc}")
+if pids:
+    time.sleep(1.0)  # let it exit, then force any survivor
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    print(f"Stopped local llama-server ({len(pids)} process(es)).")
+else:
+    print("No local llama-server is listening on that port.")
 
 print(f"Stopping remote RPC worker on {machine['ip']}:{rpc_port} via agent...")
 result = agent.rpc_stop(machine, rpc_port)

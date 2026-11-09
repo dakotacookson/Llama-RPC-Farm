@@ -63,23 +63,28 @@ else
 fi
 
 # ---------------------------------------------------------------- venv
-if command -v uv >/dev/null 2>&1; then
-  log "Using uv for virtual environment and dependencies"
-  uv venv --python 3.12 "$VENV_DIR"
-  uv pip install \
-    --python "$VENV_DIR/bin/python" \
-    -r "$REQ"
-else
-  if [ ! -x "$VENV_DIR/bin/python" ] && [ ! -x "$VENV_DIR/Scripts/python.exe" ]; then
+# Create the venv only when missing (idempotent). Prefer uv when it is
+# already on PATH, but use the interpreter we actually selected rather
+# than hardcoding a version: forcing `--python 3.12` here would download
+# another Python on machines that already have a suitable 3.11+.
+if [ ! -x "$VENV_DIR/bin/python" ] && [ ! -x "$VENV_DIR/Scripts/python.exe" ]; then
+  if command -v uv >/dev/null 2>&1; then
+    log "Creating virtualenv at $VENV_DIR (uv)"
+    uv venv --python "$PY" "$VENV_DIR"
+  else
     log "Creating virtualenv at $VENV_DIR"
     "$PY" -m venv "$VENV_DIR"
   fi
+fi
 
-  VENV_PY="$VENV_DIR/bin/python"
-  if [ -x "$VENV_DIR/Scripts/python.exe" ]; then
-    VENV_PY="$VENV_DIR/Scripts/python.exe"
-  fi
+VENV_PY="$VENV_DIR/bin/python"
+if [ -x "$VENV_DIR/Scripts/python.exe" ]; then VENV_PY="$VENV_DIR/Scripts/python.exe"; fi
 
+if command -v uv >/dev/null 2>&1; then
+  log "Installing requirements (uv)"
+  uv pip install --python "$VENV_PY" -r "$REQ"
+else
+  # pip bootstrap (venvs created by uv-managed pythons may lack it)
   "$VENV_PY" -m pip --version >/dev/null 2>&1 ||
     "$VENV_PY" -m ensurepip >/dev/null 2>&1 || true
 
