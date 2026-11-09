@@ -194,10 +194,15 @@ at the gateway instead of `:8080`.
 Environment overrides: `GATEWAY_PORT` (default `8090`), `GATEWAY_HOST`
 (default `0.0.0.0`), `GATEWAY_UPSTREAM` (default `http://127.0.0.1:8080`).
 
-If you prefer the legacy standalone systemd service, start the app with
-`FARM_GATEWAY_DISABLE=1` and run
-`.venv/bin/python src/swap_gateway.py` yourself — the app detects an
-already-answering `:8090` and leaves it alone.
+**Gateway lifecycle follows the app.** On startup, if a stale standalone
+`swap_gateway.py` process still answers on `:8090` (for example from an
+older checkout), the app stops it and binds its embedded gateway, so
+gateway code can never outlive the app and serve stale logic. An unrelated
+service holding the port is never killed — the app logs it and stays off
+`:8090`.
+
+If you intentionally run a separate gateway service, start the app with
+`FARM_GATEWAY_DISABLE=1`; then the app never touches `:8090`.
 
 ## 10. Connect clients
 

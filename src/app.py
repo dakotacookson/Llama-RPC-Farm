@@ -70,14 +70,173 @@ def _port_open(port):
         return False
 
 
+def _port_listener_pids(port):
+    """Best-effort PIDs of processes LISTENing on a local TCP port."""
+    port = int(port)
+    if os.name == "nt":
+        cmd = (
+            f"(Get-NetTCPConnection -LocalPort {port} -State Listen "
+            "-ErrorAction SilentlyContinue | "
+            "Select-Object -ExpandProperty OwningProcess -Unique)"
+        )
+        try:
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 cmd], capture_output=True, text=True, timeout=8)
+            return sorted({int(x) for x in (out.stdout or "").split()
+                           if x.strip().isdigit()})
+        except Exception:
+            return []
+    pids = set()
+    if shutil.which("lsof"):
+        try:
+            out = subprocess.run(
+                ["lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"],
+                capture_output=True, text=True, timeout=8)
+            pids.update(int(x) for x in (out.stdout or "").split()
+                        if x.strip().isdigit())
+        except Exception:
+            pass
+    if not pids and shutil.which("ss"):
+        try:
+            out = subprocess.run(["ss", "-ltnp"], capture_output=True,
+                                 text=True, timeout=8)
+            for line in (out.stdout or "").splitlines():
+                if re.search(rf":{port}\s", line):
+                    pids.update(int(m) for m in re.findall(r"pid=(\d+)", line))
+        except Exception:
+            pass
+    if not pids and shutil.which("fuser"):
+        try:
+            out = subprocess.run(["fuser", "-n", "tcp", str(port)],
+                                 capture_output=True, text=True, timeout=8)
+            text = (out.stdout or "") + (out.stderr or "")
+            pids.update(int(tok) for tok in re.split(r"\s+", text)
+                        if tok.isdigit())
+        except Exception:
+            pass
+    return sorted(pids)
+
+
+def _pid_cmdline(pid):
+    """Command line of a PID, or "" when unavailable."""
+    pid = int(pid)
+    if os.name == "nt":
+        cmd = (f'(Get-CimInstance Win32_Process -Filter "ProcessId={pid}")'
+               ".CommandLine")
+        try:
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 cmd], capture_output=True, text=True, timeout=8)
+            return (out.stdout or "").strip()
+        except Exception:
+            return ""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return f.read().replace(b"\x00", b" ").decode(
+                "utf-8", "replace").strip()
+    except OSError:
+        pass
+    try:
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                             capture_output=True, text=True, timeout=8)
+        return (out.stdout or "").strip()
+    except Exception:
+        return ""
+
+
+def _terminate_pid(pid):
+    """SIGTERM a PID, escalating to SIGKILL after a short grace period."""
+    pid = int(pid)
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                           capture_output=True, timeout=10)
+        except Exception:
+            pass
+        return
+    import signal
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return
+        time.sleep(0.1)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+def _stop_gateway_units():
+    """Stop known legacy gateway systemd user units (best-effort)."""
+    if os.name == "nt" or not shutil.which("systemctl"):
+        return
+    for unit in ("swap-gateway.service", "llama-rpc-farm-gateway.service"):
+        try:
+            res = subprocess.run(
+                ["systemctl", "--user", "stop", unit],
+                capture_output=True, text=True, timeout=10)
+            if res.returncode == 0:
+                print(f"[gateway] stopped legacy unit {unit}")
+        except Exception:
+            pass
+
+
+def _stop_stale_gateway(port):
+    """Stop a stale standalone `swap_gateway.py` so the app can own the port.
+
+    Only processes whose command line is recognizably this project's
+    gateway are killed; an unrelated service on the port is left alone
+    (and the embedded gateway stays off, exactly as before). Returns True
+    once the port is free.
+    """
+    if not _port_open(port):
+        return False
+    pids = _port_listener_pids(port)
+    if not pids:
+        print(f"[gateway] :{port} is answering but its PID could not be "
+              "identified — leaving it alone")
+        return False
+    stopped = False
+    for pid in pids:
+        cmd = _pid_cmdline(pid)
+        low = (cmd or "").lower()
+        if "swap_gateway.py" not in low and \
+                "llama-rpc-farm-gateway" not in low:
+            print(f"[gateway] :{port} held by unrelated process {pid} "
+                  f"({cmd[:120] or 'unknown'}) — leaving it alone")
+            continue
+        print(f"[gateway] stale standalone gateway pid {pid} on :{port} — "
+              "stopping it so the embedded gateway can start")
+        _stop_gateway_units()
+        _terminate_pid(pid)
+        stopped = True
+    if not stopped:
+        return False
+    for _ in range(25):
+        if not _port_open(port):
+            return True
+        time.sleep(0.2)
+    print(f"[gateway] :{port} still bound after stopping the stale gateway")
+    return False
+
+
 def start_swap_gateway():
     """Run the view/access-key gateway in-process on :8090.
 
     Packaged builds have no source checkout to launch src/swap_gateway.py
     as a separate service, and every client-facing path (README examples,
     UI Chat/Tests) expects :8090. Embedding it keeps one binary and makes
-    the gateway lifecycle follow the app. If something already answers on
-    the port (legacy systemd gateway), leave it alone.
+    the gateway lifecycle follow the app: on startup a stale standalone
+    `swap_gateway.py` listener is stopped so it can never outlive the app
+    and serve old code. An unrelated service on the port is untouched
+    (set FARM_GATEWAY_DISABLE=1 to keep an external gateway deliberately).
     """
     global _GATEWAY_SERVER
     if _GATEWAY_SERVER is not None:
@@ -93,7 +252,12 @@ def start_swap_gateway():
     except ValueError:
         port = 8090
     if _port_open(port):
-        print(f"[gateway] :{port} already answering — using external gateway")
+        if not _stop_stale_gateway(port):
+            print(f"[gateway] :{port} already answering — using external "
+                  "gateway")
+            return
+    if _port_open(port):
+        print(f"[gateway] :{port} still answering — using external gateway")
         return
     try:
         import threading
