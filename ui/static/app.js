@@ -954,7 +954,7 @@ function statCardHTML(m) {
       <div class="card-metrics">
         <div class="card-metric">
           <div class="card-metric-label"><i class="fa-solid fa-gauge-high"></i> CPU</div>
-          <div class="card-metric-value" style="color:${valColor(m.cpu_pct)}">${Math.round(m.cpu_pct || 0)}%${m.cores ? ` · ${m.cores} cores` : ""}</div>
+          <div class="card-metric-value" style="color:${valColor(m.cpu_pct)}">${Math.round(m.cpu_pct || 0)}%</div>
           <div class="metric-bar"><div class="metric-fill" style="width:${m.cpu_pct || 0}%; background:${valColor(m.cpu_pct)}"></div></div>
           ${m.cores ? `<div class="card-metric-label">${((m.cpu_pct || 0) / 100 * m.cores).toFixed(1)} / ${m.cores} cores</div>` : ""}
         </div>
