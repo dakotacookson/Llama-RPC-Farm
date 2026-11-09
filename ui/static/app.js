@@ -7302,11 +7302,13 @@ on("#dl-start", "click", async (e) => {
 
 /* ---------------- HF GGUF browser (amazing search) ---------------- */
 let hfPage = 0, hfQuery = "", hfQuant = "", hfTask = "", hfCompany = "", hfCollection = "", hfSort = "downloads", hfActiveId = null, hfDebounce = null;
+let hfCursor = null, hfNextCursor = null, hfCursorMode = false, hfCursorStack = [];
 let hfFormat = "gguf"; // "gguf" | "safetensors" — which HF repo flavor the browse pane lists
 let hfVramTotal = 0; // for recommended highlight
 let hfAvatarCache = {}; // author -> url
 let hfCompaniesFull = [];
 let hfCompanyFilterDebounce = null;
+let hfCompaniesPoll = null;
 let hfRecommended = false;
 const HF_RECOMMENDED = ["openai","google","Qwen","deepseek-ai","microsoft","meta-llama","mistralai","huihui-ai","orcarouter","unsloth","ornith-ai"];
 async function getHfAvatar(author){
@@ -7324,8 +7326,12 @@ async function getHfAvatar(author){
 }
 async function loadHfCompanies(search=""){
   const sel=$("#hf-company"); if(!sel) return;
+  if(hfCompaniesPoll){ clearTimeout(hfCompaniesPoll); hfCompaniesPoll=null; }
   try{
-    const params = new URLSearchParams({limit:"150"});
+    // Backend "All companies" is backed by a complete GGUF publisher index;
+    // search is an exhaustive substring match over it, so typing reaches any
+    // author even though the visible picker is capped to keep the DOM sane.
+    const params = new URLSearchParams({limit: search ? "2000" : "1000"});
     if(search) params.set("search", search);
     if(hfTask) params.set("pipeline_tag", hfTask);
     if(hfQuant) params.set("quant", hfQuant);
@@ -7343,7 +7349,20 @@ async function loadHfCompanies(search=""){
     }
     if(cur && [...sel.options].some(o=>o.value===cur)) sel.value=cur;
     const hint=$("#hf-results-hint");
-    if(hint && data.totalUnique) hint.textContent = `${toShow.length} companies · ${data.totalUnique} total unique`;
+    if(hint && data.totalUnique != null){
+      const total = Number(data.totalUnique).toLocaleString();
+      const scan = data.scanning
+        ? ` · indexing GGUF publishers… ${Number(data.scanned_models||0).toLocaleString()} models`
+        : "";
+      hint.textContent = `${toShow.length} shown · ${total} companies${scan}`;
+    }
+    // The index builds in the background (~1–2 min, persisted). Keep the
+    // picker growing until it is complete, but never clobber an active search.
+    if(data.scanning && !search && !hfRecommended){
+      hfCompaniesPoll = setTimeout(()=>{
+        if(!($("#hf-company-search")?.value||"").trim()) loadHfCompanies("");
+      }, 5000);
+    }
   }catch(e){ console.warn("companies load failed", e.message); }
 }
 function filterHfCompaniesLocal(q){
@@ -7436,25 +7455,27 @@ async function initHfBrowse(){
     const st = await api("GET","/api/stats");
     hfVramTotal = (st.totals?.vram?.total) || 0;
   }catch(_){ hfVramTotal = 0; }
-  // defaults per user request: empty search, Q4_K_M, Text, trending, Recommended
+  // Broad-discovery defaults: All quants, All tasks, Most downloads,
+  // All companies, Recommended OFF. Recommended is an opt-in curated
+  // shortlist; defaulting it on hid every GGUF publisher not in it.
   $("#hf-query").value = "";
-  hfQuant = "Q4_K_M";
+  hfQuant = "";
   document.querySelectorAll("#hf-quant-chips .hw-chip").forEach(b=> b.classList.toggle("active", b.dataset.quant===hfQuant));
-  hfTask = "text-generation";
+  hfTask = "";
   document.querySelectorAll("#hf-task-chips .hw-chip").forEach(b=> b.classList.toggle("active", b.dataset.task===hfTask));
   const pipeSel=$("#hf-pipeline-select"); if(pipeSel) pipeSel.value = hfTask;
-  const sortSel=$("#hf-sort"); if(sortSel) sortSel.value = "trending";
-  hfSort = "trending";
-  hfRecommended = true;
-  const recChip=$("#hf-recommended"); if(recChip){ recChip.classList.add("active"); recChip.dataset.recommended="true"; }
-  // reset company/collection to All (recommended filter will limit to curated)
+  const sortSel=$("#hf-sort"); if(sortSel) sortSel.value = "downloads";
+  hfSort = "downloads";
+  hfRecommended = false;
+  const recChip=$("#hf-recommended"); if(recChip){ recChip.classList.remove("active"); recChip.dataset.recommended="false"; }
   hfCompany = ""; const compSel=$("#hf-company"); if(compSel) compSel.value="";
   hfCollection = ""; const collSel=$("#hf-collection"); if(collSel) collSel.value="";
   if(compSel) await loadHfCollections("");
   doHfSearch(true);
 }
 async function doHfSearch(resetPage){
-  if(resetPage) hfPage = 0;
+  if(resetPage){ hfPage = 0; hfCursor = null; hfNextCursor = null;
+                 hfCursorMode = false; hfCursorStack = []; }
   hfQuery = $("#hf-query")?.value.trim() || "";
   hfSort = $("#hf-sort")?.value || "downloads";
   hfCompany = $("#hf-company")?.value || "";
@@ -7474,7 +7495,14 @@ async function doHfSearch(resetPage){
       const models = (data.items||[]).map(it=> ({
         id: it.id, author: it.author, downloads: it.downloads||0, likes: it.likes||0, pipeline_tag: it.pipeline_tag||"", tags: it.tags||[], ggufCount: it.ggufCount||0, gated: false
       }));
-      renderHfResults({models, total: models.length});
+      if(models.length){
+        renderHfResults({models, total: models.length});
+      } else {
+        // renderHfResults' generic empty state uses the search query, which
+        // reads as "No GGUF models found for “”" in collection mode.
+        list.innerHTML = `<p class="hint" style="padding:14px">No GGUF models in “${escHtml(data.title||hfCollection)}” — this collection is source/safetensors weights only. Search the model name for community GGUF quants.</p>`;
+        $("#hf-detail").style.display="none";
+      }
       if(status) status.textContent = models.length
         ? `${models.length} GGUF models in "${data.title||hfCollection}"`
         : `No GGUF models in "${data.title||hfCollection}" — only source/safetensors repos`;
@@ -7491,24 +7519,28 @@ async function doHfSearch(resetPage){
   list.innerHTML = `<div style="padding:12px"><div class="hf-skeleton" style="width:80%"></div><div class="hf-skeleton" style="width:60%"></div><div class="hf-skeleton" style="width:90%"></div></div>`.repeat(3);
   if(status) status.textContent = "Searching Hugging Face…";
   try{
-    const qs = new URLSearchParams({query: hfQuery, sort: hfSort, limit:"20", page:String(hfPage), quant: hfQuant, pipeline_tag: hfTask, author: hfCompany, recommended: hfRecommended ? "true" : "false", fmt: hfFormat});
+    const qs = new URLSearchParams({query: hfQuery, sort: hfSort, limit:"50", page:String(hfPage), quant: hfQuant, pipeline_tag: hfTask, author: hfCompany, recommended: hfRecommended ? "true" : "false", fmt: hfFormat});
+    if(hfCursor) qs.set("cursor", hfCursor);
     const data = await api("GET", `/api/hf/search?${qs}`);
     renderHfResults(data);
     // gated hint
-    // chunked pagination: backend returns exact_total only when it knows
-    // the full count (snapshot path / HF exhausted). Otherwise page with
-    // has_more — Next fetches the next chunk on demand.
+    // Pagination is cursor-based against HF's Link: rel="next" chain (the
+    // deprecated skip offset silently lost rows on deep pages). Cursor
+    // pages are batch-aligned and may be empty when a quant filter is
+    // sparse; the backend advances and refills, so nothing is skipped.
+    hfNextCursor = data.next_cursor || null;
+    hfCursorMode = data.paged_by === "cursor";
     const gatedCount = (data.models||[]).filter(m=>m.gated).length;
     const recHint = hfRecommended ? " · ★ Recommended" : "";
     const exact = data.exact_total && data.total != null;
     const totalAll = data.total ?? 0;
-    const hasMore = data.has_more ?? ((data.models||[]).length >= 20);
-    const lastPage = exact ? Math.max(1, Math.ceil(totalAll/20)) : null;
+    const hasMore = data.has_more ?? !!hfNextCursor;
+    const lastPage = exact ? Math.max(1, Math.ceil(totalAll/50)) : null;
     const pageLabel = exact ? `page ${hfPage+1}/${lastPage}` : `page ${hfPage+1}${hasMore ? "" : " (end)"}`;
     const countLabel = exact ? `${data.models?.length||0} of ${totalAll} models` : `${data.models?.length||0} models${hasMore ? " · more…" : ""}`;
     if(status) status.textContent = `${countLabel} · ${pageLabel}` + (gatedCount?` · ${gatedCount} gated`:"") + recHint;
     if(hint) hint.textContent = exact ? `${totalAll} ${hfFormat === "safetensors" ? "safetensors" : "GGUF"} models` + (hfCompany?` — ${hfCompany}`: hfRecommended?` — Recommended`:"") : `${hfFormat === "safetensors" ? "safetensors" : "GGUF"} models${hasMore ? " · more available" : ""}` + (hfCompany?` — ${hfCompany}`: hfRecommended?` — Recommended`:"");
-    $("#hf-prev").disabled = hfPage===0;
+    $("#hf-prev").disabled = hfCursorMode ? !hfCursorStack.length : hfPage===0;
     $("#hf-next").disabled = !hasMore;
   }catch(e){
     const msg = e.message||"";
@@ -7523,7 +7555,11 @@ function renderHfResults(data){
   const list=$("#hf-results"); if(!list) return;
   const models = data.models||[];
   const st = hfFormat === "safetensors";
-  if(!models.length){ list.innerHTML = `<p class="hint" style="padding:14px">No ${st?"safetensors":"GGUF"} models found for “${escHtml(hfQuery)}”. Try Qwen, Mistral, Phi.</p>`; $("#hf-detail").style.display="none"; return; }
+  if(!models.length){
+    const forQ = hfQuery ? ` for “${escHtml(hfQuery)}”` : "";
+    list.innerHTML = `<p class="hint" style="padding:14px">No ${st?"safetensors":"GGUF"} models found${forQ}. Try Qwen, Mistral, Phi.</p>`;
+    $("#hf-detail").style.display="none"; return;
+  }
   list.innerHTML = models.map(m=>`
     <div class="hf-card ${hfActiveId===m.id?'active':''}" data-id="${escHtml(m.id)}">
       <img class="hf-avatar" data-author="${escHtml(m.author)}" src="${escHtml(proxiedImgSrc(`https://ui-avatars.com/api/?name=${encodeURIComponent(m.author)}&background=171c29&color=9aa5bd&size=56&bold=true`))}" alt="${escHtml(m.author)}" loading="lazy">
@@ -7784,10 +7820,29 @@ on("#hf-collection","change", ()=>{
 });
 on("#hf-company-search","input", (e)=>{
   clearTimeout(hfCompanyFilterDebounce);
-  hfCompanyFilterDebounce = setTimeout(()=> filterHfCompaniesLocal(e.target.value), 200);
+  hfCompanyFilterDebounce = setTimeout(()=> loadHfCompanies((e.target.value||"").trim()), 250);
 });
-on("#hf-prev","click", ()=>{ if(hfPage>0){ hfPage--; doHfSearch(false); } });
-on("#hf-next","click", ()=>{ hfPage++; doHfSearch(false); });
+on("#hf-prev","click", ()=>{
+  if(hfCursorMode){
+    if(!hfCursorStack.length) return;
+    hfCursor = hfCursorStack.pop();
+    hfPage = Math.max(0, hfPage - 1);
+    doHfSearch(false);
+  } else if(hfPage>0){
+    hfPage--; doHfSearch(false);
+  }
+});
+on("#hf-next","click", ()=>{
+  if(hfCursorMode){
+    if(!hfNextCursor) return;
+    hfCursorStack.push(hfCursor);
+    hfCursor = hfNextCursor;
+    hfPage++;
+    doHfSearch(false);
+  } else {
+    hfPage++; doHfSearch(false);
+  }
+});
 /* format is always GGUF quants (llama.cpp). */
 function hfSetFormat(fmt){
   hfFormat = "gguf";

@@ -11,9 +11,12 @@ Called by app.py endpoints:
   GET /api/hf/models/{author}/{name}/gguf
 """
 import asyncio
+import datetime as _dt
+import json
 import os
-import time
 import re
+import threading
+import time
 from urllib.parse import quote
 
 import httpx
@@ -21,7 +24,32 @@ import httpx
 from runtime_paths import data_dir
 
 HF_API = "https://huggingface.co/api"
+HF_ROOT = "https://huggingface.co"
 CACHE_TTL = 300
+# Full GGUF publisher index: HF retired the `skip` parameter in favour of
+# the Link: rel="next" cursor chain. Walking the whole GGUF listing is
+# surprisingly cheap (measured ~220 pages of 1000, 219k models, ~37k
+# authors) so the "All companies" list is built from a complete index
+# instead of a bounded crawl. Built in a background thread and persisted
+# so app restarts resume where they left off.
+AUTHOR_INDEX_PATH = os.path.join(data_dir(), "generated", "hf_snapshot",
+                                 "gguf-authors.json")
+AUTHOR_INDEX_TTL = 24 * 3600
+AUTHOR_PAGE_SIZE = 1000
+_author_index_lock = threading.Lock()
+_author_index = {"authors": {}, "cursor": None, "done": False,
+                 "models": 0, "updated": None, "running": False,
+                 "error": None}
+_author_index_loaded = False
+
+# repo_id -> GGUF file count, so collection GGUF filtering (and repeat
+# owners) is a one-time HF lookup per repo, persisted across restarts.
+REPO_GGUF_CACHE_PATH = os.path.join(data_dir(), "generated", "hf_snapshot",
+                                    "gguf-repos.json")
+REPO_GGUF_TTL = 7 * 86400
+_repo_gguf_lock = threading.Lock()
+_repo_gguf = {}
+_repo_gguf_loaded = False
 _cache = {}  # key -> (expires_at, data)
 
 _QUANT_RE = re.compile(r"(Q\d+_K_M|Q\d+_K_S|Q\d+_K_L|Q\d+_0|Q\d+_1|Q\d+|F16|F32|BF16|IQ\d+_[A-Z]+)", re.IGNORECASE)
@@ -54,12 +82,35 @@ def _token():
         pass
     return None
 
+_ANON_HEADERS = {"User-Agent": "llama-rpc-farm/1.0"}
+
 def _headers():
-    h = {"User-Agent": "llama-rpc-farm/1.0"}
+    h = dict(_ANON_HEADERS)
     t = _token()
     if t:
         h["Authorization"] = f"Bearer {t}"
     return h
+
+async def _get_public(client, url, params=None):
+    """GET with the configured token, retrying anonymously if rejected.
+
+    Fine-grained HF tokens are entity-scoped (e.g. `collection.read` only
+    for the token owner's own collections). HF answers 403 for another
+    owner's PUBLIC collection even though anonymous reads are allowed —
+    this is why public browsing worked in a browser but failed in the app.
+    Retry without Authorization on 401/403; if the anonymous request also
+    fails, return the original token response so private/own content keeps
+    its real error. Non-auth errors (404/5xx) are returned as-is.
+    """
+    resp = await client.get(url, params=params)
+    if resp.status_code in (401, 403) and _token():
+        async with httpx.AsyncClient(
+                timeout=client.timeout, headers=dict(_ANON_HEADERS),
+                follow_redirects=True) as anon:
+            anon_resp = await anon.get(url, params=params)
+            if anon_resp.status_code < 400:
+                return anon_resp
+    return resp
 
 def _cache_get(key):
     ent = _cache.get(key)
@@ -85,6 +136,273 @@ def _is_gguf(filename):
 
 _avatar_cache = {}  # author -> (expires, url)
 
+
+# ---------------- full GGUF publisher index ----------------
+def _index_next_cursor(link_header):
+    """Extract the cursor from an HF `Link: <...>; rel="next"` header."""
+    m = re.search(r'<([^>]+)>;\s*rel="next"', link_header or "")
+    if not m:
+        return None
+    try:
+        return httpx.URL(m.group(1)).params.get("cursor")
+    except Exception:
+        return None
+
+
+def _merge_author_batch(state, batch):
+    """Accumulate one page of models into the author dict (pure helper)."""
+    authors = state["authors"]
+    for m in batch or []:
+        mid = m.get("id") or ""
+        if not mid:
+            continue
+        a = m.get("author") or (mid.split("/")[0] if "/" in mid else "")
+        if not a:
+            continue
+        ent = authors.setdefault(a, {"count": 0, "downloads": 0, "likes": 0})
+        ent["count"] += 1
+        ent["downloads"] += m.get("downloads") or 0
+        ent["likes"] += m.get("likes") or 0
+        state["models"] += 1
+
+
+def _load_author_index():
+    global _author_index_loaded
+    if _author_index_loaded:
+        return
+    with _author_index_lock:
+        if _author_index_loaded:
+            return
+        try:
+            if os.path.exists(AUTHOR_INDEX_PATH):
+                with open(AUTHOR_INDEX_PATH, "r", encoding="utf-8") as f:
+                    blob = json.load(f)
+                _author_index.update({
+                    "authors": blob.get("authors") or {},
+                    "cursor": blob.get("cursor"),
+                    "done": bool(blob.get("done")),
+                    "models": int(blob.get("models") or 0),
+                    "updated": blob.get("updated"),
+                    "error": None,
+                })
+        except Exception:
+            pass
+        _author_index_loaded = True
+
+
+def _save_author_index_locked():
+    try:
+        os.makedirs(os.path.dirname(AUTHOR_INDEX_PATH), exist_ok=True)
+        tmp = AUTHOR_INDEX_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({
+                "authors": _author_index["authors"],
+                "cursor": _author_index["cursor"],
+                "done": _author_index["done"],
+                "models": _author_index["models"],
+                "updated": _author_index["updated"],
+            }, f)
+        os.replace(tmp, AUTHOR_INDEX_PATH)
+    except Exception:
+        pass
+
+
+def _load_repo_gguf_cache():
+    global _repo_gguf_loaded
+    if _repo_gguf_loaded:
+        return
+    with _repo_gguf_lock:
+        if _repo_gguf_loaded:
+            return
+        try:
+            if os.path.exists(REPO_GGUF_CACHE_PATH):
+                with open(REPO_GGUF_CACHE_PATH, "r", encoding="utf-8") as f:
+                    _repo_gguf.update(json.load(f) or {})
+        except Exception:
+            pass
+        _repo_gguf_loaded = True
+
+
+def _repo_gguf_get(repo_id):
+    _load_repo_gguf_cache()
+    ent = _repo_gguf.get(repo_id.lower())
+    if not ent:
+        return None
+    try:
+        age = (_dt.datetime.now(_dt.timezone.utc)
+               - _dt.datetime.fromisoformat(ent.get("t") or "")).total_seconds()
+        if age > REPO_GGUF_TTL:
+            return None
+    except Exception:
+        return None
+    return ent.get("n")
+
+
+def _repo_gguf_set(repo_id, count):
+    with _repo_gguf_lock:
+        _load_repo_gguf_cache()
+        _repo_gguf[repo_id.lower()] = {
+            "n": int(count),
+            "t": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        }
+        try:
+            os.makedirs(os.path.dirname(REPO_GGUF_CACHE_PATH), exist_ok=True)
+            tmp = REPO_GGUF_CACHE_PATH + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(_repo_gguf, f)
+            os.replace(tmp, REPO_GGUF_CACHE_PATH)
+        except Exception:
+            pass
+
+
+async def _repo_gguf_count(repo_id):
+    """Number of .gguf siblings in a repo (None = unknown / check failed)."""
+    repo_id = (repo_id or "").strip().strip("/")
+    if "/" not in repo_id:
+        return None
+    cached = _repo_gguf_get(repo_id)
+    if cached is not None:
+        return cached
+    author, name = repo_id.split("/", 1)
+    try:
+        async with httpx.AsyncClient(timeout=20, headers=_headers(),
+                                     follow_redirects=True) as client:
+            resp = await client.get(f"{HF_API}/models/{quote(author)}/{quote(name)}")
+        if resp.status_code == 404:
+            n = 0
+        elif resp.status_code in (401, 403):
+            return None  # private/unknown: don't hide the collection
+        else:
+            resp.raise_for_status()
+            sibs = resp.json().get("siblings") or []
+            n = sum(1 for s in sibs if _is_gguf(s.get("rfilename")))
+    except Exception:
+        return None
+    _repo_gguf_set(repo_id, n)
+    return n
+
+
+def _index_is_stale():
+    updated = _author_index.get("updated")
+    if not updated:
+        return True
+    try:
+        age = (_dt.datetime.now(_dt.timezone.utc)
+               - _dt.datetime.fromisoformat(updated)).total_seconds()
+        return age > AUTHOR_INDEX_TTL
+    except Exception:
+        return True
+
+
+def _crawl_author_index():
+    """Walk the whole GGUF listing via the cursor chain, persisting progress."""
+    import httpx as _httpx
+    url = HF_API + "/models"
+    fails = 0
+    try:
+        while True:
+            with _author_index_lock:
+                if _author_index["done"]:
+                    break
+                cursor = _author_index["cursor"]
+            params = {"filter": "gguf", "limit": str(AUTHOR_PAGE_SIZE),
+                      "sort": "downloads", "direction": "-1"}
+            if cursor:
+                params["cursor"] = cursor
+            try:
+                with _httpx.Client(timeout=90, headers=_headers(),
+                                   follow_redirects=True) as client:
+                    resp = client.get(url, params=params)
+                if resp.status_code == 429:
+                    ra = resp.headers.get("retry-after") or "10"
+                    try:
+                        wait = min(float(ra), 60.0)
+                    except ValueError:
+                        wait = 10.0
+                    time.sleep(wait)
+                    continue
+                if resp.status_code >= 500:
+                    fails += 1
+                    if fails > 5:
+                        with _author_index_lock:
+                            _author_index["error"] = f"HTTP {resp.status_code}"
+                        return
+                    time.sleep(5 * fails)
+                    continue
+                if resp.status_code == 400 and cursor:
+                    # Expired/invalid cursor: restart the scan cleanly rather
+                    # than resume into the middle of a dead search state.
+                    with _author_index_lock:
+                        _author_index.update({"authors": {}, "models": 0,
+                                              "cursor": None})
+                    continue
+                resp.raise_for_status()
+                batch = resp.json() or []
+                fails = 0
+            except Exception as e:
+                fails += 1
+                with _author_index_lock:
+                    _author_index["error"] = str(e)
+                if fails > 5:
+                    return
+                time.sleep(5 * fails)
+                continue
+            with _author_index_lock:
+                before = _author_index["models"]
+                _merge_author_batch(_author_index, batch)
+                link = resp.headers.get("link", "")
+                nxt = _index_next_cursor(link)
+                _author_index["cursor"] = nxt
+                if not batch or not nxt or len(batch) < AUTHOR_PAGE_SIZE:
+                    _author_index["done"] = True
+                _author_index["updated"] = _dt.datetime.now(
+                    _dt.timezone.utc).isoformat()
+                _author_index["error"] = None
+                _save_author_index_locked()
+                advanced = _author_index["models"] - before
+            if not advanced:
+                with _author_index_lock:
+                    _author_index["done"] = True
+                    _save_author_index_locked()
+                break
+            time.sleep(0.05)
+    finally:
+        with _author_index_lock:
+            _author_index["running"] = False
+            _save_author_index_locked()
+
+
+def ensure_author_index(force=False):
+    """Start (or resume) the background index build; return a snapshot."""
+    global _author_index_loaded
+    _load_author_index()
+    start = False
+    with _author_index_lock:
+        if force and _author_index["done"]:
+            _author_index.update({"authors": {}, "models": 0, "cursor": None,
+                                  "done": False, "updated": None})
+        if not _author_index["running"]:
+            if not _author_index["done"] or _index_is_stale():
+                if _author_index["done"] and _index_is_stale():
+                    # stale but complete: do a clean rebuild
+                    _author_index.update({"authors": {}, "models": 0,
+                                          "cursor": None, "done": False})
+                _author_index["running"] = True
+                _author_index["error"] = None
+                start = True
+        snap = {
+            "authors": dict(_author_index["authors"]),
+            "done": _author_index["done"],
+            "running": _author_index["running"],
+            "models": _author_index["models"],
+            "error": _author_index["error"],
+            "updated": _author_index["updated"],
+        }
+    if start:
+        threading.Thread(target=_crawl_author_index, daemon=True).start()
+    return snap
+
+
 async def list_gguf_companies(limit: int = 20, search: str = "", pipeline_tag: str = "", quant: str = "", recommended: bool = False):
     """Curated big companies when recommended, else top by downloads — reflective of task/quant."""
     CURATED = [
@@ -93,11 +411,34 @@ async def list_gguf_companies(limit: int = 20, search: str = "", pipeline_tag: s
         "unsloth", "ornith-ai",
     ]
     norm = {c.lower(): c for c in CURATED}
-    limit = max(1, min(limit, 50))
+    limit = max(1, min(limit, 5000))
     key = f"companies:curated:{search}:{pipeline_tag}:{quant}:{limit}:{recommended}"
     cached = _cache_get(key)
     if cached is not None:
         return cached
+    # All companies: serve from the complete GGUF publisher index (background
+    # cursor crawl) instead of the old bounded top-downloads crawl. Search is
+    # an exhaustive substring match over every indexed author, so any company
+    # visible on Hugging Face is reachable no matter where it ranks.
+    if not recommended:
+        snap = ensure_author_index()
+        needle = (search or "").strip().lower()
+        rows = []
+        for author, ent in snap["authors"].items():
+            if needle and needle not in author.lower():
+                continue
+            rows.append({"author": author,
+                         "count": ent.get("count") or 0,
+                         "downloads": ent.get("downloads") or 0,
+                         "likes": ent.get("likes") or 0})
+        rows.sort(key=lambda x: (-x["count"], -x["downloads"]))
+        result = {"companies": rows[:limit], "totalUnique": len(rows),
+                  "curated": False, "scanned_models": snap["models"],
+                  "scanning": bool(snap["running"] and not snap["done"]),
+                  "complete": bool(snap["done"]), "error": snap["error"]}
+        if snap["done"]:
+            _cache_set(key, result)  # never cache a partial, still-growing list
+        return result
     import asyncio
     if search and search.strip():
         needle = search.strip().lower()
@@ -115,25 +456,11 @@ async def list_gguf_companies(limit: int = 20, search: str = "", pipeline_tag: s
                 seen[a]["downloads"] += m.get("downloads") or 0
         except Exception:
             pass
+        # Recommended only: emit authors that actually returned GGUF results
+        # (a curated name with no GGUF is not a usable recommendation).
         merged = {}
-        if recommended:
-            for c in matched:
-                merged[c.lower()] = {"author": c, "count": 0, "downloads": 0, "likes": 0, "curated": True}
-            for a, v in list(seen.items()):
-                lk = a.lower()
-                if lk in merged:
-                    merged[lk]["count"] = v["count"]
-                    merged[lk]["downloads"] = v["downloads"]
-        else:
-            for c in matched:
-                merged[c.lower()] = {"author": c, "count": 0, "downloads": 0, "likes": 0, "curated": True}
-            for a, v in seen.items():
-                lk = a.lower()
-                if lk not in merged:
-                    merged[lk] = v
-                else:
-                    merged[lk]["count"] = v["count"]
-                    merged[lk]["downloads"] = v["downloads"]
+        for a, v in seen.items():
+            merged[a.lower()] = {**v, "curated": a.lower() in norm}
         top = sorted(merged.values(), key=lambda x: (0 if x.get("curated") else 1, -x["downloads"]))[:limit]
         async def enrich(t):
             av = await get_avatar(t["author"])
@@ -163,10 +490,8 @@ async def list_gguf_companies(limit: int = 20, search: str = "", pipeline_tag: s
                 if cnt:
                     m = models[0]
                     seen[author] = {"author": author, "count": cnt, "downloads": m.get("downloads") or 0, "likes": m.get("likes") or 0, "curated": True}
-                else:
-                    seen[author] = {"author": author, "count": 0, "downloads": 0, "likes": 0, "curated": True}
             except Exception:
-                seen[author] = {"author": author, "count": 0, "downloads": 0, "likes": 0, "curated": True}
+                pass  # never recommend an author we couldn't verify has GGUF
             await asyncio.sleep(0.05)
         top = sorted(seen.values(), key=lambda x: (-x["count"], -x["downloads"]))[:limit]
         async def enrich2(t):
@@ -177,43 +502,6 @@ async def list_gguf_companies(limit: int = 20, search: str = "", pipeline_tag: s
         if top:
             await asyncio.gather(*[enrich2(t) for t in top])
         result = {"companies": top, "totalUnique": len(seen), "curated": True}
-        _cache_set(key, result)
-        return result
-    else:
-        seen = {}
-        per_page = 50
-        pages_needed = max(4, (limit // 10) + 2)
-        pages_needed = min(pages_needed, 20)
-        for page in range(pages_needed):
-            try:
-                data = await search_gguf(query="", sort="downloads", limit=per_page, page=page, quant=quant or "", pipeline_tag=pipeline_tag or "", author="")
-            except Exception:
-                break
-            models = data.get("models") or []
-            if not models:
-                break
-            for m in models:
-                a = m.get("author") or ""
-                if not a:
-                    continue
-                if a not in seen:
-                    seen[a] = {"author": a, "count": 0, "downloads": 0, "likes": 0}
-                seen[a]["count"] += 1
-                seen[a]["downloads"] += m.get("downloads") or 0
-                seen[a]["likes"] += m.get("likes") or 0
-            if len(seen) >= limit and page >= 2:
-                break
-            if page < pages_needed - 1:
-                await asyncio.sleep(0.15)
-        top = sorted(seen.values(), key=lambda x: x["downloads"], reverse=True)[:limit]
-        async def enrich3(t):
-            av = await get_avatar(t["author"])
-            if av:
-                t["avatarUrl"] = av
-            return t
-        if top:
-            await asyncio.gather(*[enrich3(t) for t in top])
-        result = {"companies": top, "totalUnique": len(seen), "curated": False}
         _cache_set(key, result)
         return result
 
@@ -243,39 +531,33 @@ async def list_gguf_pipeline_tags(limit: int = 200):
     _cache_set(key, result)
     return result
 
-async def list_collections(owner: str, limit: int = 20, pipeline_tag: str = "", quant: str = ""):
-    """List HF collections for an owner — reflective of task/quant, paginated for full list."""
+async def list_collections(owner: str, limit: int = 20, pipeline_tag: str = "",
+                           quant: str = "", gguf_only: bool = True):
+    """List HF collections for an owner — task/quant-aware, GGUF-only by default.
+
+    HF's collections listing ignores `skip` (it returns the same owner set),
+    so a single request is both sufficient and avoids duplicate rows.
+    With gguf_only (default) a collection is shown only when at least one of
+    its model repos actually contains .gguf files; non-GGUF source-weight
+    collections (e.g. Qwen3.8) simply don't appear in the picker.
+    """
     owner = (owner or "").strip()
     if not owner:
         return {"collections": []}
     limit = max(1, min(limit, 100))
-    # include task/quant in cache key
-    key = f"collections:{owner}:{limit}:{pipeline_tag}:{quant}"
+    # include task/quant/gguf in cache key
+    key = f"collections:{owner}:{limit}:{pipeline_tag}:{quant}:gguf{int(gguf_only)}"
     cached = _cache_get(key)
     if cached is not None:
         return cached
     url = f"https://huggingface.co/api/collections"
-    # paginate via limit+skip to get full list (not just greatest hits)
     all_cols = []
-    per_page = min(limit, 50)
-    pages = (limit + per_page - 1) // per_page
     async with httpx.AsyncClient(timeout=15, headers=_headers(), follow_redirects=True) as client:
-        for page in range(pages):
-            skip = page * per_page
-            params = {"owner": owner, "limit": str(per_page)}
-            if skip:
-                params["skip"] = str(skip)
-            resp = await client.get(url, params=params)
-            if resp.status_code == 404:
-                break
+        params = {"owner": owner, "limit": str(limit)}
+        resp = await _get_public(client, url, params=params)
+        if resp.status_code != 404:
             resp.raise_for_status()
-            raw = resp.json()
-            if not raw:
-                break
-            all_cols.extend(raw)
-            if len(raw) < per_page:
-                break
-            await asyncio.sleep(0.05)
+            all_cols = resp.json() or []
     # filter reflective of task: only collections with at least one model matching pipeline_tag
     if pipeline_tag and pipeline_tag != "all":
         filtered = []
@@ -292,6 +574,33 @@ async def list_collections(owner: str, limit: int = 20, pipeline_tag: str = "", 
             if has:
                 filtered.append(c)
         all_cols = filtered
+    if gguf_only and all_cols:
+        # Verify each collection has at least one GGUF repo. Repo verdicts are
+        # persisted 7d, so this is a one-time cost per repo, not per dropdown.
+        uniq = []
+        for c in all_cols:
+            for it in c.get("items") or []:
+                if it.get("type") == "model" and it.get("id"):
+                    uniq.append(it.get("id"))
+        uniq = list(dict.fromkeys(uniq))
+        sem = asyncio.Semaphore(6)
+
+        async def _check(mid):
+            async with sem:
+                return mid, await _repo_gguf_count(mid)
+
+        verdicts = dict(await asyncio.gather(*[_check(m) for m in uniq])) if uniq else {}
+        kept = []
+        for c in all_cols:
+            ids = [it.get("id") for it in (c.get("items") or [])
+                   if it.get("type") == "model" and it.get("id")]
+            if not ids:
+                continue
+            vals = [verdicts.get(i) for i in ids]
+            # keep if any repo has GGUF; fail-open if a check was inconclusive
+            if any((v or 0) > 0 for v in vals) or any(v is None for v in vals):
+                kept.append(c)
+        all_cols = kept
     # trim to limit and shape
     out = []
     for c in all_cols[:limit]:
@@ -302,7 +611,7 @@ async def list_collections(owner: str, limit: int = 20, pipeline_tag: str = "", 
             "lastUpdated": c.get("lastUpdated") or "",
             "itemCount": len(c.get("items") or []),
         })
-    result = {"collections": out}
+    result = {"collections": out, "gguf_only": bool(gguf_only)}
     _cache_set(key, result)
     return result
 
@@ -326,7 +635,7 @@ async def get_collection(slug: str, gguf_only: bool = True):
         return cached
     url = f"https://huggingface.co/api/collections/{quote(slug, safe='/')}"
     async with httpx.AsyncClient(timeout=15, headers=_headers(), follow_redirects=True) as client:
-        resp = await client.get(url)
+        resp = await _get_public(client, url)
         resp.raise_for_status()
         c = resp.json()
         items = c.get("items") or []
@@ -419,18 +728,21 @@ async def get_avatar(author: str):
         pass
     return None
 
-async def search_gguf(query: str = "", sort: str = "downloads", limit: int = 20, page: int = 0, quant: str = "", pipeline_tag: str = "", author: str = "", recommended: bool = False):
+async def search_gguf(query: str = "", sort: str = "downloads", limit: int = 20, page: int = 0, quant: str = "", pipeline_tag: str = "", author: str = "", recommended: bool = False, cursor: str = ""):
     """
     Search HF Hub for GGUF models.
-    Uses GET /api/models?library=gguf&search=...&sort=...&limit=...&skip=...
-    Then filters siblings to .gguf and optionally quant.
-    Chunked: only enough HF rows to fill the requested page window are
-    fetched (next chunk on next page). Returns {models, total, page, limit,
-    has_more, exact_total} — total is exact only when exact_total is true
-    (recommended/snapshot path, or HF exhausted); otherwise use has_more.
+    Uses GET /api/models?filter=gguf&search=...&sort=...&limit=... plus HF's
+    Link: rel="next" cursor (the `skip` parameter is deprecated upstream).
+    Chunked: only enough HF rows to fill the requested window are fetched.
+    Returns {models, total, page, limit, has_more, exact_total, next_cursor,
+    paged_by} — total is exact only when exact_total is true (recommended/
+    snapshot path); otherwise page with next_cursor. Cursor paging is
+    batch-aligned and never skips rows: an empty quant-filtered batch advances
+    the cursor and keeps fetching instead of dropping models.
     Each model: {id, author, modelId, downloads, likes, lastModified, tags, pipeline_tag, siblings:[{rfilename,size,quant}], ggufCount}
     """
-    key = f"search:{query}:{sort}:{limit}:{page}:{quant}:{pipeline_tag}:{author}:{recommended}"
+    cursor = (cursor or "").strip() or None
+    key = f"search:{query}:{sort}:{limit}:{page}:{quant}:{pipeline_tag}:{author}:{recommended}:{cursor}"
     cached = _cache_get(key)
     if cached is not None:
         return cached
@@ -467,10 +779,9 @@ async def search_gguf(query: str = "", sort: str = "downloads", limit: int = 20,
         params["search"] = query.strip()
     if author:
         params["author"] = author
-    # NOTE: no HF `skip` here — _fetch_window pages HF from offset 0 and
-    # slices the UI window locally. A leftover skip used to double-offset
-    # (HF skipped raw rows AND we sliced filtered rows), eating models on
-    # every page>=1 and corrupting internal page=1 callers (company counts).
+    # NOTE: never send HF's deprecated `skip` here. Deep paging rides the
+    # Link: rel="next" cursor below (cursor pagination is the supported path
+    # and cannot silently drop rows the way offset paging did).
 
     url = HF_API + "/models"
     async with httpx.AsyncClient(timeout=20, headers=_headers(), follow_redirects=True) as client:
@@ -494,9 +805,12 @@ async def search_gguf(query: str = "", sort: str = "downloads", limit: int = 20,
         async def _get_with_retry(p):
             """One HF GET with sort-fallback + transient-error retries.
 
-            Returns (batch, sort_used). Retries 429/5xx/timeouts 3x with
-            backoff; a 400 on a non-downloads sort falls back to downloads
-            once (HF rejects some sort+filter combos). Never mutates p.
+            Returns (batch, sort_used, next_cursor). Retries 429/5xx/timeouts
+            3x with backoff; a 400 on a non-downloads sort falls back to
+            downloads once (HF rejects some sort+filter combos). Never mutates
+            p. `next_cursor` comes from HF's Link: rel="next" header — HF
+            deprecated `skip`, so this is the only supported deep-paging
+            primitive and the one that guarantees no rows are skipped.
             """
             last = None
             for attempt in range(3):
@@ -504,7 +818,8 @@ async def search_gguf(query: str = "", sort: str = "downloads", limit: int = 20,
                 try:
                     resp = await client.get(url, params=q)
                     resp.raise_for_status()
-                    return resp.json(), q.get("sort")
+                    return (resp.json(), q.get("sort"),
+                            _index_next_cursor(resp.headers.get("link", "")))
                 except httpx.HTTPStatusError as e:
                     code = e.response.status_code if e.response is not None else 0
                     if code == 400 and q.get("sort") != "downloads":
@@ -512,7 +827,8 @@ async def search_gguf(query: str = "", sort: str = "downloads", limit: int = 20,
                         q["sort"] = "downloads"
                         resp = await client.get(url, params=q)
                         resp.raise_for_status()
-                        return resp.json(), "downloads"
+                        return (resp.json(), "downloads",
+                                _index_next_cursor(resp.headers.get("link", "")))
                     if code in (429, 500, 502, 503) and attempt < 2:
                         last = e
                         await asyncio.sleep(0.5 * (attempt + 1))
@@ -540,39 +856,39 @@ async def search_gguf(query: str = "", sort: str = "downloads", limit: int = 20,
                     return False
             return True
 
-        async def _fetch_window(params_base, need):
-            """Fetch HF pages until `need` post-filtered rows are collected
-            (or HF is exhausted). Returns (passing_raw, exhausted).
+        async def _fetch_cursor_page(params_base, cursor, limit):
+            """Fetch cursor-aligned HF batches until a non-empty GGUF window.
 
-            Chunked: page 0 typically costs 1-2 HF fetches instead of the
-            full crawl the old _fetch_all did. Exact totals are therefore
-            unknown unless exhausted — callers must use has_more.
+            Cursor pagination cannot address a row inside an HF page, so a
+            result page is aligned to whole HF batches. A quant filter can
+            make a batch yield zero rows; we advance the cursor and keep
+            fetching (bounded) instead of skipping those raw rows — that is
+            what guarantees no models are lost between pages.
+            Returns (passing, next_cursor, exhausted).
             """
             passing = []
-            skip = 0
+            nxt = cursor
             exhausted = False
-            while len(passing) < need:
+            batch_size = max(1, min(limit, 100))
+            for _ in range(8):
                 p = dict(params_base)
-                p["limit"] = "100"
-                if skip:
-                    p["skip"] = str(skip)
-                batch, _ = await _get_with_retry(p)
+                p["limit"] = str(batch_size)
+                if nxt:
+                    p["cursor"] = nxt
+                batch, _, next_cursor = await _get_with_retry(p)
                 if not batch:
                     exhausted = True
+                    nxt = next_cursor
                     break
-                for m in batch:
-                    if _passes_post_filters(m):
-                        passing.append(m)
-                        if len(passing) >= need + 1:
-                            break
-                if len(batch) < 100:
+                passing.extend(m for m in batch if _passes_post_filters(m))
+                nxt = next_cursor
+                if not nxt:
                     exhausted = True
                     break
-                if len(passing) >= need + 1:
+                if passing:
                     break
-                skip += 100
                 await asyncio.sleep(0.05)
-            return passing, exhausted
+            return passing, nxt, exhausted
 
         # ---- persistent snapshot store ----
         import json as _json
@@ -614,11 +930,8 @@ async def search_gguf(query: str = "", sort: str = "downloads", limit: int = 20,
                     snap_age = None
             # full refresh weekly (SNAPSHOT_TTL); otherwise delta-only.
             # Snapshot refresh still needs the author's full list (it backs
-            # local pagination for all later pages), so it pages through
-            # everything — but via _get_with_retry (no caller-dict mutation).
-            # Defensive: drop any UI-page `skip` so snapshots always cover
-            # the author's full list from HF offset 0.
-            base_params = {k: v for k, v in base_params.items() if k != "skip"}
+            # local pagination for all later pages), so it walks the cursor
+            # chain to the end via _get_with_retry.
             # The snapshot backs every recommended query, so it holds the
             # author's full GGUF list. Task and search filters are applied
             # locally afterwards, never baked into the snapshot.
@@ -626,32 +939,32 @@ async def search_gguf(query: str = "", sort: str = "downloads", limit: int = 20,
             base_params["filter"] = ["gguf"]
             if snap_age is None or snap_age > 7 * 86400:
                 fresh = []
-                skip = 0
+                cur = None
                 while True:
                     p = {**base_params, "author": a, "limit": "100"}
-                    if skip:
-                        p["skip"] = str(skip)
-                    batch, _ = await _get_with_retry(p)
+                    if cur:
+                        p["cursor"] = cur
+                    batch, _, nxt = await _get_with_retry(p)
                     if not batch:
                         break
                     fresh.extend(batch)
-                    if len(batch) < 100:
+                    if not nxt:
                         break
-                    skip += 100
+                    cur = nxt
                     await asyncio.sleep(0.05)
                 snap = {m.get("id"): m for m in fresh if m.get("id")}
             else:
                 # delta: fetch first page(s) sorted by lastModified and merge
                 # anything newer than our snapshot time until we hit known ids
                 p = {**base_params, "author": a, "sort": "lastModified"}
-                skip = 0
+                cur = None
                 merged_new = 0
                 while True:
                     p2 = dict(p)
                     p2["limit"] = "100"
-                    if skip:
-                        p2["skip"] = str(skip)
-                    batch, _ = await _get_with_retry(p2)
+                    if cur:
+                        p2["cursor"] = cur
+                    batch, _, nxt = await _get_with_retry(p2)
                     if not batch:
                         break
                     # stop when this page is entirely models we already have
@@ -673,9 +986,9 @@ async def search_gguf(query: str = "", sort: str = "downloads", limit: int = 20,
                     merged_new += len(batch)
                     if known == len(batch):
                         break  # whole page already known and unchanged — done
-                    if len(batch) < 100:
+                    if not nxt:
                         break
-                    skip += 100
+                    cur = nxt
                     await asyncio.sleep(0.05)
             # persist snapshot
             try:
@@ -743,22 +1056,21 @@ async def search_gguf(query: str = "", sort: str = "downloads", limit: int = 20,
             models = [_shape(m) for m in passing[start:start + limit]]
             result = {"models": models, "total": total, "page": page,
                       "limit": limit, "has_more": start + limit < total,
-                      "exact_total": True}
+                      "exact_total": True, "next_cursor": None,
+                      "paged_by": "page"}
             _cache_set(key, result)
             return result
 
-        # Chunked path: fetch only enough HF rows to fill the requested
-        # window (usually 1-2 HF fetches for page 0). Exact total unknown
-        # unless HF is exhausted — frontend must use has_more for paging.
-        passing, exhausted = await _fetch_window(dict(params), need)
-        start = page * limit
-        window = passing[start:start + limit]
-        models = [_shape(m) for m in window]
-        has_more = (len(passing) > start + limit) or not exhausted
-        total = len(passing) if exhausted else None
-        result = {"models": models, "total": total, "page": page,
-                  "limit": limit, "has_more": has_more,
-                  "exact_total": exhausted}
+        # Cursor path: one cursor-aligned batch (or a few when a quant filter
+        # is sparse). Never uses the deprecated skip, so deep pages cannot
+        # silently drop models the way skip-based offset paging did.
+        passing, next_cursor, exhausted = await _fetch_cursor_page(
+            dict(params), cursor, limit)
+        models = [_shape(m) for m in passing]
+        result = {"models": models, "total": None, "page": page,
+                  "limit": limit, "has_more": bool(next_cursor),
+                  "exact_total": False, "next_cursor": next_cursor,
+                  "cursor": cursor, "paged_by": "cursor"}
         _cache_set(key, result)
         return result
 
