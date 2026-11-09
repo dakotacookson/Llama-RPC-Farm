@@ -1,4 +1,58 @@
-## Smoke test (MacOS Metal + Linux RAM CPU)
+# Examples
+
+Minimal examples with step by step procedures.
+
+## Single-device Smoke test (MacOS Metal)
+
+Run a small GGUF model locally on the MacOS
+
+### Prerequisites
+
+| Component | Requirement |
+|---|---|
+| Mac | Apple Silicon; llama-server built with Metal and RPC support |
+
+
+### Get the model
+
+Model-download placeholder: obtain `Qwen_Qwen3.5-0.8B-Q4_K_M.gguf` and place it in `$HOME/models`.
+
+```bash
+./get_model.sh
+```
+![alt text](img/get_dummy_model.png)
+
+### Terminal A — inference server
+
+```bash
+./run_mac_local.sh 
+```
+
+Wait until the model finishes loading. The HTTP endpoint is `http://127.0.0.1:8084`.
+
+![alt text](img/run_mac_local.png)
+
+Larger models might take longer to load.
+
+### Sample generation
+
+With Terminal A running the service, run:
+
+```bash
+./test_inference.sh "<SAMPLE_TEXT>" <MAX_OUTPUT_TOKENS>
+```
+
+
+Example:
+
+```bash
+./test_inference.sh "The capital of Austria is" 32
+```
+
+![alt text](img/test_inference_single.png)
+
+
+## Server Smoke test (MacOS Metal + Linux RAM CPU)
 
 Run a small GGUF model on a Mac with a Linux RPC worker. 
 
@@ -8,7 +62,10 @@ Run a small GGUF model on a Mac with a Linux RPC worker.
 |---|---|
 | Mac (Master) | Apple Silicon; llama-server built with Metal and RPC support |
 | Linux (worker) | Compatible ggml-rpc-server build; CPU device available |
-| Connection | SSH key access; TCP port 50052 reachable; Trusted VPN (for WiFi connection using generic routers on default configs)|
+| Network  | For SSH **password** over **WLAN**: SSH running; TCP port 50052 reachable; **Trusted VPN might be needed** (ports in router disabled by default) |
+| Network  | For SSH **password** over **Ethernet**: SSH running; TCP port 50052 reachable; |
+| Network  | *For cases SSH **Key** (any: WLAN/Eth):* SSH running; TCP port 50052 reachable; |
+| Ethernet Connection (For SSH password connections) | SSH  running; TCP port 50052 reachable|
 | Worker binary | Verify its Linux path; default is `$HOME/llama-rpc-worker/build/bin/ggml-rpc-server` |
 
 > Run the commands below from the repository's `scripts` directory. Replace `<YOUR_IP>` and `<YOUR_USER_NAME>` with your Linux worker's address and SSH username.
@@ -18,9 +75,9 @@ Run a small GGUF model on a Mac with a Linux RPC worker.
 Model-download placeholder: obtain `Qwen_Qwen3.5-0.8B-Q4_K_M.gguf` and place it in `$HOME/models`.
 
 ```bash
-./get_model.sh
+./get_dummy_model.sh
 ```
-![alt text](image.png)
+![alt text](img/get_dummy_model.png)
 
 ### Terminal A — worker logs
 
@@ -56,6 +113,5 @@ Example:
 
 ![Running test](img/test_inference_init.png)
 
-The live timer stays on one line. The result prints generated text, request elapsed time, and tokens/sec. Timer and elapsed numbers are blue; tokens/sec numbers are light blue.
-
 ![Completed test](img/test_inference_end.png)
+
