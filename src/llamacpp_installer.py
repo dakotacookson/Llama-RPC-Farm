@@ -412,7 +412,10 @@ def install_on(machine, log=lambda m: None):
             agent_client.install_artifact(
                 machine, urls, dest,
                 archive="zip" if is_win else "tar.gz",
-                strip_components=1, mode=None if is_win else 0o755)
+                # Windows release zips are flat (no top-level directory);
+                # stripping one component discarded every member.
+                strip_components=0 if is_win else 1,
+                mode=None if is_win else 0o755)
             bin_name = "llama-server.exe" if is_win else "llama-server"
             rpc_name = "ggml-rpc-server.exe" if is_win else "ggml-rpc-server"
             v = agent_client.install_verify(machine, f"{dest}/{bin_name}")
