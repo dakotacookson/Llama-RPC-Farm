@@ -1645,9 +1645,15 @@ async def add_group(g: GroupIn):
     # DEC-17: new machine groups are stamped with the active engine.
     data = _stamp_group_engine(g.model_dump())
     try:
-        return cfg.groups.add(data)
+        saved = cfg.groups.add(data)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    try:
+        import config_advice
+        warnings = config_advice.machine_group_warnings(saved)
+    except Exception:
+        warnings = []
+    return {**saved, "warnings": warnings}
 
 
 @app.put("/api/groups/{name}")
@@ -1657,9 +1663,15 @@ async def update_group(name: str, g: GroupIn):
     # never moves a group between engines.
     data = _stamp_group_engine(g.model_dump())
     try:
-        return cfg.groups.update(name, data)
+        saved = cfg.groups.update(name, data)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    try:
+        import config_advice
+        warnings = config_advice.machine_group_warnings(saved)
+    except Exception:
+        warnings = []
+    return {**saved, "warnings": warnings}
 
 
 @app.delete("/api/groups/{name}")
@@ -1710,7 +1722,13 @@ async def add_swap_group(g: SwapGroupIn):
     # Serve-group truth: a deployment in 2+ swap:true groups only takes
     # effect in the first — warn loudly at save time instead of letting
     # the generator silently drop the loser (one group per model).
-    return {"group": saved, "warnings": swap_manager.duplicate_swap_claims()}
+    warnings = swap_manager.duplicate_swap_claims()
+    try:
+        import config_advice
+        warnings += config_advice.serve_group_warnings(saved)
+    except Exception:
+        pass
+    return {"group": saved, "warnings": warnings}
 
 
 @app.put("/api/swap-groups/{name}")
@@ -1722,7 +1740,13 @@ async def update_swap_group(name: str, g: SwapGroupIn):
         saved = cfg.swap_groups.update(name, data)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return {"group": saved, "warnings": swap_manager.duplicate_swap_claims()}
+    warnings = swap_manager.duplicate_swap_claims()
+    try:
+        import config_advice
+        warnings += config_advice.serve_group_warnings(saved)
+    except Exception:
+        pass
+    return {"group": saved, "warnings": warnings}
 
 
 @app.delete("/api/swap-groups/{name}")
@@ -2085,13 +2109,34 @@ async def save_model(m: ModelConfigIn, request: Request):
         if not data.get("runtime") or data.get("runtime") == "llama":
             data.pop("runtime", None)  # default stays unfiled (legacy files)
         orig = (data.pop("original_model_id", "") or "").strip()
-        # llama.cpp keeps the byte-identical save path: its
-        # validate_model_config is disk-based (POST /api/models/{id}/test
-        # validates the stored config against real hardware), so calling
-        # it here would 400 every brand-new model ("not found" on disk)
-        # and validate stale data on edits.
         validation_warnings = []
         saved = cfg.save_model(mid, data)
+        # Validation is disk-based, so run it AFTER the save (the config
+        # exists now). It never blocks the save: errors and warnings ride
+        # back to the UI so a user sees a doomed placement/flag combination
+        # at configuration time instead of at first load.
+        try:
+            import config_advice
+            validation_warnings += config_advice.model_warnings(saved)
+        except Exception as e:
+            validation_warnings.append(f"warn: advice unavailable: {e}")
+        try:
+            from engine_registry import get_engine
+            issues = await run_in_threadpool(
+                get_engine().validate_model_config, saved)
+            for it in issues or []:
+                if isinstance(it, dict):
+                    if it.get("level") == "info":
+                        continue  # e.g. "custom runtime: checks skipped"
+                    validation_warnings.append(
+                        f"{'error' if it.get('level') == 'error' else 'warn'}: "
+                        f"{it.get('msg') or it}")
+                elif str(it).strip():
+                    validation_warnings.append(f"warn: {it}")
+        except Exception as e:
+            validation_warnings.append(f"warn: validation skipped: {e}")
+        # de-dupe identical lines (advice and validator overlap)
+        validation_warnings = list(dict.fromkeys(validation_warnings))
         if orig and orig != mid:
             # rename: remove the orphaned old file (plus its seed, if any)
             try:
@@ -2333,6 +2378,31 @@ async def tune_apply_defaults(model_id: str):
     saved = cfg.save_model(model_id, m)
     return {"saved": saved["model_id"] if isinstance(saved, dict) else model_id,
             "defaults": d}
+
+
+class RecommendPlacementIn(pydantic.BaseModel):
+    base_path: str = ""
+    servers: list[str] | None = None   # restrict to these boxes (group)
+    target_ctx: int | None = None
+    allow_ram: bool = True
+    cache_type: str = "q8_0"
+    mmproj: str = ""
+
+
+@app.post("/api/models/recommend")
+async def recommend_placement(r: RecommendPlacementIn):
+    """Recommend a baseline hardware placement + flags for an (unsaved)
+    model file: reads the GGUF header, picks the best single box or
+    multi-box RPC spread from detected hardware, and returns the same
+    fields the model editor saves. Math-only — no loads, no side effects.
+    """
+    import placement
+    try:
+        return await run_in_threadpool(
+            placement.recommend, r.base_path, r.servers, r.target_ctx,
+            r.allow_ram, r.cache_type, r.mmproj)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 class TuneStartIn(pydantic.BaseModel):

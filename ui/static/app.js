@@ -162,6 +162,39 @@ function uiConfirm(message, okLabel = "Continue") {
   });
 }
 
+/* Non-blocking advisory dialog (configuration warnings). No native alert. */
+function uiNotice(title, lines) {
+  return new Promise((resolve) => {
+    const back = document.createElement("div");
+    back.style.cssText = "position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;padding:20px";
+    const box = document.createElement("div");
+    box.style.cssText = "max-width:560px;width:100%;max-height:80vh;overflow:auto;background:var(--surface,#1b1f2a);color:var(--text,#e6e9ef);border:1px solid var(--border-soft,#333);border-radius:12px;padding:18px;box-shadow:0 12px 48px #000a";
+    const h = document.createElement("div");
+    h.style.cssText = "font-weight:600;font-size:1.05em;margin-bottom:10px";
+    h.textContent = title;
+    const list = document.createElement("div");
+    list.style.cssText = "display:flex;flex-direction:column;gap:8px;margin-bottom:16px";
+    for (const ln of (lines || [])) {
+      const row = document.createElement("div");
+      row.style.cssText = "white-space:pre-line;line-height:1.4;padding-left:10px;border-left:3px solid var(--warn,#c60)";
+      row.textContent = String(ln);
+      list.appendChild(row);
+    }
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;justify-content:flex-end";
+    const ok = document.createElement("button");
+    ok.type = "button"; ok.className = "small"; ok.textContent = "Got it";
+    const onkey = (e) => { if (e.key === "Escape") done(); };
+    const done = () => { document.removeEventListener("keydown", onkey); back.remove(); resolve(); };
+    ok.onclick = done;
+    back.onclick = (e) => { if (e.target === back) done(); };
+    document.addEventListener("keydown", onkey);
+    row.appendChild(ok); box.append(h, list, row); back.append(box);
+    document.body.appendChild(back);
+    ok.focus();
+  });
+}
+
 /* Toast: replaces native alert()/confirm(), which browsers block or
    suppress (that silently killed the delete/status buttons). */
 function loadedNotice(key, label) {
@@ -2793,11 +2826,15 @@ on("#grp-modal-save", "click", async () => {
   if (!data.machines.length) { toast("pick at least one machine", "bad"); return; }
   const original = $("#group-original-name").value;
   try {
-    if (original) await api("PUT", `/api/groups/${encodeURIComponent(original)}`, data);
-    else await api("POST", "/api/groups", data);
+    const res = original
+      ? await api("PUT", `/api/groups/${encodeURIComponent(original)}`, data)
+      : await api("POST", "/api/groups", data);
     $("#grp-modal").classList.add("hidden");
     $("#grp-modal").setAttribute("aria-hidden", "true");
     loadGroups();
+    if (res && res.warnings && res.warnings.length) {
+      uiNotice(`Machine group "${data.name}" saved with warnings`, res.warnings);
+    }
   } catch (err) { toast(err.message, "bad"); }
 });
 
@@ -3291,12 +3328,16 @@ on("#sg-modal-save", "click", async () => {
   if (!data.members.length) { toast("pick at least one member deployment", "bad"); return; }
   const original = $("#sgroup-original-name").value;
   try {
-    if (original) await api("PUT", `/api/swap-groups/${encodeURIComponent(original)}`, data);
-    else await api("POST", "/api/swap-groups", data);
+    const res = original
+      ? await api("PUT", `/api/swap-groups/${encodeURIComponent(original)}`, data)
+      : await api("POST", "/api/swap-groups", data);
     $("#sg-modal").classList.add("hidden");
     $("#sg-modal").setAttribute("aria-hidden", "true");
     loadServeGroups();
     pushSwapRoutes(`Serve group ${data.name} saved`);
+    if (res && res.warnings && res.warnings.length) {
+      uiNotice(`Serve group "${data.name}" saved with warnings`, res.warnings);
+    }
   } catch (err) { toast(err.message, "bad"); }
 });
 
@@ -4407,6 +4448,8 @@ async function saveModelForm(btn, skipArm = false) {
     } else {
       toast(`Saved ${mid} (${push.reason || push.error || "swap push skipped"} — Launch All to apply)`, "warn", 9000);
     }
+    const vw = (saved && saved._validation_warnings) || [];
+    if (vw.length) uiNotice(`Model "${mid}" saved with configuration warnings`, vw);
     ok = true;
   } catch (err) { toast(err.message, "bad"); }
   btn.disabled = false; btn.textContent = origLabel;
@@ -5341,6 +5384,86 @@ async function applySafeDefaultsForScan(path){
     try{ syncTensorChips(); syncOrderChips(); syncToggleChip("chip-flash-attn","flag-flash-attn"); syncToggleChip("chip-jinja","flag-jinja"); updateAdvancedBadge(); }catch(_){}
   }catch(e){ console.warn("safe defaults failed", e); }
 }
+
+/* ---- recommend placement: read the GGUF, pick the best hardware ----
+   Math-only on the server (no loads). Fills the hardware chips, tensor
+   mode/policy and the known-good baseline flags in one click; Tune then
+   refines batches/KV/split. */
+function applyRecommendedFlags(f){
+  if(!f) return;
+  const common = new Set(["ctx-size","c","cache-type-k","cache-type-v","flash-attn","jinja"]);
+  if(f["ctx-size"]!==undefined) $("#flag-ctx-size").value = f["ctx-size"];
+  if(f["cache-type-k"]!==undefined) $("#flag-cache-k").value = f["cache-type-k"];
+  if(f["cache-type-v"]!==undefined) $("#flag-cache-v").value = f["cache-type-v"];
+  if(f["flash-attn"]!==undefined) $("#flag-flash-attn").checked = (f["flash-attn"]==="on"||f["flash-attn"]===true);
+  if(f["jinja"]!==undefined) $("#flag-jinja").checked = !!f["jinja"];
+  syncCommonFlagsToRows();
+  // replace rows for every non-common flag we were given, then add them
+  document.querySelectorAll("#flags-container .flag-row").forEach(row=>{
+    const key=row.querySelector(".flag-key")?.value.trim().replace(/^--/,"");
+    if(key && !common.has(key) && Object.prototype.hasOwnProperty.call(f,key)) row.remove();
+  });
+  for(const [k,v] of Object.entries(f)){
+    if(common.has(k)) continue;
+    if(v===undefined || v===null || String(v).trim()==="") continue;
+    addFlagRow(k, v);
+  }
+  try{ syncTensorChips(); syncOrderChips(); syncToggleChip("chip-flash-attn","flag-flash-attn"); syncToggleChip("chip-jinja","flag-jinja"); updateAdvancedBadge(); }catch(_){}
+}
+
+async function applyRecommendation(res){
+  const chipList = $("#mo-servers-chip-list");
+  // renderModelServers rebuilds chips from servers + device_order and
+  // resets the hidden servers input, so the form saves exactly what the
+  // recommender chose.
+  await renderModelServers({servers: res.servers || [], device_order: res.device_order || ""});
+  $("#mo-tensor-mode").value = res.tensor_split_mode || "fit";
+  $("#mo-tensor-split").value = res.tensor_split || "";
+  $("#mo-fit-margin").value = res.fit_margin ?? 1024;
+  $("#mo-fit-ram-allow").value = res.fit_ram_allow ?? 1024;
+  $("#mo-order-policy").value = res.device_order_policy || "vram-first";
+  applyTensorModeUI();
+  if(flagsMode === "text") setFlagsMode("rows");
+  applyRecommendedFlags(res.flags || {});
+  chipList._selectedHardware = new Set((res.device_order || "").split(",").map(s=>s.trim()).filter(Boolean));
+  updateServersFromHardware(chipList._selectedHardware, chipList._machinesData || [], chipList);
+  try { renderDeviceOrderPreview(chipList, chipList._machinesData || []); } catch(_){}
+}
+
+async function recommendPlacement(){
+  const btn = $("#mo-recommend");
+  const path = $("#mo-path").value.trim();
+  if(!path){ toast("Pick a model file first (step 1)", "bad"); mowizShow(1); return; }
+  const grp = $("#mo-group")?.value?.trim() || "";
+  let servers = [];
+  if(grp){
+    try{
+      const groups = await api("GET", "/api/groups");
+      const g = groups.find(x => x.name === grp);
+      if(g && (g.machines || []).length) servers = g.machines;
+    }catch(_){}
+  }
+  const mmproj = readFlags()["mmproj"] || "";
+  const label = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = "recommending…";
+  try{
+    const res = await api("POST", "/api/models/recommend", {
+      base_path: path, servers, allow_ram: true, mmproj,
+    });
+    await applyRecommendation(res);
+    const lines = (res.reasons || []).slice();
+    for(const w of (res.warnings || [])) lines.push("⚠ " + w);
+    const title = `Recommended placement — ${(res.servers || []).join(", ") || "no hardware"}`;
+    uiNotice(title, lines);
+    toast(`Applied ${res.single_box ? "single-box" : "multi-box RPC"} placement${res.fits ? "" : " (does not fit!)"}`, res.fits ? "ok" : "warn", 8000);
+  }catch(err){
+    toast(err.message || "recommendation failed", "bad");
+  }finally{
+    btn.disabled = false; btn.innerHTML = label;
+  }
+}
+on("#mo-recommend", "click", recommendPlacement);
+
 
 async function runScan() {
   if (runScan._running) return;  // interval overlap guard
