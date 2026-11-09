@@ -1,7 +1,6 @@
-"""Activity & Performance tab: /api/swap/activity and /api/swap/performance.
+"""Activity tab: /api/swap/activity.
 
-Both only read llama-swap's own metrics (/api/metrics/activity,
-/api/performance). Scoped keys must see only rows for their granted
+It only reads llama-swap's own request log (/api/metrics/activity). Scoped keys must see only rows for their granted
 models and never the client address; embedding rows get an input
 tokens/s figure from the request duration (llama-server sends no
 timings for embeddings).
@@ -9,7 +8,6 @@ timings for embeddings).
 import asyncio
 import os
 import sys
-from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
@@ -32,21 +30,11 @@ def _row(i, model, inp=1000, out=0, dur=2000, status=200, tps=-1):
 
 @pytest.fixture
 def swap(monkeypatch):
-    now = datetime.now(timezone.utc)
-    old = (now - timedelta(minutes=30)).isoformat()
-    fresh = [(now - timedelta(seconds=s)).isoformat() for s in range(50, 0, -1)]
     payloads = {
         "/api/metrics/activity": {"total": 3, "data": [
             _row(3, "emb", inp=1736, dur=1539),
             _row(2, "chat", inp=20, out=200, dur=4000, tps=50.0),
             _row(1, "emb", inp=10, dur=100, status=500)]},
-        "/api/performance": {"enabled": True,
-            "gpu_stats": [{"timestamp": old, "id": 0, "name": "GPU", "gpu_util_pct": 1,
-                           "mem_used_mb": 1, "mem_total_mb": 8192}] +
-                         [{"timestamp": t, "id": 0, "name": "GPU", "gpu_util_pct": 50,
-                           "mem_used_mb": 4000, "mem_total_mb": 8192} for t in fresh],
-            "sys_stats": [{"timestamp": t, "cpu_util_per_core": [10, 30],
-                           "mem_used_mb": 9000, "mem_total_mb": 16000} for t in fresh]},
     }
     monkeypatch.setattr(app_module.swap_manager, "status", lambda: {
         "running": True, "host": "h", "host_ip": "127.0.0.1", "port": 8080})
@@ -87,16 +75,6 @@ def test_unknown_caller_sees_nothing(swap, monkeypatch):
     assert a["rows"] == [] and a["models"] == []
 
 
-def test_performance_window_and_thinning(swap):
-    p = asyncio.run(app_module.swap_performance(minutes=5, points=10))
-    g = p["gpus"][0]
-    assert all(s["util"] == 50 for s in g["samples"])      # 30-min-old sample cut
-    assert 1 < len(g["samples"]) <= 11                     # thinned (+ last kept)
-    assert p["sys"][-1]["cpu"] == 20.0
-    assert p["sys"][-1]["mem_total_mb"] == 16000
-
-
 def test_swap_down(monkeypatch):
     monkeypatch.setattr(app_module.swap_manager, "status", lambda: {"running": False})
     assert asyncio.run(app_module.swap_activity())["running"] is False
-    assert asyncio.run(app_module.swap_performance())["running"] is False

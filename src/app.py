@@ -39,6 +39,7 @@ import stats_collector
 import rpc_manager
 import agent_client
 import reaper
+import stats_history
 import gguf_inspect
 import platform as _platform
 import version as app_version
@@ -209,6 +210,13 @@ def seed_local_master():
         reaper.start()
     except Exception as e:
         print(f"[reaper] start skipped: {e}")
+
+    # Rolling per-machine hardware history for the Performance tab
+    # (FARM_STATS_HISTORY_SEC, 0 disables).
+    try:
+        stats_history.start()
+    except Exception as e:
+        print(f"[stats-history] start skipped: {e}")
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -6002,6 +6010,24 @@ async def get_stats(light: bool = False):
     return result
 
 
+@app.get("/api/stats/history")
+async def get_stats_history(minutes: int = 15, points: int = 180):
+    """Rolling per-machine hardware samples (GPU util/VRAM/temp, CPU, RAM)
+    kept in memory by stats_history for the Performance tab, cut to the
+    last `minutes` and thinned to at most `points` per machine."""
+    minutes = max(1, min(int(minutes or 15), 60))
+    points = max(10, min(int(points or 180), 1000))
+    hist = stats_history.history(minutes, points)
+    machines = []
+    for m in cfg.machines.all():
+        name = m.get("name")
+        machines.append({"name": name, "role": m.get("role"),
+                         "samples": hist.get(name, [])})
+    return {"enabled": stats_history.INTERVAL > 0,
+            "interval": stats_history.INTERVAL, "minutes": minutes,
+            "machines": machines}
+
+
 @app.get("/api/stats/stream")
 async def get_stats_stream():
     """Per-machine stats, streamed as NDJSON: one JSON line per machine
@@ -6825,9 +6851,8 @@ async def swap_loaded_models(request: Request):
 
 
 # ---------------- llama-swap activity & performance ----------------
-# llama-swap records every proxied request (/api/metrics/activity) and
-# samples the swap host's GPUs/CPU/RAM (/api/performance). The farm
-# shows both on its own Activity tab; these endpoints only READ them.
+# llama-swap records every proxied request (/api/metrics/activity); the
+# farm shows it on its own Activity tab. This endpoint only READS it.
 
 def _swap_api_url(st, path):
     host = ("127.0.0.1"
@@ -6926,64 +6951,6 @@ async def swap_activity(limit: int = 200):
         return await run_in_threadpool(fetch)
     except Exception as e:
         return {"running": True, "rows": [], "models": [], "error": str(e)}
-
-
-@app.get("/api/swap/performance")
-async def swap_performance(minutes: int = 15, points: int = 180):
-    """The swap host's GPU and system samples from llama-swap, cut to
-    the last `minutes` and thinned to at most `points` per series."""
-    st = swap_manager.status()
-    if not st.get("running"):
-        return {"running": False, "gpus": [], "sys": []}
-    minutes = max(1, min(int(minutes or 15), 240))
-    points = max(10, min(int(points or 180), 1000))
-
-    def fetch():
-        from datetime import datetime, timedelta, timezone
-        data = _swap_api_get(st, "/api/performance")
-        if not data.get("enabled", True):
-            return {"running": True, "enabled": False, "gpus": [], "sys": []}
-        cut = datetime.now(timezone.utc) - timedelta(minutes=minutes)
-
-        def recent(rows):
-            out = []
-            for r in rows or []:
-                try:
-                    t = datetime.fromisoformat(
-                        str(r.get("timestamp")).replace("Z", "+00:00"))
-                except ValueError:
-                    continue
-                if t.tzinfo is None:
-                    t = t.replace(tzinfo=timezone.utc)
-                if t >= cut:
-                    out.append((t, r))
-            step = max(1, -(-len(out) // points))   # ceil
-            return out[::step] + ([out[-1]] if out and (len(out) - 1) % step else [])
-
-        gpus = {}
-        for t, r in recent(data.get("gpu_stats")):
-            g = gpus.setdefault(r.get("id"), {
-                "id": r.get("id"), "name": r.get("name"),
-                "mem_total_mb": r.get("mem_total_mb"), "samples": []})
-            g["samples"].append({
-                "ts": t.isoformat(), "util": r.get("gpu_util_pct"),
-                "mem_used_mb": r.get("mem_used_mb"),
-                "power_w": r.get("power_draw_w"), "temp_c": r.get("temp_c")})
-        sys_rows = []
-        for t, r in recent(data.get("sys_stats")):
-            cores = r.get("cpu_util_per_core") or []
-            sys_rows.append({
-                "ts": t.isoformat(),
-                "cpu": round(sum(cores) / len(cores), 1) if cores else None,
-                "mem_used_mb": r.get("mem_used_mb"),
-                "mem_total_mb": r.get("mem_total_mb")})
-        return {"running": True, "enabled": True, "host": st["host"],
-                "minutes": minutes, "gpus": list(gpus.values()),
-                "sys": sys_rows}
-    try:
-        return await run_in_threadpool(fetch)
-    except Exception as e:
-        return {"running": True, "gpus": [], "sys": [], "error": str(e)}
 
 
 @app.post("/api/swap/load/{model_id}")

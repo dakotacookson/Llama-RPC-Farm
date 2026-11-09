@@ -245,6 +245,7 @@ document.querySelectorAll("nav button").forEach((btn) => {
     if (btn.dataset.tab === "visualizer") { initFlowVisualizer(); }
     if (btn.dataset.tab === "logs") { initLogsTab(); }
     if (btn.dataset.tab === "swapmetrics") smStart(); else smStop();
+    if (btn.dataset.tab === "perf") perfStart(); else perfStop();
     if (btn.dataset.tab === "models") {
       loadModels();
       getAppSettings().then(s => {
@@ -9496,46 +9497,13 @@ function smRenderActivity(a) {
     }).join("")
   }</tbody></table>` : "";
 }
-function smRenderPerf(p, stats) {
-  const box = $("#sm-perf"), peers = $("#sm-peers");
-  $("#sm-perf-host").textContent = p.host ? `· ${p.host} (llama-swap host)` : "";
-  if (!p.running) { box.innerHTML = ""; peers.innerHTML = ""; return; }
-  if (p.error) { box.innerHTML = `<p class="status-bad">${escHtml(p.error)}</p>`; return; }
-  if (p.enabled === false) { box.innerHTML = `<p class="hint">llama-swap performance sampling is off.</p>`; return; }
-  const c = "var(--accent)";
-  const pct = v => Math.round(v), gb = v => (v / 1024).toFixed(1);
-  let html = "";
-  for (const g of p.gpus) {
-    const s = g.samples;
-    html += smLine(s, "util", {max: 100, color: c, fmt: pct, unit: " %", title: `${g.name} — utilization`});
-    html += smLine(s, "mem_used_mb", {max: g.mem_total_mb || null, color: c, fmt: gb, unit: " GB", title: `${g.name} — VRAM used`});
-    const temps = s.filter(x => x.temp_c > 0);
-    if (temps.length > 1) html += smLine(temps, "temp_c", {max: 100, color: c, fmt: pct, unit: " °C", title: `${g.name} — temperature`});
-  }
-  const total = p.sys.length ? p.sys[p.sys.length - 1].mem_total_mb : null;
-  html += smLine(p.sys, "cpu", {max: 100, color: c, fmt: pct, unit: " %", title: "CPU (all cores)"});
-  html += smLine(p.sys, "mem_used_mb", {max: total, color: c, fmt: gb, unit: " GB", title: "RAM used"});
-  box.innerHTML = html;
-  // peers: llama-swap only sees its own host — show the other machines'
-  // GPUs as current values from the farm's agent stats
-  const others = ((stats && stats.data) || []).filter(m => m.name !== p.host && (m.gpus || []).length);
-  peers.innerHTML = others.length ? `<h4 style="margin:12px 0 6px">Other machines <span class="hint">(current values from the agents)</span></h4><table class="sm-table"><thead><tr><th>Machine</th><th>GPU</th><th>Utilization</th><th>VRAM</th></tr></thead><tbody>${
-    others.flatMap(m => m.gpus.map(g => `<tr><td>${escHtml(m.name)}</td><td>${escHtml(g.name || "")}</td><td>${smNum(Math.round(g.util))} %</td><td>${g.mem_used_gb} / ${g.mem_total_gb} GB</td></tr>`)).join("")
-  }</tbody></table>` : "";
-}
 async function smRefresh() {
   if (smBusy) return;
   smBusy = true;
   const st = $("#sm-status");
-  const minutes = $("#sm-minutes")?.value || 15;
   try {
-    const [a, p, stats] = await Promise.all([
-      api("GET", "/api/swap/activity?limit=200"),
-      api("GET", `/api/swap/performance?minutes=${minutes}`),
-      api("GET", "/api/stats").catch(() => null),
-    ]);
+    const a = await api("GET", "/api/swap/activity?limit=200");
     smRenderActivity(a);
-    smRenderPerf(p, stats);
     if (st) { st.textContent = a.running ? "live" : "swap down"; st.className = `serving-ind ${a.running ? "status-ok" : "status-warn"}`; }
   } catch (e) {
     if (st) { st.textContent = "error"; st.className = "serving-ind status-bad"; }
@@ -9546,4 +9514,58 @@ async function smRefresh() {
 function smStart() { smRefresh(); clearInterval(smTimer); smTimer = setInterval(smRefresh, 5000); }
 function smStop() { clearInterval(smTimer); smTimer = null; }
 on("#sm-refresh", "click", smRefresh);
-on("#sm-minutes", "change", smRefresh);
+
+/* ---------------- Performance (farm's own per-machine history) ----------------
+   /api/stats/history: every machine sampled in the background by
+   stats_history (master locally, peers through their agents). One chart
+   per measure, no dual axes; each machine gets its own block. */
+let perfTimer = null, perfBusy = false;
+function perfRenderMachine(m) {
+  const rows = (m.samples || []).map(s => ({...s, ts: s.ts * 1000}));
+  const last = rows[rows.length - 1];
+  const role = m.role === "master" ? ' <span class="badge badge-master">master</span>' : "";
+  const head = `<h3>${escHtml(m.name)}${role}${last && last.status && last.status !== "online" ? ` <span class="status-bad">${escHtml(last.status)}</span>` : ""}</h3>`;
+  if (rows.length < 2) return `<div class="card">${head}<p class="hint">Collecting samples… the first chart points appear after two samples.</p></div>`;
+  const c = "var(--accent)";
+  const pct = v => Math.round(v), gb = v => Number(v).toFixed(1);
+  let charts = "";
+  const gpuIdx = [...new Set(rows.flatMap(r => (r.gpus || []).map(g => g.index)))];
+  for (const idx of gpuIdx) {
+    const series = rows.map(r => {
+      const g = (r.gpus || []).find(x => x.index === idx) || {};
+      return {ts: r.ts, util: g.util, mem: g.mem_used_gb, temp: g.temp > 0 ? g.temp : null, name: g.name, total: g.mem_total_gb};
+    });
+    const info = series.filter(s => s.name).pop() || {};
+    const name = info.name || `GPU ${idx}`;
+    charts += smLine(series, "util", {max: 100, color: c, fmt: pct, unit: " %", title: `${name} — utilization`});
+    charts += smLine(series, "mem", {max: info.total || null, color: c, fmt: gb, unit: " GB", title: `${name} — VRAM used`});
+    if (series.filter(s => s.temp != null).length > 1)
+      charts += smLine(series, "temp", {max: 100, color: c, fmt: pct, unit: " °C", title: `${name} — temperature`});
+  }
+  charts += smLine(rows, "cpu", {max: 100, color: c, fmt: pct, unit: " %", title: "CPU (all cores)"});
+  charts += smLine(rows, "ram_used_gb", {max: last.ram_total_gb || null, color: c, fmt: gb, unit: " GB", title: "RAM used"});
+  return `<div class="card">${head}<div class="sm-charts">${charts}</div></div>`;
+}
+async function perfRefresh() {
+  if (perfBusy) return;
+  perfBusy = true;
+  const st = $("#perf-status"), box = $("#perf-machines");
+  const minutes = $("#perf-minutes")?.value || 15;
+  try {
+    const h = await api("GET", `/api/stats/history?minutes=${minutes}`);
+    if (!h.enabled) {
+      box.innerHTML = `<p class="hint">The background sampler is off (FARM_STATS_HISTORY_SEC=0).</p>`;
+    } else {
+      box.innerHTML = h.machines.map(perfRenderMachine).join("") || `<p class="hint">No machines configured.</p>`;
+    }
+    if (st) { st.textContent = h.enabled ? `every ${h.interval} s` : "off"; st.className = `serving-ind ${h.enabled ? "status-ok" : "status-warn"}`; }
+  } catch (e) {
+    if (st) { st.textContent = "error"; st.className = "serving-ind status-bad"; }
+    toast(e.message, "bad");
+  }
+  perfBusy = false;
+}
+function perfStart() { perfRefresh(); clearInterval(perfTimer); perfTimer = setInterval(perfRefresh, 10000); }
+function perfStop() { clearInterval(perfTimer); perfTimer = null; }
+on("#perf-refresh", "click", perfRefresh);
+on("#perf-minutes", "change", perfRefresh);
