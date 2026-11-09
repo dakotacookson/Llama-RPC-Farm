@@ -1,9 +1,9 @@
 # Llama RPC Farm
 
-**True llama.cpp, over your whole house.** One dashboard that spans real
-multi-machine llama.cpp RPC clusters — your desktops' GPUs pooled across
-boxes — and on-demand multi-model serving through llama-swap. Any mix of
-Linux, Windows, and macOS machines — see the hardware table. Any client
+**True llama.cpp, from one box to your whole house.** One dashboard for
+real llama.cpp serving: run a model on a single machine, pool GPUs and RAM
+across machines over RPC, or serve many models on demand through
+llama-swap — any mix of Linux, Windows, and macOS machines. Any client
 that speaks OpenAI.
 
 Real llama.cpp means real features: full CUDA, tensor-split across GPUs,
@@ -50,6 +50,110 @@ engine/agent installs go to standard user locations such as
   machine sees it immediately.
 
   ![Hugging Face browser: search, filter by quant/task, download to a store](docs/img/downloads.png)
+
+## Serve it the way it fits
+
+This is not an RPC-only tool. Each model deployment picks the topology that
+actually suits the hardware — automatically (`launch_mode: auto`) or
+explicitly — and every one of them sits behind the same llama-swap endpoint.
+
+| Topology | Where inference runs | Use it when |
+|---|---|---|
+| **Single box** | one machine, no RPC | the model fits on one box. CUDA, ROCm, Vulkan, Metal and CPU-only are all first-class |
+| **Multi-box RPC cluster** | host machine, with `--rpc` to peers | the model is too big for one box; pool GPUs and host RAM across machines |
+| **Peer-local (remote-local)** | a peer, started through its agent | compute belongs on another box, but clients still use one farm endpoint (llama-swap proxies to it) |
+| **Custom runtime** | an external OpenAI-compatible server the agent starts/stops | you already have a non-llama.cpp stack (for example a Windows `.bat` runtime) |
+| **MLX** | Apple Silicon via `mlx_lm.server` | Mac-native serving without RPC or device flags |
+
+MLX is a **separate runtime, not a llama.cpp backend**: it cannot join a
+model's `--rpc` device graph or take part in tensor splitting. It can sit
+alongside llama.cpp/RPC models behind llama-swap as its own model entry, but
+a single model is either MLX (one Mac) or llama.cpp (which may span boxes).
+The same applies to **custom runtimes**: they are proxied standalone OpenAI
+servers, not RPC peers. To put an Apple Silicon GPU into a llama.cpp cluster,
+use the **Metal** backend (`Metal` device token) — that is llama.cpp's own
+Apple GPU backend, still llama.cpp — not MLX. MLX and llama.cpp/Metal are two
+different ways to serve on a Mac; only the latter can join the RPC graph.
+
+And one endpoint can front **many** models at once:
+
+- **On-demand loading** — llama-swap starts a model when a request arrives
+  and unloads it after its TTL; pinned/always-on models stay warm.
+- **Serve groups** — make models take turns (`swap`), evict everything else
+  when one loads (`exclusive`), or keep a set loaded together (`persistent`).
+- **Variants** — the same weights with different context sizes, hardware,
+  flags or split layouts, published as separate model ids.
+- **Per-key views** — each access key sees only the models it is granted,
+  through the embedded `:8090` gateway.
+
+So the same install can be a single-GPU dev box, a multi-machine GPU pool for
+one giant model, a multi-model household server, or a mix of all three — with
+the same model configs, dashboard, gateway and client API.
+
+### Heterogeneous multi-node, done properly
+
+Master and peers can be any mix of Linux, Windows and macOS. The master
+orchestrates; each peer runs its native `ggml-rpc-server` (or `llama-server`
+for peer-local deployments) through the peer agent. There is no SSH and no
+shared shell — every peer operation is a typed agent call, so Windows
+PowerShell, macOS process quirks and Linux all behave the same.
+
+The tensor placement itself is llama.cpp's scheduler: it distributes model
+layers/tensors across the selected devices, and the farm supplies the
+`--rpc`, `--device` and `--tensor-split`/`--fit` plan it needs. The Flow
+Visualizer then reads the real per-tensor GGML sched log lines and shows
+which GPU on which machine is executing each tensor, live while the model
+runs. One OpenAI-compatible endpoint can therefore span several boxes and
+several GPUs without hiding what the scheduler is actually doing.
+
+### Combinations that work
+
+These are the shapes the farm is designed around, drawn from a working mixed
+fleet (Linux master + Linux peers + Windows box + CPU laptop):
+
+1. **One big model across two boxes (RPC)** — host with 3 GPUs, peer with 3
+   GPUs (or 2 GPUs + shared RAM). `servers: [host, peer]`,
+   `device_order` lists every selected chip, `tensor_split_mode: fit` (or
+   explicit `split` weights). llama-server runs on the host, peers run
+   `ggml-rpc-server`, clients see one model.
+2. **Same weights, two placements (base + variant)** — base on the host
+   (`servers: [aibox1]`) for everyday use; a variant on a peer
+   (`servers: [aibox3]`, `launch_mode: local`) so llama-server runs there and
+   llama-swap proxies to it. Different access keys can expose base vs
+   variant to different people.
+3. **Small models per box, one endpoint** — a 4B on one peer (remote-local),
+   ASR + embeddings on a CPU/RAM box, and an external native server on
+   Windows, all listed by the same llama-swap instance.
+4. **Take-turns group on one box** — several 27–35B models that do not fit
+   together; `swap: true` so loading one evicts the group's others.
+5. **Exclusive "clear the stage" group** — a model that needs all of a
+   box's VRAM; `swap: true, exclusive: true` so loading it evicts everything.
+6. **Always-on co-serving group** — ASR + embeddings + a small decision model
+   on a dedicated box; `persistent: true` keeps them all loaded.
+7. **CPU/RAM-only node** — a laptop with no usable GPU: `device_order:
+   box-RAM`, `n-gpu-layers: 0`. Good for embeddings, ASR and small decision
+   models.
+8. **Windows peer** — for big models, use it as an **RPC peer** (Windows only
+   runs `ggml-rpc-server`; the host reads the GGUF). For an existing native
+   server, use `runtime: custom` with an agent-managed `.bat`. Avoid
+   remote-local `llama-server` on Windows for SMB model paths.
+
+### Combinations to avoid
+
+- **MLX + RPC peers in one model** — MLX is single-Mac; peers are ignored.
+- **A persistent group whose members do not all fit in VRAM together** —
+  every member stays loaded; the last one will fail.
+- **The same model in two `swap: true` groups** — only the first group wins.
+- **`tensor_split_mode: split` with a weight count that differs from
+  `--device`** — layers get mis-assigned.
+- **`fit` + a RAM device when you expect pure fit** — the farm downgrades to
+  a computed split (llama.cpp's RAM-last fitter bug).
+- **Custom runtime with more than one server** — it manages exactly one
+  external OpenAI server.
+
+The app now shows these as non-blocking warnings when you save a model,
+machine group, or serve group, so you see the problem at configuration time
+instead of at first load.
 
 ## Quick start
 
@@ -158,9 +262,11 @@ contribution — pull requests welcome.
 ## How it works, in one breath
 
 The machine you run the UI on is the master; everything you add is a peer.
-Model configs live as YAML, the app generates the exact launch scripts
-(RPC nodes first, llama-server last), and llama-swap fronts it all so
-clients always hit one endpoint. The app also runs the `:8090` view/access
+Model configs live as YAML, and each deployment chooses its topology:
+single-box local, multi-box RPC, peer-local, custom runtime or MLX. The app
+generates the exact launch plan/scripts (RPC peers first, llama-server last,
+or the peer agent start for local deployments), and llama-swap fronts it all
+so clients always hit one endpoint. The app also runs the `:8090` view/access
 gateway in-process — no separate service to install. Secrets (agent tokens, HF token) live in an encrypted vault on your box, never in
 configs, never in scripts.
 

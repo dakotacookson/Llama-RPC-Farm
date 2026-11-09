@@ -51,6 +51,7 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 | `GET/PUT/DELETE /api/models/{model_id}` | Read/update/delete one config |
 | `POST /api/models/{model_id}/test` | Live load test (single model) |
 | `POST /api/models/cleanup` | Remove configs whose GGUF file no longer exists |
+| `POST /api/models/recommend` | Recommend a baseline placement (servers, device_order, split, flags) from GGUF size + live/detected hardware; math-only, no loads |
 | `GET /api/models/scan-file` | Resolve a single path → model info |
 | `GET /api/scan?path=&recursive=` | Directory GGUF scan (shards collapsed) |
 | `GET /api/models/{model_id}/file` | GGUF file info + metadata |

@@ -2539,9 +2539,17 @@ def validate_model(model_id):
     # with context instead of a misleading red.
     if (model.get("runtime") or "") == "custom":
         return {"model_id": model_id, "ok": True,
-                "issues": [{"level": "warn",
+                "issues": [{"level": "info",
                             "msg": "custom runtime: served externally — "
                                    "static llama.cpp checks skipped"}]}
+    # MLX is a separate runtime (mlx_lm.server), not a ggml backend: it has
+    # no --rpc/--device and never uses peers. Running the llama.cpp static
+    # checks on an HF repo id would produce misleading missing-file errors.
+    if (model.get("runtime") or "") == "mlx":
+        return {"model_id": model_id, "ok": True,
+                "issues": [{"level": "info",
+                            "msg": "MLX runtime: single-Mac serving — "
+                                   "llama.cpp/RPC checks skipped"}]}
     servers = model.get("servers") or []
     if not servers:
         err("no servers configured")
@@ -2582,9 +2590,16 @@ def validate_model(model_id):
         warn(f"unknown device_order_policy '{policy}', using as-selected")
         policy = "as-selected"
     mapped = _device_order_to_llama(raw_order, master, peers, policy)
-    if not mapped:
-        err("empty --device mapping (no hardware selected?)")
-    else:
+    # A RAM-only / CPU-only box legitimately has no --device, and an empty
+    # device_order means "auto at launch". Only a non-empty order that
+    # selects accelerator chips but maps to nothing is a real error.
+    selected_gpu = any(
+        gpu_vendor.is_gpu_token(_parse_chip(t.strip())[1])
+        for t in raw_order.split(",") if t.strip())
+    if not mapped and selected_gpu:
+        err("device_order selects accelerator chips but none map to "
+            "--device (check machine names / exposed GPUs)")
+    elif mapped:
         rpc_ids = sorted(int(t[3:]) for t in mapped.split(",")
                          if t.startswith("RPC") and t[3:].isdigit())
         if rpc_ids and rpc_ids != list(range(rpc_ids[-1] + 1)):
@@ -2654,15 +2669,10 @@ def validate_model(model_id):
     if split_mode == "manual":
         split_mode = "fit"   # legacy manual ratios -> fit
     if split_mode == "split":
-        weights = (model.get("tensor_split") or "").strip()
-        if not weights:
-            err("split mode needs tensor_split weights (e.g. '4,4,4,2,2,2')")
-        else:
-            n_dev = len((mapped or "").split(",")) if mapped else 0
-            n_w = len([w for w in weights.split(",") if w.strip()])
-            if n_dev and n_w != n_dev:
-                warn(f"tensor_split has {n_w} weights but --device has "
-                     f"{n_dev} devices ('{mapped}'); layers will mis-assign")
+        # Empty weights = llama.cpp's default placement (valid, used by
+        # working fleet configs). A shorter weight list is also accepted
+        # upstream, so don't flag either shape as an error.
+        pass
     # 2b. flags must not collide with backend-derived args (they would
     # be emitted twice: once verbatim, once derived). host/port are
     # already skipped by the command builder, so only these matter.
@@ -2678,11 +2688,7 @@ def validate_model(model_id):
         if isinstance(value, str) and value == "":
             warn(f"flag '{key}' has an empty value and will be dropped "
                  f"(an empty value would swallow the next flag)")
-    if "n-gpu-layers" in flags and split_mode == "fit":
-        warn("n-gpu-layers is user-set: llama.cpp aborts param fitting "
-             "('failed to fit params ... abort'). The launcher strips it "
-             "from fit-mode commands automatically, but remove it from "
-             "flags to avoid the warning")
+
 
     # 4. paths resolve (and exist when the master is this machine)
     for label, path in (("model", model.get("base_path") or model.get("path", "")),

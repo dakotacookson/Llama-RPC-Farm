@@ -498,6 +498,10 @@
                 <select id="mo-group"><option value="">(custom / no group)</option></select>
               </label>
             </div>
+            <div class="row" style="align-items:center; gap:10px; margin-bottom:4px">
+              <button type="button" class="small" id="mo-recommend" title="Read the GGUF header and pick the fastest hardware that fits this model, plus our known-good baseline flags. Math-only — no model is loaded."><i class="fa-solid fa-wand-magic-sparkles"></i> Recommend placement</button>
+              <small class="hint">auto-picks servers/GPUs + baseline flags from the model size; Tune refines it</small>
+            </div>
             <div class="row">
               <div id="mo-servers-chip-list"></div>
             </div>
