@@ -12,6 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
+from . import files
 from .config import AgentConfig
 
 _PORT_RE = re.compile(r"(?:^|\s)(?:-p|--port)\s+(\d+)(?:\s|$)")
@@ -387,7 +388,10 @@ def stop_llama_port(config: AgentConfig, port: int,
             "killed": not bool(alive), "pids": sorted(set(pids))}
 
 
-def validate_llama_start(port, args, env, state_key):
+def validate_llama_start(port, args, env, state_key, llama_bin=None):
+    if llama_bin is not None and (not isinstance(llama_bin, str)
+                                  or "\x00" in llama_bin):
+        raise AgentProcessError("llama_bin must be a string")
     try:
         port = int(port)
     except (TypeError, ValueError) as e:
@@ -422,9 +426,9 @@ def validate_llama_start(port, args, env, state_key):
 
 
 def start_llama(config: AgentConfig, port: int, args: list, env: dict,
-                state_key=None) -> dict:
+                state_key=None, llama_bin=None) -> dict:
     port, args, env, state_key = validate_llama_start(
-        port, args, env, state_key)
+        port, args, env, state_key, llama_bin)
     existing = [p for p in list_llama_processes() if p["port"] == port]
     if _port_open(port):
         if existing:
@@ -440,6 +444,21 @@ def start_llama(config: AgentConfig, port: int, args: list, env: dict,
                 "log": str(_llama_log_path(config, port))}
 
     bin_path = llama_binary(config)
+    override = (llama_bin or "").strip()
+    if override:
+        # The master knows which binary it probed and wants served; use
+        # exactly that instead of re-running discovery (which can pick a
+        # stale legacy path). Restrict to an allowed root and the known
+        # binary name: this is a typed operation, not a shell.
+        try:
+            p = files._path(config, override)
+        except files.AgentFileError as e:
+            raise AgentProcessError(f"llama_bin override invalid: {e}") from e
+        if not p.is_file() or p.name not in ("llama-server",
+                                             "llama-server.exe"):
+            raise AgentProcessError(
+                "llama_bin override must be an existing llama-server binary")
+        bin_path = str(p)
     if not bin_path:
         return {"running": False, "loading": False, "reused": False,
                 "port": port,

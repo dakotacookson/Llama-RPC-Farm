@@ -346,11 +346,13 @@ def build_probe(machine, llama_bin, timeout=30.0) -> dict:
 
 
 def build_update(machine, src_root, build_dir, bin_path, jobs=None,
-                 timeout=7300.0) -> dict:
-    return _request(machine, "POST", "/build/update", {
-        "src_root": src_root, "build_dir": build_dir,
-        "bin_path": bin_path, "jobs": jobs,
-    }, timeout=timeout)
+                 ref=None, timeout=7300.0) -> dict:
+    body = {"src_root": src_root, "build_dir": build_dir,
+            "bin_path": bin_path, "jobs": jobs}
+    if ref:
+        body["ref"] = str(ref)
+    return _request(machine, "POST", "/build/update", body,
+                    timeout=timeout)
 
 
 def rpc_list(machine, timeout=8.0) -> list:

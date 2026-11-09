@@ -613,11 +613,12 @@ source "{scripts_dir}/{SIDECAR_NAME}" 2>/dev/null || true
 : "${{{var}:?agent token not set for {machine.get('name')}}}"
 AGENT="{base}"
 PORT="{int(port)}"
-if ! curl -fsS -H "Authorization: Bearer ${var}" \
+_resp=$(curl -sS -H "Authorization: Bearer ${var}" \
   -H "Content-Type: application/json" \
   --data-binary @"{scripts_dir}/{payload_name}" \
-  "$AGENT/llama/start" >/dev/null; then
-  echo "!!! agent llama/start failed for {machine.get('name')}:{int(port)}" >&2
+  "$AGENT/llama/start" 2>&1) || _resp="curl failed: $_resp"
+if printf '%s' "$_resp" | grep -q '"error"'; then
+  echo "!!! agent llama/start failed for {machine.get('name')}:{int(port)}: $_resp" >&2
   exit 1
 fi
 _up=0
