@@ -2739,3 +2739,46 @@ body.login-locked #login-modal * { pointer-events: auto !important; }
   border-radius: 6px;
   white-space: nowrap;
 }
+
+/* ---------------- Activity & Performance tab (llama-swap metrics) ---------------- */
+.sm-tiles {
+  display: grid; gap: 10px; margin-bottom: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+.sm-tile {
+  background: var(--surface); border: 1px solid var(--border-soft);
+  border-radius: 8px; padding: 10px 12px;
+}
+.sm-tile-label { font-size: 12px; color: var(--text-2); }
+.sm-tile-value { font-size: 22px; font-weight: 700; margin-top: 2px; }
+.sm-tile-value small { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.sm-tile-sub { font-size: 11px; color: var(--muted, var(--text-2)); margin-top: 2px; }
+.sm-charts {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+.sm-chart-title { font-size: 12px; color: var(--text-2); margin-bottom: 2px; }
+.sm-table { width: 100%; font-size: 12px; }
+.sm-table td, .sm-table th { white-space: nowrap; }
+.sm-rows { max-height: 420px; overflow: auto; }
+#sm-models, #sm-peers { overflow-x: auto; }
+.sm-table tr.sm-click { cursor: pointer; }
+.sm-table tr.sm-click:hover td, .sm-table tr.sm-open td { background: var(--hover, var(--raised)); }
+.sm-caret { font-size: 10px; color: var(--text-2); width: 10px; }
+.sm-table tr.sm-detail td { white-space: normal; background: var(--raised, var(--surface)); }
+.sm-detail-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.sm-pre { white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow: auto;
+  font-size: 11px; margin: 4px 0 10px; padding: 8px; border-radius: 6px;
+  background: var(--bg); border: 1px solid var(--border-soft); }
+
+/* Performance tab: detailed charts (one per measure, a line per device) */
+.pf-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); margin-top: 12px; }
+.pf-chart { background: var(--surface); border: 1px solid var(--border-soft); border-radius: 8px; padding: 10px 12px; }
+.pf-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.pf-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--text-2); margin-bottom: 4px; }
+.pf-legend i, .pf-tip i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.pf-plot { position: relative; }
+.pf-plot svg { width: 100%; height: auto; display: block; overflow: visible; }
+.pf-tip { position: absolute; top: 6px; pointer-events: none; background: var(--raised, var(--surface)); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 8px; font-size: 12px; white-space: nowrap; box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+.pf-tip-time { color: var(--text-2); margin-bottom: 2px; }
