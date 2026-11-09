@@ -48,15 +48,32 @@ def probe(config: AgentConfig, llama_bin) -> dict:
                 "rpc": False, "build_dir": None, "src_root": None,
                 "flags": {}}
     p = files._path(config, lb)
-    build = p.parent.parent if p.parent.name == "bin" else p.parent
+    # Two common layouts:
+    #   <src>/build/bin/llama-server  (a source build; llama_bin points at build/bin)
+    #   <src>/bin/llama-server        (installer prebuilt; the source build,
+    #                                  if any, is still <src>/build)
+    # Never assume the first "bin" parent is the build dir — aibox3's
+    # Vulkan prebuilt sat in ~/llama.cpp/bin while its CUDA source build
+    # lived in ~/llama.cpp/build, so the update button kept reinstalling
+    # a prebuilt and never rebuilt the actual engine.
+    if p.parent.name == "bin":
+        base = p.parent.parent
+        candidates = [base, base / "build"]
+    else:
+        base = p.parent
+        candidates = [base, base / "build"]
+    build = next((c for c in candidates
+                  if (c / "CMakeCache.txt").is_file()), base)
     out = {"kind": "prebuilt", "llama_bin": lb, "version": "",
            "rpc": False, "build_dir": None, "src_root": None, "flags": {}}
     if not build.is_dir():
         out["kind"] = "missing"
         return out
     out["build_dir"] = str(build)
-    if (build / "bin" / "llama-server").is_file():
-        out["llama_bin"] = str(build / "bin")
+    build_bin = build / "bin"
+    server = build_bin / "llama-server"
+    if server.is_file():
+        out["llama_bin"] = str(build_bin)
     out["version"], out["rpc"] = _bin_meta(out["llama_bin"])
     if not (build / "CMakeCache.txt").is_file():
         return out
@@ -81,7 +98,7 @@ def probe(config: AgentConfig, llama_bin) -> dict:
 
 
 def update(config: AgentConfig, src_root, build_dir, bin_path,
-           jobs=None) -> dict:
+           jobs=None, ref=None) -> dict:
     src = files._path(config, src_root)
     build = files._path(config, build_dir)
     binp = files._path(config, bin_path)
@@ -89,23 +106,45 @@ def update(config: AgentConfig, src_root, build_dir, bin_path,
         raise AgentBuildError("source or build dir not found")
     if not (build / "CMakeCache.txt").is_file():
         raise AgentBuildError("build dir has no CMakeCache.txt")
-    proc = _run(["git", "-C", str(src), "fetch", "origin", "master"],
-                timeout=600)
-    if proc.returncode != 0:
-        raise AgentBuildError("git fetch failed: " + (proc.stderr or "")[-300:])
-    proc = _run(["git", "-C", str(src), "merge-base", "--is-ancestor",
-                 "HEAD", "origin/master"], timeout=60)
-    if proc.returncode != 0:
-        raise AgentBuildError("source tree has local-only commits")
     proc = _run(["git", "-C", str(src), "status", "--porcelain"], timeout=60)
     dirty = [ln for ln in (proc.stdout or "").splitlines()
              if ln and not ln.startswith("??")]
     if dirty:
         raise AgentBuildError("tracked files modified: " + "; ".join(dirty[:5]))
-    proc = _run(["git", "-C", str(src), "checkout", "origin/master"],
-                timeout=120)
+    target = (ref or "").strip()
+    if target:
+        # Build the exact release the farm advertises (e.g. b12224), not
+        # whatever origin/master happens to be. A source build is required
+        # on glibc < 2.38 + NVIDIA because upstream's CUDA prebuilts need
+        # glibc 2.38; this is how those machines stay modern and CUDA.
+        _run(["git", "-C", str(src), "fetch", "origin", "tag", target],
+             timeout=900)
+        proc = _run(["git", "-C", str(src), "rev-parse", "--verify",
+                     target + "^{commit}"], timeout=60)
+        if proc.returncode != 0:
+            _run(["git", "-C", str(src), "fetch", "--tags", "origin"],
+                 timeout=900)
+            proc = _run(["git", "-C", str(src), "rev-parse", "--verify",
+                         target + "^{commit}"], timeout=60)
+        if proc.returncode != 0:
+            raise AgentBuildError(f"release tag {target} not found upstream")
+        proc = _run(["git", "-C", str(src), "checkout", "--detach", target],
+                    timeout=120)
+    else:
+        proc = _run(["git", "-C", str(src), "fetch", "origin", "master"],
+                    timeout=600)
+        if proc.returncode != 0:
+            raise AgentBuildError("git fetch failed: "
+                                  + (proc.stderr or "")[-300:])
+        proc = _run(["git", "-C", str(src), "merge-base", "--is-ancestor",
+                     "HEAD", "origin/master"], timeout=60)
+        if proc.returncode != 0:
+            raise AgentBuildError("source tree has local-only commits")
+        proc = _run(["git", "-C", str(src), "checkout", "origin/master"],
+                    timeout=120)
     if proc.returncode != 0:
-        raise AgentBuildError("git checkout failed: " + (proc.stderr or "")[-300:])
+        raise AgentBuildError("git checkout failed: "
+                              + (proc.stderr or "")[-300:])
     # A CMakeCache records the absolute CMAKE_COMMAND used when it was
     # configured. Snap/venv/upgraded CMake leaves that path behind, and
     # gmake then dies with `CMAKE_COMMAND: No such file or directory`
@@ -146,17 +185,41 @@ def update(config: AgentConfig, src_root, build_dir, bin_path,
             jobs = max(1, min(os.cpu_count() or 2, mem // 2048))
         except (OSError, ValueError):
             jobs = max(1, os.cpu_count() or 2)
+    # Remove the server/rpc executables before building. A previous
+    # installer that updated libraries without relinking left an old
+    # llama-server beside new libggml*.so (aibox3: Oct-24 binary + Nov-8
+    # libs → SIGSEGV with an empty log). Forcing the link step is what
+    # makes the update produce a consistent, runnable set.
+    for name in ("llama-server", "llama-server.exe",
+                 "libllama-server-impl.so", "llama-server.dll",
+                 "ggml-rpc-server", "ggml-rpc-server.exe"):
+        try:
+            (binp.parent / name).unlink()
+        except OSError:
+            pass
     proc = _run(["cmake", "--build", str(build), "-j", str(int(jobs))],
                 timeout=7200)
-    output = ((proc.stdout or "") + (proc.stderr or ""))[-1000:]
+    output = ((proc.stdout or "") + (proc.stderr or ""))[-1500:]
     if proc.returncode != 0:
         return {"ok": False, "error": f"build failed: {output}"}
-    rpc = binp.parent / "ggml-rpc-server"
+    rpc = binp.parent / ("ggml-rpc-server.exe" if os.name == "nt"
+                         else "ggml-rpc-server")
     if not rpc.is_file():
         return {"ok": False,
                 "error": "build did not produce ggml-rpc-server "
                          "(enable GGML_RPC=ON in the build cache)"}
+    # A build that exits 0 but leaves a crashing/mixed binary must not be
+    # reported as success. Run it and capture the backend list too.
     v = _run([str(binp), "--version"], timeout=120)
     version = ((v.stdout or "") + (v.stderr or "")).strip().splitlines()
+    if v.returncode != 0 or not version:
+        return {"ok": False,
+                "error": f"built llama-server does not run "
+                         f"(exit {v.returncode}); mixed/incomplete libs?"}
+    dev = _run([str(binp), "--list-devices"], timeout=120)
+    devices = ((dev.stdout or "") + (dev.stderr or "")).strip()[:1200]
+    rpc_v = _run([str(rpc), "--version"], timeout=120)
     return {"ok": True, "version": version[0] if version else "",
-            "rpc": str(rpc), "output": output}
+            "devices": devices, "rpc": str(rpc),
+            "rpc_ok": rpc_v.returncode == 0, "ref": target,
+            "output": output}

@@ -2259,8 +2259,19 @@ def remote_local_agent_payload(model_cfg, master, remote_port, state_key=None):
   ", " ").replace('"$PORT"', str(remote_port))
     args = _cmd_to_args(cmd, master.get("os", "linux"))
     env = dict(_parse_env_exports(_device_env_exports(master)))
-    return {"port": int(remote_port), "args": args, "env": env,
-            "state_key": state_key}
+    payload = {"port": int(remote_port), "args": args, "env": env,
+               "state_key": state_key}
+    # Send the exact binary the app probed. The agent otherwise re-runs
+    # discovery, which can prefer a stale legacy build/bin over the path
+    # the master's readiness/update checks use.
+    lb = (master.get("llama_bin") or "").strip().rstrip("/\\")
+    if lb:
+        name = ("llama-server.exe" if master.get("os") == "windows"
+                else "llama-server")
+        if not lb.endswith(name):
+            lb = f"{lb}/{name}"
+        payload["llama_bin"] = lb
+    return payload
 
 
 
