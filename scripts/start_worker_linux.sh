@@ -9,6 +9,8 @@ WORKER_RPC_BIN="${WORKER_RPC_BIN:-$HOME/llama-rpc-worker/build/bin/ggml-rpc-serv
 WORKER_LOG="${WORKER_LOG:-/tmp/ggml-rpc-server.log}"
 
 SSH_TARGET="$WORKER_USER@$WORKER_IP"
+export WORKER_START_FILE="${WORKER_START_FILE:-/tmp/llama_rpc_worker_start.epoch}"
+date +%s > "$WORKER_START_FILE"
 
 wait_for_rpc() {
   local tries="${RPC_WAIT_SECONDS:-60}"
@@ -37,4 +39,5 @@ fi
 
 echo "Streaming worker log: $SSH_TARGET:$WORKER_LOG"
 ssh -o BatchMode=yes "$SSH_TARGET" \
-  "tail -n 50 -F '$WORKER_LOG'"
+  "tail -n 0 -F '$WORKER_LOG'" | \
+  perl -MTime::HiRes=time -ne 'BEGIN { open my $f, "<", $ENV{WORKER_START_FILE}; chomp(my $s = <$f>); $start = $s } { my $e = time() - $start; $| = 1; my $c = /error|failed|fatal/i ? 31 : /closed|closing|recv returned 0/i ? 33 : /graph_compute|graph_recompute/i ? 35 : /accepted/i ? 32 : 0; printf "\e[36m%02d:%02d.%03d\e[0m \e[%dm%s\e[0m", int($e/60), int($e)%60, ($e-int($e))*1000, $c, $_ }'
