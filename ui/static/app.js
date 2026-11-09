@@ -39,7 +39,11 @@ function setAccessKey(k) {
 }
 
 async function api(method, url, body) {
-  const opts = { method, headers: { "Content-Type": "application/json" } };
+  // no-store: Firefox heuristically caches API GETs. Agent/engine version
+  // probes then stick on stale values (e.g. "Agent on latest" forever,
+  // disabled button that appears to do nothing after a release).
+  const opts = { method, cache: "no-store",
+                 headers: { "Content-Type": "application/json" } };
   if (_accessKey) opts.headers["Authorization"] = `Bearer ${_accessKey}`;
   if (_farmSession) opts.headers["X-Farm-Session"] = _farmSession;
   if (body !== undefined) opts.body = JSON.stringify(body);
@@ -122,6 +126,40 @@ function _toastHost() {
     document.body.appendChild(host);
   }
   return host;
+}
+
+/* In-app confirmation. NEVER use window.confirm(): Firefox's "prevent
+   this page from creating additional dialogs" checkbox makes it return
+   false permanently, silently disabling every confirm-gated button
+   (agent/engine update, delete, …) until the page is reloaded. */
+function uiConfirm(message, okLabel = "Continue") {
+  return new Promise((resolve) => {
+    const back = document.createElement("div");
+    back.style.cssText = "position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;padding:20px";
+    const box = document.createElement("div");
+    box.style.cssText = "max-width:480px;width:100%;background:var(--surface,#1b1f2a);color:var(--text,#e6e9ef);border:1px solid var(--border-soft,#333);border-radius:12px;padding:18px;box-shadow:0 12px 48px #000a";
+    const msg = document.createElement("div");
+    msg.style.cssText = "white-space:pre-line;line-height:1.45;margin-bottom:16px";
+    msg.textContent = message;
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:8px;justify-content:flex-end";
+    const cancel = document.createElement("button");
+    cancel.type = "button"; cancel.className = "small"; cancel.textContent = "Cancel";
+    const ok = document.createElement("button");
+    ok.type = "button"; ok.className = "small danger"; ok.textContent = okLabel;
+    const onkey = (e) => { if (e.key === "Escape") done(false); };
+    const done = (v) => {
+      document.removeEventListener("keydown", onkey);
+      back.remove(); resolve(v);
+    };
+    cancel.onclick = () => done(false);
+    ok.onclick = () => done(true);
+    back.onclick = (e) => { if (e.target === back) done(false); };
+    document.addEventListener("keydown", onkey);
+    row.append(cancel, ok); box.append(msg, row); back.append(box);
+    document.body.appendChild(back);
+    ok.focus();
+  });
 }
 
 /* Toast: replaces native alert()/confirm(), which browsers block or
@@ -1082,7 +1120,7 @@ on("#setup-readiness", "click", async (e) => {
     return;
   }
   if (act === "engines") {
-    if (!window.confirm(`Install llama.cpp + llama RPC on ${name} through the peer agent?`)) return;
+    if (!await uiConfirm(`Install llama.cpp + llama RPC on ${name} through the peer agent?`)) return;
     let prevBuild = null, expectedBuild = null;
     try {
       const v = await api("GET",
@@ -1114,7 +1152,7 @@ on("#setup-readiness", "click", async (e) => {
     return;
   }
   if (act === "swap") {
-    if (!window.confirm(`Install llama-swap on ${name}?`)) return;
+    if (!await uiConfirm(`Install llama-swap on ${name}?`)) return;
     btn.disabled = true; btn.textContent = "Installing…";
     try {
       const r = await api("POST", `/api/install-llama-swap?name=${encodeURIComponent(name)}`);
@@ -1385,7 +1423,7 @@ on("#machine-detail-body", "click", async (e) => {
   const mid = btn.dataset.mid;
   const hint = $("#md-update-latest");
   if (!mid) return;
-  if (!window.confirm(`Update llama.cpp on ${mid}?\n\nSource builds are rebuilt in place (custom flags kept, running models keep serving); prebuilt installs stop that machine's llama processes first. Continue?`)) return;
+  if (!await uiConfirm(`Update llama.cpp on ${mid}?\n\nSource builds are rebuilt in place (custom flags kept, running models keep serving); prebuilt installs stop that machine's llama processes first. Continue?`)) return;
   btn.disabled = true;
   try {
     const job = await runLlamaCppUpdate(mid, (state, j) => {
@@ -2132,7 +2170,7 @@ async function loadMachines(skipCaps = false) {
           : mode === "update"
             ? `Update llama.cpp on ${m.name}?\n\nSource builds are rebuilt in place (custom flags kept); prebuilt installs stop that machine's llama processes first. Continue?`
             : `Cleanly reinstall llama.cpp + RPC on ${m.name}?\n\nExisting binaries will be overwritten.`;
-        if (!window.confirm(confirmMsg)) return;
+        if (!await uiConfirm(confirmMsg)) return;
         const prevRaw = parseInt(btn.dataset.build || "", 10);
         const prevBuild = Number.isFinite(prevRaw) ? prevRaw : null;
         const expRaw = mode === "update"
@@ -2168,7 +2206,7 @@ async function loadMachines(skipCaps = false) {
       const installSwapBtn = tr.querySelector('[data-act="install-swap"]');
       if (installSwapBtn) installSwapBtn.onclick = async (e) => {
         const btn = e.currentTarget;
-        if (!window.confirm(`Install llama-swap on ${m.name}?`)) return;
+        if (!await uiConfirm(`Install llama-swap on ${m.name}?`)) return;
         btn.disabled = true; btn.textContent = "Installing…";
         try {
           const r = await api("POST", `/api/install-llama-swap?name=${encodeURIComponent(m.name)}`);
@@ -2181,7 +2219,7 @@ async function loadMachines(skipCaps = false) {
       const agentUpdateBtn = tr.querySelector('[data-act="agent-update"]');
       if (agentUpdateBtn) agentUpdateBtn.onclick = async (e) => {
         const btn = e.currentTarget;
-        if (!window.confirm(`Install/update the peer agent on ${m.name}?\n\nThe agent will be restarted.`)) return;
+        if (!await uiConfirm(`Install/update the peer agent on ${m.name}?\n\nThe agent will be restarted.`)) return;
         btn.disabled = true;
         btn.dataset.busy = "1";
         const old = btn.textContent;
@@ -7011,7 +7049,7 @@ function wireAppUpdate(btn) {
     const msg = source
       ? "Download the latest release source, update this checkout, and restart the app?"
       : "Download and install the latest farm-app release? The app will restart.";
-    if (!window.confirm(msg)) return;
+    if (!await uiConfirm(msg)) return;
     b.disabled = true; b.textContent = "Updating…";
     try {
       const r = await api("POST", "/api/app/update", {});

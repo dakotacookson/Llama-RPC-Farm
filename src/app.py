@@ -729,7 +729,11 @@ async def _no_cache_static(request: Request, call_next):
     serve a stale app.js after an upgrade and keep using old login logic.
     Force revalidation for every static file."""
     resp = await call_next(request)
-    if request.url.path.startswith("/static/"):
+    if (request.url.path.startswith("/static/")
+            or request.url.path.startswith("/api/")):
+        # API responses are live probes (agent/engine versions, jobs,
+        # stats). Firefox will otherwise heuristically cache GETs and pin
+        # buttons to stale "on latest"/disabled states after a release.
         resp.headers["Cache-Control"] = "no-store, max-age=0"
     return resp
 
