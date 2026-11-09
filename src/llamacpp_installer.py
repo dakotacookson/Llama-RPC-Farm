@@ -405,6 +405,23 @@ def install_on(machine, log=lambda m: None):
         return {"ok": False, "machine": name,
                 "detail": "release assets not found upstream: "
                           + ", ".join(plan_info["missing"])}
+    # Never silently replace a CUDA-configured machine with a Vulkan
+    # prebuilt. Upstream CUDA builds need glibc >= 2.38; on older hosts
+    # _pick_assets falls back to Vulkan, which cannot serve --device
+    # CUDA*/--mmproj-device CUDA* (this broke aibox3). Such machines must
+    # update from a CUDA source build instead.
+    backend_note = (plan_info.get("backend") or "").lower()
+    tokens = str(machine.get("gpu") or "").upper()
+    if (not is_win and "vulkan" in backend_note
+            and (machine.get("gpu_vendor") or "").lower() == "nvidia"
+            and "CUDA" in tokens):
+        return {"ok": False, "machine": name,
+                "detail": "this host's only glibc-compatible prebuilt is "
+                          "Vulkan, but the machine is configured for CUDA "
+                          "device tokens. Point llama_bin at a CUDA source "
+                          "build (e.g. ~/llama.cpp/build/bin) so the Update "
+                          "button rebuilds it, or switch the machine/model "
+                          "device tokens to Vulkan."}
     urls = [f"{base}/{n}" for n in plan_info["assets"]]
     if not is_local and agent_client.should_use_agent(machine):
         try:
@@ -644,8 +661,15 @@ def probe_setup(machine, log=lambda m: None):
         code, probe = run(
             rf'd="{lb}"; d="${{d/\~/$HOME}}"; d="${{d%/}}"; d="${{d%bin}}"; '
             rf'd="${{d%/}}"; '
-            f'[ -d "$d" ] || exit 3; echo "D=$d"; '
-            f'[ -f "$d/CMakeCache.txt" ] && echo CACHE || echo NOCACHE; '
+            # A source build can be <root>/build/bin (the installer
+            # prebuilt may sit beside it in <root>/bin). Prefer the
+            # directory that actually has a CMakeCache.
+            f'for c in "$d" "$d/build"; do '
+            f'  if [ -f "$c/CMakeCache.txt" ]; then '
+            f'    echo "D=$c"; echo CACHE; '
+            f'    [ -f "$c/bin/llama-server" ] && echo BIN || echo NOBIN; '
+            f'    exit 0; fi; done; '
+            f'[ -d "$d" ] || exit 3; echo "D=$d"; echo NOCACHE; '
             f'[ -f "$d/bin/llama-server" ] && echo BIN || echo NOBIN')
         probe = (probe or "").strip().splitlines()
         if code == 3:
@@ -709,6 +733,18 @@ def probe_setup(machine, log=lambda m: None):
         return out          # unreachable -> prebuilt attempt is harmless
 
 
+def _version_matches_tag(version_line, tag):
+    """True when a --version line reports the build number in a `bNNNN` tag."""
+    import re
+    m = re.search(r"build (\d+)", version_line or "")
+    t = (tag or "").strip().lower()
+    if not m or not t:
+        return False
+    if not re.fullmatch(r"b\d+", t):
+        return True  # unknown tag shape — don't block on it
+    return m.group(1) == t[1:]
+
+
 def update_source_on(machine, probe=None, log=lambda m: None):
     """Update a machine's llama.cpp SOURCE build in place (POSIX only).
 
@@ -733,6 +769,11 @@ def update_source_on(machine, probe=None, log=lambda m: None):
                           f"{probe.get('llama_bin') or machine.get('llama_bin')}"}
     build_dir = probe["build_dir"]
     src_root = probe["src_root"]
+    try:
+        target_tag, _assets, _base = _fetch_latest_assets()
+    except Exception:
+        target_tag = None
+    log(f"{name}: source build target = {target_tag or 'origin/master'}")
     if (not local_node.is_local(machine)
             and agent_client.should_use_agent(machine)):
         bin_path = (f"{probe.get('llama_bin') or build_dir + '/bin'}"
@@ -743,11 +784,29 @@ def update_source_on(machine, probe=None, log=lambda m: None):
         for attempt in (1, 2):
             try:
                 res = agent_client.build_update(
-                    machine, src_root, build_dir, bin_path)
+                    machine, src_root, build_dir, bin_path,
+                    ref=target_tag)
                 if res.get("ok"):
+                    ver = str(res.get("version") or "")
+                    if target_tag and not _version_matches_tag(
+                            ver, target_tag):
+                        return {"ok": False, "machine": name,
+                                "detail": f"built {ver or 'unknown'}, "
+                                          f"expected {target_tag}"}
+                    try:
+                        import config_loader as _cfg
+                        _cfg.machines.update(
+                            name,
+                            {"llama_bin": probe.get("llama_bin")
+                             or (build_dir + "/bin")})
+                    except Exception:
+                        pass
+                    log(f"{name} devices: "
+                        + " | ".join((res.get("devices") or "")
+                                      .splitlines()[:6]))
                     return {"ok": True, "machine": name, "bin": bin_path,
-                            "detail": f"source build updated to "
-                                      f"{res.get('version', '')}"}
+                            "detail": f"source build updated to {ver}",
+                            "devices": res.get("devices") or ""}
                 return {"ok": False, "machine": name,
                         "detail": res.get("error") or "source update failed"}
             except Exception as e:
@@ -765,32 +824,47 @@ def update_source_on(machine, probe=None, log=lambda m: None):
     run, _is_local = _machine_run(machine)
 
     try:
-        code, out = run(f"cd '{src_root}' && git fetch origin master "
-                        "2>&1 | tail -1")
-        if code != 0:
-            return {"ok": False, "machine": name,
-                    "detail": f"git fetch failed: {(out or '')[-300:]}"}
-        code, out = run(f"cd '{src_root}' && (git merge-base --is-ancestor "
-                        "HEAD origin/master && echo CLEAN-ANCESTOR "
-                        "|| echo LOCAL-ONLY)")
-        if "CLEAN-ANCESTOR" not in (out or ""):
-            return {"ok": False, "machine": name,
-                    "detail": "source tree has local-only commits — "
-                              "update refused, merge manually"}
         code, out = run(f"cd '{src_root}' && git status --porcelain "
                         "| grep -v '^??' | head -5")
         if (out or "").strip():
             return {"ok": False, "machine": name,
                     "detail": "tracked files modified: "
                               + (out or "").strip()[:200]}
-        code, out = run(f"cd '{src_root}' && git checkout origin/master "
-                        "2>&1 | tail -1")
+        if target_tag:
+            code, out = run(f"cd '{src_root}' && git fetch origin tag "
+                            f"'{target_tag}' 2>&1 | tail -1", timeout=900)
+            if code != 0:
+                code, out = run(f"cd '{src_root}' && git fetch --tags "
+                                "origin 2>&1 | tail -1", timeout=900)
+            code, out = run(f"cd '{src_root}' && git rev-parse --verify "
+                            f"'{target_tag}^{{commit}}' 2>&1 | tail -1")
+            if code != 0:
+                return {"ok": False, "machine": name,
+                        "detail": f"release tag {target_tag} not found "
+                                  f"upstream: {(out or '')[-200:]}"}
+            code, out = run(f"cd '{src_root}' && git checkout --detach "
+                            f"'{target_tag}' 2>&1 | tail -1")
+        else:
+            code, out = run(f"cd '{src_root}' && git fetch origin master "
+                            "2>&1 | tail -1")
+            if code != 0:
+                return {"ok": False, "machine": name,
+                        "detail": f"git fetch failed: {(out or '')[-300:]}"}
+            code, out = run(f"cd '{src_root}' && (git merge-base --is-ancestor "
+                            "HEAD origin/master && echo CLEAN-ANCESTOR "
+                            "|| echo LOCAL-ONLY)")
+            if "CLEAN-ANCESTOR" not in (out or ""):
+                return {"ok": False, "machine": name,
+                        "detail": "source tree has local-only commits — "
+                                  "update refused, merge manually"}
+            code, out = run(f"cd '{src_root}' && git checkout origin/master "
+                            "2>&1 | tail -1")
         if code != 0:
             return {"ok": False, "machine": name,
                     "detail": f"git checkout failed: {(out or '')[-300:]}"}
         fl = probe.get("flags") or {}
         kept = ", ".join(f"{k}={v}" for k, v in sorted(fl.items())[:6]) or "cache defaults"
-        log(f"fast-forwarded {name} to origin/master — rebuilding "
+        log(f"{name}: checked out {target_tag or 'origin/master'} — rebuilding "
             f"{build_dir} in place (preserving {kept})")
 
         # RAM-aware parallelism (see docstring): available MB col 7 of free
@@ -830,6 +904,13 @@ def update_source_on(machine, probe=None, log=lambda m: None):
                 return {"ok": False, "machine": name,
                         "detail": f"cmake reconfigure failed: "
                                   f"{(out or '')[-300:]}"}
+        bin_dir = probe.get("llama_bin") or (build_dir + "/bin")
+        bin_path = f"{bin_dir}/llama-server"
+        rpc_path = f"{bin_dir}/ggml-rpc-server"
+        # Force the link step. Updating libs without relinking the server
+        # is exactly what produced aibox3's mixed-version SIGSEGV.
+        run(f"rm -f '{bin_path}' '{bin_dir}/libllama-server-impl.so' "
+            f"'{rpc_path}'")
         build_cmd = (f"cd '{src_root}' && cmake --build '{build_dir}' "
                      f"-j {jobs} > /tmp/llamacpp-build.log 2>&1; "
                      "_ec=$?; tail -3 /tmp/llamacpp-build.log; exit $_ec")
@@ -839,19 +920,32 @@ def update_source_on(machine, probe=None, log=lambda m: None):
                     "detail": f"build failed (exit {code}): "
                               f"{(out or '')[-400:]}"}
 
-        bin_path = f"{probe.get('llama_bin') or build_dir + '/bin'}/llama-server"
-        rpc_path = f"{probe.get('llama_bin') or build_dir + '/bin'}/ggml-rpc-server"
         code, out = run(f"'{bin_path}' --version 2>&1 | head -1")
         version = (out or "").strip()
+        if code != 0 or not version:
+            return {"ok": False, "machine": name,
+                    "detail": f"built llama-server does not run "
+                              f"(exit {code}); mixed/incomplete libs?"}
+        if target_tag and not _version_matches_tag(version, target_tag):
+            return {"ok": False, "machine": name,
+                    "detail": f"built {version}, expected {target_tag}"}
         code, out = run(f"test -x '{rpc_path}' && echo RPC || echo NORPC")
         if "RPC" not in (out or ""):
             return {"ok": False, "machine": name,
                     "detail": "source build did not produce ggml-rpc-server "
                               "(enable GGML_RPC=ON in the build cache)"}
+        code, devs = run(f"'{bin_path}' --list-devices 2>&1 | head -8")
+        try:
+            import config_loader as _cfg
+            _cfg.machines.update(name, {"llama_bin": bin_dir})
+        except Exception:
+            pass
         log(f"{name} now: {version} (llama-server + ggml-rpc-server)")
+        log(f"{name} devices: " + " | ".join((devs or "").splitlines()[:6]))
         return {"ok": True, "machine": name, "bin": bin_path,
                 "detail": f"source build updated to {version} "
-                          f"(llama-server + ggml-rpc-server)"}
+                          f"(llama-server + ggml-rpc-server)",
+                "devices": devs or ""}
     except Exception as e:
         return {"ok": False, "machine": name,
                 "detail": f"source update failed: {e}"}

@@ -259,6 +259,11 @@ def test_build_probe_and_update(monkeypatch, tmp_path):
     def fake_run(args, **k):
         cmd = " ".join(args)
         out = "v\n" if "--version" in cmd else ""
+        if "cmake" in cmd:
+            # update() removes the targets to force a relink; a real
+            # build recreates them.
+            (build / "bin" / "ggml-rpc-server").write_text("x")
+            (build / "bin" / "llama-server").write_text("x")
         return type("P", (), {"returncode": 0, "stdout": out,
                               "stderr": ""})()
     monkeypatch.setattr(agent_build.subprocess, "run", fake_run)
@@ -864,6 +869,9 @@ def test_build_remaining(monkeypatch, tmp_path):
     def run(args, **k):
         cmd = " ".join(args)
         out = "v" if "--version" in cmd else ""
+        if "cmake" in cmd:
+            (build / "bin" / "ggml-rpc-server").write_text("x")
+            (build / "bin" / "llama-server").write_text("x")
         return type("P", (), {"returncode": 0, "stdout": out,
                               "stderr": ""})()
     (build / "bin").mkdir(exist_ok=True)

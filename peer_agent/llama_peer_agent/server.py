@@ -302,6 +302,11 @@ class AgentHandler(BaseHTTPRequestHandler):
             return self._agent_update_binary(body)
         if path == "/build/update":
             try:
+                if body.get("ref"):
+                    return 200, build.update(
+                        config, body.get("src_root"), body.get("build_dir"),
+                        body.get("bin_path"), body.get("jobs"),
+                        ref=body.get("ref"))
                 return 200, build.update(
                     config, body.get("src_root"), body.get("build_dir"),
                     body.get("bin_path"), body.get("jobs"))
@@ -328,9 +333,15 @@ class AgentHandler(BaseHTTPRequestHandler):
             try:
                 port, args, env, state = processes.validate_llama_start(
                     body.get("port"), body.get("args") or [],
-                    body.get("env") or {}, body.get("state_key"))
-                result = processes.start_llama(
-                    config, port, args, env, state)
+                    body.get("env") or {}, body.get("state_key"),
+                    body.get("llama_bin"))
+                if body.get("llama_bin"):
+                    result = processes.start_llama(
+                        config, port, args, env, state,
+                        body.get("llama_bin"))
+                else:
+                    result = processes.start_llama(
+                        config, port, args, env, state)
             except processes.AgentProcessError as e:
                 return 400, {"error": str(e)}
             ok = bool(result.get("running") or result.get("loading")

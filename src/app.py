@@ -2762,7 +2762,7 @@ async def swap_faults_ws(websocket: WebSocket):
     priming_until = time.time() + 1.5
     state = {"model": "", "loading": False, "loading_model": "",
              "hint_ts": 0.0, "last_emit": {}, "specific": {},
-             "last_code": {}}
+             "last_code": {}, "pending": {}}
     dead = asyncio.Event()
 
     def _allowed(model):
@@ -2824,6 +2824,11 @@ async def swap_faults_ws(websocket: WebSocket):
                         # serving output (including arbitrary model text).
                         if _MODEL_READY_RE.search(line):
                             state["loading"] = False
+                            # Startup recovered (llama.cpp/llama-swap may
+                            # retry after a transient allocation failure).
+                            # A held fault is therefore FALSE — drop it.
+                            state["pending"].pop(
+                                state["loading_model"] or "?", None)
                             continue
                         # llama-swap's own "starting <model> failed" line
                         sm = _START_FAIL_RE.search(line)
@@ -2831,7 +2836,14 @@ async def swap_faults_ws(websocket: WebSocket):
                             model = _resolve_fault_model(sm.group(1), mmap)
                             key = model or "?"
                             now = time.time()
-                            if now - state["specific"].get(key, 0) >= 120:
+                            pend = state["pending"].pop(key, None)
+                            if pend and now - pend["ts"] <= 300:
+                                # Attach the specific cause we saw during
+                                # this attempt (OOM/MTP/mmproj…) to the
+                                # authoritative failure line.
+                                await _emit(model, pend["code"],
+                                            pend["reason"], pend["detail"])
+                            elif now - state["specific"].get(key, 0) >= 120:
                                 await _emit(
                                     model, "generic",
                                     "Model failed to load (upstream exited prematurely).",
@@ -2851,10 +2863,18 @@ async def swap_faults_ws(websocket: WebSocket):
                         fault = _parse_load_fault(line)
                         if fault:
                             code, reason = fault
-                            await _emit(state["loading_model"], code, reason,
-                                        line)
-                            if dead.is_set():
-                                return
+                            key = state["loading_model"] or "?"
+                            # Hold the cause; do not notify yet. If the
+                            # model becomes ready we discard it (this was
+                            # the false "CUDA out of memory" while a model
+                            # loaded fine); a real failure surfaces via
+                            # llama-swap's "starting … failed" line.
+                            prev = state["pending"].get(key)
+                            if not prev or prev.get("code") == "generic":
+                                state["pending"][key] = {
+                                    "code": code, "reason": reason,
+                                    "detail": line, "ts": time.time()}
+                            continue
         except Exception:
             pass
 
@@ -5110,24 +5130,41 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
                     machine, log=lambda m: job["log"].append(str(m)))
                 job["result"] = res
                 job["state"] = "done" if res.get("ok") else "failed"
-            elif vp.get("on_latest"):
-                job["log"].append(
-                    f"{name} already on the latest release "
-                    f"({vp.get('latest')}) — nothing to do")
-                job["result"] = {"ok": True, "machine": name,
-                                 "detail": f"already on the latest release "
-                                           f"({vp.get('latest')})"}
-                job["state"] = "done"
             else:
                 # Fully dynamic routing: probe the machine itself (what
                 # binary dir exists, is a git source tree + CMakeCache
                 # behind it, which flags that cache carries) and pick the
                 # path from the ANSWER — never from path-string guessing.
-                # New machines classify correctly the moment they're added.
+                # Probe FIRST: a machine can have an installer-managed
+                # prebuilt in <root>/bin and a source build in
+                # <root>/build/bin; the prebuilt may be current while the
+                # source build (the one the agent actually launches) lags.
                 job["state"] = "updating"
                 probe = llamacpp_installer.probe_setup(
                     machine, log=lambda m: job["log"].append(str(m)))
                 kind = probe.get("kind", "prebuilt")
+                src_build = _llama_build_no(probe.get("version") or "")
+                latest_build = vp.get("latest_build")
+                source_current = bool(src_build and latest_build
+                                      and src_build >= int(latest_build))
+                if kind != "source" and vp.get("on_latest"):
+                    job["log"].append(
+                        f"{name} already on the latest release "
+                        f"({vp.get('latest')}) — nothing to do")
+                    job["result"] = {"ok": True, "machine": name,
+                                     "detail": f"already on the latest "
+                                               f"release ({vp.get('latest')})"}
+                    job["state"] = "done"
+                    return
+                if kind == "source" and source_current:
+                    job["log"].append(
+                        f"{name}: source build already on the latest "
+                        f"release ({probe.get('version') or vp.get('latest')})"
+                        " — nothing to do")
+                    job["result"] = {"ok": True, "machine": name,
+                                     "detail": "source build already current"}
+                    job["state"] = "done"
+                    return
                 if kind == "source":
                     fl = ", ".join(f"{k}={v}" for k, v in
                                    sorted((probe.get("flags") or {}).items())[:6])
@@ -5135,6 +5172,31 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
                         f"{name}: source build detected"
                         + (f" ({fl})" if fl else "")
                         + " → in-place rebuild, custom flags preserved")
+                    # Rebuilding replaces the server binary the agent
+                    # launches. Stop this machine's farm processes first
+                    # (same rule as the prebuilt path) so no model starts
+                    # while the target is being linked.
+                    try:
+                        if name == (swap_manager.get_host() or {}).get("name"):
+                            port = int(swap_manager.load_settings().get("listen_port") or 8080)
+                            with urllib.request.urlopen(
+                                    f"http://127.0.0.1:{port}/health",
+                                    timeout=3) as r:
+                                was_swap_up = (r.status == 200)
+                            job["log"].append(
+                                f"llama-swap on {name}: "
+                                + ("running — will restart after the rebuild"
+                                   if was_swap_up else "not running"))
+                    except Exception:
+                        was_swap_up = False
+                    job["log"].append(f"stopping llama processes on {name} …")
+                    try:
+                        rep = rpc_manager.stop_rpc(name)
+                        job["log"].append("stop_rpc: "
+                                          + json.dumps(rep)[:400])
+                    except Exception as e:
+                        job["log"].append(
+                            f"stop_rpc failed (continuing anyway): {e}")
                     res = llamacpp_installer.update_source_on(
                         machine, probe, log=lambda m: job["log"].append(str(m)))
                 else:
