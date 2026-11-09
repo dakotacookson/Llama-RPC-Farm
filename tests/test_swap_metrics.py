@@ -78,3 +78,19 @@ def test_unknown_caller_sees_nothing(swap, monkeypatch):
 def test_swap_down(monkeypatch):
     monkeypatch.setattr(app_module.swap_manager, "status", lambda: {"running": False})
     assert asyncio.run(app_module.swap_activity())["running"] is False
+
+
+def test_speed_ignores_cold_start_and_uses_wall_time():
+    # a 60 s first request (model load, 2 tokens) then three 1 s requests
+    # of 1000 tokens each, one per second, 10 s after the load ended
+    def row(end, dur_ms, tokens, status=200):
+        return app_module._activity_row({
+            "timestamp": f"2026-11-09T03:00:{end:02d}+00:00", "model": "m",
+            "resp_status_code": status, "duration_ms": dur_ms,
+            "tokens": {"input_tokens": tokens, "output_tokens": 0}})
+    rows = [row(0, 60000, 2), row(11, 1000, 1000), row(12, 1000, 1000),
+            row(13, 1000, 1000), row(14, 1000, 999999, status=400)]
+    sp = app_module._speed_stats(rows)
+    assert sp["median_tps"] == 1000.0               # the load does not drag it
+    assert sp["window_s"] == 73.0                    # 03:00:00-60 s .. 03:00:13
+    assert sp["throughput_tps"] == round(3002 / 73.0, 1)   # failed row excluded

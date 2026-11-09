@@ -6891,6 +6891,36 @@ def _caller_model_filter():
     return lambda mid: _mid_allowed(str(mid or ""), allow)
 
 
+def _speed_stats(rows):
+    """Speeds over successful rows, in two honest forms:
+    median_tps     - median of per-request input tok/s: how fast the model
+                     works on a request; one cold-start load (a 60 s first
+                     request) cannot drag it down.
+    throughput_tps - input tokens / wall-clock time from the first
+                     request's start to the last one's end: what the
+                     server actually delivered, counting idle gaps and
+                     requests that ran at the same time correctly.
+    Summing per-request durations (the old figure) did neither."""
+    from datetime import datetime
+    import statistics as _stats
+    ok = [r for r in rows if (r.get("status") or 0) < 400
+          and (r.get("input_tokens") or 0) > 0 and (r.get("duration_ms") or 0) > 0]
+    tps = [r["input_tps"] for r in ok if r.get("input_tps")]
+    starts, ends = [], []
+    for r in ok:
+        try:
+            end = datetime.fromisoformat(str(r["ts"])).timestamp()
+        except (TypeError, ValueError):
+            continue
+        ends.append(end)
+        starts.append(end - r["duration_ms"] / 1000.0)
+    span = (max(ends) - min(starts)) if ends else 0
+    tokens = sum(r["input_tokens"] for r in ok)
+    return {"median_tps": round(_stats.median(tps), 1) if tps else None,
+            "throughput_tps": round(tokens / span, 1) if span > 0 else None,
+            "window_s": round(span, 1) if span else None}
+
+
 def _activity_row(r):
     """One llama-swap activity row, trimmed to what the tab shows.
     Embedding responses carry no llama-server timings (speeds are -1),
@@ -6934,8 +6964,9 @@ async def swap_activity(limit: int = 200):
         if allowed is not None:
             rows = [dict(r, src=None, capture_id=None, kept=False)
                     for r in rows if allowed(r["model"])]
-        per = {}
+        per, per_rows = {}, {}
         for r in rows:
+            per_rows.setdefault(r["model"] or "?", []).append(r)
             m = per.setdefault(r["model"] or "?", {
                 "model": r["model"] or "?", "requests": 0, "errors": 0,
                 "input_tokens": 0, "output_tokens": 0, "duration_ms": 0,
@@ -6950,14 +6981,14 @@ async def swap_activity(limit: int = 200):
                 m["gen_tps"].append(r["gen_tps"])
         models = []
         for m in per.values():
-            secs = m["duration_ms"] / 1000.0
             g = m.pop("gen_tps")
-            m["input_tps"] = round(m["input_tokens"] / secs, 1) if secs else None
+            m.update(_speed_stats(per_rows[m["model"]]))
             m["gen_tps"] = round(sum(g) / len(g), 1) if g else None
             models.append(m)
         models.sort(key=lambda m: -m["requests"])
         return {"running": True, "host": st["host"], "rows": rows,
-                "models": models, "total": data.get("total"),
+                "models": models, "speed": _speed_stats(rows),
+                "total": data.get("total"),
                 "scoped": allowed is not None}
     try:
         return await run_in_threadpool(fetch)

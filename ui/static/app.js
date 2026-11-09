@@ -9476,18 +9476,20 @@ function smRenderActivity(a) {
   }
   if (a.error) { models.innerHTML = `<p class="status-bad">${escHtml(a.error)}</p>`; return; }
   const sum = (k) => a.models.reduce((t, m) => t + (m[k] || 0), 0);
-  const req = sum("requests"), inTok = sum("input_tokens"), outTok = sum("output_tokens"), ms = sum("duration_ms");
+  const req = sum("requests"), inTok = sum("input_tokens"), outTok = sum("output_tokens");
+  const sp = a.speed || {};
   const gens = a.models.filter(m => m.gen_tps);
   const tile = (label, value, sub) => `<div class="sm-tile"><div class="sm-tile-label">${escHtml(label)}</div><div class="sm-tile-value">${value}</div>${sub ? `<div class="sm-tile-sub">${escHtml(sub)}</div>` : ""}</div>`;
   tiles.innerHTML =
     tile("Requests", smNum(req), a.total != null && !a.scoped ? `last ${smNum(a.rows.length)} of ${smNum(a.total)}` : `last ${smNum(a.rows.length)}`) +
     tile("Input tokens", smNum(inTok), "prompt / text sent in") +
     tile("Output tokens", smNum(outTok), outTok ? "generated" : "none (embeddings generate none)") +
-    tile("Input speed", ms ? `${smNum(Math.round(inTok / (ms / 1000)))} <small>tok/s</small>` : "–", "input tokens ÷ request time") +
+    tile("Model speed", sp.median_tps ? `${smNum(Math.round(sp.median_tps))} <small>tok/s</small>` : "–", "input tok/s, median per request") +
+    tile("Throughput", sp.throughput_tps ? `${smNum(Math.round(sp.throughput_tps))} <small>tok/s</small>` : "–", sp.window_s ? `input tokens over ${smDur(sp.window_s * 1000)} of wall time` : "input tokens ÷ wall time") +
     tile("Generation speed", gens.length ? `${smNum(Math.round(gens.reduce((t, m) => t + m.gen_tps, 0) / gens.length))} <small>tok/s</small>` : "–", gens.length ? "llama-server timings" : "no chat requests yet");
   $("#sm-models-note").textContent = a.scoped ? "· only models your key can use" : `· over the last ${a.rows.length} requests`;
-  models.innerHTML = a.models.length ? `<table class="sm-table"><thead><tr><th>Model</th><th>Task</th><th>Requests</th><th>Errors</th><th>Input tok</th><th>Output tok</th><th>Input tok/s</th><th>Gen tok/s</th></tr></thead><tbody>${
-    a.models.map(m => `<tr><td>${escHtml(m.model)}</td><td>${escHtml(m.task || "–")}</td><td>${smNum(m.requests)}</td><td>${m.errors ? `<span class="status-bad">${smNum(m.errors)}</span>` : "0"}</td><td>${smNum(m.input_tokens)}</td><td>${smNum(m.output_tokens)}</td><td>${smNum(m.input_tps)}</td><td>${smNum(m.gen_tps)}</td></tr>`).join("")
+  models.innerHTML = a.models.length ? `<table class="sm-table"><thead><tr><th>Model</th><th>Task</th><th>Requests</th><th>Errors</th><th>Input tok</th><th>Output tok</th><th>Input tok/s (median)</th><th>Throughput tok/s</th><th>Gen tok/s</th></tr></thead><tbody>${
+    a.models.map(m => `<tr><td>${escHtml(m.model)}</td><td>${escHtml(m.task || "–")}</td><td>${smNum(m.requests)}</td><td>${m.errors ? `<span class="status-bad">${smNum(m.errors)}</span>` : "0"}</td><td>${smNum(m.input_tokens)}</td><td>${smNum(m.output_tokens)}</td><td>${smNum(m.median_tps)}</td><td>${smNum(m.throughput_tps)}</td><td>${smNum(m.gen_tps)}</td></tr>`).join("")
   }</tbody></table>` : `<p class="hint">No requests recorded yet.</p>`;
   smLastActivity = a;
   smRenderRows();
