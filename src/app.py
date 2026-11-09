@@ -707,6 +707,17 @@ async def auth_bootstrap(l: FirstLoginIn, response: Response):
 
 
 # ---------------- pages ----------------
+@app.middleware("http")
+async def _no_cache_static(request: Request, call_next):
+    """Static assets are versioned by ?v=mtime+boot, but Firefox can still
+    serve a stale app.js after an upgrade and keep using old login logic.
+    Force revalidation for every static file."""
+    resp = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-store, max-age=0"
+    return resp
+
+
 import time as _time_mod
 _DAEMON_BOOT = str(int(_time_mod.time()))  # per-boot unique
 

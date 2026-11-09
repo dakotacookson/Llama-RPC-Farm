@@ -5148,7 +5148,10 @@ async function doLogin() {
   const btn = $("#login-go");
   try {
     if (btn) btn.disabled = true;
-    await api("POST", "/api/auth/login", { username: u, password: p });
+    const lr = await api("POST", "/api/auth/login", { username: u, password: p });
+    if (lr && lr.session) setFarmSession(lr.session);
+    // old localStorage API key would shadow the cookie session
+    setAccessKey("");
     // verify the cookie actually landed BEFORE reloading — Firefox
     // HTTPS-only upgrades / cookie denials would otherwise loop
     const me = await api("GET", "/api/auth/me");
@@ -5190,9 +5193,11 @@ async function doBootstrap() {
   }
   try {
     if (btn) btn.disabled = true;
-    await api("POST", "/api/auth/bootstrap", {
+    const br = await api("POST", "/api/auth/bootstrap", {
       username: u, password: p, key_name: u,
     });
+    if (br && br.session) setFarmSession(br.session);
+    setAccessKey("");
     $("#login-modal")?.classList.add("hidden");
     window.location.reload();
   } catch (e) {
