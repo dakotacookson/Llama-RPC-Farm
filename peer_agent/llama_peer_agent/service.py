@@ -114,7 +114,7 @@ def start(config: AgentConfig, name, binary, config_path, port) -> dict:
         raise AgentServiceError(f"failed to start llama-swap: {e}") from e
     time.sleep(1)
     return {"method": "detached-process", "pid": pid,
-            "running": True}
+            "running": bool(processes.list_swap_processes())}
 
 
 def stop(config: AgentConfig, name) -> dict:

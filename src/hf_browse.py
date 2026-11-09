@@ -579,6 +579,8 @@ async def search_gguf(query: str = "", sort: str = "downloads", limit: int = 20,
         SNAPSHOT_DIR = os.path.join(data_dir(), "generated", "hf_snapshot")
         os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 
+        SNAPSHOT_SCOPE = "gguf-all"
+
         def _snap_path(a):
             return os.path.join(SNAPSHOT_DIR, f"{a.lower()}.json")
 
@@ -597,6 +599,11 @@ async def search_gguf(query: str = "", sort: str = "downloads", limit: int = 20,
                         blob = _json.load(f)
                     snap = blob.get("models") or {}
                     snap_time = blob.get("time")
+                    # Snapshots built before the scope marker were fetched
+                    # with whatever task/search filter was active at the
+                    # time, so they miss models. Rebuild them once.
+                    if blob.get("scope") != SNAPSHOT_SCOPE:
+                        snap, snap_time = {}, None
                 except Exception:
                     snap, snap_time = {}, None
             snap_age = None
@@ -612,6 +619,11 @@ async def search_gguf(query: str = "", sort: str = "downloads", limit: int = 20,
             # Defensive: drop any UI-page `skip` so snapshots always cover
             # the author's full list from HF offset 0.
             base_params = {k: v for k, v in base_params.items() if k != "skip"}
+            # The snapshot backs every recommended query, so it holds the
+            # author's full GGUF list. Task and search filters are applied
+            # locally afterwards, never baked into the snapshot.
+            base_params.pop("search", None)
+            base_params["filter"] = ["gguf"]
             if snap_age is None or snap_age > 7 * 86400:
                 fresh = []
                 skip = 0
@@ -668,7 +680,8 @@ async def search_gguf(query: str = "", sort: str = "downloads", limit: int = 20,
             # persist snapshot
             try:
                 with open(path, "w", encoding="utf-8") as f:
-                    _json.dump({"time": _dt.datetime.now(_dt.timezone.utc).isoformat(), "models": snap}, f)
+                    _json.dump({"time": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                                "scope": SNAPSHOT_SCOPE, "models": snap}, f)
             except Exception:
                 pass
             return list(snap.values())
@@ -712,7 +725,19 @@ async def search_gguf(query: str = "", sort: str = "downloads", limit: int = 20,
             for a in CURATED:
                 merged.extend(await _get_author_snapshot(a, params))
             merged.sort(key=_sort_key, reverse=True)
-            passing = [m for m in merged if _passes_post_filters(m)]
+            # HF applies task/search server-side on the normal path; the
+            # snapshot holds everything, so match them here the same way:
+            # task = pipeline_tag or a tag, search = substring of the id.
+            task = pipeline_tag if pipeline_tag and pipeline_tag != "all" else ""
+            terms = (query or "").lower().split()
+
+            def _matches(m):
+                if task and m.get("pipeline_tag") != task and task not in (m.get("tags") or []):
+                    return False
+                mid = (m.get("id") or "").lower()
+                return all(t in mid for t in terms)
+
+            passing = [m for m in merged if _matches(m) and _passes_post_filters(m)]
             total = len(passing)
             start = page * limit
             models = [_shape(m) for m in passing[start:start + limit]]
@@ -791,7 +816,9 @@ async def get_gguf_files(author: str, name: str):
         return cached
     url = f"{HF_API}/models/{quote(author)}/{quote(name)}"
     async with httpx.AsyncClient(timeout=20, headers=_headers(), follow_redirects=True) as client:
-        resp = await client.get(url)
+        # Siblings carry per-file sizes only with blobs=true; without it
+        # every size is null and the UI shows "0 MB".
+        resp = await client.get(url, params={"blobs": "true"})
         resp.raise_for_status()
         m = resp.json()
         siblings = m.get("siblings") or []

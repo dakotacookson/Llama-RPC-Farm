@@ -1,8 +1,7 @@
 """Regression guard for the confirmed pytest exit-code-1 defect.
 
 Each module listed in relevantSourcePaths must be importable without
-raising ImportError or NameError when heavy optional deps (paramiko)
-are stubbed, matching the conftest.py stub pattern already in use.
+raising ImportError or NameError when optional heavy deps are missing.
 
 If a module cannot be imported this test fails immediately with a
 precise error, replacing the opaque suite-level exit code 1 that
@@ -16,9 +15,9 @@ import types
 
 import pytest
 
-# Modules that conftest.py already stubs; extend here if new optional
-# heavy deps are introduced.
-_STUBBED_BEFORE_IMPORT = ["paramiko"]
+# Optional heavy deps to stub before import (none today; kept as the
+# extension point for future optional integrations).
+_STUBBED_BEFORE_IMPORT = []
 
 # All source modules from relevantSourcePaths that are safe to import
 # in a unit-test environment (no running server, no real filesystem).
@@ -35,8 +34,8 @@ _IMPORTABLE_MODULES = [
     "stats_collector",
     # app.py starts uvicorn at import time in some configurations — skip.
     # hf_browse / hf_downloader / llamacpp_installer / tuner / steps /
-    # swap_manager / gguf_inspect may require heavy optional deps beyond
-    # paramiko; they are listed as CANDIDATE below.
+    # swap_manager / gguf_inspect may require other optional deps; they
+    # are listed as CANDIDATE below.
 ]
 
 _CANDIDATE_MODULES = [

@@ -1,15 +1,16 @@
 # Setup & installation guide
 
 End-to-end path from a bare folder to a working farm: web UI up, machines
-added, models visible, llama-swap serving, clients hitting the gateway.
-Nothing outside the project folder is ever modified.
+added, models visible, llama-swap serving, clients hitting the gateway. The app's own config lives under
+the project folder (or the platform data dir for packaged builds); engines
+and the agent are installed to standard user locations.
 
 ## 0. Prerequisites
 
 | Where you need it | Requirement |
 |---|---|
 | Master (this app's box) | Python 3.11+, a terminal, network reach to every peer (Tailscale or LAN) |
-| Peers | The peer agent package (`.deb` / `.pkg` / `setup.exe`) — no SSH server needed |
+| Peers | The peer agent package (`.deb` / `.pkg` / `setup.exe`) — no remote login needed |
 | Models | llama.cpp `llama-server` built (or installed later via the UI) + GGUF files on a shared path |
 | Serving clients | Any OpenAI-compatible client (opencode, SillyTavern, curl, …) |
 | Optional | `curl` (used by run.sh / run.bat health checks) |
@@ -31,6 +32,9 @@ and installs `requirements.txt`.
 install.bat
 ```
 
+This installs the app and Python requirements only. Engines and llama-swap
+are installed from the UI after the app starts (step 2's setup checklist).
+
 ## 2. Start the web UI
 
 ```bash
@@ -41,6 +45,28 @@ run.bat         # Windows
 Open `http://localhost:8199`. Stop later with
 `fuser -k 8199/tcp` (Linux) or the dashboard's Restart button.
 
+### First launch: create the admin account
+
+A fresh install has **no default credentials** and no access keys, so the
+UI opens a **Create admin account** dialog instead of an unusable sign-in
+box. Pick a username and a password (8+ characters); this creates the
+first web login plus its admin access key and signs the browser in.
+
+- The dialog appears whenever `/api/auth/me` reports `needs_setup: true`
+  (no web logins and no access keys).
+- `POST /api/auth/bootstrap` is the same first-run path; once any login or
+  access key exists it is admin/console-only.
+- Later logins/keys are managed from the app (Access/User pages). There is
+  no built-in `admin/admin` account to forget to change.
+
+### First-run setup checklist
+
+The Dashboard shows a **Setup needed** panel whenever a machine is missing
+something: the peer agent, llama.cpp, `ggml-rpc-server`, or llama-swap on the
+swap host. Each row has an install button (engines via the app/peer agent,
+llama-swap on its host). The Machines page shows the same status as badges on
+each machine row.
+
 ### Tabs
 
 | Tab | What it does |
@@ -48,8 +74,9 @@ Open `http://localhost:8199`. Stop later with
 | Dashboard | Live status of every machine: reachability, RPC server, GPU VRAM/temp |
 | Machines | Add/edit machines (IP, agent port, agent token, GPUs); start/stop RPC servers |
 | Groups | Cluster groups of machines for multi-AI setups |
-| Models | Scan directories for GGUF files (shards shown as ONE model); per-model: servers, tensor split, flags key/value editor |
-| Run | Generate the full bash script (RPC startup on peers + llama-server) for any model + server set |
+| Models | Scan directories for GGUF files (shards shown as ONE model); per-model: servers, variants, tensor split, flags key/value editor |
+| Launch | Load a model through the selected engines/peers and watch live state |
+| Downloads | Search Hugging Face, filter GGUF models, and download into a `store://` path |
 
 ## 3. Secrets vault (`.env`)
 
@@ -81,11 +108,11 @@ machine is auto-registered as master.
 **Auto-discovery is near zero-touch.** The agent's UDP responder reports
 identity **and** hardware (GPU vendor/names, VRAM, RAM, cores) for
 NVIDIA, AMD ROCm, Intel SYCL and Apple GPUs, so a discovered agent
-prefills the form. The agent token is never broadcast
-(that would hand the peer to anyone on the LAN); set a **Farm agent token**
-once in Settings if all agents share a token — new discovered agents then
-verify and save without typing it. With per-machine tokens, enter the
-token once for that machine.
+prefills the form. Agent tokens are never broadcast (that would hand the
+peer to anyone on the LAN). The app manages one farm token automatically
+in the encrypted vault — there is no Settings field for it. Fresh agents in
+their pairing window enroll against it; per-machine tokens are generated
+when needed.
 
 **Packaged binaries self-register.** On first run the app/agent installs a
 login service (systemd user unit on Linux, LaunchAgent on macOS, Scheduled
@@ -98,7 +125,7 @@ with `LLAMA_FARM_NO_SERVICE=1` / `PEER_AGENT_NO_SERVICE=1`; run either binary
 with `--install-service` / `--uninstall-service` to manage it manually.
 
 Machine identity is the MAC, not the IP — DHCP drift self-heals when the
-new IP answers SSH (only for machines with a stored MAC).
+new IP answers on the agent port (only for machines with a stored MAC).
 
 ## 5. Point model paths at shared storage (stores.yaml)
 
@@ -119,30 +146,36 @@ metadata (from the repo, or from its declared `base_model` when the GGUF
 repo omits them), LICENSE/README files, and a `farm-bundle.json` manifest.
 Existing flat files keep working; only new downloads use bundles.
 
-## 6. Build llama.cpp (UI: llama.cpp installer)
+## 6. Install llama.cpp + RPC (UI: Install engines)
 
-From the UI, install/build `llama-server` per machine (or point
+Use the Dashboard **Setup needed** panel or the Machines page per-machine
+**Install engines / Reinstall engines** action. The app installs the right
+prebuilt through the peer agent (or locally on the master), then verifies
+`llama-server` and `ggml-rpc-server` actually run. You can also point
 `llama_bin` at an existing build dir, e.g.
-`/home/you/llama.cpp/build/bin`). Linux CUDA builds need glibc ≥ 2.38
+`/home/you/llama.cpp/build/bin`. Linux CUDA builds need glibc ≥ 2.38
 (Ubuntu 24.04+); Vulkan builds only need 2.34 and are the automatic
 fallback. Peers run `ggml-rpc-server` from the same build.
 
-## 7. Start RPC servers + launch models (Run tab)
+## 7. Start RPC servers + launch models (Launch tab)
 
-The Run tab generates a full launch script. Every peer is started through
+Launching a model starts the required RPC servers, then llama-server. Every peer is started through
 its peer agent's typed endpoints (`/rpc/ensure`, `/rpc/stop`), with ports
 rolled per model if busy (base 50052 is legacy), then the `llama-server`
 command runs with your per-model flags. The script contains no secrets;
 agent tokens come from the pushed `swap-secrets.env` sidecar.
 
-## 8. Install llama-swap and push config (Swap tab)
+## 8. Install llama-swap and serve
 
-1. **Install** — the UI downloads the right official llama-swap prebuilt
-   per platform (`~/.local/bin/llama-swap` POSIX,
+1. **Install** — when the swap host is missing llama-swap, the Dashboard
+   **Setup needed** panel and the Machines page show **Install llama-swap**.
+   It downloads the right official prebuilt for the platform
+   (`~/.local/bin/llama-swap` POSIX,
    `%USERPROFILE%\llama-swap\llama-swap.exe` Windows).
-2. **Push** — `src/swap_manager.py` renders `config/swap.yaml` + per-model
-   start scripts to the swap host (`~/.config/llama-swap/`). Do not
-   hand-edit that pushed copy; edit config in the app and re-push.
+2. **Push** — saving a model or variant pushes `config/swap.yaml` +
+   per-model start scripts to the swap host
+   (`~/.config/llama-swap/`). Do not hand-edit that pushed copy; edit
+   configs in the app.
 3. **Serve** — llama-swap listens on `:8080` and starts/stops model
    servers on demand. It launches scripts as a systemd **user** unit
    (`llama-swap.service`, `Restart=on-failure`) when available; secrets
@@ -195,10 +228,9 @@ minutes between streamed chunks (prefill, RPC backends, memory pressure).
 - **UI won't come up** — check the log (`/tmp/llama-web.log` POSIX,
   `%TEMP%\llama-web.log` Windows); free port 8199 and re-run run.sh.
 - **Peer-agent failures** — service/task stopped, token missing/rotated, or
-  firewall blocking TCP 8198/UDP 8199. SSH failures still apply to SSH-mode
-  peers: password changed, OpenSSH not running, or
-  the OS shell trap: Windows peers need PowerShell-wrapped commands
-  (`OpenSSH` default shell is cmd.exe), macOS has no `pgrep`/`pkill`.
+  firewall blocking TCP 8198/UDP 8199. There is no shell fallback: every
+  configured machine must have a reachable agent, and installing/repairing
+  it is a one-time platform-package step.
 - **Model path not found on a peer** — the `store://` alias lacks a key
   for that machine's OS; add it in `stores.yaml`.
 - **Port 50052 family busy on a peer** — per-model ports roll

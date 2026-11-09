@@ -72,12 +72,16 @@ def test_install_sync_runs_plan_with_stubbed_executor(client, monkeypatch):
     given and returns a canned summary — no real install ever runs."""
     calls = {}
 
-    def fake_execute(plan, info, dry_run):
+    def fake_execute(plan, info, dry_run, runner=None):
         calls["plan"] = [type(s).__name__ for s in plan]
         calls["dry_run"] = dry_run
+        calls["runner"] = runner
         return dict(_CANNED_SUMMARY)
 
     monkeypatch.setattr(app_module, "_execute_plan", fake_execute)
+    monkeypatch.setattr(app_module, "_tools_plan",
+                        lambda m, role, log: ([object()], object(),
+                                              object(), object()))
     r = client.post("/api/tools/install/sync",
                     json={"machine": "aibox1", "tools": [],
                           "role": "main", "dry_run": True})
@@ -93,6 +97,8 @@ def test_install_sync_runs_plan_with_stubbed_executor(client, monkeypatch):
 def test_install_sync_unknown_machine_404(client, monkeypatch):
     monkeypatch.setattr(app_module, "_execute_plan",
                         lambda *a, **k: dict(_CANNED_SUMMARY))
+    monkeypatch.setattr(app_module, "_tools_plan",
+                        lambda m, role, log: ([], object(), object(), object()))
     r = client.post("/api/tools/install/sync",
                     json={"machine": "ghost"})
     assert r.status_code == 404
@@ -115,3 +121,107 @@ def tmp_machine(client, os_name):
         machines.append({"id": name, "name": name, "ip": "127.0.0.1",
                          "os": os_name})
     return name
+
+def test_verify_respects_configured_paths(client, settings_file, tmp_path,
+                                          monkeypatch):
+    """Configured per-machine / swap paths are authoritative: the status
+    probe must not substitute a different well-known install."""
+    bin_dir = tmp_path / "custom-llama"
+    bin_dir.mkdir()
+    server = bin_dir / "llama-server"
+    server.write_text("#!/bin/sh\necho 'version: 0.7.0 (build 12209)'\n")
+    server.chmod(0o755)
+    rpc = bin_dir / "ggml-rpc-server"
+    rpc.write_text("#!/bin/sh\n")
+    rpc.chmod(0o755)
+
+    # local machine's llama_bin wins over the global setting
+    settings_file.write_text(
+        "machines:\n"
+        "- id: aibox1\n"
+        "  name: aibox1\n"
+        "  ip: 127.0.0.1\n"
+        "  role: master\n"
+        "  os: linux\n"
+        "  rpc_port: 50052\n"
+        f"  llama_bin: {bin_dir}\n",
+        encoding="utf-8",
+    )
+    swap_dir = tmp_path / "custom-swap"
+    swap_dir.mkdir()
+    swap = swap_dir / "llama-swap"
+    swap.write_text("#!/bin/sh\necho 'v271'\n")
+    swap.chmod(0o755)
+    import swap_manager
+    monkeypatch.setattr(swap_manager, "load_settings",
+                        lambda: {"binary": str(swap)})
+
+    body = client.get("/api/tools/verify").json()
+    assert body["llama.cpp"]["found"] is True
+    assert body["llama.cpp"]["path"] == str(server)
+    assert body["llama.cpp"]["configured"] == str(bin_dir)
+    assert body["llama-swap"]["found"] is True
+    assert body["llama-swap"]["path"] == str(swap)
+    assert body["llama-swap"]["configured"] == str(swap)
+
+
+def test_install_sync_local_alias_resolves_to_this_host(client, monkeypatch):
+    import app as app_module
+    seen = {}
+
+    monkeypatch.setattr(app_module, "_tools_plan",
+                        lambda m, role, log: ([object()], object(),
+                                              object(), object()))
+
+    def fake_execute(plan, info, dry_run, runner=None):
+        seen["machine"] = "local"
+        return dict(_CANNED_SUMMARY, installed=["llama.cpp"])
+
+    monkeypatch.setattr(app_module, "_execute_plan", fake_execute)
+    r = client.post("/api/tools/install/sync",
+                    json={"machine": "__local__", "tools": ["llama.cpp"],
+                          "dry_run": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["installed"] == ["llama.cpp"]
+
+
+def test_remote_tools_install_uses_agent_and_reports_failures(monkeypatch):
+    import app as app_module
+    import llamacpp_installer
+    import swap_installer
+
+    called = []
+    monkeypatch.setattr(
+        llamacpp_installer, "install_on",
+        lambda machine, log: (called.append("llama.cpp") or
+                              {"ok": True, "detail": "cpp ok",
+                               "version": "b12211"}))
+    monkeypatch.setattr(
+        swap_installer, "install_on",
+        lambda machine, log: (called.append("llama-swap") or
+                              {"ok": False, "detail": "swap failed"}))
+    machine = {"name": "peer1", "ip": "10.0.0.50", "os": "linux"}
+    summary = app_module._install_remote_tools(
+        machine, "main", [], False, lambda m: None)
+    assert called == ["llama.cpp", "llama-swap"]
+    assert summary["installed"] == ["llama.cpp"]
+    assert summary["failures"][0]["context"]["tool"] == "llama-swap"
+    assert summary["manifest"]["tools"]["llama.cpp"]["method"] == "agent"
+
+
+def test_remote_tools_install_dry_run_does_not_call_agent(monkeypatch):
+    import app as app_module
+    import llamacpp_installer
+    import swap_installer
+
+    def boom(*a, **k):
+        raise AssertionError("dry-run must not install")
+    monkeypatch.setattr(llamacpp_installer, "install_on", boom)
+    monkeypatch.setattr(swap_installer, "install_on", boom)
+    logs = []
+    summary = app_module._install_remote_tools(
+        {"name": "peer1", "ip": "10.0.0.50", "os": "linux"},
+        "main", [], True, logs.append)
+    assert summary["planned"] == ["llama.cpp", "llama-swap"]
+    assert summary["failures"] == []
+    assert any("would install llama.cpp" in line for line in logs)

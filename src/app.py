@@ -40,6 +40,8 @@ import rpc_manager
 import agent_client
 import reaper
 import gguf_inspect
+import platform as _platform
+import version as app_version
 
 from runtime_paths import asset_dir, data_dir, ensure_runtime_layout
 BASE_DIR = data_dir()
@@ -132,10 +134,7 @@ def seed_local_master():
     ensure_runtime_layout()
     local_node.ensure_local_master()
     try:
-        import secrets as _secrets
-        import secrets_vault as _vault
-        if not _vault.farm_agent_token_set():
-            _vault.set_farm_agent_token(_secrets.token_urlsafe(32))
+        _ensure_farm_agent_token()
     except Exception:
         pass
     start_swap_gateway()
@@ -151,7 +150,7 @@ def seed_local_master():
     # must be regenerated from the CURRENT model configs before anyone
     # points a client at :8080 — otherwise a daemon left over from a
     # previous run keeps serving its stale entries until a manual Launch
-    # All. Best-effort + backgrounded: SSH/config trouble must never
+    # All. Best-effort + backgrounded: agent/config trouble must never
     # block boot (same policy as migrate_group_engines above).
     import threading as _thr
 
@@ -254,7 +253,7 @@ app.add_middleware(IpGateMiddleware)
 # ---------------- web logins (key identity via username/password) ----
 # Secrets in the vault (.env): LOGIN_<NAME>_PASS = salted SHA-256 hash,
 # LOGIN_<NAME>_KEY = Fernet-encrypted access-key token (AES-128-CBC +
-# HMAC-256 under the hood — same machinery as machine SSH passwords),
+# HMAC-256 under the hood — same machinery as machine credentials),
 # WEB_SESSION_<sid> = encrypted "{user}|{created}" records. Sessions
 # live in the vault too, so logins SURVIVE daemon restarts. Cookie is
 # HttpOnly, SameSite=Lax; the API key never needs to be pasted into a
@@ -344,13 +343,20 @@ async def auth_me(request: Request, response: Response):
     # everything loopback silently disabled the login screen).
     peer = ((request.scope.get("client") or (None,))[0] or "")
     is_console = peer in access._TRUSTED_ANCHORS
+    has_logins = bool(_vault.list_web_logins())
+    has_keys = bool(access.access_keys())
     return {"name": name, "user": user, "admin": admin, "scoped": scoped,
             "models": sorted(access.view_allow() or []),
             "logged_in": bool(user) or bool(tok),
             "trust_via": "session-cookie" if user else
                          ("key" if tok else
                           ("loopback" if is_console else "unauthenticated")),
-            "has_logins": bool(_vault.list_web_logins())}
+            "has_logins": has_logins,
+            "has_keys": has_keys,
+            # First boot on a fresh install: no web login AND no access key.
+            # The UI uses this to show the "create admin" setup form rather
+            # than an unusable sign-in box.
+            "needs_setup": (not has_logins and not has_keys)}
 
 
 @app.get("/api/auth/my-key")
@@ -441,7 +447,7 @@ async def auth_login(l: LoginIn, response: Response):
     response.set_cookie(LOGIN_COOKIE, sid, max_age=30 * 24 * 3600,
                         httponly=True, samesite="lax",
                         path="/")
-    return {"ok": True, "user": user}
+    return {"ok": True, "user": user, "session": sid}
 
 
 @app.post("/api/auth/logout")
@@ -670,13 +676,18 @@ class FirstLoginIn(pydantic.BaseModel):
 @app.post("/api/auth/bootstrap")
 async def auth_bootstrap(l: FirstLoginIn, response: Response):
     import secrets_vault as _vault, access as _a
-    if _vault.list_web_logins():
-        # logins exist: this endpoint is admin/console-only from now on
+    has_logins = bool(_vault.list_web_logins())
+    has_keys = bool(access.access_keys())
+    if has_logins or has_keys:
+        # This is a FIRST-RUN endpoint only once the farm has any identity
+        # (a web login or an access key). After that it is admin/console-only.
         if not (access.gate_open() and access.view_allow() is None):
             raise HTTPException(404, "not found")
     name = (l.username or "").strip()
     if not name or not l.password:
         raise HTTPException(400, "username and password required")
+    if len(l.password) < 8:
+        raise HTTPException(400, "password must be at least 8 characters")
     # admin key for the login (reuse existing by name or create)
     tok = access.generate_token()
     current = _load_settings_yaml_preserving(SETTINGS_FILE)
@@ -692,7 +703,7 @@ async def auth_bootstrap(l: FirstLoginIn, response: Response):
     _vault.set_web_session(sid, name)
     response.set_cookie(LOGIN_COOKIE, sid, max_age=30 * 24 * 3600,
                         httponly=True, samesite="lax", path="/")
-    return {"ok": True, "user": name, "key_created": True}
+    return {"ok": True, "user": name, "session": sid, "key_created": True}
 
 
 # ---------------- pages ----------------
@@ -791,16 +802,16 @@ def _machine_connection_caps(machine):
     try:
         if local_node.is_local(machine):
             return {"name": name, "mode": "local", "local": True,
-                    "ssh": False, "agent": False}
+                    "agent": False}
     except Exception:
         pass
     try:
         agent_client.health(machine, timeout=3.0)
         return {"name": name, "mode": "agent", "local": False,
-                "ssh": False, "agent": True}
+                "agent": True}
     except Exception:
         return {"name": name, "mode": "none", "local": False,
-                "ssh": False, "agent": False}
+                "agent": False}
 
 @app.get("/api/machines/connections")
 async def machine_connections():
@@ -831,39 +842,149 @@ async def machine_agent_check(p: AgentCheckIn):
     machine = {"name": p.name or p.ip, "ip": p.ip, "agent_port": port,
                "transport": "agent",
                "id": (existing or {}).get("id")}
-    try:
-        out = await run_in_threadpool(
-            agent_client.health, machine, 4.0, p.agent_token or None)
-    except Exception:
-        # Unpaired agent + farm token: enroll automatically, then retry.
-        try:
-            import secrets_vault as _vault
-            farm = _vault.get_farm_agent_token()
-            if farm and not p.agent_token:
-                await run_in_threadpool(agent_client.pair, machine, farm)
-                out = await run_in_threadpool(
-                    agent_client.health, machine, 4.0, farm)
-            else:
-                raise
-        except Exception as e:
-            raise HTTPException(status_code=502,
-                                detail=f"peer agent unreachable: {e}")
+    _caps, err = await run_in_threadpool(
+        _ensure_agent_ready, machine, p.agent_token or "")
+    if err:
+        raise HTTPException(status_code=502,
+                            detail=f"peer agent auth failed: {err}")
+    out = await run_in_threadpool(
+        agent_client.health, machine, 4.0, p.agent_token or None)
     return {"ok": True, **out}
 
 
-def _ssh_port_guard(machine):
+def _ensure_farm_agent_token():
+    """Farm token is app-managed: generated once and reused; never exposed
+    for manual override in Settings."""
+    import secrets as _secrets
+    import secrets_vault as _vault
+    try:
+        if not _vault.farm_agent_token_set():
+            _vault.set_farm_agent_token(_secrets.token_urlsafe(32))
+        return _vault.get_farm_agent_token()
+    except Exception:
+        return ""
+
+
+def _persist_farm_token_if_missing(machine):
+    """A successfully reached agent with no per-machine vault token is using
+    the farm token; persist it so the machine shows agent_token_set=true and
+    its generated scripts get AGENT_TOKEN_<NAME>."""
+    try:
+        import secrets_vault as _vault
+        mid = machine.get("id")
+        if mid and not _vault.get_machine_agent_token(machine):
+            farm = _ensure_farm_agent_token()
+            if farm:
+                _vault.set_machine_agent_token(mid, farm)
+    except Exception:
+        pass
+
+
+def _auto_agent_token(machine, requested=""):
+    """Auto-generate/assign a peer-agent token on first save.
+
+    Uses an explicit token if given, else an existing per-machine vault
+    token, else the farm token (auto-generated at app startup), pairing a
+    fresh unpaired agent as needed. Returns the effective token.
+    """
+    if local_node.is_local(machine):
+        return ""
+    import secrets as _secrets
+    import secrets_vault as _vault
+
+    requested = (requested or "").strip()
+    if requested:
+        _ok, err = _ensure_agent_ready(machine, requested)
+        if err:
+            raise ValueError(
+                f"peer agent rejected the token: {err}")
+        return requested
+
+    existing = _vault.get_machine_agent_token(machine)
+    if existing:
+        _ok, err = _ensure_agent_ready(machine, existing)
+        if not err:
+            return existing
+    farm = _ensure_farm_agent_token()
+    if farm:
+        _ok, err = _ensure_agent_ready(machine)
+        if not err:
+            return farm
+    tok = _secrets.token_urlsafe(32)
+    m = dict(machine)
+    m["_agent_token"] = tok
+    try:
+        agent_client.pair(m, tok)
+        agent_client.capabilities(m, timeout=8)
+        return tok
+    except Exception as e:
+        raise ValueError(
+            "could not auto-pair the peer agent — it may already be paired "
+            "with another token; enter that token in the machine editor") from e
+
+
+def _ensure_agent_ready(machine, token_override="", timeout=4):
+    """Validate a peer agent's TOKEN (not just reachability), auto-pairing a
+    fresh agent with the farm token when possible.
+
+    /health is deliberately unauthenticated, so it cannot prove the token is
+    right. /capabilities requires auth and is the gate here.
+    Returns (capabilities_or_None, error_or_None)."""
+    m = dict(machine)
+    if token_override:
+        m["_agent_token"] = token_override
+    try:
+        out = agent_client.capabilities(m, timeout=8)
+        if not token_override:
+            _persist_farm_token_if_missing(machine)
+        return out, None
+    except Exception as first:
+        if token_override:
+            # An explicitly supplied token can also enroll a fresh agent.
+            try:
+                agent_client.pair(m, token_override)
+            except Exception as pe:
+                if "already paired" in str(pe).lower():
+                    return None, (
+                        "agent is already paired with a different token — "
+                        "enter its token in Configure")
+                return None, str(first)
+            try:
+                out = agent_client.capabilities(m, timeout=8)
+                return out, None
+            except Exception as e:
+                return None, str(e)
+        farm = _ensure_farm_agent_token()
+        if farm:
+            pair_err = None
+            try:
+                agent_client.pair(m, farm)
+            except Exception as e:
+                pair_err = str(e)
+            m["_agent_token"] = farm
+            try:
+                out = agent_client.capabilities(m, timeout=8)
+                _persist_farm_token_if_missing(machine)
+                return out, None
+            except Exception as e:
+                if pair_err and "already paired" in pair_err.lower():
+                    return None, (
+                        "agent is already paired with a different token — "
+                        "enter its token in Configure")
+                return None, str(e)
+        return None, str(first)
+
+
+def _agent_guard(machine):
     """Fail fast with an actionable error when a new (non-local) machine's
-    peer agent is unreachable. Agent-only: there is no SSH preflight."""
+    peer agent is unreachable. Agent-only: there is no shell preflight."""
     try:
         if local_node.is_local(machine):
             return None
     except Exception:
         pass
-    try:
-        agent_client.health(machine, timeout=4)
-        return None
-    except Exception as e:
-        return f"peer agent unreachable: {e}"
+    ok, err = _ensure_agent_ready(machine)
+    return None if ok else f"peer agent unreachable: {err}"
 
 
 
@@ -875,8 +996,8 @@ def _validate_machine_swap_config(payload):
 
 
 def _validate_machine_connection(payload):
-    """Agent-only machines: normalize the agent port and drop legacy SSH
-    transport/password fields so they never land in machines.yaml."""
+    """Agent-only machines: normalize the agent port and clear legacy
+    credential transport fields so they never reach machines.yaml."""
     try:
         agent_port = int(payload.get("agent_port") or 8198)
     except (TypeError, ValueError) as e:
@@ -891,23 +1012,26 @@ def _validate_machine_connection(payload):
 async def add_machine(m: MachineIn):
     try:
         payload = m.model_dump()
-        agent_token = payload.pop("agent_token", "")
-        if agent_token:
-            import uuid
-            payload.setdefault("id", uuid.uuid4().hex[:8])
-            import secrets_vault as _vault
-            _vault.set_machine_agent_token(payload["id"], agent_token)
-        if not payload.get("password"):
-            # fresh add with key-auth (no password): nothing to fill
-            pass
+        requested_token = (payload.pop("agent_token", "") or "").strip()
+        import uuid
+        payload.setdefault("id", uuid.uuid4().hex[:8])
         _validate_machine_swap_config(payload)
         _validate_machine_connection(payload)
-        detail = _ssh_port_guard(payload)
+        if not local_node.is_local(payload):
+            import secrets_vault as _vault
+            try:
+                tok = _auto_agent_token(payload, requested_token)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+            if tok:
+                _vault.set_machine_agent_token(payload["id"], tok)
+                payload["_agent_token"] = tok
+        detail = _agent_guard(payload)
         if detail:
             raise HTTPException(status_code=400, detail=detail)
         saved = cfg.machines.add(payload)
         saved = dict(saved)
-        saved["agent_token_set"] = bool(agent_token) or bool(
+        saved["agent_token_set"] = bool(
             __import__("secrets_vault").machine_agent_token_set(saved))
         saved.pop("password", None)
         return saved
@@ -925,18 +1049,9 @@ async def update_machine(name: str, m: MachineIn):
             target = cfg.machines.get(name) or {}
             _vault.set_machine_agent_token(target.get("id") or name,
                                            agent_token)
-        if not payload.get("password"):
-            # blank = keep vault password: resolve it for the pre-save
-            # SSH guard so edits don't falsely fail auth
-            try:
-                import secrets_vault as _vault
-                existing = cfg.machines.get(name) or {}
-                payload["password"] = _vault.get_machine_password(existing)
-            except Exception:
-                pass
         _validate_machine_swap_config(payload)
         _validate_machine_connection(payload)
-        detail = _ssh_port_guard(payload)
+        detail = _agent_guard(payload)
         if detail:
             raise HTTPException(status_code=400, detail=detail)
         saved = cfg.machines.update(name, payload)
@@ -954,7 +1069,14 @@ async def delete_machine(name: str):
     try:
         import secrets_vault as _vault
         target = cfg.machines.get(name) or {}
-        _vault.delete_env_value(_vault.machine_env_key(target.get("id") or name))
+        # Remove every app-side secret keyed to this machine (id, name, and
+        # the requested name) so a fresh re-add starts clean instead of
+        # inheriting a stale token.
+        for ident in {target.get("id"), target.get("name"), name}:
+            if not ident:
+                continue
+            _vault.set_machine_agent_token(ident, "")
+            _vault.delete_env_value(_vault.machine_env_key(ident))
     except Exception:
         pass
     return {"remaining": cfg.machines.delete(name)}
@@ -965,13 +1087,19 @@ async def detect_hardware(name: str):
     """Discover GPUs/cores/RAM on a machine and persist into its config,
     so expose defaults to everything available with no manual entry."""
     machine = cfg.machines.require(name)
+    # A saved machine may pre-date its agent's token: pair/verify first so
+    # the stats call itself cannot fail on an unpaired fresh agent.
+    if not local_node.is_local(machine):
+        detail = _agent_guard(machine)
+        if detail:
+            raise HTTPException(status_code=503, detail=detail)
     stats = await run_in_threadpool(stats_collector.machine_stats, machine)
     if stats["status"] != "online":
-        detail = _ssh_port_guard(machine)
+        detail = _agent_guard(machine)
         raise HTTPException(
             status_code=503,
-            detail=detail or f"{name} is offline (SSH port open but "
-                             f"login/command failed — check credentials)")
+            detail=detail or f"{name} is offline (agent port open but the "
+                             f"agent failed to answer)")
     gpus = [gpu_vendor.gpu_token(machine, g["index"]) for g in stats["gpus"]]
     updates = {
         "gpu": ",".join(gpus),
@@ -985,22 +1113,23 @@ async def detect_hardware(name: str):
             "ram_total_gb": math.floor(stats["ram_total_gb"]),
         },
     }
-    # RDMA auto-detect: when the machine has rdma=True, discover the RoCE NIC
-    # (device name + GID index + IP) via ibv_devinfo + the sysfs GID table,
-    # and persist them so the user doesn't have to type them.
+    # RDMA auto-detect: probe for an ACTIVE RoCE NIC even when the flag is
+    # currently off. If one is found, auto-enable RDMA and persist the
+    # device/GID/IP (user can turn it back off in the machine editor if
+    # they prefer TCP). Detection is Linux-only; Windows/macOS return {}.
     is_local = False
     try:
         is_local = local_node.is_local(machine)
     except Exception:
         pass
     rdma_info = {}
-    if machine.get("rdma"):
-        rdma_info = await run_in_threadpool(_detect_rdma_nic, machine, is_local)
-        if rdma_info:
-            updates["rdma_dev"] = rdma_info.get("dev", "")
-            updates["rdma_gid"] = rdma_info.get("gid", "")
-            if rdma_info.get("ip"):
-                updates["rdma_ip"] = rdma_info["ip"]
+    rdma_info = await run_in_threadpool(_detect_rdma_nic, machine, is_local)
+    if rdma_info:
+        updates["rdma"] = True
+        updates["rdma_dev"] = rdma_info.get("dev", "")
+        updates["rdma_gid"] = rdma_info.get("gid", "")
+        if rdma_info.get("ip"):
+            updates["rdma_ip"] = rdma_info["ip"]
     updates = {k: v for k, v in updates.items() if v is not None}
     result = cfg.machines.update(name, updates)
     result["synced_models"] = cfg.sync_models_to_hardware()
@@ -1013,7 +1142,7 @@ def _detect_rdma_nic(machine, is_local):
     """Discover the machine's RoCE NIC: active ibverbs device, its active
     port, the RoCE v2 GID index on that port that maps to a local IP, and
     that IP. Returns {} when no RDMA device is found.
-    ONE bundled remote command (single SSH round trip) — a shell script
+    ONE bundled remote command (single agent round trip) — a shell script
     scans all devices/ports/GIDs locally and emits "dev|port|gid|ip"."""
     remote_script = (
         'for dev in $(ibv_devices 2>/dev/null | awk "NR>2{print \\$1}"); do '
@@ -1077,22 +1206,15 @@ async def probe_hardware(p: ProbeIn):
         machine["gpu_vendor"] = ""  # detect the real local vendor
     if p.agent_token:
         machine["_agent_token"] = p.agent_token
-    detail = _ssh_port_guard(machine)
+    detail = _agent_guard(machine)
     if detail:
         raise HTTPException(status_code=503, detail=detail)
 
     def run():
         if not local_node.is_local(machine):
-            try:
-                agent_client.health(machine, timeout=4)
-            except Exception:
-                try:
-                    import secrets_vault as _vault
-                    farm = _vault.get_farm_agent_token()
-                    if farm:
-                        agent_client.pair(machine, farm)
-                except Exception:
-                    pass
+            _caps, err = _ensure_agent_ready(machine)
+            if err:
+                return {"online": False, "error": err}
         s = stats_collector.machine_stats(machine)
         if s["status"] != "online":
             return {"online": False}
@@ -1118,9 +1240,10 @@ async def probe_hardware(p: ProbeIn):
     if not result["online"]:
         raise HTTPException(
             status_code=503,
-            detail=f"{p.ip} is unreachable over the peer agent "
-                   f"(port {p.agent_port}) — install/start the agent there "
-                   f"and check the token")
+            detail=result.get("error") or (
+                f"{p.ip} is unreachable over the peer agent "
+                f"(port {p.agent_port}) — install/start the agent there "
+                f"and check the token"))
     result["detected"] = result.get("detected") or {}
     return result
 
@@ -1145,7 +1268,7 @@ async def discover_subnets():
 
 @app.post("/api/discover")
 async def discover_hosts(p: DiscoverIn):
-    """Scan the LAN for peer agents (UDP discovery). No SSH scan: peers
+    """Scan the LAN for peer agents (UDP discovery). No shell scan: peers
     are agent-installed machines, identified by MAC/hostname."""
     import discovery
 
@@ -1207,7 +1330,7 @@ async def detect_all():
 # Machines page + visualizer without manual "Detect Hardware" clicks, and
 # model configs get reconciled to the new slot layout automatically.
 _hw_watcher_state = {"running": False, "last": {}}
-HW_WATCH_INTERVAL_S = 120  # low frequency: SSH round-trip per machine
+HW_WATCH_INTERVAL_S = 120  # low frequency: agent round-trip per machine
 
 
 def _hw_fingerprint(machine):
@@ -1292,6 +1415,11 @@ def _hw_watcher_loop():
 
 @app.on_event("startup")
 async def start_hw_watcher():
+    if (os.environ.get("LLAMA_FARM_NO_HW_WATCH") or "").lower() in (
+            "1", "true", "yes", "on"):
+        # E2E/CI (or an operator pinning hardware by hand) needs the
+        # declared machine record to win over host autodetection.
+        return
     if _hw_watcher_state["running"]:
         return
     _hw_watcher_state["running"] = True
@@ -1600,6 +1728,8 @@ class VariantIn(pydantic.BaseModel):
     flags: dict | None = None
     pinned: bool | None = None
     ttl: int | None = None
+    launch_mode: str | None = None          # auto | local | rpc
+    launch_mode_local_port: int | None = None
 
 
 class ModelConfigIn(pydantic.BaseModel):
@@ -1618,6 +1748,8 @@ class ModelConfigIn(pydantic.BaseModel):
     ttl: int = 0                     # auto-unload after ttl seconds idle (0 = swap default, pinned forces 0)
     device_order: str = ""
     device_order_policy: str = "as-selected"  # as-selected | vram-first
+    launch_mode: str = "auto"        # auto | local | rpc (swap deployment)
+    launch_mode_local_port: int | None = None
     expose: dict = {}
     flags: dict = {}
     # custom runtime (external server, e.g. winbox .bat passthrough):
@@ -1658,13 +1790,67 @@ async def list_saved_models(full: bool = False):
             if "variants" not in d or d["variants"] is None:
                 d["variants"] = []
             d["architecture"] = cfg._get_model_architecture(d.get("base_path"))
+            d["decision_type"] = cfg._get_decision_type(d.get("base_path"))
+            mid = (d.get("model_id") or "").lower()
+            name = (d.get("name") or "").lower()
+            arch = (d.get("architecture") or "").lower()
+            flags = d.get("flags") or {}
+            tags = []
+            if d["decision_type"]:
+                tags.append("decision")
+            else:
+                if ("asr" in mid or "whisper" in mid or "audio" in mid
+                        or flags.get("audio")):
+                    tags.append("speech")
+                if "embed" in mid or "embed" in name or "bert" in arch:
+                    tags.append("embedding")
+                if ("speech" not in tags
+                        and (flags.get("mmproj") or "vision" in mid
+                             or ("vl" in arch and arch != "unknown"))):
+                    tags.append("vision")
+                if not tags or tags == ["vision"]:
+                    tags.append("chat")
+            d["model_tags"] = tags
             out.append(d)
         return out
     try:
         engine = engine_registry.get_engine()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
-    return _access_filter_models(engine.filter_models(cfg.list_models()))
+    models = engine.filter_models(cfg.list_models())
+
+    def _ids(fn):
+        try:
+            return {m.get("model_id") for m in (fn(models) or [])}
+        except Exception:
+            return set()
+
+    emb_ids = _ids(engine.filter_embedding_models)
+    aud_ids = _ids(engine.filter_audio_models)
+    vis_ids = _ids(engine.filter_vision_models)
+    dec_ids = _ids(engine.filter_decision_models)
+    for m in models:
+        mid = m.get("model_id") or ""
+        base = mid.split("--")[0]
+        arch = (m.get("architecture") or "").lower()
+        tags = []
+        if m.get("decision_type") or base in dec_ids:
+            tags.append("decision")
+        else:
+            is_speech = base in aud_ids
+            if is_speech:
+                tags.append("speech")
+            # ASR models also carry a projector, but it is audio-side; do
+            # not label them vision just because mmproj exists.
+            if not is_speech and (base in vis_ids
+                                  or "mmproj" in (m.get("flags") or {})):
+                tags.append("vision")
+            if base in emb_ids or "bert" in arch or "embed" in arch:
+                tags.append("embedding")
+            if not tags or (tags == ["vision"]):
+                tags.append("chat")
+        m["model_tags"] = tags
+    return _access_filter_models(models)
 
 
 @app.get("/api/rpc-map")
@@ -2456,6 +2642,10 @@ _LOAD_FAULT_RULES = (
         r"\b(?:mmproj|clip_model_load|projector)\b",
         re.IGNORECASE),
      "Vision projector (mmproj) failed to load or does not match the model."),
+    ("rpc_connect", re.compile(
+        r"Failed to connect to \S+:\d+", re.IGNORECASE),
+     "Cannot reach an RPC peer. Check that its rpc-server is running and "
+     "that the peer's firewall allows the port from this host."),
     ("load_error", re.compile(
         r"failed to load model|error loading model|"
         r"exiting due to model loading error",
@@ -3510,8 +3700,6 @@ class AppSettingsIn(pydantic.BaseModel):
     theme_mode: str = "dark"
     hf_token: str | None = None  # only a non-empty value updates the stored token
     clear_hf_token: bool = False
-    farm_agent_token: str | None = None  # shared by all agents when set
-    clear_farm_agent_token: bool = False
     engine: str | None = None  # llama_cpp — None leaves the stored value
 
 
@@ -3606,9 +3794,7 @@ async def save_settings(s: AppSettingsIn, r: Request):
         or access.is_admin(None)
     _key_name_for_ui = access.key_display_name()
     if not _control_identity and (s.engine is not None
-                                  or s.hf_token or s.clear_hf_token
-                                  or s.farm_agent_token
-                                  or s.clear_farm_agent_token):
+                                  or s.hf_token or s.clear_hf_token):
         raise HTTPException(404, "not found")
     # merge over the CURRENT FILE so unknown/future keys survive the write;
     # loaded via the comment-preserving persister (B9c) — a plain
@@ -3618,8 +3804,6 @@ async def save_settings(s: AppSettingsIn, r: Request):
     update = s.model_dump()
     tok = (update.pop("hf_token", None) or "").strip()
     clear_tok = update.pop("clear_hf_token", False)
-    farm_tok = (update.pop("farm_agent_token", None) or "").strip()
-    clear_farm_tok = update.pop("clear_farm_agent_token", False)
     engine = update.pop("engine", None)
     # per-key UI state: scoped identities write theme_family/theme_mode
     # into THEIR access_keys ui: block instead of the shared file —
@@ -3665,10 +3849,6 @@ async def save_settings(s: AppSettingsIn, r: Request):
         _vault.set_hf_token("")
     elif tok:
         _vault.set_hf_token(tok)
-    if clear_farm_tok:
-        _vault.set_farm_agent_token("")
-    elif farm_tok:
-        _vault.set_farm_agent_token(farm_tok)
     # don't echo the raw token back; write via the comment-preserving
     # persister (B9c) so unrelated keys, key order, and all comments
     # survive — never a wholesale rewrite from the request dict
@@ -3959,24 +4139,31 @@ def _detect_bin_on_machine(machine):
             seen.add(c)
             uniq.append(c)
     if is_local:
+        from installer.env import RealFS
+        fs = RealFS()
         for cand in uniq:
             try:
                 expanded = (os.path.expandvars(os.path.expanduser(cand))
                             if is_win else os.path.expanduser(cand))
                 if _Path(expanded).exists():
-                    return True, cand, f"found at {cand}"
+                    r = fs.file_exists_and_runs(expanded)
+                    if r.ok:
+                        return True, cand, f"found at {cand}"
             except Exception:
                 continue
-        return False, None, "no bin found (checked: " + ", ".join(uniq) + ")"
+        return False, None, "no runnable bin found (checked: " + ", ".join(uniq) + ")"
     for cand in uniq:
         probe = cand.replace("%USERPROFILE%", "~")
         try:
-            st = agent_client.file_stat(machine, probe)
-            if st.get("exists") and st.get("is_file"):
+            res = agent_client.install_verify(
+                machine, probe, ["--version"], timeout=35) or {}
+            if res.get("returncode") == 0:
                 return True, cand, f"found at {cand}"
         except Exception as e:
-            return False, None, f"agent bin probe failed: {e}"
-    return False, None, "no bin found (checked: " + ", ".join(uniq) + ")"
+            if "401" in str(e) or "403" in str(e):
+                return False, None, f"agent bin probe failed: {e}"
+            continue
+    return False, None, "no runnable bin found (checked: " + ", ".join(uniq) + ")"
 
 class InstallAllIn(pydantic.BaseModel):
     install_missing: bool = False  # actually install on missing nodes
@@ -3989,7 +4176,7 @@ async def install_llama_cpp_all(p: InstallAllIn | None = None):
     Existing installs are SKIPPED (not reinstalled) — preserves working
     systems. Missing/offline nodes are reported so the UI can act.
     With install_missing=true, missing nodes get the correct official
-    prebuilt for their machine type installed over SSH."""
+    prebuilt for their machine type installed through the agent."""
     install_missing = bool(p and p.install_missing)
     machines = cfg.machines.all()
     # modal subset: only check/install the ticked machines (None = all)
@@ -4006,14 +4193,10 @@ async def install_llama_cpp_all(p: InstallAllIn | None = None):
         is_local = local_node.is_local(m)
         # quick reachability for remote
         if not is_local:
-            try:
-                agent_client.health(m, timeout=4)
-                reachable = True
-            except Exception:
-                reachable = False
-            if not reachable:
+            _caps, auth_err = _ensure_agent_ready(m)
+            if auth_err:
                 return {"machine": name, "ip": ip, "os": os_type, "status": "offline",
-                        "skipped": True, "reason": "offline/unreachable — skipped",
+                        "skipped": True, "reason": auth_err,
                         "bin": m.get("llama_bin") or None}
         found, bin_path, detail = _detect_bin_on_machine(m)
         if found:
@@ -4029,12 +4212,12 @@ async def install_llama_cpp_all(p: InstallAllIn | None = None):
             return {"machine": name, "ip": ip, "os": os_type, "status": "missing",
                     "skipped": False, "reason": detail, "bin": None}
 
-    # run checks in parallel (threadpool, since SSH is blocking)
+    # run checks in parallel (threadpool, since agent calls are blocking)
     with ThreadPoolExecutor(max_workers=len(machines) or 1) as pool:
         results = list(pool.map(check_one, machines))
 
     # optionally install the right prebuilt on missing nodes (sequentially;
-    # installs are heavy downloads, and SSH fan-out of 600s curls is risky)
+    # installs are heavy downloads, and agent fan-out of 600s curls is risky)
     if install_missing:
         import llamacpp_installer
         for r in results:
@@ -4048,6 +4231,8 @@ async def install_llama_cpp_all(p: InstallAllIn | None = None):
             r["skipped"] = bool(res.get("ok"))
             r["reason"] = res.get("detail") or res.get("error", "")
             r["bin"] = res.get("bin")
+            with _LLAMA_UPDATES_LOCK:
+                _LLAMA_VER_CACHE.pop(r["machine"], None)
 
     skipped = sum(1 for r in results if r.get("skipped") and r["status"] in ("already-installed", "offline", "installed"))
     missing = [r for r in results if r["status"] == "missing"]
@@ -4061,7 +4246,7 @@ async def install_llama_cpp_all(p: InstallAllIn | None = None):
 @app.post("/api/install-llama-cpp/install")
 async def install_llama_cpp_machine(name: str = ""):
     """Install the right official llama.cpp prebuilt for a machine type
-    (CUDA/ROCm/Metal/CPU, linux/windows/macos) over SSH or locally,
+    (CUDA/ROCm/Metal/CPU, linux/windows/macos) through the agent or locally,
     then point the machine's llama_bin at it."""
     if not name:
         raise HTTPException(status_code=400, detail="machine name required")
@@ -4081,7 +4266,7 @@ async def install_llama_cpp_machine(name: str = ""):
 _LLAMA_UPDATES: dict = {}
 _LLAMA_UPDATES_LOCK = threading.Lock()
 _LATEST_TAG_CACHE = {"tag": None, "ts": 0.0}
-# per-machine llama-server version probe (SSH/bash, ~seconds) — cached
+# per-machine llama-server version probe (agent/bash, ~seconds) — cached
 # so the machine grid can re-ask on every render without hammering
 _LLAMA_VER_CACHE: dict = {}
 _LLAMA_VER_TTL = 600
@@ -4098,9 +4283,12 @@ def _llama_build_no(version_str):
 
 def _llama_version_on(machine):
     """First line of '<llama_bin>/llama-server --version' on a machine
-    (local bash or raw SSH). POSIX: leading ~ expands via $HOME on the
+    (local bash or the peer agent). POSIX: leading ~ expands via $HOME on the
     target; Windows: cmd.exe expands %USERPROFILE% inside the path."""
-    lb = (machine.get("llama_bin") or "").strip().rstrip("/\\")
+    import rpc_manager
+    # Per-machine override wins; empty falls back to Settings' global
+    # llama_bin (same resolver the launch path uses).
+    lb = (rpc_manager._effective_bin_dir(machine) or "").strip().rstrip("/\\")
     if not lb:
         return None
     is_win = machine.get("os", "linux") == "windows"
@@ -4111,16 +4299,15 @@ def _llama_version_on(machine):
                     else f"{lb}/llama-server")
             res = agent_client.install_verify(
                 machine, path, ["--version"], timeout=35)
+            if res.get("returncode") != 0:
+                return None
             out = res.get("output") or ""
             for line in out.splitlines():
                 if line.strip():
                     return line.strip()
             return None
-        except Exception as e:
-            if agent_client.transport(machine) == "agent":
-                return None
-            print(f"[agent] {machine.get('name')}: version probe failed, "
-                  f"falling back to SSH: {e}")
+        except Exception:
+            return None
     try:
         from llamacpp_installer import _machine_run
         run, _ = _machine_run(machine)
@@ -4129,6 +4316,8 @@ def _llama_version_on(machine):
         else:
             cmd = rf'p="{lb}/llama-server"; p="${{p/#\~/$HOME}}"; "$p" --version 2>&1'
         code, out = run(cmd, timeout=30)
+        if code != 0:
+            return None
     except Exception:
         return None
     for line in (out or "").splitlines():
@@ -4193,7 +4382,7 @@ async def llama_cpp_latest():
 async def llama_cpp_version_machine(name: str):
     """Current llama-server build on one machine vs the latest upstream
     release — lets the UI swap the Update button for an 'on latest'
-    chip. TTL-cached (SSH probe + GitHub tag are both slow-ish), so the
+    chip. TTL-cached (agent probe + GitHub tag are both slow-ish), so the
     machine grid can re-ask on every render without hammering anything."""
     machine = cfg.machines.require(name)
     return await run_in_threadpool(_llama_version_payload, machine)
@@ -4243,76 +4432,429 @@ def _agent_wheel_path():
         return wheels[0]
 
 
-def _agent_latest_version():
-    if getattr(sys, "frozen", False):
-        import glob
-        wheels = sorted(glob.glob(os.path.join(
-            ASSET_DIR, "agent-wheel", "llama_rpc_farm_agent-*.whl")))
-        if wheels:
-            base = os.path.basename(wheels[-1])
-            m = re.match(r"llama_rpc_farm_agent-([^-]+)-", base)
-            return m.group(1) if m else None
-        return None
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "peer_agent", "pyproject.toml")
+_AGENT_REPO = os.environ.get("LLAMA_FARM_REPO",
+                             "dakotacookson/Llama-RPC-Farm")
+
+_AGENT_RELEASE_CACHE = {"ts": 0.0, "by_asset": {}}
+
+
+def _agent_binary_asset(machine):
+    """Release asset name for this peer's standalone agent, if published."""
+    os_type = (machine.get("os") or "").lower()
+    arch = ((machine.get("detected") or {}).get("arch") or "").lower()
+    if not arch:
+        try:
+            arch = str((agent_client.info(machine) or {}).get("arch") or "").lower()
+        except Exception:
+            arch = ""
+    if os_type == "windows":
+        return "llama-peer-agent-windows-x64.exe"
+    if os_type in ("macos", "darwin"):
+        return ("llama-peer-agent-macos-arm64"
+                if arch in ("arm64", "aarch64") else None)
+    if os_type == "linux":
+        return ("llama-peer-agent-linux-x86_64"
+                if arch in ("x86_64", "amd64", "") else None)
+    return None
+
+
+_RELEASE_FEED_CACHE = {"ts": 0.0, "versions": [], "commits": {}}
+
+
+def _release_feed_versions():
+    """Newest release versions from the public releases Atom feed.
+
+    The GitHub REST API is rate-limited (60/hr unauthenticated) and its
+    array order changes when releases are recreated. The Atom feed is
+    unauthenticated, ordered by publish time, and enough to construct the
+    deterministic release asset URLs.
+    """
+    now = time.time()
+    with _LLAMA_UPDATES_LOCK:
+        if now - _RELEASE_FEED_CACHE["ts"] < 60:
+            return list(_RELEASE_FEED_CACHE["versions"])
+    import urllib.request
     try:
-        text = open(path, encoding="utf-8").read()
-        m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
-        return m.group(1) if m else None
-    except OSError:
-        return None
+        req = urllib.request.Request(
+            f"https://github.com/{_AGENT_REPO}/releases.atom",
+            headers={"User-Agent": "llama-rpc-farm"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            body = r.read().decode("utf-8", "replace")
+        vers = re.findall(r"/releases/tag/release-(\d+\.\d+\.\d+)", body)
+        seen = []
+        for v in vers:
+            if v not in seen:
+                seen.append(v)
+        seen.sort(key=lambda v: tuple(int(p) for p in v.split(".")),
+                  reverse=True)
+        commits = {}
+        for entry in re.findall(r"<entry>.*?</entry>", body, re.S):
+            vm = re.search(r"release-(\d+\.\d+\.\d+)", entry)
+            cm = re.search(r"/commit/([0-9a-f]{7,40})", entry)
+            if vm and cm:
+                commits[vm.group(1)] = cm.group(1)
+    except Exception:
+        seen = []
+    with _LLAMA_UPDATES_LOCK:
+        _RELEASE_FEED_CACHE.update(ts=now, versions=list(seen),
+                                   commits=locals().get("commits") or {})
+    return seen
+
+
+def _release_commit(version):
+    _release_feed_versions()
+    with _LLAMA_UPDATES_LOCK:
+        return _RELEASE_FEED_CACHE["commits"].get(version)
+
+
+def _agent_release_info(machine):
+    """Latest release agent asset (release tag is the authoritative version)."""
+    asset = _agent_binary_asset(machine)
+    if not asset:
+        return {"asset": None, "url": None, "version": None}
+    versions = _release_feed_versions()
+    if not versions:
+        return {"asset": asset, "url": None, "version": None}
+    version = versions[0]
+    base = (f"https://github.com/{_AGENT_REPO}/releases/download/"
+            f"release-{version}")
+    wheel = f"llama_rpc_farm_agent-{version}-py3-none-any.whl"
+    return {"asset": asset, "url": f"{base}/{asset}",
+            "wheel_url": f"{base}/{wheel}", "version": version}
+
+
+_APP_RELEASE_CACHE = {"ts": 0.0, "by_asset": {}}
+
+
+def _app_binary_asset():
+    """Raw farm-app release asset for this host platform."""
+    os_name = _platform.system().lower()
+    arch = _platform.machine().lower()
+    if os_name == "windows":
+        return "llama-rpc-farm-windows-x64.exe"
+    if os_name == "darwin":
+        return ("llama-rpc-farm-macos-arm64"
+                if arch in ("arm64", "aarch64") else None)
+    if os_name == "linux":
+        return ("llama-rpc-farm-linux-x86_64"
+                if arch in ("x86_64", "amd64") else None)
+    return None
+
+
+def _app_release_info():
+    """Latest release farm-app binary (tag is the authoritative version)."""
+    asset = _app_binary_asset()
+    if not asset:
+        return {"asset": None, "url": None, "version": None}
+    versions = _release_feed_versions()
+    if not versions:
+        return {"asset": asset, "url": None, "version": None}
+    version = versions[0]
+    return {"asset": asset,
+            "url": (f"https://github.com/{_AGENT_REPO}/releases/download/"
+                    f"release-{version}/{asset}"),
+            "version": version}
+
+
+def _app_version_payload():
+    current = getattr(app_version, "__version__", "")
+    packaged = bool(getattr(sys, "frozen", False))
+    try:
+        info = _app_release_info()
+        latest = info.get("version")
+    except Exception:
+        latest = None
+    dirty = False
+    if not packaged:
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        try:
+            d = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
+                               capture_output=True, text=True, timeout=10)
+            dirty = bool((d.stdout or "").strip())
+        except Exception:
+            pass
+    return {"current": current, "latest": latest,
+            "on_latest": bool(latest and current == latest),
+            "packaged": packaged, "source": not packaged,
+            "dirty": dirty}
+
+
+def _restart_app_binary():
+    import time as _t
+    _t.sleep(1.5)
+    exe = os.path.abspath(sys.executable)
+    args = [exe] + list(sys.argv[1:])
+    try:
+        if os.name == "nt":
+            subprocess.Popen(args, close_fds=True)
+            os._exit(0)
+        os.execv(exe, args)
+    except Exception:
+        pass
+
+
+def _update_app_binary():
+    if not getattr(sys, "frozen", False):
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if not os.path.isdir(os.path.join(repo, ".git")):
+            return {"ok": False, "source": True,
+                    "detail": "source install is not a git checkout — "
+                              "update with git or the release installer"}
+        try:
+            dirty = subprocess.run(
+                ["git", "-C", repo, "status", "--porcelain"],
+                capture_output=True, text=True, timeout=60)
+            if (dirty.stdout or "").strip():
+                return {"ok": False, "source": True,
+                        "detail": "source tree has local changes — commit or "
+                                  "stash them before updating"}
+            info = _app_release_info()
+            version = info.get("version")
+            if not version:
+                return {"ok": False, "source": True,
+                        "detail": "could not determine the latest release"}
+            rel_sha = _release_commit(version)
+            if rel_sha:
+                head = subprocess.run(
+                    ["git", "-C", repo, "rev-parse", "HEAD"],
+                    capture_output=True, text=True).stdout.strip()
+                if rel_sha != head:
+                    chk = subprocess.run(
+                        ["git", "-C", repo, "merge-base", "--is-ancestor",
+                         rel_sha, "HEAD"], capture_output=True, text=True)
+                    if chk.returncode == 0:
+                        return {"ok": False, "source": True,
+                                "detail": f"source is newer than release "
+                                          f"{version}; wait for the next "
+                                          f"release"}
+            archive = (f"https://github.com/{_AGENT_REPO}/archive/refs/tags/"
+                       f"release-{version}.tar.gz")
+            import tarfile
+            import urllib.request
+            with tempfile.TemporaryDirectory(prefix="farm-src-") as tmp:
+                tarpath = os.path.join(tmp, "src.tar.gz")
+                with urllib.request.urlopen(archive, timeout=180) as r, \
+                        open(tarpath, "wb") as out:
+                    shutil.copyfileobj(r, out)
+                with tarfile.open(tarpath, "r:gz") as tar:
+                    members = tar.getmembers()
+                    for mem in members:
+                        pth = os.path.normpath(mem.name)
+                        if pth.startswith("..") or os.path.isabs(pth):
+                            raise RuntimeError("unsafe archive path")
+                    tar.extractall(tmp)
+                roots = [os.path.join(tmp, d) for d in os.listdir(tmp)
+                         if os.path.isdir(os.path.join(tmp, d))]
+                if not roots:
+                    raise RuntimeError("release archive has no source dir")
+                src = roots[0]
+                for name in ("src", "ui", "peer_agent", "scripts",
+                             "packaging"):
+                    sdir = os.path.join(src, name)
+                    ddir = os.path.join(repo, name)
+                    if os.path.isdir(sdir):
+                        shutil.copytree(sdir, ddir, dirs_exist_ok=True)
+                for name in ("VERSION", "requirements.txt", "install.sh",
+                             "install.bat", "run.sh", "run.bat",
+                             "restart.sh", "restart-llama-swap.sh"):
+                    sp = os.path.join(src, name)
+                    if os.path.isfile(sp):
+                        shutil.copy2(sp, os.path.join(repo, name))
+            subprocess.run([sys.executable,
+                            os.path.join(repo, "scripts", "stamp_version.py"),
+                            version], capture_output=True, text=True,
+                           timeout=120)
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q",
+                            "-r", os.path.join(repo, "requirements.txt")],
+                           capture_output=True, text=True, timeout=600)
+        except Exception as e:
+            return {"ok": False, "source": True,
+                    "detail": f"source release update failed: {e}"}
+
+        def _restart_source():
+            import time as _t
+            _t.sleep(1.5)
+            script = os.path.join(repo, "src", "app.py")
+            try:
+                os.execv(sys.executable, [sys.executable, script])
+            except Exception:
+                pass
+        threading.Thread(target=_restart_source, daemon=True).start()
+        return {"ok": True, "source": True, "version": version,
+                "restarting": True,
+                "detail": f"source updated to release {version}; restarting"}
+    info = _app_release_info()
+    url = info.get("url")
+    version = info.get("version")
+    if not url:
+        return {"ok": False, "detail": "no published farm-app binary for "
+                                       "this platform"}
+    exe = os.path.abspath(sys.executable)
+    dest_dir = os.path.dirname(exe)
+    tmp = None
+    try:
+        import urllib.request
+        fd, tmp = tempfile.mkstemp(prefix=".farm-update-", dir=dest_dir)
+        os.close(fd)
+        with urllib.request.urlopen(url, timeout=180) as r, \
+                open(tmp, "wb") as out:
+            shutil.copyfileobj(r, out)
+        size = os.path.getsize(tmp)
+        if size < 1024 * 1024 or size > 500 * 1024 * 1024:
+            raise RuntimeError(f"unexpected app size: {size} bytes")
+        if os.name != "nt":
+            os.chmod(tmp, 0o755)
+            os.replace(tmp, exe)
+        else:
+            backup = exe + ".old"
+            try:
+                os.replace(exe, backup)
+            except OSError:
+                pass
+            os.replace(tmp, exe)
+    except Exception as e:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+        return {"ok": False, "detail": f"app update failed: {e}"}
+    threading.Thread(target=_restart_app_binary, daemon=True).start()
+    return {"ok": True, "version": version, "asset": info.get("asset"),
+            "restarting": True}
+
+
+@app.get("/api/app-version")
+async def app_version_info():
+    return await run_in_threadpool(_app_version_payload)
+
+
+@app.post("/api/app/update")
+async def app_update():
+    return await run_in_threadpool(_update_app_binary)
 
 
 def _agent_version_payload(machine):
-    latest = _agent_latest_version()
     if local_node.is_local(machine):
-        return {"current": None, "latest": latest, "on_latest": True,
-                "local": True}
+        return {"current": None, "latest": None, "on_latest": True,
+                "local": True, "packaged": False}
     current = None
+    packaged = False
     try:
-        current = agent_client.version(machine, timeout=4).get("agent_version")
+        v = agent_client.version(machine, timeout=4) or {}
+        current = v.get("agent_version")
+        packaged = bool(v.get("packaged"))
     except Exception:
         current = None
+    try:
+        info = _agent_release_info(machine)
+        latest = info.get("version")
+    except Exception:
+        latest = None
+    applied = str(machine.get("agent_release") or "").strip()
     return {"current": current, "latest": latest,
-            "on_latest": bool(current and latest and current == latest)}
+            "on_latest": bool(latest and (current == latest
+                                          or applied == latest)),
+            "packaged": packaged}
 
 
 def _update_agent_remote(machine):
-    """Install/update the agent through its in-place /agent/update endpoint."""
+    """Install/update a standalone peer agent from the latest repo release."""
     name = machine.get("name") or machine.get("id") or "?"
     if local_node.is_local(machine):
         return {"ok": True, "machine": name, "skipped": True, "local": True,
                 "detail": "local master uses the app directly; no peer agent"}
-    wheel = _agent_wheel_path()
-    version = _agent_latest_version()
-    if True:
+    av = _agent_version_payload(machine)
+    prev_version = str(av.get("current") or "")
+    try:
+        info = _agent_release_info(machine)
+    except Exception as e:
+        return {"ok": False, "machine": name, "frozen": True,
+                "detail": f"could not check GitHub releases: {e}"}
+    version = info.get("version")
+    if not av.get("packaged"):
+        # Pip/source-installed agents update through the release wheel.
+        wheel_url = info.get("wheel_url")
+        if not wheel_url:
+            return {"ok": False, "machine": name, "reinstall": True,
+                    "detail": "no release agent wheel is published — "
+                              "reinstall the peer agent package"}
         try:
-            with open(wheel, "rb") as f:
-                blob = f.read()
+            import urllib.request
+            with urllib.request.urlopen(wheel_url, timeout=120) as r:
+                blob = r.read()
             res = agent_client.agent_update(machine, blob, version or "")
-            if res.get("ok"):
-                for _ in range(15):
-                    import time as _t
-                    _t.sleep(1)
-                    try:
-                        h = agent_client.health(machine, timeout=3)
-                        if h.get("agent_version") == version:
-                            return {"ok": True, "machine": name,
-                                    "wheel": os.path.basename(wheel),
-                                    "agent_version": h.get("agent_version"),
-                                    "protocol_version": h.get("protocol_version"),
-                                    "method": "agent"}
-                    except Exception:
-                        continue
-                return {"ok": False, "machine": name,
-                        "wheel": os.path.basename(wheel),
-                        "method": "agent",
-                        "detail": "agent accepted update but did not come back healthy"}
         except Exception as e:
             return {"ok": False, "machine": name,
-                    "wheel": os.path.basename(wheel),
-                    "method": "agent",
-                    "detail": f"agent update failed: {e}"}
+                    "detail": f"could not install release wheel: {e}"}
+        if not res.get("ok"):
+            return {"ok": False, "machine": name,
+                    "detail": res.get("error") or "agent wheel update failed"}
+        for _ in range(20):
+            import time as _t
+            _t.sleep(1)
+            try:
+                h = agent_client.health(machine, timeout=3)
+                hver = h.get("agent_version")
+                if hver and (hver == version or hver != prev_version):
+                    if version:
+                        try:
+                            cfg.machines.update(name,
+                                                {"agent_release": version})
+                        except Exception:
+                            pass
+                    return {"ok": True, "machine": name,
+                            "agent_version": hver,
+                            "agent_release": version,
+                            "method": "wheel"}
+            except Exception:
+                continue
+        return {"ok": False, "machine": name,
+                "detail": "agent installed the release wheel but did not "
+                          "come back healthy"}
+    asset = info.get("asset")
+    url = info.get("url")
+    if not asset:
+        return {"ok": False, "machine": name, "frozen": True,
+                "detail": "no standalone agent asset is published for this "
+                          "platform — reinstall the peer agent package"}
+    if not url:
+        return {"ok": False, "machine": name, "frozen": True,
+                "detail": f"no published standalone agent asset ({asset})"}
+    try:
+        res = agent_client.agent_update_binary(machine, url, version or "")
+    except Exception as e:
+        return {"ok": False, "machine": name, "frozen": True,
+                "detail": f"could not download {asset}: {e}"}
+    if not res.get("ok"):
+        return {"ok": False, "machine": name, "frozen": True,
+                "detail": res.get("error") or "standalone agent update failed"}
+    # Success = healthy /version after the agent replaces and restarts itself.
+    # Its internal build version may lag the release tag; record the release
+    # we installed so the machine is not considered stale forever.
+    for _ in range(20):
+        import time as _t
+        _t.sleep(1)
+        try:
+            h = agent_client.health(machine, timeout=3)
+            hver = h.get("agent_version")
+            if hver and (hver == version or hver != prev_version):
+                if version:
+                    try:
+                        cfg.machines.update(name, {"agent_release": version})
+                    except Exception:
+                        pass
+                return {"ok": True, "machine": name,
+                        "agent_version": hver,
+                        "agent_release": version,
+                        "protocol_version": h.get("protocol_version"),
+                        "method": "binary", "asset": asset}
+        except Exception:
+            continue
+    return {"ok": False, "machine": name, "frozen": True,
+            "detail": "agent downloaded the new binary but did not come "
+                      "back healthy — reinstall the peer agent package"}
+
 
 @app.get("/api/machines/{name}/agent-version")
 async def agent_version_machine(name: str):
@@ -4322,7 +4864,7 @@ async def agent_version_machine(name: str):
 
 @app.post("/api/machines/{name}/update-agent")
 async def update_agent_machine(name: str):
-    """Build current agent, install it over SSH bootstrap, restart it."""
+    """Build current agent, install it through the agent bootstrap, restart it."""
     machine = cfg.machines.require(name)
     try:
         res = await run_in_threadpool(_update_agent_remote, machine)
@@ -4335,20 +4877,20 @@ async def update_agent_machine(name: str):
 
 
 @app.post("/api/machines/{name}/update-llama-cpp")
-async def update_llama_cpp_machine(name: str):
+async def update_llama_cpp_machine(name: str, force: bool = False):
     """One-click llama.cpp UPDATE for one machine (machine-page button).
 
     Background job that: (1) stops that machine's llama processes —
     Windows refuses to overwrite locked exes (observed live on winbox),
     and Linux keeps serving the old inode anyway; (2) installs the
     newest prebuilt via llamacpp_installer (auto-detects os / gpu_vendor
-    / arch / glibc, uses the stored SSH credentials); (3) resurrects
+    / arch / glibc, uses the stored machine record); (3) resurrects
     llama-swap if this machine hosts it (stop_rpc's legacy stop-all
     kills it). Poll GET /api/llama-cpp-updates/{job_id} for progress."""
     machine = cfg.machines.require(name)
     with _LLAMA_UPDATES_LOCK:
         for j in _LLAMA_UPDATES.values():
-            if j["machine"] == name and j["state"] in ("stopping", "installing"):
+            if j["machine"] == name and j["state"] in ("stopping", "installing", "updating"):
                 return JSONResponse(
                     status_code=409,
                     content={"detail": f"update already running on {name}",
@@ -4367,12 +4909,73 @@ async def update_llama_cpp_machine(name: str):
         import urllib.request
         was_swap_up = False
         try:
+            # Install/update the peer agent first when it is older than the
+            # app's wheel. Older agents cannot verify RPC and (critically)
+            # drop .so symlinks when extracting prebuilt archives.
+            if not local_node.is_local(machine):
+                try:
+                    av = _agent_version_payload(machine)
+                    if (av.get("latest") and av.get("current")
+                            and not av.get("on_latest")):
+                        job["log"].append(
+                            f"updating peer agent {av.get('current')} → "
+                            f"{av.get('latest')} before engine install")
+                        up = _update_agent_remote(machine)
+                        if not up.get("ok"):
+                            if up.get("reinstall"):
+                                job["log"].append(
+                                    "peer agent is not a standalone release "
+                                    "build; continuing with the installed "
+                                    "agent: " + str(up.get("detail") or ""))
+                            else:
+                                job["result"] = {
+                                    "ok": False, "machine": name,
+                                    "detail": "agent update failed before "
+                                              "engine install: "
+                                              + str(up.get("detail")
+                                                    or "unknown")}
+                                job["state"] = "failed"
+                                return
+                        else:
+                            job["log"].append(
+                                f"peer agent updated to "
+                                f"{up.get('agent_version')}")
+                except Exception as e:
+                    job["log"].append(
+                        f"agent pre-update check failed (continuing): {e}")
             # Already current? Skip the whole update (probe the running
             # binary's build vs the newest release tag) — a no-op
             # rebuild still costs a fetch + cmake pass, and the UI
             # shows 'on latest' for these machines anyway.
             vp = _llama_version_payload(machine)
-            if vp.get("on_latest"):
+            if force:
+                job["log"].append(
+                    f"{name}: forced clean reinstall of llama.cpp + RPC "
+                    "(existing binaries will be overwritten)")
+                try:
+                    if name == (swap_manager.get_host() or {}).get("name"):
+                        port = int(swap_manager.load_settings().get("listen_port") or 8080)
+                        with urllib.request.urlopen(
+                                f"http://127.0.0.1:{port}/health", timeout=3) as r:
+                            was_swap_up = (r.status == 200)
+                        job["log"].append(
+                            f"llama-swap on {name}: "
+                            + ("running — will restart after the install"
+                               if was_swap_up else "not running"))
+                except Exception:
+                    was_swap_up = False
+                job["log"].append(f"stopping llama processes on {name} …")
+                try:
+                    rep = rpc_manager.stop_rpc(name)
+                    job["log"].append("stop_rpc: " + json.dumps(rep)[:400])
+                except Exception as e:
+                    job["log"].append(f"stop_rpc failed (continuing anyway): {e}")
+                job["state"] = "installing"
+                res = llamacpp_installer.install_on(
+                    machine, log=lambda m: job["log"].append(str(m)))
+                job["result"] = res
+                job["state"] = "done" if res.get("ok") else "failed"
+            elif vp.get("on_latest"):
                 job["log"].append(
                     f"{name} already on the latest release "
                     f"({vp.get('latest')}) — nothing to do")
@@ -4470,7 +5073,7 @@ async def llama_cpp_update_status(job_id: str):
 @app.post("/api/install-llama-swap")
 async def install_llama_swap(name: str = ""):
     """Install the official llama-swap binary on a machine if not already
-    present (local machines run locally — no SSH), then point swap
+    present (local machines run locally — no shell transport), then point swap
     settings' binary at it. Mirrors the llama.cpp installer."""
     if not name:
         raise HTTPException(status_code=400, detail="machine name required")
@@ -4504,7 +5107,7 @@ class ToolsInstallIn(pydantic.BaseModel):
 def _machine_env(machine):
     """(SystemInfo, RunCmd) for a machine record: local machines probe
     locally; remote machines run the same read-only probe ladder over
-    SSH. OS/gpu_vendor come from the machine record (config truth), the
+    the agent. OS/gpu_vendor come from the machine record (config truth), the
     rest from the remote probes."""
     from installer.env import SystemInfo, RealFS, RunResult
     import gpu_vendor as _gv
@@ -4535,6 +5138,96 @@ def _machine_env(machine):
     info.os = os_type
     info.gpu_vendor = vendor or info.gpu_vendor
     return info, run
+
+
+def _resolve_install_machine(name):
+    """Settings-modal machine id: '__local__'/'' = this host, else a name."""
+    if name in ("", "__local__"):
+        for m in cfg.machines.all():
+            if local_node.is_local(m):
+                return m
+        raise HTTPException(status_code=400,
+                            detail="no local machine configured")
+    try:
+        return cfg.machines.require(name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from None
+
+
+def _install_remote_tools(machine, role, tools, dry_run, log):
+    """Agent-backed install for a peer (the Settings modal's peer path).
+
+    The peer agent already implements /install/artifact + /install/verify;
+    this just routes the app's request there instead of trying to probe the
+    remote host locally.
+    """
+    import llamacpp_installer
+    import swap_installer
+
+    name = machine.get("name") or "?"
+    want = set(tools or [])
+    if not want:
+        want = ({"llama.cpp", "llama-swap"} if role == "main"
+                else {"llama.cpp"})
+    summary = {"installed": [], "skipped": [], "repaired": [],
+               "settings": [], "notes": [], "failures": [],
+               "manifest": {"tools": {}}}
+    if dry_run:
+        planned = []
+        if "llama.cpp" in want:
+            planned.append("llama.cpp")
+        if role == "main" and "llama-swap" in want:
+            planned.append("llama-swap")
+        for tool in planned:
+            log(f"[dry-run] would install {tool} on {name} through the "
+                f"peer agent")
+        summary["planned"] = planned
+        summary["notes"].append("dry run — nothing executed")
+        return summary
+
+    def _finish(tool, res):
+        for line in str(res.get("detail") or "").splitlines():
+            if line.strip():
+                log(line.strip())
+        if res.get("ok"):
+            summary["installed"].append(tool)
+            summary["manifest"]["tools"][tool] = {
+                "version": res.get("version") or "",
+                "method": "agent",
+            }
+            summary["notes"].append(f"{tool}: {res.get('detail') or 'ok'}")
+        else:
+            summary["failures"].append({
+                "error": res.get("detail") or f"{tool} install failed",
+                "context": {"tool": tool},
+            })
+
+    if "llama.cpp" in want:
+        log(f"installing llama.cpp + llama RPC on {name} via the peer agent")
+        _finish("llama.cpp", llamacpp_installer.install_on(machine, log=log))
+    if role == "main" and "llama-swap" in want:
+        log(f"installing llama-swap on {name} via the peer agent")
+        _finish("llama-swap", swap_installer.install_on(machine, log=log))
+    return summary
+
+
+def _tools_plan(machine, role, log=lambda m: None):
+    """Build the SAME dynamic install plan the bootstrap uses: newest
+    llama.cpp/llama-swap releases with matching assets, plus source-build
+    detection, so the UI installer and bootstrap cannot drift."""
+    from installer.env import RealFS
+    from installer.probe import probe as installer_probe
+    import bootstrap
+
+    info, run = _machine_env(machine)
+    fs = RealFS()
+    resolved = bootstrap._resolve_latest(info, role, log)
+    source_probe = bootstrap._detect_source_build(
+        info, fs, log, settings_file=SETTINGS_FILE)
+    plan = installer_probe(info, fs, run, role=role, resolved=resolved,
+                           source_probe=source_probe,
+                           settings_root=BASE_DIR)
+    return plan, info, run, fs
 
 
 class _ToolsProgress:
@@ -4576,23 +5269,20 @@ async def tools_install(p: ToolsInstallIn):
     it (installer.execute), streaming per-step progress as NDJSON
     ({event: log|done}). The plan carries per-tool skip/refuse notes;
     llama.cpp behavior is untouched (this endpoint only ADDS surfaces)."""
-    machine = p.machine
-    try:
-        m = cfg.machines.require(machine)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    m = _resolve_install_machine(p.machine)
     role = p.role if p.role in ("main", "client") else "main"
     progress = _ToolsProgress()
 
     def run_install():
         try:
-            info, run = _machine_env(m)
-            from installer.env import RealFS
-            from installer.probe import probe as installer_probe
+            if not local_node.is_local(m):
+                summary = _install_remote_tools(
+                    m, role, p.tools, p.dry_run, progress.log)
+                progress.finish(summary)
+                return
             from installer.execute import Executor
 
-            fs = RealFS() if local_node.is_local(m) else _RemoteFS(run, is_win=getattr(run, '_win', False))
-            plan = installer_probe(info, fs, run, role=role)
+            plan, info, run, fs = _tools_plan(m, role, progress.log)
             if p.tools:
                 keep = set(p.tools)
                 # keep only the requested tools' steps; settings/manifest
@@ -4609,7 +5299,8 @@ async def tools_install(p: ToolsInstallIn):
                           manifest_path=os.path.join(
                               os.path.expanduser("~"),
                               ".llama-rpc-farm", "installer-state.yaml"),
-                          runner=lambda cmd: run.run(cmd))
+                          runner=lambda cmd, timeout=1800:
+                              run.run(cmd, timeout=timeout))
             summary = ex.execute(plan)
             ex.write_manifest(summary, detected={})
             progress.finish(summary)
@@ -4646,7 +5337,7 @@ async def _tools_ndjson(progress):
 
 
 class _RemoteFS:
-    """FS adapter for remote machines: existence/version checks over SSH.
+    """FS adapter for remote machines: existence/version checks through the agent.
     Only what probe.py touches."""
 
     def __init__(self, run, is_win=False):
@@ -4696,29 +5387,31 @@ async def tools_install_sync(p: ToolsInstallIn):
     """Non-streaming variant of /api/tools/install: same plan+execute,
     but the full summary is returned in one body (for tests + simple
     clients). Same engine gates, same refusal semantics."""
-    machine = p.machine
-    try:
-        m = cfg.machines.require(machine)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    from installer.env import RealFS
-    from installer.probe import probe as installer_probe
-    from installer.execute import Executor
-    info, run = _machine_env(m)
-    fs = RealFS() if local_node.is_local(m) else _RemoteFS(run, is_win=getattr(run, '_win', False))
-    plan = installer_probe(info, fs, run, role=p.role if p.role in ("main", "client") else "main")
-    summary = await run_in_threadpool(
-        _execute_plan, plan, info, p.dry_run)
+    m = _resolve_install_machine(p.machine)
+    role = p.role if p.role in ("main", "client") else "main"
+    if not local_node.is_local(m):
+        summary = await run_in_threadpool(
+            _install_remote_tools, m, role, p.tools, p.dry_run,
+            lambda msg: print(msg, flush=True))
+    else:
+        plan, info, run, fs = await run_in_threadpool(
+            _tools_plan, m, role, lambda msg: print(msg, flush=True))
+        summary = await run_in_threadpool(
+            _execute_plan, plan, info, p.dry_run, run)
     ok = not summary.get("failures")
     return JSONResponse(status_code=200 if ok else 502, content=summary)
 
 
-def _execute_plan(plan, info, dry_run):
+def _execute_plan(plan, info, dry_run, runner=None):
     from installer.execute import Executor
+    runner_fn = None
+    if runner is not None:
+        runner_fn = lambda cmd, timeout=1800: runner.run(cmd, timeout=timeout)
     ex = Executor(log=lambda m: None, dry_run=dry_run, info=info,
                   manifest_path=os.path.join(
                       os.path.expanduser("~"),
-                      ".llama-rpc-farm", "installer-state.yaml"))
+                      ".llama-rpc-farm", "installer-state.yaml"),
+                  runner=runner_fn)
     summary = ex.execute(plan)
     ex.write_manifest(summary, detected={})
     return summary
@@ -4747,6 +5440,206 @@ async def uninstall_llamacpp_machine(name: str = ""):
     # uninstaller's own message.
     return JSONResponse(status_code=200 if result.get("ok") else 502,
                         content=result)
+
+
+# ---------------- setup readiness (per machine) ---------------------------
+
+def _rpc_verify_remote(machine, path):
+    """RPC binaries disagree on --version; --help is the reliable probe.
+    Returns (ok, error)."""
+    last = None
+    for args in (["--help"], ["--version"]):
+        try:
+            r = agent_client.install_verify(
+                machine, path, args, timeout=30) or {}
+            if r.get("returncode") == 0:
+                return True, None
+            last = str(r.get("output") or "verify failed")
+        except Exception as e:
+            last = str(e)
+            if "not allowed" in last:
+                # Older agents only allow llama-server/swap in /install/verify.
+                # Fall back to presence for those agents; installs after the
+                # agent update use the real run check above.
+                try:
+                    st = agent_client.file_stat(machine, path) or {}
+                    if st.get("exists") and st.get("is_file"):
+                        return True, None
+                except Exception:
+                    pass
+                break
+    return False, (last or "RPC verify failed")[-300:]
+
+
+def _local_engine_readiness(machine):
+    """llama.cpp + ggml-rpc-server on this host, using the effective bin."""
+    from installer.env import RealFS
+    from installer.probe import _version_from_output
+
+    fs = RealFS()
+    is_win = (machine.get("os") or ("windows" if os.name == "nt" else "linux")) == "windows"
+    bin_dir = ((machine.get("llama_bin") or "").strip()
+               or rpc_manager._effective_bin_dir(machine) or "")
+    bin_dir = os.path.expanduser(os.path.expandvars(bin_dir))
+    server_name = "llama-server.exe" if is_win else "llama-server"
+    rpc_name = "ggml-rpc-server.exe" if is_win else "ggml-rpc-server"
+    if bin_dir.rstrip("/\\").endswith(server_name):
+        bin_dir = os.path.dirname(bin_dir)
+    server = os.path.join(bin_dir, server_name)
+    rpc = os.path.join(bin_dir, rpc_name)
+    version = None
+    cpp_error = None
+    rpc_error = None
+    cpp_ok = False
+    rpc_ok = False
+    if fs.isfile(server):
+        try:
+            r = fs.file_exists_and_runs(server)
+            cpp_ok = bool(r.ok)
+            if cpp_ok:
+                version = _version_from_output(r.stdout + " " + r.stderr)
+            else:
+                cpp_error = (r.stderr or r.stdout or "llama-server verify failed").strip()[-300:]
+        except Exception as e:
+            cpp_error = str(e)
+    if fs.isfile(rpc):
+        # --version is not universal for ggml-rpc-server; try --help too.
+        for arg in ("--help", "--version"):
+            try:
+                rr = fs.file_exists_and_runs(rpc, arg)
+                if rr.ok:
+                    rpc_ok = True
+                    break
+                rpc_error = (rr.stderr or rr.stdout
+                             or "ggml-rpc-server verify failed").strip()[-300:]
+            except Exception as e:
+                rpc_error = str(e)
+    return {
+        "llama_cpp": {"installed": cpp_ok,
+                      "path": server if fs.isfile(server) else None,
+                      "version": version, "error": cpp_error},
+        "llama_rpc": {"installed": rpc_ok,
+                      "path": rpc if fs.isfile(rpc) else None,
+                      "error": rpc_error},
+    }
+
+
+def _readiness_for(machine, swap_host_name):
+    """One machine's setup checklist: agent, llama.cpp, RPC, llama-swap."""
+    name = machine.get("name") or "?"
+    is_local = local_node.is_local(machine)
+    out = {"machine": name, "local": is_local,
+           "is_swap_host": name == swap_host_name,
+           "agent": {"ok": is_local, "local": is_local,
+                     "version": None, "error": None},
+           "llama_cpp": {"installed": False, "path": None, "version": None},
+           "llama_rpc": {"installed": False, "path": None},
+           "llama_swap": {"installed": False, "path": None,
+                          "required": name == swap_host_name}}
+    if is_local:
+        out.update(_local_engine_readiness(machine))
+    else:
+        caps, err = _ensure_agent_ready(machine)
+        if err:
+            out["agent"] = {"ok": False, "local": False,
+                            "version": None, "error": err}
+        else:
+            try:
+                h = agent_client.health(machine, timeout=4)
+            except Exception:
+                h = {}
+            out["agent"] = {"ok": True, "local": False,
+                            "version": h.get("agent_version"),
+                            "protocol": h.get("protocol_version"),
+                            "error": None}
+            lp = (caps or {}).get("llama_binary")
+            rp = (caps or {}).get("rpc_binary")
+            # The machine's configured llama_bin is the launch path; the
+            # agent's capability search can point at a different (stale)
+            # build tree. Prefer the configured dir, then fall back to the
+            # agent-discovered path.
+            os_type = (machine.get("os") or "linux").lower()
+            server_name = "llama-server.exe" if os_type == "windows" else "llama-server"
+            rpc_name = "ggml-rpc-server.exe" if os_type == "windows" else "ggml-rpc-server"
+            sep = "\\" if os_type == "windows" else "/"
+            cfg_cpp = cfg_rpc = None
+            lb = (machine.get("llama_bin") or "").strip()
+            if lb:
+                base = lb.rstrip("/\\")
+                if base.endswith(server_name):
+                    cfg_cpp = base
+                    base = base.rsplit(sep, 1)[0]
+                else:
+                    cfg_cpp = base + sep + server_name
+                cfg_rpc = base + sep + rpc_name
+            last_err = None
+            for cand in dict.fromkeys([c for c in (cfg_cpp, lp) if c]):
+                try:
+                    v = agent_client.install_verify(
+                        machine, cand, ["--version"], timeout=35) or {}
+                    if v.get("returncode") == 0:
+                        out["llama_cpp"]["installed"] = True
+                        out["llama_cpp"]["path"] = cand
+                        from installer.probe import _version_from_output
+                        out["llama_cpp"]["version"] = _version_from_output(
+                            str(v.get("output") or ""))
+                        break
+                    last_err = (str(v.get("output") or "verify failed"))[-300:]
+                except Exception as e:
+                    last_err = str(e)
+            out["llama_cpp"]["error"] = None if out["llama_cpp"]["installed"] else last_err
+            last_rpc_err = None
+            for cand in dict.fromkeys([c for c in (cfg_rpc, rp) if c]):
+                rpc_ok, rpc_err = _rpc_verify_remote(machine, cand)
+                if rpc_ok:
+                    out["llama_rpc"]["installed"] = True
+                    out["llama_rpc"]["path"] = cand
+                    break
+                last_rpc_err = rpc_err
+            out["llama_rpc"]["error"] = None if out["llama_rpc"]["installed"] else last_rpc_err
+    try:
+        import swap_installer
+        found, path = swap_installer.detect_on(machine)
+        out["llama_swap"] = {"installed": bool(found), "path": path,
+                             "required": name == swap_host_name}
+    except Exception:
+        pass
+    out["ready"] = bool(
+        out["agent"]["ok"]
+        and out["llama_cpp"]["installed"]
+        and out["llama_rpc"]["installed"]
+        and (not out["is_swap_host"] or out["llama_swap"]["installed"]))
+    return out
+
+
+@app.get("/api/readiness")
+async def readiness_all():
+    """Per-machine setup checklist for the dashboard/machine page.
+
+    Answers the new-user question: which peers still need llama.cpp +
+    ggml-rpc-server, and is llama-swap installed on the swap host?
+    """
+    machines = cfg.machines.all()
+    try:
+        import swap_manager
+        host_name = (swap_manager.get_host() or {}).get("name")
+    except Exception:
+        host_name = None
+    with ThreadPoolExecutor(max_workers=len(machines) or 1) as pool:
+        rows = list(pool.map(lambda m: _readiness_for(m, host_name), machines))
+    return {"machines": {r["machine"]: r for r in rows},
+            "ready_all": all(r["ready"] for r in rows)}
+
+
+@app.get("/api/machines/{name}/readiness")
+async def readiness_machine(name: str):
+    machine = cfg.machines.require(name)
+    try:
+        import swap_manager
+        host_name = (swap_manager.get_host() or {}).get("name")
+    except Exception:
+        host_name = None
+    return await run_in_threadpool(_readiness_for, machine, host_name)
 
 
 # ---------------- GET /api/tools/verify (UX-3, design §8) --------------------
@@ -4794,30 +5687,51 @@ async def tools_verify():
         swap_bin = (swap_manager.load_settings() or {}).get("binary")
     except Exception:
         swap_bin = None
+    local_machine = next(
+        (m for m in cfg.machines.all() if local_node.is_local(m)), {})
+    configured_llcpp = ((local_machine.get("llama_bin") or "").strip()
+                        or settings_bin)
 
     def _entry(found, path, version, expected, configured):
         return {"found": bool(found), "path": path, "version": version,
                 "expected": expected, "configured": configured or None}
 
-    out = {}
-    # llama.cpp — well-known prebuilt/source locations, then settings record
-    p, ver = installer_probe.probe_llama_cpp(fs, run, role="main")
-    if not p and settings_bin:
-        cand = settings_bin
-        if not (cand.endswith("llama-server") or cand.endswith("llama-server.exe")):
-            cand = cand.rstrip("/\\") + "/llama-server"
-        if fs.isfile(cand):
-            r = fs.file_exists_and_runs(cand)
-            p, ver = cand, (installer_probe._version_from_output(
-                r.stdout + " " + r.stderr) if r.ok else None)
-    out["llama.cpp"] = _entry(p, p, ver, "b10000+", settings_bin)
-    # llama-swap
-    p, ver = installer_probe.probe_swap(fs, run)
-    if not p and swap_bin and swap_bin != "llama-swap" and fs.isfile(swap_bin):
-        r = fs.file_exists_and_runs(swap_bin)
-        p, ver = swap_bin, (installer_probe._version_from_output(
+    def _configured_probe(configured, exe):
+        """Probe EXACTLY the configured path (dir or file). Never substitute
+        a well-known location — per-machine settings are authoritative."""
+        if not configured:
+            return "", None
+        cand = os.path.expanduser(os.path.expandvars(str(configured)))
+        if not cand.rstrip("/\\").endswith(exe):
+            cand = os.path.join(cand, exe)
+        if not fs.isfile(cand):
+            return cand, None
+        r = fs.file_exists_and_runs(cand)
+        ver = (installer_probe._version_from_output(
             r.stdout + " " + r.stderr) if r.ok else None)
-    out["llama-swap"] = _entry(p, p, ver, "255+", swap_bin)
+        return cand, ver
+
+    out = {}
+    # llama.cpp — configured local-machine path wins; otherwise probe the
+    # well-known prebuilt/source locations.
+    if configured_llcpp:
+        exe = "llama-server.exe" if os.name == "nt" else "llama-server"
+        p, ver = _configured_probe(configured_llcpp, exe)
+        found = bool(p and fs.isfile(p))
+    else:
+        p, ver = installer_probe.probe_llama_cpp(fs, run, role="main")
+        found = bool(p)
+    out["llama.cpp"] = _entry(found, p, ver, "b10000+", configured_llcpp)
+    # llama-swap — an explicit path in swap.yaml wins; bare "llama-swap"
+    # still resolves through PATH/well-known locations, as configured.
+    if swap_bin and swap_bin != "llama-swap":
+        exe = "llama-swap.exe" if os.name == "nt" else "llama-swap"
+        p, ver = _configured_probe(swap_bin, exe)
+        found = bool(p and fs.isfile(p))
+    else:
+        p, ver = installer_probe.probe_swap(fs, run)
+        found = bool(p)
+    out["llama-swap"] = _entry(found, p, ver, "255+", swap_bin)
     return out
 
 
@@ -4921,7 +5835,7 @@ async def restart_app():
     # remote-proxy llama-servers (launch-mode=local models) run on their
     # own boxes — stop them BEFORE restarting, or they keep serving while
     # the app/swap cycle under them. Fire-and-forget: restart must not
-    # block on SSH; the daemon comes back in ~3s either way.
+    # block on the agent; the daemon comes back in ~3s either way.
     import threading as _th
     def _stop_remote_llama():
         # host EXCLUDED: the restart bash's pkill+setsid brings llama-swap
@@ -5033,7 +5947,7 @@ def _fs_list_remote(machine, raw_path, show_hidden=False):
 
 @app.get("/api/fs/browse")
 async def fs_browse(path: str = "", machine: str = "", show_hidden: bool = False):
-    """Browse filesystem — local host if machine=, else remote via SSH.
+    """Browse filesystem — local host if machine=, else remote via the agent.
     Works on both Linux and Windows (machine.os decides). Query: path, machine (name), show_hidden."""
     if machine:
         m = cfg.machines.get(machine)
@@ -5057,7 +5971,7 @@ async def fs_browse(path: str = "", machine: str = "", show_hidden: bool = False
 
 # ---------------- model scanning ----------------
 
-# short-lived stats cache so the 1s overview poll stays snappy (full SSH
+# short-lived stats cache so the 1s overview poll stays snappy (full agent
 # collection per machine is slow, esp. Windows). The detail modal forces a
 # fresh collection on demand.
 _stats_cache = {}  # key -> {"ts": ..., "data": ...}
@@ -5067,8 +5981,8 @@ _STATS_TTL = 5.0  # seconds
 @app.get("/api/stats")
 async def get_stats(light: bool = False):
     """Get cluster-wide machine stats (GPU, CPU, RAM). Cached briefly so the
-    auto-refresh poll doesn't re-SSH every second. light=true skips the slow
-    full SSH collection and returns reachability + identity instantly (the
+    auto-refresh poll doesn't re-query every second. light=true skips the slow
+    full agent collection and returns reachability + identity instantly (the
     overview uses this; the detail modal does a full collection on demand).
     Cache is keyed by light so the two never overwrite each other."""
     key = "light" if light else "full"
@@ -5096,7 +6010,7 @@ async def get_stats_stream():
     The dashboard consumes this so one slow/offline machine can't drag
     the others: each card paints the moment its own data lands instead
     of waiting for the slowest host (the old /api/stats blocked until
-    every SSH collection finished — 5s+ on Windows blobs, 6s+ on offline
+    every agent collection finished — 5s+ on Windows blobs, 6s+ on offline
     boxes). Same short cache as /api/stats per machine."""
     from fastapi.responses import StreamingResponse
 
@@ -5254,9 +6168,7 @@ async def machine_detail(name: str):
               "mac": (machine.get("mac") or ""),
               "transport": machine.get("transport") or "auto",
               "agent_port": machine.get("agent_port") or 8198,
-              "connection": ("local" if is_local else
-                             "agent" if agent_client.should_use_agent(machine)
-                             else "ssh")}
+              "connection": "local" if is_local else "agent"}
 
     # ---- combine all detail queries into ONE round-trip per OS ----
     detail["net"] = {"ip": "", "speed": ""}
@@ -5297,11 +6209,8 @@ async def machine_detail(name: str):
     if not is_local and agent_client.should_use_agent(machine):
         try:
             agent_detail = agent_client.system_detail(machine)
-        except Exception as e:
-            if agent_client.transport(machine) == "agent":
-                agent_detail = {}
-            else:
-                print(f"[agent] {machine['name']}: detail failed, falling back to SSH: {e}")
+        except Exception:
+            agent_detail = {}
     if agent_detail is not None:
         detail.update(agent_detail)
     else:
@@ -5722,16 +6631,6 @@ async def stop_launch(l: LaunchIn):
         if allow is None or lmid not in allow:
             raise HTTPException(status_code=404,
                                 detail=f"model '{lmid}' not found")
-    try:
-        engine = engine_registry.get_engine()
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from None
-    if not engine.capable("rpc_cluster"):
-        try:
-            return await run_in_threadpool(
-                engine.stop_model, l.model_id, l.servers, l.variant)
-        except vllm_manager.SwapDownError as e:
-            raise HTTPException(status_code=503, detail=str(e)) from None
     valid = {m["name"] for m in cfg.machines.all()}
     unknown = [s for s in l.servers if s not in valid]
     if unknown:
@@ -5945,14 +6844,27 @@ async def swap_load_model(model_id: str, request: Request):
         # identity (session cookie → access key), exactly like API clients.
         base = _gateway_url("")
         is_embed = False
+        is_decision = False
         try:
             engine = engine_registry.get_engine()
+            base_id = model_id.split("--")[0]
             emb_ids = {m.get("model_id") for m in
                        (engine.filter_embedding_models(cfg.list_models()) or [])}
-            is_embed = model_id.split("--")[0] in emb_ids
+            dec_ids = {m.get("model_id") for m in
+                       (engine.filter_decision_models(cfg.list_models()) or [])}
+            is_embed = base_id in emb_ids
+            is_decision = base_id in dec_ids
         except Exception:
             pass
-        if is_embed:
+        if is_decision:
+            payload = _json.dumps({
+                "model": model_id, "state": "warmup",
+                "questions": {"route": {"type": "choice",
+                                        "instructions": "Pick one",
+                                        "criteria": {"yes": 1, "no": 2}}},
+            }).encode()
+            path = "/v1/systemone"
+        elif is_embed:
             payload = _json.dumps(
                 {"model": model_id, "input": "hi"}).encode()
             path = "/v1/embeddings"
@@ -6303,6 +7215,42 @@ async def vision_test(v: VisionIn, request: Request):
     return await run_in_threadpool(do)
 
 
+def _tags_by_base_path(models, engine):
+    """Same model-type filters as /api/models, keyed by base_path. Used by
+    /api/scan so configured source rows inherit mmproj/vision and other
+    capabilities the file scan alone cannot know."""
+    def _ids(fn):
+        try:
+            return {m.get("model_id") for m in (fn(models) or [])}
+        except Exception:
+            return set()
+    emb_ids = _ids(engine.filter_embedding_models)
+    aud_ids = _ids(engine.filter_audio_models)
+    vis_ids = _ids(engine.filter_vision_models)
+    dec_ids = _ids(engine.filter_decision_models)
+    out = {}
+    for m in models:
+        mid = m.get("model_id") or ""
+        base = mid.split("--")[0]
+        arch = (m.get("architecture") or "").lower()
+        flags = m.get("flags") or {}
+        tags = []
+        if m.get("decision_type") or base in dec_ids:
+            tags.append("decision")
+        else:
+            is_speech = base in aud_ids
+            if is_speech:
+                tags.append("speech")
+            if not is_speech and (base in vis_ids or "mmproj" in flags):
+                tags.append("vision")
+            if base in emb_ids or "bert" in arch or "embed" in arch:
+                tags.append("embedding")
+            if not tags or tags == ["vision"]:
+                tags.append("chat")
+        out[m.get("base_path")] = tags
+    return out
+
+
 @app.get("/api/scan")
 async def scan_models(path: str, recursive: bool = False):
     if not path:
@@ -6399,10 +7347,38 @@ async def scan_models(path: str, recursive: bool = False):
     for p in projectors:
         p["base_path"] = path_resolver.to_alias(p["base_path"])
     # attach architecture for grouping in the wizard source list
+    # Configured source rows inherit the SAME capability tags as the model
+    # list (mmproj -> vision, embed -> embedding, etc.). File-scan heuristics
+    # alone cannot see mmproj because projectors are scanned separately.
+    try:
+        configured_tags = _tags_by_base_path(
+            engine.filter_models(cfg.list_models()), engine)
+    except Exception:
+        configured_tags = {}
     for m in filtered_models:
         m["architecture"] = cfg._get_model_architecture(m["base_path"])
         # TypeSafe decision models surface in the wizard the same way
         m["decision_type"] = cfg._get_decision_type(m["base_path"])
+        if m["base_path"] in configured_tags:
+            m["model_tags"] = configured_tags[m["base_path"]]
+            continue
+        mid = (m.get("model_id") or m.get("base_path") or "").lower()
+        arch = (m.get("architecture") or "").lower()
+        tags = []
+        if m["decision_type"]:
+            tags.append("decision")
+        else:
+            is_speech = "asr" in mid or "whisper" in mid or "audio" in mid
+            if is_speech:
+                tags.append("speech")
+            if "embed" in mid or "bert" in arch:
+                tags.append("embedding")
+            if not is_speech and ("vision" in mid or "vl" in arch
+                                  or "-vl" in mid):
+                tags.append("vision")
+            if not tags or tags == ["vision"]:
+                tags.append("chat")
+        m["model_tags"] = tags
     return {"models": filtered_models, "projectors": projectors}
 
 

@@ -61,6 +61,8 @@ def _linux(config: AgentConfig):
         "V=$(systemd-detect-virt 2>/dev/null || echo bare); "
         "CF=$(lscpu | grep '^Flags:' | cut -d: -f2- | sed 's/^ *//'); "
         'G=$(ldd --version 2>&1 | head -1); '
+        'DRV=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader '
+        '2>/dev/null | head -1); '
         "P=$(nvidia-smi --query-gpu=pcie.link.gen.current,pcie.link.width.current "
         "--format=csv,noheader,nounits 2>/dev/null); "
         "R=$(nvidia-smi --query-gpu=pci.bar1_memory_total "
@@ -69,7 +71,8 @@ def _linux(config: AgentConfig):
         f'"{bin_dir}/llama-cli" --version 2>&1); '
         'echo "K:$K"; echo "C:$C"; echo "U:$U"; echo "I:$I"; '
         'echo "S:$S"; echo "D:$D"; echo "DT:$DT"; echo "V:$V"; '
-        'echo "CF:$CF"; echo "P:$P"; echo "R:$R"; echo "L:$L"'
+        'echo "CF:$CF"; echo "P:$P"; echo "R:$R"; echo "L:$L"; '
+        'echo "DRV:$DRV"'
     )
     code, out, _ = _run(cmd)
     if code != 0:
@@ -94,7 +97,7 @@ def _linux(config: AgentConfig):
         "llama_version": p.get("L", ""), "cores": os.cpu_count() or 0,
         "cpu_cores": cores,
         "virt": p.get("V", ""), "cpu_flags": p.get("CF", ""),
-        "glibc": p.get("G", ""),
+        "glibc": p.get("G", ""), "driver_version": p.get("DRV", ""),
         "pcie": _pcie_tags(p.get("P", "")),
         "rebar": _rebar_values(p.get("R", "")),
     }
@@ -122,7 +125,7 @@ echo "L:$("BIN/llama-server" --version 2>&1 || "BIN/llama-cli" --version 2>&1)"
         "uptime": p.get("U", ""),
         "net": {"ip": p.get("I", ""), "speed": p.get("S", "")},
         "disk": {"free": p.get("D", ""), "total": p.get("DT", "")},
-        "llama_version": p.get("L", ""),
+        "llama_version": p.get("L", ""), "driver_version": "",
         "virt": "bare", "cpu_flags": "", "pcie": "", "rebar": "",
         "cores": int(subprocess.run(
             ["sysctl", "-n", "hw.ncpu"], capture_output=True, text=True,
@@ -190,6 +193,7 @@ def _windows(config: AgentConfig):
         "disk": {"free": free, "total": total},
         "llama_version": o.get("llama", ""), "cores": o.get("cores", 0),
         "cpu_cores": cl or [], "virt": "windows", "cpu_flags": "",
+        "driver_version": str(o.get("driver") or ""),
         "pcie": "", "rebar": "",
     }
 
@@ -222,7 +226,9 @@ _RDMA_SCRIPT = (
 
 
 def rdma():
-    if os.name == "nt":
+    if os.name == "nt" or sys.platform == "darwin":
+        # _RDMA_SCRIPT is Linux/netlink-specific; skip it on Windows and
+        # macOS instead of burning a 20s timeout and reporting nothing.
         return {}
     code, out, _ = _run(_RDMA_SCRIPT, timeout=20)
     if code != 0:

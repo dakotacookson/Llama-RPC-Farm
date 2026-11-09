@@ -19,6 +19,7 @@ import io
 import json
 import os
 import sys
+import time
 
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
 if SRC not in sys.path:
@@ -31,7 +32,9 @@ from installer.execute import Executor                              # noqa: E402
 LOG_DIR = "~/.llama-rpc-farm"
 LOG_FILE = os.path.join(LOG_DIR, "install.log")
 
-# Pinned requirements (§2). Keep in one place; upgrade bumps these.
+# Last-resort pins, used only for --offline or when the GitHub release
+# lookup fails. Online installs resolve the newest release that actually
+# carries matching binaries (same selection the UI's machine cards use).
 DEFAULT_PINS = {
     "llama.cpp": {"version": "b10934"},
     "llama-swap": {"version": "255"},
@@ -58,6 +61,124 @@ class TeeLog:
                 f.write(line + "\n")
 
 
+def _detect_source_build(info, fs, log, settings_file="config/settings.yaml"):
+    """Classify an existing llama.cpp install as a source tree.
+
+    The UI machine card updates source builds in place (preserving every
+    CMakeCache flag); bootstrap must do the same instead of replacing them
+    with a prebuilt. Uses the current settings `llama_bin` (or the default
+    prebuilt dir) and only local commands.
+    """
+    try:
+        from installer.probe import _read_setting
+        from llamacpp_installer import probe_setup
+    except Exception as e:  # pragma: no cover - import shape safety
+        log(f"WARN source-build probe unavailable: {e}")
+        return None
+    cur = _read_setting(fs, settings_file, "llama_bin") or ""
+    default_bin = ("%USERPROFILE%\\llama.cpp\\bin" if info.os == "windows"
+                   else "~/llama.cpp/bin")
+    machine = {
+        "name": "local",
+        "ip": "127.0.0.1",
+        "os": info.os,
+        "role": "master",
+        "gpu_vendor": info.gpu_vendor or "none",
+        "detected": {"arch": info.arch},
+        "llama_bin": cur or default_bin,
+    }
+    try:
+        return probe_setup(machine, log=log)
+    except Exception as e:
+        log(f"WARN source-build probe failed: {e}")
+        return None
+
+
+def _backend_from_assets(names):
+    """Backend key for logs/manifest from the resolved asset names."""
+    blob = " ".join(names)
+    for key, token in (("cuda", "-cuda-"), ("rocm", "-rocm-"),
+                       ("vulkan", "-vulkan-"), ("sycl", "-sycl-"),
+                       ("metal", "-macos-"), ("cpu", "-cpu")):
+        if token in blob:
+            return key
+    return "cpu"
+
+
+def _resolve_latest(info, role, log):
+    """Resolve the newest installable release for this host.
+
+    Mirrors the UI machine-card installers: fetch the newest release that
+    has bin assets, then pick the asset set for this OS/GPU/glibc (and the
+    tag-number asset for llama-swap). Returns {tool: {version, assets,
+    base, dest, note}}. A failure logs a warning; probe then falls back to
+    DEFAULT_PINS (offline/reproducible builds).
+    """
+    machine = {
+        "os": info.os,
+        "gpu_vendor": info.gpu_vendor or "none",
+        "detected": {"arch": info.arch},
+    }
+    resolved = {}
+    from llamacpp_installer import (
+        _fetch_latest_assets as _fetch_lcpp,
+        _pick_assets as _pick_lcpp,
+        _driver_tuple,
+    )
+    def _fetch_retry(fetch, what):
+        last = None
+        for attempt in range(3):
+            try:
+                return fetch()
+            except Exception as e:      # transient GitHub/network errors
+                last = e
+                if attempt < 2:
+                    log(f"WARN {what} release lookup failed "
+                        f"({attempt + 1}/3): {e}; retrying")
+                    time.sleep(1.5 * (attempt + 1))
+        raise last
+
+    try:
+        tag, assets, base = _fetch_retry(_fetch_lcpp, "llama.cpp")
+        if not tag:
+            raise RuntimeError("no llama.cpp release with bin assets")
+        names, dest, note, _zip = _pick_lcpp(
+            machine, tag, assets, glibc=info.glibc,
+            driver_version=_driver_tuple(info.driver_version))
+        missing = [n for n in names if n not in assets]
+        if missing:
+            raise RuntimeError(f"llama.cpp assets missing upstream: {missing}")
+        resolved["llama.cpp"] = {
+            "version": tag, "assets": names, "base": base,
+            "dest": dest, "note": note,
+            "backend": _backend_from_assets(names),
+        }
+        log(f"latest llama.cpp: {tag} — {note}")
+    except Exception as e:
+        log(f"WARN llama.cpp latest lookup failed: {e}; "
+            f"using pinned {DEFAULT_PINS['llama.cpp']['version']}")
+
+    if role == "main":
+        try:
+            from swap_installer import (
+                _fetch_latest_assets as _fetch_swap,
+                _pick_asset as _pick_swap,
+            )
+            tag, assets, base = _fetch_retry(_fetch_swap, "llama-swap")
+            if not tag:
+                raise RuntimeError("no llama-swap release with assets")
+            name, dest, version = _pick_swap(machine, tag, assets)
+            resolved["llama-swap"] = {
+                "version": version, "assets": [name],
+                "base": base, "dest": dest,
+            }
+            log(f"latest llama-swap: {tag} ({name})")
+        except Exception as e:
+            log(f"WARN llama-swap latest lookup failed: {e}; "
+                f"using pinned {DEFAULT_PINS['llama-swap']['version']}")
+    return resolved
+
+
 def cmd_install(args) -> int:
     log = TeeLog(verbose=args.verbose or args.report,
                  path=args.log_file)
@@ -72,9 +193,13 @@ def cmd_install(args) -> int:
     # expected but nvidia-smi is absent the executor refuses below via
     # notes; nothing system-level is ever touched here.
     manifest = _read_manifest(log)
+    resolved = {} if args.offline else _resolve_latest(
+        info, args.role, log)
+    source_probe = _detect_source_build(info, fs, log)
     plan = probe(info, fs, run, role=args.role, pinned=DEFAULT_PINS,
                  force_settings=args.force_settings,
-                 manifest=manifest)
+                 manifest=manifest, resolved=resolved,
+                 source_probe=source_probe)
     if args.dry_run:
         log("dry-run plan:")
         for s in plan:

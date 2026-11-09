@@ -8,8 +8,10 @@ from . import files
 from .config import AgentConfig
 
 _FLAG_RE = re.compile(
-    r"^(GGML_CUDA:BOOL|GGML_HIP:BOOL|GGML_VULKAN:BOOL|GGML_RPC:BOOL|"
-    r"GGML_CUDA_FA:BOOL|GGML_CUDA_NCCL:BOOL|CMAKE_CUDA_ARCHITECTURES:|"
+    r"^(GGML_CUDA:BOOL|GGML_HIP:BOOL|GGML_VULKAN:BOOL|GGML_SYCL:BOOL|"
+    r"GGML_METAL:BOOL|GGML_OPENCL:BOOL|GGML_RPC:BOOL|GGML_CUDA_FA:BOOL|"
+    r"GGML_CUDA_NCCL:BOOL|GGML_BLAS:BOOL|GGML_NATIVE:BOOL|LLAMA_CURL:BOOL|"
+    r"CMAKE_BUILD_TYPE:STRING|CMAKE_CUDA_ARCHITECTURES:|"
     r"CMAKE_CUDA_COMPILER:FILEPATH|GGML_CUDA_COMPRESSION_MODE:STRING)")
 
 
@@ -25,20 +27,37 @@ def _run(args, timeout=120, cwd=None):
         raise AgentBuildError(str(e)) from e
 
 
+def _bin_meta(llama_bin):
+    """(version line, ggml-rpc-server present?) for a llama.cpp bin dir."""
+    base = Path(str(llama_bin or ""))
+    server = base / ("llama-server.exe" if os.name == "nt" else "llama-server")
+    rpc = base / ("ggml-rpc-server.exe" if os.name == "nt"
+                  else "ggml-rpc-server")
+    version = ""
+    if server.is_file():
+        v = _run([str(server), "--version"], timeout=60)
+        lines = ((v.stdout or "") + (v.stderr or "")).strip().splitlines()
+        version = lines[0] if lines else ""
+    return version, rpc.is_file()
+
+
 def probe(config: AgentConfig, llama_bin) -> dict:
     lb = str(llama_bin or "").strip()
     if not lb:
-        return {"kind": "missing", "llama_bin": None}
+        return {"kind": "missing", "llama_bin": None, "version": "",
+                "rpc": False, "build_dir": None, "src_root": None,
+                "flags": {}}
     p = files._path(config, lb)
     build = p.parent.parent if p.parent.name == "bin" else p.parent
-    out = {"kind": "prebuilt", "llama_bin": lb,
-           "build_dir": None, "src_root": None, "flags": {}}
+    out = {"kind": "prebuilt", "llama_bin": lb, "version": "",
+           "rpc": False, "build_dir": None, "src_root": None, "flags": {}}
     if not build.is_dir():
         out["kind"] = "missing"
         return out
     out["build_dir"] = str(build)
     if (build / "bin" / "llama-server").is_file():
         out["llama_bin"] = str(build / "bin")
+    out["version"], out["rpc"] = _bin_meta(out["llama_bin"])
     if not (build / "CMakeCache.txt").is_file():
         return out
     proc = _run(["git", "-C", str(build), "rev-parse", "--show-toplevel"],
@@ -87,6 +106,35 @@ def update(config: AgentConfig, src_root, build_dir, bin_path,
                 timeout=120)
     if proc.returncode != 0:
         raise AgentBuildError("git checkout failed: " + (proc.stderr or "")[-300:])
+    # A CMakeCache records the absolute CMAKE_COMMAND used when it was
+    # configured. Snap/venv/upgraded CMake leaves that path behind, and
+    # gmake then dies with `CMAKE_COMMAND: No such file or directory`
+    # before building anything. Reconfigure once with the cmake on PATH;
+    # CMake preserves every cached option while rewriting the Makefiles
+    # and CMAKE_COMMAND.
+    stale_cmake = ""
+    try:
+        cache = (build / "CMakeCache.txt").read_text(
+            encoding="utf-8", errors="replace")
+        m = re.search(r"^CMAKE_COMMAND:[^=]*=(.+)$", cache, re.M)
+        stale_cmake = m.group(1).strip() if m else ""
+    except OSError:
+        pass
+    if stale_cmake and not Path(stale_cmake).is_file():
+        home = str(src)
+        try:
+            h = re.search(r"^CMAKE_HOME_DIRECTORY:[^=]*=(.+)$",
+                          cache, re.M)
+            if h and Path(h.group(1).strip()).is_dir():
+                home = h.group(1).strip()
+        except Exception:
+            pass
+        proc = _run(["cmake", "-S", home, "-B", str(build)], timeout=900)
+        if proc.returncode != 0:
+            out = ((proc.stdout or "") + (proc.stderr or ""))[-1000:]
+            return {"ok": False,
+                    "error": f"cmake reconfigure failed after stale cache "
+                             f"({stale_cmake}): {out}"}
     if jobs is None:
         try:
             mem = 0
@@ -103,7 +151,12 @@ def update(config: AgentConfig, src_root, build_dir, bin_path,
     output = ((proc.stdout or "") + (proc.stderr or ""))[-1000:]
     if proc.returncode != 0:
         return {"ok": False, "error": f"build failed: {output}"}
+    rpc = binp.parent / "ggml-rpc-server"
+    if not rpc.is_file():
+        return {"ok": False,
+                "error": "build did not produce ggml-rpc-server "
+                         "(enable GGML_RPC=ON in the build cache)"}
     v = _run([str(binp), "--version"], timeout=120)
     version = ((v.stdout or "") + (v.stderr or "")).strip().splitlines()
     return {"ok": True, "version": version[0] if version else "",
-            "output": output}
+            "rpc": str(rpc), "output": output}

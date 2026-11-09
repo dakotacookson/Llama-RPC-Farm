@@ -1,8 +1,7 @@
-"""Pytest config: make `src/` importable and stub optional heavy deps.
+"""Pytest config: make `src/` importable.
 
 Most tests target pure logic (port allocation, command building, device
-mapping, script generation) and never touch the network. A few stub the
-SSH layer to assert port-targeted kill/reuse behavior without a real host.
+mapping, script generation) and never touch the network.
 """
 import os
 import sys
@@ -12,21 +11,6 @@ import types
 SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
 if SRC not in sys.path:
     sys.path.insert(0, SRC)
-
-# paramiko / openai / chainlit are optional for the unit tests; the modules
-# under test import paramiko at top of ssh_manager. Stub it so importing
-# rpc_manager doesn't fail when paramiko isn't installed in the test env.
-for _mod in ("paramiko",):
-    if _mod not in sys.modules:
-        try:
-            __import__(_mod)
-        except ImportError:
-            import types
-            stub = types.ModuleType(_mod)
-            stub.SSHException = type("SSHException", (Exception,), {})
-            stub.AutoAddPolicy = type("AutoAddPolicy", (), {})
-            stub.SSHClient = type("SSHClient", (), {})
-            sys.modules[_mod] = stub
 
 import pytest
 
@@ -75,3 +59,19 @@ def _default_engine_llama_cpp(monkeypatch, tmp_path):
     default = tmp_path / "settings.yaml"
     default.write_text("engine: llama_cpp\n")
     monkeypatch.setattr(engine_registry, "SETTINGS_FILE", str(default))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_access_settings(monkeypatch, tmp_path):
+    """Never let tests read the developer's live config/settings.yaml.
+
+    Access keys, private-model flags, and theme state are per-install
+    data; a test suite that silently changes behavior based on whose
+    machine it runs on is not a test. Empty settings = pre-Access farm
+    (gate open) for every test. A test that needs keys patches this
+    fixture's file or access.access_keys directly."""
+    import access
+    isolated = tmp_path / "access-settings.yaml"
+    isolated.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("FARM_SETTINGS_FILE", str(isolated))
+    monkeypatch.setattr(access, "_settings_path", lambda: str(isolated))

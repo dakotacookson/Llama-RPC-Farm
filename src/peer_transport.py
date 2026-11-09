@@ -1,7 +1,7 @@
 """Transport seam for peer operations.
 
 Agent-only architecture: main talks to every peer through the peer agent.
-Agents are installed from their own platform packages; there is no SSH
+Agents are installed from their own platform packages; there is no shell
 runtime transport.
 """
 import agent_client

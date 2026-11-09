@@ -107,8 +107,10 @@ class AgentHandler(BaseHTTPRequestHandler):
                 "arch": platform.machine(),
             }
         if path == "/version":
+            import sys as _sys
             return 200, {"agent_version": __version__,
-                         "protocol_version": PROTOCOL_VERSION}
+                         "protocol_version": PROTOCOL_VERSION,
+                         "packaged": bool(getattr(_sys, "frozen", False))}
         if path == "/capabilities":
             return 200, processes.capabilities(config)
         if path == "/info":
@@ -295,6 +297,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return 400, {"error": str(e)}
         if path == "/agent/update":
             return self._agent_update(body)
+        if path == "/agent/update-binary":
+            return self._agent_update_binary(body)
         if path == "/build/update":
             try:
                 return 200, build.update(
@@ -352,9 +356,13 @@ class AgentHandler(BaseHTTPRequestHandler):
         import time
         time.sleep(1.5)
         try:
-            os.execv(sys.executable, [
-                sys.executable, "-m", "llama_peer_agent",
-                "--host", config.host, "--port", str(config.port)])
+            if getattr(sys, "frozen", False):
+                argv = [sys.executable, "--host", config.host,
+                        "--port", str(config.port)]
+            else:
+                argv = [sys.executable, "-m", "llama_peer_agent",
+                        "--host", config.host, "--port", str(config.port)]
+            os.execv(sys.executable, argv)
         except Exception as e:
             log.error("agent self-restart failed: %s", e)
 
@@ -393,6 +401,60 @@ class AgentHandler(BaseHTTPRequestHandler):
         threading.Thread(target=self._restart_after_update,
                          args=(config,), daemon=True).start()
         return 200, {"ok": True, "installed": version or name,
+                     "restarting": True}
+
+    def _agent_update_binary(self, body: dict):
+        """Standalone agents replace their own executable from a GitHub
+        release asset, then re-exec. Wheels are only for pip installs."""
+        config = self.server.config
+        if not getattr(sys, "frozen", False):
+            return 400, {"error": "not a standalone agent"}
+        import os
+        import shutil
+        import tempfile
+        import urllib.request
+        from pathlib import Path
+        from .install import _url
+
+        try:
+            url = _url(body.get("url"))
+        except Exception as e:
+            return 400, {"error": f"invalid url: {e}"}
+        version = str(body.get("version") or "").strip()
+        expected = str(body.get("sha256") or "").strip().lower()
+        dest = Path(sys.executable).resolve()
+        try:
+            fd, tmp = tempfile.mkstemp(prefix=".agent-update-",
+                                       dir=str(dest.parent))
+            os.close(fd)
+            with urllib.request.urlopen(url, timeout=180) as resp, \
+                    open(tmp, "wb") as out:
+                shutil.copyfileobj(resp, out)
+            size = os.path.getsize(tmp)
+            if size < 1024 * 1024 or size > 200 * 1024 * 1024:
+                raise RuntimeError(f"unexpected agent size: {size} bytes")
+            if expected:
+                import hashlib
+                with open(tmp, "rb") as f:
+                    actual = hashlib.sha256(f.read()).hexdigest()
+                if actual != expected:
+                    raise RuntimeError("sha256 mismatch")
+            os.chmod(tmp, 0o755)
+            backup = dest.with_name(dest.name + ".old")
+            try:
+                os.replace(dest, backup)
+            except OSError:
+                pass
+            os.replace(tmp, dest)
+        except Exception as e:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+            return 500, {"error": f"agent binary update failed: {e}"}
+        threading.Thread(target=self._restart_after_update,
+                         args=(config,), daemon=True).start()
+        return 200, {"ok": True, "installed": version or dest.name,
                      "restarting": True}
 
     def _send_speedtest(self):

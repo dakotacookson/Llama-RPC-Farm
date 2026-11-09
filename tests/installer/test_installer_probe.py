@@ -122,6 +122,7 @@ class TestPresentCurrent:
         good = home + "/llama.cpp/bin/llama-server"
         stub_fs.add_file(good, "#!/bin/sh\necho llama.cpp\n")
         stub_fs.add_file("__ver__:" + good, "b10934 (test)")
+        stub_fs.add_file(home + "/llama.cpp/bin/ggml-rpc-server", "#!/bin/sh\n")
         swap = home + "/.local/bin/llama-swap"
         stub_fs.add_file(swap, "#!/bin/sh\n")
         stub_fs.add_file("__ver__:" + swap, "255")
@@ -143,6 +144,16 @@ class TestPresentCurrent:
         keys = {s.key for s in writes}
         assert "llama_bin" in keys
         assert "binary" in keys      # swap.yaml
+
+    def test_swap_binary_prefill_is_the_file_not_the_dir(self, stub_fs):
+        # Fresh install: InstallTool dest is ~/.local/bin, but swap.yaml
+        # `binary` must point at ~/.local/bin/llama-swap (the executable).
+        plan = probe(sysinfo(), stub_fs, StubRun({}))
+        writes = [s for s in plan if isinstance(s, probe_mod.WriteSettings)
+                  and s.key == "binary"]
+        assert writes
+        assert writes[0].value.endswith("/.local/bin/llama-swap")
+        assert not writes[0].value.endswith("/.local/bin")
 
     def test_user_value_kept(self, stub_fs):
         good, swap = self._setup(stub_fs)
@@ -187,6 +198,7 @@ class TestSettingsMerge:
         good = home + "/llama.cpp/bin/llama-server"
         stub_fs.add_file(good, "#!/bin/sh\n")
         stub_fs.add_file("__ver__:" + good, "b10934")
+        stub_fs.add_file(home + "/llama.cpp/bin/ggml-rpc-server", "#!/bin/sh\n")
         stub_fs.add_file("config/settings.yaml", text)
         return probe(sysinfo(), stub_fs, StubRun({}))
 
@@ -237,6 +249,7 @@ class TestIdempotency:
         good = home + "/llama.cpp/bin/llama-server"
         stub_fs.add_file(good, "#!/bin/sh\n")
         stub_fs.add_file("__ver__:" + good, "b10934")
+        stub_fs.add_file(home + "/llama.cpp/bin/ggml-rpc-server", "#!/bin/sh\n")
         swap = home + "/.local/bin/llama-swap"
         stub_fs.add_file(swap, "#!/bin/sh\n")
         stub_fs.add_file("__ver__:" + swap, "255")

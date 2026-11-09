@@ -13,15 +13,21 @@ The repo-root `VERSION` file is the floor for the version line, in
 next patch version on that line and is published as an immutable tag:
 
 ```
-release-0.1.1, release-0.1.2, release-0.1.3, ...
+release-1.0.0, release-1.0.1, release-1.0.2, ...
 ```
 
 The next number is computed at build time from already-published
 `release-*` tags, so a number is never reused and nothing is overwritten.
-Bump `VERSION` (e.g. to `0.2.0`) to start a new minor line; the next build
-becomes `release-0.2.1`. Artifact filenames and `.deb` control versions use
-the bare computed version (e.g. `0.1.1`), so every download is traceable to
+Bump `VERSION` (e.g. to `1.1.0`) to start a new minor line; the next build
+becomes `release-1.1.0`. Artifact filenames and `.deb` control versions use
+the bare computed version (e.g. `1.0.0`), so every download is traceable to
 a release.
+
+Every build job runs `scripts/stamp_version.py` with the computed version
+before packaging. That writes the same `X.Y.Z` into `VERSION`,
+`peer_agent/pyproject.toml`, and `peer_agent/llama_peer_agent/__init__.py`.
+The app does **not** use local source versions to decide peer updates: it
+live-checks GitHub releases and uses the highest published `release-*` tag.
 
 ## Orchestration
 
@@ -40,18 +46,20 @@ Each build job produces both the app and the peer agent:
 
 | Platform | App artifacts | Agent artifacts |
 |---|---|---|
-| Linux | `.deb` | `.deb` |
-| macOS | `.pkg` | `.pkg` |
-| Windows | `setup.exe` | `setup.exe` |
+| Linux | `.deb` | `.deb` + `llama-peer-agent-linux-x86_64` |
+| macOS | `.pkg` | `.pkg` + `llama-peer-agent-macos-arm64` |
+| Windows | `setup.exe` | `setup.exe` + `llama-peer-agent-windows-x64.exe` |
 
-Each platform also emits a SHA-256 checksum file.
+The Linux job also publishes the universal pip wheel
+`llama_rpc_farm_agent-<version>-py3-none-any.whl`. Each platform also emits
+a SHA-256 checksum file.
 
 ## Publishing
 
 The publish job runs once, after all builds pass:
 
 1. Creates an **immutable per-build prerelease** tagged `release-<version>`
-   (e.g. `release-0.1.1`) and uploads every platform asset to it, with a
+   (e.g. `release-1.0.0`) and uploads every platform asset to it, with a
    generated body: version, commit link, changelog since the previous roll,
    download names per platform, checksum note, and quick-start instructions.
    Older versioned releases are never deleted, so every historical build
@@ -65,12 +73,23 @@ Because the publish step is gated on `needs: [linux, macos, windows]` and
 the workflow serializes on the `rolling-main` concurrency group, a failed
 build leaves the previous release untouched — no partial releases.
 
+## Agent updates
+
+The app resolves the newest release that carries the machine's raw agent
+asset (or the universal wheel). Standalone packaged agents update through
+`/agent/update-binary`; pip-installed agents update through
+`/agent/update` with the release wheel. The installed release is recorded
+per machine so an asset whose internal build number lags the release tag
+does not create an update loop.
+
 ## First-run automation
 
 Packaged binaries self-register a login service (systemd user unit,
 launchd LaunchAgent, or Windows Scheduled Task) and the Windows agent adds
 inbound rules for TCP 8198 + UDP 8199. Unpaired agents open a bounded
-pairing window and are enrolled by the app with its farm token. Opt out with
+pairing window and are enrolled by the app with its auto-managed farm
+token (stored only in the encrypted vault; there is no Settings override).
+Opt out with
 `LLAMA_FARM_NO_SERVICE=1` / `PEER_AGENT_NO_SERVICE=1`.
 
 ## Signing & notarization
@@ -105,6 +124,11 @@ warn until SmartScreen reputation accrues; an **EV** certificate or
 Microsoft Trusted Signing improves this immediately. HSM/cloud signing
 (Azure Trusted Signing, DigiCert KeyLocker) needs a different signtool
 invocation than the `.pfx` path used here.
+
+Without the two secrets the build is unsigned and SmartScreen shows
+"Windows protected your PC". See [windows-signing.md](windows-signing.md)
+for the safe "More info → Run anyway" path, hash verification, and the
+certificate options (including free SignPath signing for open source).
 
 ## Local release smoke test
 

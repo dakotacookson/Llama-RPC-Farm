@@ -1,8 +1,8 @@
 """LAN identity helpers + peer-agent discovery (agent-only).
 
-There is no SSH scanning: peers are found through the peer agent's UDP
-responder, and MAC/IP healing uses the local ARP cache. Identity is the
-MAC, so DHCP re-leases do not break a configured machine.
+Peers are found through the peer agent's UDP responder; MAC/IP healing
+uses the local ARP cache. Identity is the MAC, so DHCP re-leases do not
+break a configured machine.
 """
 import ipaddress
 import subprocess
@@ -121,9 +121,8 @@ def discover_agents(port=8199, timeout=2.0, include_known=True):
             continue
         hw = a.get("hardware") or {}
         results.append({
-            "ip": ip, "port": 0, "ssh_port_open": False,
+            "ip": ip, "port": 0,
             "ping_alive": None, "banner": None, "os": a.get("os"),
-            "ssh_ok": False, "auth_failed": False,
             "hostname": a.get("hostname"),
             "gpus": hw.get("gpu_names") or [],
             "gpu_vendor": hw.get("gpu_vendor") or None,
@@ -141,7 +140,7 @@ def discover_agents(port=8199, timeout=2.0, include_known=True):
         })
     results.sort(key=lambda r: (r.get("hostname") or "", r.get("ip") or ""))
     return {"subnet": "peer-agent", "port": 0, "alive": 0,
-            "ssh_hosts": 0, "unknown": 0, "agents": len(results),
+            "unknown": 0, "agents": len(results),
             "results": results}
 
 

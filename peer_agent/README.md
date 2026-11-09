@@ -1,9 +1,8 @@
 # llama-rpc-farm-agent
 
-Optional tiny agent for Llama RPC Farm peers. It is **not required** — the
-farm keeps working over SSH. Use it when you want deterministic lifecycle
-control, consistent process listings on Linux/Windows, and less per-action
-SSH.
+Tiny agent for Llama RPC Farm peers. It is the **only** runtime
+transport: every configured-machine operation (RPC + llama-server
+lifecycle, files, logs, services, metrics, installs) goes through it.
 
 ## What it does
 
@@ -63,8 +62,9 @@ export PEER_AGENT_DISCOVERY_PORT="8199"
 Bind only to your LAN/VPN. Do not port-forward this service. The token is
 the boundary; the agent exposes no arbitrary shell endpoint.
 
-The agent is agent-first for all configured-machine operations. SSH is
-used only for first-time bootstrap/recovery and optional SSH discovery.
+The agent is the only runtime path for all configured-machine
+operations. Installing it is a one-time platform-package step; there is
+no shell fallback.
 
 ## Master-side setup
 
@@ -74,12 +74,13 @@ Set the same token on the farm master:
 .venv/bin/python scripts/set-agent-token.py <machine-name> '<token>'
 ```
 
-Then set `transport: auto` (default), `transport: agent` (require agent),
-or `transport: ssh` (never use agent) on that machine. `auto` probes
-`/health` and falls back to SSH if the agent is unreachable.
+The legacy `transport:` value is accepted for config compatibility but no
+longer changes behaviour: the app always uses the agent. A machine whose
+agent is unreachable is reported offline; there is no shell fallback.
 
-Native RDMA/`rdma_cm` peers should stay on `transport: ssh` for now: the
-agent's readiness check is TCP-based.
+Native RDMA/`rdma_cm` peers are supported through the agent's typed RPC
+lifecycle; readiness uses the agent's process list when no TCP listener
+exists.
 
 ## systemd (Linux)
 

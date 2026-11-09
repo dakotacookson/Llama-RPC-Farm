@@ -33,6 +33,9 @@ FAULTS = {
     "MTP context creation failed": "mtp",
     "doesn't contain MTP layers": "mtp",
     "failed to create MTP context": "mtp",
+    # llama-server cannot reach a peer's rpc-server (port closed/blocked)
+    "D:/a/llama.cpp/llama.cpp/ggml/src/ggml-rpc/ggml-rpc.cpp:653: "
+    "Failed to connect to 192.168.1.104:51427": "rpc_connect",
 }
 
 

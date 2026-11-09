@@ -247,12 +247,14 @@ def test_build_probe_and_update(monkeypatch, tmp_path):
     (build / "bin").mkdir(parents=True)
     (build / "CMakeCache.txt").write_text("GGML_CUDA:BOOL=ON\n")
     (build / "bin" / "llama-server").write_text("x")
+    (build / "bin" / "ggml-rpc-server").write_text("x")
     monkeypatch.setattr(agent_build.subprocess, "run",
                         lambda *a, **k: type("P", (), {
                             "returncode": 0, "stdout": str(tmp_path) + "\n",
                             "stderr": ""})())
     p = agent_build.probe(c, str(build / "bin" / "llama-server"))
     assert p["kind"] == "source" and p["flags"]["GGML_CUDA"] == "ON"
+    assert p["rpc"] is True and p["version"]
     assert agent_build.probe(c, "")["kind"] == "missing"
     def fake_run(args, **k):
         cmd = " ".join(args)
@@ -613,6 +615,8 @@ def test_agent_client_error_and_branch_paths(monkeypatch):
     assert ac.transport({"transport": "bad"}) == "agent"
     monkeypatch.setattr(ac.secrets_vault, "get_machine_agent_token",
                         lambda m: (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setattr(ac.secrets_vault, "get_farm_agent_token",
+                        lambda: "")
     monkeypatch.setenv("AGENT_TOKEN", "a")
     assert ac._token({}) == "a"
     monkeypatch.delenv("AGENT_TOKEN")
@@ -862,6 +866,8 @@ def test_build_remaining(monkeypatch, tmp_path):
         out = "v" if "--version" in cmd else ""
         return type("P", (), {"returncode": 0, "stdout": out,
                               "stderr": ""})()
+    (build / "bin").mkdir(exist_ok=True)
+    (build / "bin" / "ggml-rpc-server").write_text("x")
     monkeypatch.setattr(b.subprocess, "run", run)
     assert b.update(c, str(tmp_path), str(build),
                     str(build / "bin" / "llama-server"), None)["ok"] is True
@@ -1123,3 +1129,33 @@ def test_metrics_amd_intel_apple_windows(monkeypatch):
 def test_agent_client_token_override():
     import agent_client as ac
     assert ac._token({"name": "x", "_agent_token": "typed"}) == "typed"
+
+
+def test_main_loads_persisted_agent_env(monkeypatch, tmp_path):
+    """A token saved by pairing (save_token -> agent.env) and binary paths
+    written there must be picked up on the next agent start; real env vars
+    still win over the file."""
+    from llama_peer_agent import __main__ as agent_main
+    from llama_peer_agent import config as agent_config
+    from llama_peer_agent import selfservice
+
+    env_file = tmp_path / "agent.env"
+    env_file.write_text("PEER_AGENT_TOKEN=paired-token\n"
+                        "PEER_AGENT_LLAMA_BIN=/opt/llama/llama-server\n",
+                        encoding="utf-8")
+    monkeypatch.setattr(agent_config, "env_file_path", lambda: env_file)
+    monkeypatch.setattr(selfservice, "maybe_auto_install", lambda argv=None: None)
+    for k in ("PEER_AGENT_TOKEN", "AGENT_TOKEN", "PEER_AGENT_LLAMA_BIN"):
+        monkeypatch.delenv(k, raising=False)
+    seen = {}
+    monkeypatch.setattr(agent_main, "serve",
+                        lambda c: seen.setdefault("config", c))
+
+    assert agent_main.main([]) == 0
+    assert seen["config"].token == "paired-token"
+    assert seen["config"].llama_bin == "/opt/llama/llama-server"
+
+    seen.clear()
+    monkeypatch.setenv("PEER_AGENT_TOKEN", "env-token")
+    assert agent_main.main([]) == 0
+    assert seen["config"].token == "env-token"

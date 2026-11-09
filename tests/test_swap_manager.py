@@ -269,48 +269,9 @@ def test_duplicate_swap_claims_ignores_non_swap_and_cross_engine():
     assert swap_manager.duplicate_swap_claims(groups) == []
 
 
-# ---------------- remote launcher: no reset loop on retry -------------------
-
-def _run_wrapper_with_mock_ssh(script_text, tmp_path):
-    import os as _os
-    import stat as _stat
-    import subprocess as _sp
-    fakebin = tmp_path / "fakebin"
-    fakebin.mkdir(exist_ok=True)
-    (fakebin / "sshpass").write_text(
-        "#!/bin/bash\nif [ \"$1\" = \"-p\" ]; then shift 2; fi\nexec \"$@\"\n",
-        encoding="utf-8")
-    (fakebin / "ssh").write_text("#!/bin/bash\nexit 0\n",
-                                 encoding="utf-8")
-    (fakebin / "scp").write_text("#!/bin/bash\nexit 0\n",
-                                 encoding="utf-8")
-    for exe in ("sshpass", "ssh", "scp"):
-        _os.chmod(fakebin / exe, 0o755)
-    sh = tmp_path / "wrapper.sh"
-    sh.write_text(script_text, encoding="utf-8")
-    env = dict(_os.environ, PATH=f"{fakebin}{_os.pathsep}{_os.environ['PATH']}",
-               SSH_PASS="x")
-    # reuse path loops `sleep 5` forever: 124 == still alive in it.
-    # Python-managed timeout avoids relying on GNU coreutils `timeout`,
-    # which macOS does not provide by default.
-    try:
-        return _sp.run(["bash", str(sh)], capture_output=True,
-                       text=True, env=env, timeout=8)
-    except _sp.TimeoutExpired as e:
-        stdout = e.stdout or ""
-        stderr = e.stderr or ""
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode(errors="replace")
-        if isinstance(stderr, bytes):
-            stderr = stderr.decode(errors="replace")
-        return types.SimpleNamespace(returncode=124,
-                                     stdout=stdout,
-                                     stderr=stderr)
-
-
 def test_windows_single_peer_auto_forces_rpc(monkeypatch, tmp_path):
     """Windows remotes are never local-execution targets (no SMB over
-    SSH-launch sessions): single-peer auto resolves rpc even with all
+    remote-launch sessions): single-peer auto resolves rpc even with all
     chips on the Windows box."""
     peer = _machine("winbox", "10.0.0.124", os="windows")
     model = _model("nomic-1", servers=["aibox1", "winbox"],

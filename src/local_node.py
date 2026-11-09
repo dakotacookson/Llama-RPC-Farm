@@ -118,7 +118,7 @@ def ensure_local_master():
     return cfg.machines.add({
         "name": name,
         "ip": my_ip,
-        "username": "",       # local machine: no SSH needed
+        "username": "",       # local machine: no remote login needed
         "password": "",
         "role": "master",
         "os": local_os(),

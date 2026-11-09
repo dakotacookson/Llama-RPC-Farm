@@ -25,18 +25,16 @@ import shutil
 import socket
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
 import urllib.error
 import urllib.request
-import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 TOKEN = "e2e-agent-token-0123456789"
-MODEL_REPO = "bartowski/Qwen2.5-0.5B-Instruct-GGUF"
-MODEL_FILE = "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
+MODEL_REPO = "unsloth/Qwen3-0.6B-GGUF"
+MODEL_FILE = "Qwen3-0.6B-Q4_K_M.gguf"
 APP_PORT = 8199
 GATEWAY_PORT = 8090
 SWAP_PORT = 8080
@@ -92,12 +90,16 @@ def http(method, url, body=None, token=None, timeout=30):
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, data=data, headers=headers,
                                  method=method)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        raw = r.read() or b"{}"
-        try:
-            return json.loads(raw.decode())
-        except Exception:
-            return {"raw": raw.decode("utf-8", "replace")}
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read() or b"{}"
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:1200]
+        raise RuntimeError(f"HTTP {e.code} {method} {url}: {detail}") from e
+    try:
+        return json.loads(raw.decode())
+    except Exception:
+        return {"raw": raw.decode("utf-8", "replace")}
 
 
 def wait_json(url, timeout, token=None, what="", ok=lambda d: True):
@@ -114,121 +116,6 @@ def wait_json(url, timeout, token=None, what="", ok=lambda d: True):
     raise RuntimeError(f"{what or url} did not become ready: {last}")
 
 
-def download(url, dest):
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists() and dest.stat().st_size > 0:
-        return dest
-    log(f"download {dest.name}")
-    req = urllib.request.Request(url, headers={"User-Agent": "llama-farm-e2e"})
-    with urllib.request.urlopen(req, timeout=300) as r, open(dest, "wb") as f:
-        shutil.copyfileobj(r, f)
-    return dest
-
-
-def extract_tar(path, dest, strip=0):
-    with tarfile.open(path, "r:gz") as tar:
-        for item in tar.getmembers():
-            parts = Path(item.name).parts[strip:] if strip else Path(item.name).parts
-            if not parts:
-                continue
-            target = dest.joinpath(*parts)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if item.issym():
-                # upstream ships lib*.so.0 -> lib*.so.0.x.y symlinks; skipping
-                # them leaves llama-server unable to find its shared libs.
-                try:
-                    if target.exists() or target.is_symlink():
-                        target.unlink()
-                    os.symlink(item.linkname, target)
-                except OSError:
-                    pass
-                continue
-            if item.islnk():
-                try:
-                    os.link(dest.joinpath(*Path(item.linkname).parts[strip:])
-                            if strip else dest.joinpath(*Path(item.linkname).parts),
-                            target)
-                except OSError:
-                    pass
-                continue
-            if not item.isfile():
-                continue
-            src = tar.extractfile(item)
-            if src is None:
-                continue
-            with open(target, "wb") as out:
-                shutil.copyfileobj(src, out)
-
-
-def extract_zip(path, dest, strip=0):
-    with zipfile.ZipFile(path) as zf:
-        for info in zf.infolist():
-            if info.is_dir():
-                continue
-            parts = Path(info.filename).parts[strip:] if strip else Path(info.filename).parts
-            if not parts:
-                continue
-            target = dest.joinpath(*parts)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(info) as src, open(target, "wb") as out:
-                shutil.copyfileobj(src, out)
-
-
-def find_binary(root, name):
-    for p in Path(root).rglob(name):
-        if p.is_file():
-            return p
-    return None
-
-
-def install_llama_cpp(work):
-    import llamacpp_installer as li
-    machine = {"os": _os_name(), "gpu_vendor": "cpu",
-               "detected": {"arch": _arch()}}
-    tag, assets, base = li._fetch_latest_assets()
-    names, dest, note, is_zip = li._pick_assets(machine, tag, assets, None)
-    out = work / "llama-cpp"
-    out.mkdir(parents=True, exist_ok=True)
-    dl = work / "downloads"
-    for name in names:
-        p = download(f"{base}/{name}", dl / name)
-        if is_zip:
-            extract_zip(p, out, 0)
-        else:
-            extract_tar(p, out, 1)
-    if not _is_win():
-        for p in out.rglob("*"):
-            if p.is_file():
-                try:
-                    os.chmod(p, 0o755)
-                except OSError:
-                    pass
-    log(f"llama.cpp {tag}: {note}")
-    return out
-
-
-def install_swap(work):
-    import swap_installer as si
-    machine = {"os": _os_name(), "gpu_vendor": "cpu",
-               "detected": {"arch": _arch()}}
-    tag, assets, base = si._fetch_latest_assets()
-    name, dest, note = si._pick_asset(machine, tag, assets)
-    out = work / "llama-swap"
-    out.mkdir(parents=True, exist_ok=True)
-    p = download(f"{base}/{name}", work / "downloads" / name)
-    if name.endswith(".zip"):
-        extract_zip(p, out, 0)
-    else:
-        extract_tar(p, out, 0)
-    binary = find_binary(out, "llama-swap.exe" if _is_win() else "llama-swap")
-    if not binary:
-        raise RuntimeError(f"llama-swap binary missing from {name}")
-    if not _is_win():
-        binary.chmod(0o755)
-    log(f"llama-swap {tag}: {note}")
-    return binary
-
-
 def download_model(work):
     from huggingface_hub import hf_hub_download
     log(f"model {MODEL_REPO}/{MODEL_FILE}")
@@ -242,16 +129,23 @@ def download_model(work):
     return dest
 
 
-def write_config(work, host, llama_dir, swap_bin, model_path):
+def write_config(work, host, model_path, gpu_vendor="cpu", ngl=0):
+    """Write the minimum config needed to boot the app.
+
+    llama.cpp and llama-swap are intentionally NOT written here: the E2E
+    test drives the app's own installer flow (/api/tools/install/sync) and
+    lets the app persist their real paths.
+    """
     import yaml
     data = work / "data"
     cfg_dir = data / "config"
     (cfg_dir / "models").mkdir(parents=True, exist_ok=True)
     (work / "swap").mkdir(parents=True, exist_ok=True)
+    (work / "models").mkdir(parents=True, exist_ok=True)
 
     settings = {
         "model_dir": str(work / "models"),
-        "llama_bin": str(llama_dir),
+        "llama_bin": "",
         "theme_family": "nord",
         "theme_mode": "dark",
         "engine": "llama_cpp",
@@ -262,16 +156,17 @@ def write_config(work, host, llama_dir, swap_bin, model_path):
     machine = {
         "id": host, "name": host, "ip": "127.0.0.1", "username": "",
         "password": "", "port": 22, "role": "master", "os": _os_name(),
-        "rpc_port": 50052, "gpu": "", "gpu_vendor": "cpu",
-        "llama_bin": str(llama_dir), "ram_total_gb": 8,
+        "rpc_port": 50052, "gpu": "", "gpu_vendor": gpu_vendor,
+        "llama_bin": "", "ram_total_gb": 8,
         "expose": {"mode": "both", "gpus": []},
     }
     (cfg_dir / "machines.yaml").write_text(
-        yaml.safe_dump({"machines": [machine]}, sort_keys=False),
+        yaml.safe_dump({"machines": [machine]}, skip_keys=False) if False
+        else yaml.safe_dump({"machines": [machine]}, sort_keys=False),
         encoding="utf-8")
 
     swap_cfg = {
-        "binary": str(swap_bin),
+        "binary": "llama-swap",
         "listen_port": SWAP_PORT,
         "config_path": str(work / "swap" / "config.yaml"),
         "host_name": host,
@@ -284,11 +179,10 @@ def write_config(work, host, llama_dir, swap_bin, model_path):
         "base_path": str(model_path),
         "tensor_split_mode": "auto", "tensor_split": "",
         "fit_margin": 1024, "fit_ram_allow": 1024,
-        "llama_bin": str(llama_dir),
         "servers": [host], "group": "", "pinned": False, "ttl": 0,
         "device_order": "", "device_order_policy": "as-selected",
         "expose": {},
-        "flags": {"ctx-size": 2048, "n-gpu-layers": 0, "parallel": 1},
+        "flags": {"ctx-size": 2048, "n-gpu-layers": ngl, "parallel": 1},
         "reset": False, "variants": [],
     }
     (cfg_dir / "models" / "e2e-tiny.yaml").write_text(
@@ -314,12 +208,28 @@ def stop_tree(proc):
 
 
 def isolate_env(work):
-    """Keep the app/agent away from the runner's real user services."""
+    """Keep the app/agent/engines away from the runner's real user dirs."""
     home = work / "home"
     (home / ".config").mkdir(parents=True, exist_ok=True)
     bindir = work / "bin"
     bindir.mkdir(parents=True, exist_ok=True)
-    if not _is_win():
+    env = {
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+        "PATH": f"{bindir}{os.pathsep}" + (os.environ.get("PATH") or ""),
+    }
+    if _is_win():
+        # The Windows installer paths use %USERPROFILE% / APPDATA / TEMP, not
+        # HOME. Redirect them or the E2E installs engines into the runner's
+        # real profile.
+        for key, sub in (("USERPROFILE", "home"),
+                         ("APPDATA", "home/AppData/Roaming"),
+                         ("LOCALAPPDATA", "home/AppData/Local"),
+                         ("TEMP", "tmp"), ("TMP", "tmp")):
+            path = work / sub
+            path.mkdir(parents=True, exist_ok=True)
+            env[key] = str(path)
+    else:
         # swap_manager writes ~/.config/systemd/user/llama-swap.service and
         # calls systemctl --user. Point HOME at the sandbox and stub
         # systemctl so it falls back to a detached llama-swap process.
@@ -327,24 +237,30 @@ def isolate_env(work):
             stub = bindir / name
             stub.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
             stub.chmod(0o755)
-    return {
-        "HOME": str(home),
-        "XDG_CONFIG_HOME": str(home / ".config"),
-        "PATH": f"{bindir}{os.pathsep}" + (os.environ.get("PATH") or ""),
-    }
+    return env
 
 
 def main():
     global APP_PORT, GATEWAY_PORT, SWAP_PORT, AGENT_PORT
     ap = argparse.ArgumentParser()
-    ap.add_argument("--app", required=True)
-    ap.add_argument("--agent", required=True)
+    ap.add_argument("--app", default="")
+    ap.add_argument("--agent", default="")
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--app-port", type=int, default=APP_PORT)
     ap.add_argument("--gateway-port", type=int, default=GATEWAY_PORT)
     ap.add_argument("--swap-port", type=int, default=SWAP_PORT)
     ap.add_argument("--agent-port", type=int, default=AGENT_PORT)
+    ap.add_argument("--source", action="store_true",
+                    help="run app/agent from this checkout (self-hosted GPU "
+                         "runners) instead of installed executables")
+    ap.add_argument("--gpu-vendor", default="cpu",
+                    choices=["cpu", "nvidia", "amd", "intel", "apple", "auto"],
+                    help="backend to install/test (auto detects locally)")
+    ap.add_argument("--n-gpu-layers", type=int, default=None,
+                    help="llama.cpp ngl (default: 0 cpu, 99 gpu)")
     args = ap.parse_args()
+    if not args.source and (not args.app or not args.agent):
+        ap.error("--app and --agent are required unless --source is used")
     used = set()
     APP_PORT = _free_port(args.app_port, used)
     GATEWAY_PORT = _free_port(args.gateway_port, used)
@@ -358,15 +274,21 @@ def main():
     sys.path.insert(0, str(ROOT / "src"))
 
     host = socket.gethostname().split(".")[0].lower()
+    gpu_vendor = args.gpu_vendor
+    if gpu_vendor == "auto":
+        import gpu_vendor as _gv
+        gpu_vendor = _gv.detect_vendor_local() or "cpu"
+    ngl = args.n_gpu_layers
+    if ngl is None:
+        ngl = 0 if gpu_vendor == "cpu" else 99
+    log(f"backend={gpu_vendor} ngl={ngl}")
     app_proc = agent_proc = None
     app_log = open(work / "app.log", "w", encoding="utf-8")
     agent_log = open(work / "agent.log", "w", encoding="utf-8")
     try:
         log(f"platform={_os_name()} arch={_arch()} host={host}")
-        llama_dir = install_llama_cpp(work)
-        swap_bin = install_swap(work)
         model_path = download_model(work)
-        data = write_config(work, host, llama_dir, swap_bin, model_path)
+        data = write_config(work, host, model_path, gpu_vendor, ngl)
 
         # ---- agent package ----
         isolated = isolate_env(work)
@@ -379,9 +301,16 @@ def main():
                          PEER_AGENT_PAIRING="0",
                          PEER_AGENT_LOG_DIR=str(work / "agent-logs"),
                          PEER_AGENT_STATE_DIR=str(work / "agent-state"))
+        if args.source:
+            pp = str(ROOT / "peer_agent")
+            agent_env["PYTHONPATH"] = (
+                pp + os.pathsep + (agent_env.get("PYTHONPATH") or ""))
+            agent_cmd = [sys.executable, "-m", "llama_peer_agent"]
+        else:
+            agent_cmd = [args.agent]
         agent_proc = subprocess.Popen(
-            [args.agent, "--host", "127.0.0.1", "--port", str(AGENT_PORT),
-             "--token", TOKEN, "--no-discovery"],
+            agent_cmd + ["--host", "127.0.0.1", "--port", str(AGENT_PORT),
+                         "--token", TOKEN, "--no-discovery"],
             env=agent_env, stdout=agent_log, stderr=subprocess.STDOUT)
         health = wait_json(f"http://127.0.0.1:{AGENT_PORT}/health", 60,
                            token=TOKEN, what="agent /health")
@@ -396,13 +325,39 @@ def main():
                        GATEWAY_PORT=str(GATEWAY_PORT),
                        GATEWAY_HOST="127.0.0.1",
                        GATEWAY_UPSTREAM=f"http://127.0.0.1:{SWAP_PORT}",
-                       LLAMA_FARM_NO_SERVICE="1")
+                       LLAMA_FARM_NO_SERVICE="1",
+                       # Keep the E2E's declared CPU machine authoritative;
+                       # otherwise the host's real GPUs get auto-detected and
+                       # a CPU llama.cpp build is launched with --device CUDA*.
+                       LLAMA_FARM_NO_HW_WATCH="1")
+        if args.source:
+            app_cmd = [sys.executable, "-m", "uvicorn", "app:app",
+                       "--app-dir", str(ROOT / "src"), "--host", "0.0.0.0",
+                       "--port", str(APP_PORT)]
+        else:
+            app_cmd = [args.app]
         app_proc = subprocess.Popen(
-            [args.app], env=app_env, stdout=app_log,
+            app_cmd, cwd=str(data), env=app_env, stdout=app_log,
             stderr=subprocess.STDOUT)
         wait_json(f"http://127.0.0.1:{APP_PORT}/api/machines", 90,
                   what="app UI")
         log("app UI OK")
+
+        # ---- install llama.cpp + llama-swap THROUGH THE APP ----
+        install = http(
+            "POST", f"http://127.0.0.1:{APP_PORT}/api/tools/install/sync",
+            body={"machine": host, "role": "main",
+                  "tools": ["llama.cpp", "llama-swap"], "dry_run": False},
+            timeout=1200)
+        if install.get("failures"):
+            raise RuntimeError(f"app install failed: {install['failures']}")
+        installed = set(install.get("installed") or [])
+        assert {"llama.cpp", "llama-swap"} <= installed, install
+        log(f"app installed engines: {sorted(installed)}")
+        verify = http("GET", f"http://127.0.0.1:{APP_PORT}/api/tools/verify")
+        for tool in ("llama.cpp", "llama-swap"):
+            assert verify[tool]["found"], verify[tool]
+            log(f"{tool} -> {verify[tool]['path']} {verify[tool]['version']}")
 
         # ---- llama-swap via the app, load through the real gateway ----
         launch = http("POST", f"http://127.0.0.1:{APP_PORT}/api/swap/launch",
@@ -414,11 +369,23 @@ def main():
                   ok=lambda d: d.get("running"))
         log("llama-swap running")
 
-        load = http("POST",
+        load = None
+        last_err = None
+        for attempt in range(1, 4):
+            try:
+                load = http(
+                    "POST",
                     f"http://127.0.0.1:{APP_PORT}/api/swap/load/e2e-tiny",
                     body=None, timeout=600)
-        if not load.get("ok"):
-            raise RuntimeError(f"model load failed: {load}")
+                if load.get("ok"):
+                    break
+                last_err = RuntimeError(f"model load failed: {load}")
+            except Exception as e:
+                last_err = e
+            log(f"model load attempt {attempt} failed: {last_err}")
+            time.sleep(3)
+        if not load or not load.get("ok"):
+            raise RuntimeError(f"model load failed after retries: {last_err}")
         log(f"model loaded in {load.get('elapsed_s')}s")
 
         models = http("GET", f"http://127.0.0.1:{GATEWAY_PORT}/v1/models")
@@ -428,12 +395,12 @@ def main():
 
         chat = http("POST",
                     f"http://127.0.0.1:{GATEWAY_PORT}/v1/chat/completions",
-                    body={"model": "e2e-tiny", "max_tokens": 8,
+                    body={"model": "e2e-tiny", "max_tokens": 64,
                           "messages": [{"role": "user", "content": "Say hi"}]},
                     timeout=300)
-        answer = ((chat.get("choices") or [{}])[0].get("message") or {}).get(
-            "content")
-        assert isinstance(answer, str), chat
+        msg = ((chat.get("choices") or [{}])[0].get("message") or {})
+        answer = msg.get("content") or msg.get("reasoning_content") or ""
+        assert isinstance(answer, str) and answer.strip(), chat
         log(f"chat OK: {answer[:80]!r}")
 
         # clean shutdown via the app, then terminate processes

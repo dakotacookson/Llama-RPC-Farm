@@ -29,6 +29,16 @@ def bs(monkeypatch):
     return mod
 
 
+@pytest.fixture(autouse=True)
+def _no_latest_lookup(bs, monkeypatch):
+    """CLI tests are hermetic: never hit the GitHub releases API or the
+    local source tree."""
+    monkeypatch.setattr(bs, "_resolve_latest",
+                        lambda info, role, log: {})
+    monkeypatch.setattr(bs, "_detect_source_build",
+                        lambda info, fs, log: None)
+
+
 # --- report-setup: redaction (design §4 — no paths with usernames) ---------
 
 def test_report_setup_redacts_home_prefix(bs, monkeypatch, capsys):
@@ -81,9 +91,12 @@ def test_install_client_role_passes_role_to_probe(bs, monkeypatch, capsys):
     seen = {}
 
     def fake_probe(info, fs, run, role="main", pinned=None,
-                   force_settings=False, manifest=None):
+                   force_settings=False, manifest=None, resolved=None,
+                   source_probe=None):
         seen["role"] = role
         seen["manifest"] = manifest
+        seen["resolved"] = resolved
+        seen["source_probe"] = source_probe
         return []
 
     monkeypatch.setattr(bs, "detect_system_info", lambda run: _fake_info())
@@ -93,6 +106,8 @@ def test_install_client_role_passes_role_to_probe(bs, monkeypatch, capsys):
     assert rc == 0
     assert seen["role"] == "client"
     assert seen["manifest"] == {"tools": {}}
+    assert seen["resolved"] == {}
+    assert seen["source_probe"] is None
 
 
 def test_install_dry_run_does_not_execute(bs, monkeypatch, capsys):

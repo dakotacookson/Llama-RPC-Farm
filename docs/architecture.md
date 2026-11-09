@@ -27,14 +27,14 @@ A single FastAPI process (`src/app.py`) that:
 | `llamacpp_installer.py` | Downloads the right llama.cpp prebuilt per OS/vendor/arch/glibc and updates `llama_bin`. |
 | `swap_installer.py` | Downloads the official llama-swap prebuilt per OS/arch, skip-if-present, updates swap settings' binary. Single-host tool — no fleet install. |
 | `stats_collector.py` | GPU/CPU/RAM stats: local or peer-agent; three OS branches (linux `/proc`+nvidia-smi, Windows PowerShell, macOS sysctl/top). |
-| `discovery.py` | LAN identity helpers: UDP peer-agent discovery + ARP/MAC healing. No SSH scan. |
+| `discovery.py` | LAN identity helpers: UDP peer-agent discovery + ARP/MAC healing. No network sweep. |
 | `local_node.py` | Which machine am I? `is_local()` decides master vs peer everywhere. |
 | `gpu_vendor.py` | Vendor normalization + device token prefixes (`CUDA0`, `ROCm0`, `SYCL0`, `Metal`). |
 | `model_parser.py` | Directory scan for GGUF; collapses `-000XX-of-000YY` shards into one model. |
 | `gguf_inspect.py` | Minimal GGUF metadata reader (arch, tensor count, MTP layers, byte sizes) without deps. |
 | `path_resolver.py` | `store://` alias ↔ real path per platform (`config/stores.yaml`). |
 | `hf_browse.py` / `hf_downloader.py` | Hugging Face GGUF search/collections + download jobs (single + shard fan-out), proxied through the app. |
-| `secrets_vault.py` | Fernet vault in git-ignored `.env` (`FARM_SECRET_KEY`, `FARM_SALT`, `HF_TOKEN_ENC`, `MACHINE_<ID>_PASSWORD_ENC`, mode 0600); passwords/HF token decrypted only at point of use, never written back to YAML or sent to the browser (`password_set` / `hf_token_set` flags only). SHA-256+salt `hash_password`/`verify_password` for one-way fingerprints. |
+| `secrets_vault.py` | Fernet vault in git-ignored `.env` (`FARM_SECRET_KEY`, `FARM_SALT`, `HF_TOKEN_ENC`, `AGENT_TOKEN_ENC`, `MACHINE_<ID>_AGENT_TOKEN_ENC`, mode 0600); agent tokens/HF token decrypted only at point of use, never written back to YAML or sent to the browser (`agent_token_set` / `hf_token_set` flags only). SHA-256+salt `hash_password`/`verify_password` for one-way fingerprints (login passwords only; no remote-login password transport). |
 | `steps.py` | Shared step-runner for launch reports (used by both single-model launch and swap launch). |
 | `reaper.py` | Conservative orphan `ggml-rpc-server` reaper: protects loaded/loading models, active `--rpc` endpoints, and young processes; kills only per-port orphans. |
 

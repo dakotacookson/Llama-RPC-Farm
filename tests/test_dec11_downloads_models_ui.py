@@ -10,7 +10,7 @@
   the /api/settings ui_manifest.downloads.formats list is what the
   renderer consumes, already covered by DEC-02 tests).
 
-Same stub contract as test_dec07_acquisition_gate (SSH/HF faked).
+Same stub contract as test_dec07_acquisition_gate (agent/HF faked).
 """
 import os
 import sys

@@ -16,7 +16,19 @@ console.log("[ui] app.js loaded");
    token). Keys scope model visibility server-side; loopback console
    needs none. */
 let _accessKey = null;
-try { _accessKey = localStorage.getItem("farm-access-key") || null; } catch (_) {}
+let _farmSession = null;
+try {
+  _accessKey = localStorage.getItem("farm-access-key") || null;
+  _farmSession = localStorage.getItem("farm-session") || null;
+} catch (_) {}
+
+function setFarmSession(s) {
+  _farmSession = (s || "").trim() || null;
+  try {
+    if (_farmSession) localStorage.setItem("farm-session", _farmSession);
+    else localStorage.removeItem("farm-session");
+  } catch (_) {}
+}
 
 function setAccessKey(k) {
   _accessKey = (k || "").trim() || null;
@@ -29,6 +41,7 @@ function setAccessKey(k) {
 async function api(method, url, body) {
   const opts = { method, headers: { "Content-Type": "application/json" } };
   if (_accessKey) opts.headers["Authorization"] = `Bearer ${_accessKey}`;
+  if (_farmSession) opts.headers["X-Farm-Session"] = _farmSession;
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res = await fetch(url, opts);
   if (!res.ok) {
@@ -232,10 +245,13 @@ function switchToTab(name) {
 
 document.querySelectorAll("nav button").forEach((btn) => {
   btn.addEventListener("click", () => {
+    const tabName = btn.dataset.tab;
+    if (!tabName) return;
+    const tabEl = $(`#tab-${tabName}`);
+    if (!tabEl) return;               // non-tab nav button / stale panel
     document.querySelectorAll("nav button").forEach(b => b.classList.remove("active"));
     document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
     btn.classList.add("active");
-    const tabEl = $(`#tab-${btn.dataset.tab}`);
     tabEl.classList.add("active");
     triggerTabEnter(tabEl);
     if (btn.dataset.tab === "dashboard") startAutoRefresh();
@@ -537,6 +553,7 @@ document.querySelectorAll("#user-subtabs [data-utab]").forEach(b => {
 
 on("#user-logout", "click", async () => {
   try { await api("POST", "/api/auth/logout", {}); } catch (_) {}
+  setFarmSession("");
   window.location.href = "/";
 });
 
@@ -972,6 +989,131 @@ function statCardHTML(m) {
     </div>`;
 }
 
+/* ---- setup readiness: what each machine still needs ---- */
+let _readinessCache = { ts: 0, data: null };
+async function fetchReadiness(force = false) {
+  if (!force && _readinessCache.data &&
+      Date.now() - _readinessCache.ts < 8000) return _readinessCache.data;
+  const data = await api("GET", "/api/readiness");
+  _readinessCache = { ts: Date.now(), data };
+  return data;
+}
+function _readyPill(label, ok) {
+  return `<span class="${ok ? "status-ok" : "status-warn"}">${escHtml(label)} ${ok ? "✓" : "✗"}</span>`;
+}
+function readinessBadgeHTML(r) {
+  if (!r) return "";
+  const bits = [_readyPill("llama.cpp", !!(r.llama_cpp || {}).installed),
+                _readyPill("RPC", !!(r.llama_rpc || {}).installed)];
+  if (r.is_swap_host) bits.push(_readyPill("llama-swap", !!(r.llama_swap || {}).installed));
+  if (!(r.agent || {}).ok) bits.unshift('<span class="status-warn">agent ✗</span>');
+  return ` <small class="hint">${bits.join(" · ")}</small>`;
+}
+function _readinessIssues(data) {
+  const out = [];
+  for (const [name, r] of Object.entries((data && data.machines) || {})) {
+    const missing = [];
+    if (!(r.agent || {}).ok) missing.push("agent unreachable");
+    if (!(r.llama_cpp || {}).installed) missing.push("llama.cpp");
+    if (!(r.llama_rpc || {}).installed) missing.push("llama RPC");
+    if (r.is_swap_host && !(r.llama_swap || {}).installed) missing.push("llama-swap");
+    if (missing.length) out.push({ name, r, missing });
+  }
+  return out;
+}
+async function loadReadiness(force = false) {
+  const host = $("#setup-readiness");
+  if (!host) return;
+  try {
+    const data = await fetchReadiness(force);
+    const issues = _readinessIssues(data);
+    if (!issues.length) {
+      host.style.display = "";
+      host.innerHTML = '<p class="status-ok" style="margin:0"><i class="fa-solid fa-circle-check"></i> Setup complete — every machine has its agent, llama.cpp, llama RPC, and llama-swap where needed.</p>';
+      return;
+    }
+    host.style.display = "";
+    const rows = issues.map(({ name, r, missing }) => {
+      const acts = [];
+      if (!(r.agent || {}).ok) {
+        acts.push(`<button class="small" data-ready-act="agent" data-machine="${escHtml(name)}">Machines tab</button>`);
+      } else {
+        if (!(r.llama_cpp || {}).installed || !(r.llama_rpc || {}).installed) {
+          acts.push(`<button class="small" data-ready-act="engines" data-machine="${escHtml(name)}">Install engines</button>`);
+        }
+        if (r.is_swap_host && !(r.llama_swap || {}).installed) {
+          acts.push(`<button class="small" data-ready-act="swap" data-machine="${escHtml(name)}">Install llama-swap</button>`);
+        }
+      }
+      return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border-soft)">
+        <span class="status-warn"><i class="fa-solid fa-triangle-exclamation"></i></span>
+        <span style="flex:1"><strong>${escHtml(name)}</strong>
+          <small class="hint">needs ${escHtml(missing.join(", "))}</small></span>
+        ${acts.join(" ")}
+      </div>`;
+    }).join("");
+    host.innerHTML = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        <strong><i class="fa-solid fa-list-check"></i> Setup needed</strong>
+        <small class="hint">install engines on each peer; llama-swap on the swap host</small>
+      </div>${rows}`;
+  } catch (_) {
+    host.style.display = "none";
+  }
+}
+on("#setup-readiness", "click", async (e) => {
+  const btn = e.target.closest("[data-ready-act]");
+  if (!btn) return;
+  const name = btn.dataset.machine;
+  const act = btn.dataset.readyAct;
+  if (act === "agent") {
+    document.querySelector('nav button[data-tab="machines"]')?.click();
+    return;
+  }
+  if (act === "engines") {
+    if (!window.confirm(`Install llama.cpp + llama RPC on ${name} through the peer agent?`)) return;
+    let prevBuild = null, expectedBuild = null;
+    try {
+      const v = await api("GET",
+        `/api/machines/${encodeURIComponent(name)}/llama-cpp-version`);
+      if (Number.isFinite(v.build)) prevBuild = v.build;
+      if (Number.isFinite(v.latest_build)) expectedBuild = v.latest_build;
+    } catch (_) {}
+    btn.disabled = true; btn.textContent = "Installing…";
+    try {
+      const job = await runLlamaCppUpdate(name, (state) => {
+        btn.textContent = state === "stopping" ? "Stopping…"
+          : state === "installing" ? "Installing…"
+          : state === "updating" ? "Rebuilding…" : btn.textContent;
+      });
+      if (job.state !== "done") {
+        toast(`install failed on ${name}: ${(job.result && job.result.detail) || "failed"}`, "bad");
+        btn.disabled = false;
+      } else {
+        btn.disabled = true;
+        btn.textContent = "Verifying… (up to 30 min)";
+        await waitForEngineVersion(name, expectedBuild, prevBuild, "install");
+        toast(`llama.cpp + RPC installed on ${name}`, "ok");
+      }
+    } catch (err) {
+      toast(err.message, "bad");
+      btn.disabled = false;
+    }
+    await loadReadiness(true); loadMachines(true); loadStatus();
+    return;
+  }
+  if (act === "swap") {
+    if (!window.confirm(`Install llama-swap on ${name}?`)) return;
+    btn.disabled = true; btn.textContent = "Installing…";
+    try {
+      const r = await api("POST", `/api/install-llama-swap?name=${encodeURIComponent(name)}`);
+      toast(r.detail || `llama-swap installed on ${name}`, "ok");
+    } catch (err) {
+      toast(`llama-swap install failed: ${err.message}`, "bad");
+    }
+    await loadReadiness(true); loadMachines(true); loadStatus();
+  }
+});
+
 /* ---- machine detail modal (dashboard card click) ---- */
 // per-machine detail cache: render the last result INSTANTLY on reopen,
 // then swap in fresh data when the fetch lands (same pattern the
@@ -1192,8 +1334,9 @@ function mdUpdateBadge(d) {
    receives "stopping"/"installing" as the job progresses; resolves with
    the finished job (state "done" or "failed"). Used by both the machine
    grid's inline Update button and the detail modal's. */
-async function runLlamaCppUpdate(mid, setState = () => {}) {
-  const start = await api("POST", `/api/machines/${encodeURIComponent(mid)}/update-llama-cpp`);
+async function runLlamaCppUpdate(mid, setState = () => {}, force = false) {
+  const q = force ? "?force=true" : "";
+  const start = await api("POST", `/api/machines/${encodeURIComponent(mid)}/update-llama-cpp${q}`);
   let job = { state: "stopping", log: [] };
   for (;;) {
     job = await api("GET", start.status_url);
@@ -1526,6 +1669,7 @@ function startAutoRefresh() {
   if (autoRefreshOn()) statsTimer = setInterval(loadStatus, 1000);
   paintRefreshChip();
   loadStatus();
+  loadReadiness();
 }
 // pause ALL polling while the tab is hidden — background tabs kept
 // rebuilding DOM + holding WebSockets alive forever, which is how a
@@ -1655,8 +1799,8 @@ async function defaultLlamaBin() {
 }
 
 function syncTransportFields() {
-  // Agent-only: SSH fields are retired. Keep the hidden inputs for payload
-  // compatibility but never show or require them.
+  // Agent-only: legacy login fields are retired. Keep the hidden inputs
+  // for payload compatibility but never show or require them.
   for (const id of ["m-username-label", "m-password-label", "m-port-label"]) {
     const el = $("#" + id);
     if (el) el.style.display = "none";
@@ -1813,16 +1957,15 @@ function wizNext() {
   if (h) { discoveredFill(h); return; }  // fills form + advances to 3
   $("#m-ip").value = ip;
   wizShow(3);
-  toast("Verify the details, then Save (Save verifies SSH before storing)", "ok");
+  toast("Verify the details, then Save (Save verifies the peer agent before storing)", "ok");
 }
 on("#wiz-next", "click", wizNext);
 on("#wiz-back", "click", () => { if (!wizEditing() && wizStep > 1) wizShow(wizStep - 1); });
 on("#wiz-cancel", "click", () => { wizClearPick(); machineFormLoad(EMPTY_MACHINE, false); });
 
-/* ---- SSH host-key fingerprint (first-time login handling) ----
-   On entering Configure for a NEW machine, fetch the host key pre-auth
-   and show it. First contact = trusted on first use (stored server-side);
-   later visits show the stored fingerprint and warn on mismatch. */
+/* ---- peer-agent pre-save check ----
+   On entering Configure for a NEW machine, probe the peer agent and show
+   whether it is reachable before the machine is stored. */
 async function showHostFingerprint() {
   const box = $("#m-fingerprint");
   if (!box) return;
@@ -1891,6 +2034,8 @@ async function loadMachines(skipCaps = false) {
   const machines = await api("GET", "/api/machines");
   let groups = [];
   try { groups = await api("GET", "/api/groups"); } catch (_) {}
+  let readiness = {};
+  try { readiness = (await fetchReadiness()).machines || {}; } catch (_) {}
   body.innerHTML = "";
   // build machine -> groups map
   const machineGroups = new Map();
@@ -1922,40 +2067,84 @@ async function loadMachines(skipCaps = false) {
     const { sec, archBody: secBody } = makeArchSection(body, "machines:" + title, title, secMachines.length);
     for (const m of secMachines) {
       const tr = document.createElement("div");
+      const rr = readiness[m.name];
+      const needsEngines = !!(rr && (!(rr.llama_cpp || {}).installed
+                                    || !(rr.llama_rpc || {}).installed));
+      const needsSwap = !!(rr && rr.is_swap_host
+                           && !(rr.llama_swap || {}).installed);
       tr.innerHTML = `
       <div class="scan-main"><div class="scan-title">${osIcon(m.os)}${m.name}${m.role === "master" ? ' <span class="badge badge-master">master</span>' : ""}</div>
-        <small>${m.ip} · ${m.role} (${m.os}) · GPUs: ${m.gpu || "-"} · ${exposeHTML(m)} · ${connectionBadge(m)}</small>
+        <small>${m.ip} · ${m.role} (${m.os}) · GPUs: ${m.gpu || "-"} · ${exposeHTML(m)} · ${connectionBadge(m)}</small>${readinessBadgeHTML(rr)}
         ${detectedHTML(m)}</div>
       <div class="scan-model-actions">
         <button class="small" data-act="edit">Edit</button>
         <button class="small" data-act="detect">Detect</button>
-        <button class="small" data-act="update">Update</button>
+        <button class="small" data-act="engine-action" data-missing="${needsEngines ? "1" : "0"}" title="${needsEngines ? "Install llama.cpp + RPC" : "Reinstall llama.cpp + RPC"}">${needsEngines ? "Install engines" : "Reinstall engines"}</button>
+        ${needsSwap ? '<button class="small" data-act="install-swap">Install llama-swap</button>' : ""}
+        ${(m.role === "master" || m.is_local) ? '<button type="button" class="badge" data-app-version data-act="app-update" style="border:0;background:var(--accent-dim);color:var(--accent);cursor:pointer;font-family:inherit" title="Update farm app">app …</button>' : ""}
         ${(m.role === "master" || m.is_local) ? "" : '<button class="small" data-act="agent-update" title="Install or update the peer agent on this machine">Agent ⟳</button>'}
         <button class="small danger" data-act="delete">Delete</button>
       </div>`;
       tr.classList.add("scan-model");
-      tr.querySelector('[data-act="update"]').onclick = async (e) => {
+      if (m.role === "master" || m.is_local) {
+        const appPill = tr.querySelector('[data-app-version]');
+        hydrateAppVersion(appPill);
+        wireAppUpdate(appPill);
+      }
+      const engineBtn = tr.querySelector('[data-act="engine-action"]');
+      if (engineBtn) engineBtn.onclick = async (e) => {
         const btn = e.currentTarget;
-        if (!window.confirm(`Update llama.cpp on ${m.name}?\n\nSource builds are rebuilt in place (custom flags kept, running models keep serving); prebuilt installs stop that machine's llama processes first. Continue?`)) return;
-        btn.disabled = true; btn.textContent = "Starting…";
+        const mode = btn.dataset.mode || (btn.dataset.missing === "1" ? "install" : "reinstall");
+        const confirmMsg = mode === "install"
+          ? `Install llama.cpp + RPC on ${m.name} through the peer agent?`
+          : mode === "update"
+            ? `Update llama.cpp on ${m.name}?\n\nSource builds are rebuilt in place (custom flags kept); prebuilt installs stop that machine's llama processes first. Continue?`
+            : `Cleanly reinstall llama.cpp + RPC on ${m.name}?\n\nExisting binaries will be overwritten.`;
+        if (!window.confirm(confirmMsg)) return;
+        const prevRaw = parseInt(btn.dataset.build || "", 10);
+        const prevBuild = Number.isFinite(prevRaw) ? prevRaw : null;
+        const expRaw = mode === "update"
+          ? parseInt(btn.dataset.latestBuild || "", 10) : NaN;
+        const expected = Number.isFinite(expRaw) ? expRaw : null;
+        btn.disabled = true; btn.textContent = mode === "install" ? "Installing…" : mode === "update" ? "Updating…" : "Reinstalling…";
         try {
           const job = await runLlamaCppUpdate(m.name, (state) => {
             btn.textContent = state === "stopping" ? "Stopping…"
               : state === "installing" ? "Installing…"
               : state === "updating" ? "Rebuilding…" : btn.textContent;
-          });
-          if (job.state === "done") {
-            btn.textContent = "Updated";
-            toast(`llama.cpp updated on ${m.name}`, "ok");
-          } else {
-            btn.textContent = "Failed";
-            toast(`llama.cpp update failed on ${m.name}: ${(job.result && job.result.detail) || "failed"}`, "bad");
+          }, mode === "reinstall");
+          if (job.state !== "done") {
+            toast(`${mode} failed on ${m.name}: ${(job.result && job.result.detail) || "failed"}`, "bad");
             btn.disabled = false;
+            await loadReadiness(true); loadMachines();
+            return;
           }
+          // Do not allow a second click until the new binary is proven
+          // serving the expected build. Large builds can take minutes.
+          btn.disabled = true;
+          btn.textContent = "Verifying… (up to 30 min)";
+          await waitForEngineVersion(m.name, expected, prevBuild, mode);
+          toast(mode === "install" ? `llama.cpp + RPC installed on ${m.name}`
+                : mode === "update" ? `llama.cpp updated on ${m.name}`
+                : `llama.cpp + RPC reinstalled on ${m.name}`, "ok");
         } catch (err) {
-          btn.textContent = "Update"; btn.disabled = false;
           toast(err.message, "bad");
+          btn.disabled = false;
         }
+        await loadReadiness(true); loadMachines();
+      };
+      const installSwapBtn = tr.querySelector('[data-act="install-swap"]');
+      if (installSwapBtn) installSwapBtn.onclick = async (e) => {
+        const btn = e.currentTarget;
+        if (!window.confirm(`Install llama-swap on ${m.name}?`)) return;
+        btn.disabled = true; btn.textContent = "Installing…";
+        try {
+          const r = await api("POST", `/api/install-llama-swap?name=${encodeURIComponent(m.name)}`);
+          toast(r.detail || `llama-swap installed on ${m.name}`, "ok");
+        } catch (err) {
+          toast(`llama-swap install failed: ${err.message}`, "bad");
+        }
+        await loadReadiness(true); loadMachines();
       };
       const agentUpdateBtn = tr.querySelector('[data-act="agent-update"]');
       if (agentUpdateBtn) agentUpdateBtn.onclick = async (e) => {
@@ -2005,6 +2194,7 @@ async function loadMachines(skipCaps = false) {
         document.querySelector("#machine-form").scrollIntoView({ behavior: "smooth", block: "start" });
       };
       secBody.appendChild(tr);
+      if (engineBtn) engineBtn.dataset.mode = needsEngines ? "install" : "reinstall";
       fillInlineUpdateState(tr, m.name);
       fillAgentUpdateState(tr, m.name);
     }
@@ -2045,29 +2235,70 @@ function fillAgentUpdateState(tr, name) {
     }).catch(() => { /* keep the plain Agent button */ });
 }
 
+async function waitForEngineVersion(name, expectedBuild, previousBuild, mode,
+                                     timeoutMs = 30 * 60 * 1000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const v = await api("GET",
+        `/api/machines/${encodeURIComponent(name)}/llama-cpp-version`);
+      const build = v.build;
+      if (build != null) {
+        if (expectedBuild != null && build >= expectedBuild) return v;
+        if (expectedBuild == null && mode === "install"
+            && previousBuild != null && build !== previousBuild) return v;
+        if (expectedBuild == null && mode === "install"
+            && previousBuild == null && build > 0) return v;
+        if (expectedBuild == null && mode === "update"
+            && previousBuild != null && build !== previousBuild) return v;
+        if (expectedBuild == null && mode === "reinstall"
+            && previousBuild != null && build !== previousBuild) return v;
+        if (expectedBuild == null && previousBuild == null && build > 0) return v;
+      }
+    } catch (_) {}
+    await new Promise(r => setTimeout(r, 5000));
+  }
+  throw new Error(`timed out after 30 min waiting for the new llama.cpp build on ${name}`);
+}
+
 function fillInlineUpdateState(tr, name) {
-  const btn = tr.querySelector('[data-act="update"]');
+  const btn = tr.querySelector('[data-act="engine-action"]');
   if (!btn) return;
+  if (btn.dataset.missing === "1") return;   // missing engines: keep Install
   api("GET", `/api/machines/${encodeURIComponent(name)}/llama-cpp-version`)
     .then(v => {
       if (!btn.isConnected) return;          // grid re-rendered meanwhile
+      btn.dataset.build = v.build != null ? String(v.build) : "";
+      btn.dataset.latestBuild = v.latest_build != null ? String(v.latest_build) : "";
       if (v.on_latest) {
-        btn.disabled = true;
-        btn.textContent = `on latest (${v.latest})`;
-        btn.title = "already on the newest llama.cpp release";
+        btn.textContent = "Reinstall engines";
+        btn.dataset.mode = "reinstall";
+        btn.title = `already on the newest llama.cpp release (${v.latest})`;
       } else if (v.build != null && v.latest_build != null && v.build < v.latest_build) {
         btn.textContent = `Update ${v.build}→${v.latest_build}`;
+        btn.dataset.mode = "update";
         btn.title = `current build ${v.build}, latest ${v.latest} (${v.latest_build})`;
+      } else {
+        btn.textContent = "Reinstall engines";
+        btn.dataset.mode = "reinstall";
       }
-    }).catch(() => { /* unprobed/offline: keep plain Update */ });
+      btn.disabled = false;
+    }).catch(() => { /* unprobed/offline: keep Reinstall */ });
 }
 
 function detectedHTML(m) {
   const d = m.detected;
   if (!d) return '<span class="status-warn">not detected</span>';
+  const gpus = d.gpu_names || [];
+  if (!gpus.length) {
+    return `<div class="detected">
+      <div>CPU only</div>
+      <small>${d.cores || "?"} cores, ${d.ram_total_gb || "?"} GB RAM</small>
+    </div>`;
+  }
   return `<div class="detected">
-    <div>${(d.gpu_names || []).length} GPU(s), ${d.vram_total_gb} GB VRAM</div>
-    <small>${(d.gpu_names || []).join(", ")}</small>
+    <div>${gpus.length} GPU(s), ${d.vram_total_gb} GB VRAM</div>
+    <small>${gpus.join(", ")}</small>
     <small>${d.cores} cores, ${d.ram_total_gb} GB RAM</small>
   </div>`;
 }
@@ -2119,7 +2350,7 @@ async function discoverInit() {
 }
 
 function syncDiscoveryMode() {
-  // Agent-only discovery: UDP peer-agent responder, never an SSH scan.
+  // Agent-only discovery: UDP peer-agent responder, no network sweep.
   const subnet = $("#d-subnet-label");
   const port = $("#d-port-label");
   if (subnet) subnet.style.display = "none";
@@ -2153,18 +2384,16 @@ function connCaps(m) {
 function connectionLabel(m) {
   if (m && m.is_local) return "local";
   const caps = connCaps(m);
-  const c = caps.mode || (m && (m.connection || m.transport)) || "ssh";
-  return c === "both" ? "SSH + agent"
-    : c === "agent" ? "agent only"
-    : c === "ssh" ? "SSH only"
+  const c = caps.mode || (m && (m.connection || m.transport)) || "agent";
+  return c === "agent" ? "agent only"
     : c === "local" ? "local"
     : c === "none" ? "unreachable"
-    : "SSH + agent";
+    : "agent only";
 }
 function connectionBadge(m) {
   const caps = connCaps(m);
   const c = (m && m.is_local) ? "local"
-    : caps.mode || (m && (m.connection || m.transport)) || "ssh";
+    : caps.mode || (m && (m.connection || m.transport)) || "agent";
   const icon = c === "local" ? "fa-house"
     : c === "both" ? "fa-link"
     : c === "agent" ? "fa-plug"
@@ -2275,7 +2504,7 @@ function discoveredFill(h) {
   wizShow(3);
   toast("Review the details, then Save (Save verifies the peer agent before storing)", "ok");
 }
-// IP / SSH port edits change which host we fingerprint — re-check live
+// IP / agent-port edits change which host we probe — re-check live
 on("#m-role", "change", syncRoleFields);
 on("#m-rdma", "change", syncRdmaFields);
 on("#m-rdma-toggle", "click", () => {
@@ -2297,11 +2526,8 @@ on("#m-transport", "change", () => {
 on("#d-scan", "click", async (e) => {
   const btn = e.currentTarget;
   const res = $("#d-results");
-  const peerMode = true;
-  btn.disabled = true; btn.textContent = peerMode ? "discovering agents…" : "scanning… (~1 min)";
-  res.innerHTML = peerMode
-    ? '<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Listening for peer agents on UDP 8199…</p>'
-    : '<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Pinging subnet, sweeping for SSH port, grabbing banners…</p>';
+  btn.disabled = true; btn.textContent = "discovering agents…";
+  res.innerHTML = '<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Listening for peer agents on UDP 8199…</p>';
   let scanned = false;
   try {
     const r = await api("POST", "/api/discover", {
@@ -2312,25 +2538,13 @@ on("#d-scan", "click", async (e) => {
     $("#discovered-ips").innerHTML = r.results.map(h => `<option value="${escHtml(h.ip)}">`).join("");
     scanned = true;
     if (!r.results.length) {
-      res.innerHTML = peerMode
-        ? '<p class="hint">No peer agents answered on UDP 8199. Make sure the agent service is running and discovery is enabled.</p>'
-        : `<p class="hint">Nothing identifiable on ${escHtml(r.subnet)} — ${r.alive || 0} alive, ${r.ssh_hosts || 0} with SSH port ${r.port}${r.unknown ? `, ${r.unknown} without a recognizable banner (hidden)` : ""}.</p>`;
+      res.innerHTML = '<p class="hint">No peer agents answered on UDP 8199. Make sure the agent service is running and discovery is enabled.</p>';
     } else {
-      if (peerMode) {
-        res.innerHTML = `<p class="hint">${r.results.length} peer agent(s) found. Click a row to select it, then Continue — or Select → to jump straight to Configure.</p>` +
-          '<table><thead><tr><th>IP</th><th>Hostname</th><th>OS</th><th>Agent</th><th></th></tr></thead><tbody></tbody></table>';
-      } else {
-        res.innerHTML = `<p class="hint">${escHtml(r.subnet)}: ${r.alive} alive, ${r.ssh_hosts} with SSH port ${r.port} — ${r.results.length} candidate(s)${r.unknown ? `, ${r.unknown} unknown hidden` : ""}. Click a row to select it, then Continue — or Select → to jump straight to Configure.</p>` +
-          '<table><thead><tr><th>IP</th><th>Ping</th><th>SSH</th><th>OS (banner)</th><th>Hostname</th><th>GPUs</th><th></th></tr></thead><tbody></tbody></table>';
-      }
+      res.innerHTML = `<p class="hint">${r.results.length} peer agent(s) found. Click a row to select it, then Continue — or Select → to jump straight to Configure.</p>` +
+        '<table><thead><tr><th>IP</th><th>Hostname</th><th>OS</th><th>Agent</th><th></th></tr></thead><tbody></tbody></table>';
       const tbody = res.querySelector("tbody");
       for (const h of r.results) {
         const tr = document.createElement("tr");
-        const pingTxt = h.ping_alive == null ? "–" : (h.ping_alive ? '<span class="status-ok">alive</span>' : '<span class="status-warn">no reply</span>');
-        const sshTxt = h.ssh_port_open
-          ? (h.ssh_ok ? '<span class="status-ok">login OK</span>'
-             : (h.auth_failed ? '<span class="status-warn">auth failed</span>' : '<span class="status-warn">closed/no auth</span>'))
-          : '<span class="status-warn">no SSH</span>';
         const osTxt = h.os
           ? `${osIcon(h.os)}${escHtml(h.os)}${h.banner ? ` <small class="hint" title="${escHtml(h.banner)}">${escHtml(h.banner.split("$").pop() || "")}</small>` : ""}`
           : '<span class="status-warn">unknown</span>';
@@ -2340,9 +2554,7 @@ on("#d-scan", "click", async (e) => {
         const agentTxt = h.agent
           ? `<span class="status-ok"><i class="fa-solid fa-plug"></i> ${escHtml(h.agent_version || "agent")}:${h.agent_port || 8198}</span>`
           : "—";
-        tr.innerHTML = peerMode
-          ? `<td>${escHtml(h.ip)}</td><td>${escHtml(h.hostname || "-")}</td><td>${osTxt}</td><td>${agentTxt}</td><td>${addCell}</td>`
-          : `<td>${escHtml(h.ip)}</td><td>${pingTxt}</td><td>${sshTxt}</td><td>${osTxt}</td><td>${escHtml(h.hostname || "-")}</td><td>${escHtml((h.gpus || []).join(", ") || "-")}</td><td>${addCell}</td>`;
+        tr.innerHTML = `<td>${escHtml(h.ip)}</td><td>${escHtml(h.hostname || "-")}</td><td>${osTxt}</td><td>${agentTxt}</td><td>${addCell}</td>`;
         const addBtn = tr.querySelector('[data-act="add"]');
         if (addBtn) addBtn.onclick = () => { wizSelection = h.ip; discoveredFill(h); };
         // clicking the row selects it (Continue uses the selection)
@@ -3435,7 +3647,7 @@ function variantModalNext(){
   }
   variantModalShow(step + 1);
 }
-function variantModalSave(){
+async function variantModalSave(){
   const modal = $("#variant-modal");
   if (!modal || !variantModalCard) return;
   const label = modal.querySelector(".v-label").value.trim();
@@ -3503,7 +3715,9 @@ function variantModalSave(){
       if (!Object.keys(vFlags).length) vFlags = null;
     } catch (_) {}
   }
+  const _prevVar = variantModalCard._data || {};
   variantModalCard._data = {
+    ..._prevVar,
     label,
     servers: Array.from(machineNames),
     device_order: (deviceOrder || null),
@@ -3521,7 +3735,9 @@ function variantModalSave(){
   };
   refreshVariantSummary(variantModalCard);
   closeVariantModal();
-  toast(`Saved config ${label}`, "ok");
+  // Saving an additional config persists the WHOLE model (primary + every
+  // variant) immediately — no second "Save model" click required.
+  await saveModelForm($("#model-save"), true);
 }
 /* mirrors the primary applyTensorModeUI: fit shows margins, split shows
    weights. Blank (inherit) falls back to the primary's live mode so the
@@ -3722,7 +3938,9 @@ function collectVariants(){
       llama_bin: d.llama_bin || null,
       flags: d.flags || null,
       pinned: d.pinned ? true : null,
-      ttl: d.ttl || null
+      ttl: d.ttl || null,
+      launch_mode: d.launch_mode || null,
+      launch_mode_local_port: d.launch_mode_local_port ?? null
     });
   });
   return out;
@@ -4232,11 +4450,15 @@ async function loadModels() {
       tr.dataset.modelId = m.model_id;
       if (selectedModelId === m.model_id) tr.classList.add("row-selected");
       const sub1 = `${escHtml((m.base_path || "").split("/").pop())}${m.group ? ` · group: ${escHtml(m.group)}` : ""} · servers: ${escHtml((m.servers || []).join(", ")) || "-"}${m.pinned ? ' · <span class="badge" style="background:var(--ok-dim);color:var(--ok)">pinned</span>' : ""}`;
-      const sub2 = `${escHtml(((m.tensor_split_mode === "manual" ? "fit" : m.tensor_split_mode || "auto")) + " " + Object.entries(m.flags || {}).map(([k, v]) => `${k}=${v}`).join(" ").trim() || "-")}${(m.variants||[]).length ? ` · variants: ${escHtml((m.variants||[]).map(v=>`${v.label}(${(v.servers||[]).join(",")})`).join(" | "))}` : ""}`;
+      const sub2 = `${escHtml(((m.tensor_split_mode === "manual" ? "fit" : m.tensor_split_mode || "auto")) + " " + Object.entries(m.flags || {}).map(([k, v]) => `${k}=${v}`).join(" ").trim() || "-")}`;
+      const sub3 = (m.variants||[]).length
+        ? `<small>Additional config${(m.variants||[]).length>1?"s":""}: ${escHtml((m.variants||[]).map(v=>`${v.label}${(v.servers||[]).length?` (${(v.servers||[]).join(", ")})`:""}`).join(" | "))}</small>`
+        : "";
       tr.innerHTML = `
-      <div class="scan-main"><div class="scan-title">${modelIconHTML(m.model_id)}${escHtml(m.model_id)} ${(m.variants||[]).length ? `<span class="badge" style="background:var(--accent-dim);color:var(--accent)" title="${escHtml((m.variants||[]).map(v=>v.label).join(", "))}">+${(m.variants||[]).length} configs</span>` : ""}${m.decision_type ? ` <span class="badge" style="background:var(--ok-dim);color:var(--ok)" title="TypeSafe decision model — serves /v1/systemone only (no chat generation)">decision</span>` : ""}</div>
+      <div class="scan-main"><div class="scan-title">${modelIconHTML(m.model_id)}${escHtml(m.model_id)} ${(m.variants||[]).length ? `<span class="badge" style="background:var(--accent-dim);color:var(--accent)" title="${escHtml((m.variants||[]).map(v=>v.label).join(", "))}">+${(m.variants||[]).length} config${(m.variants||[]).length>1?"s":""}</span>` : ""} ${modelTagsHTML(m)}</div>
         <small>${sub1}</small>
-        <small>${sub2}</small></div>
+        <small>${sub2}</small>
+        ${sub3}</div>
       <div class="scan-model-actions">
         <button class="small" data-act="edit">Edit</button>
         <button class="small" data-act="check">Check</button>
@@ -4344,6 +4566,20 @@ const _origTabHandler = document.querySelectorAll("nav button");
 on('nav button[data-tab="launch"]', "click", () => setTimeout(loadActiveModels, 300));
 
 const escHtml = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const _MODEL_TAG_STYLE = {
+  chat:      "background:var(--accent-dim);color:var(--accent)",
+  vision:    "background:#3b2a5a;color:#d7c4ff",
+  speech:    "background:#4a2f16;color:#ffd39b",
+  embedding: "background:#123f3a;color:#9ff0df",
+  decision:  "background:var(--ok-dim);color:var(--ok)",
+};
+function modelTagsHTML(m) {
+  const tags = (m && m.model_tags) ||
+    ((m && m.decision_type) ? ["decision"] : ["chat"]);
+  return (tags || []).map(t =>
+    `<span class="badge" style="${_MODEL_TAG_STYLE[t] || ""}" title="${escHtml(t)} model">${escHtml(t)}</span>`
+  ).join(" ");
+}
 
 async function testModel(modelId, btn) {
   console.log("[ui] check click", modelId);
@@ -4822,8 +5058,12 @@ window.addEventListener("DOMContentLoaded", async () => {
     // from a cookie SESSION (user) or the loopback console. A bare
     // localStorage key still works (api() attaches it) but doesn't skip
     // the login prompt — humans sign in; keys are for API clients.
-    if (me && me.has_logins && !me.user && me.trust_via !== "loopback") {
-      showLogin(true);
+    if (me && me.needs_setup) {
+      // Fresh install: no login and no access key yet. Show the create-admin
+      // form instead of an unusable sign-in box.
+      showLogin(true, true);
+    } else if (me && me.has_logins && !me.user && me.trust_via !== "loopback") {
+      showLogin(true, false);
     }
     window.__me = me || null;
     renderLoginChip(me);
@@ -4840,11 +5080,24 @@ window.addEventListener("DOMContentLoaded", async () => {
 
 
 on("#login-go", "click", doLogin);
+on("#login-setup", "click", doBootstrap);
 wireKeyEditorChips();
 /* ---------------- web login (vault-backed, cookie session) --------- */
-function showLogin(force) {
+function showLogin(force, setupMode) {
   const m = $("#login-modal");
   if (!m) return;
+  const setup = Boolean(setupMode);
+  const title = $("#login-title");
+  if (title) title.innerHTML = setup
+    ? '<i class="fa-solid fa-user-plus"></i> Create admin account'
+    : '<i class="fa-solid fa-right-to-bracket"></i> Sign in';
+  const hint = $("#login-hint");
+  if (hint) hint.textContent = setup
+    ? "This farm has no account yet. Create the first admin account to sign in and manage access keys."
+    : "Your login maps to an access key — model visibility and admin powers follow it.";
+  const go = $("#login-go"), sb = $("#login-setup");
+  if (go) go.style.display = setup ? "none" : "";
+  if (sb) sb.style.display = setup ? "" : "none";
   m.classList.remove("hidden");
   // MODALITY: while sign-in is up the user must not interact with
   // anything else — page inert for pointer AND keyboard
@@ -4913,16 +5166,42 @@ async function doLogin() {
   }
 }
 
+function loginSubmit() {
+  const setup = $("#login-setup") &&
+    $("#login-setup").style.display !== "none";
+  return setup ? doBootstrap() : doLogin();
+}
+
 async function doBootstrap() {
   const u = $("#login-user")?.value.trim();
   const p = $("#login-pass")?.value || "";
   const err = $("#login-err");
+  const btn = $("#login-setup");
+  if (!u) {
+    if (err) { err.textContent = "Choose a username"; err.hidden = false; }
+    return;
+  }
+  if (p.length < 8) {
+    if (err) {
+      err.textContent = "Password must be at least 8 characters";
+      err.hidden = false;
+    }
+    return;
+  }
   try {
-    await api("POST", "/api/auth/bootstrap", { username: u, password: p, key_name: u });
+    if (btn) btn.disabled = true;
+    await api("POST", "/api/auth/bootstrap", {
+      username: u, password: p, key_name: u,
+    });
     $("#login-modal")?.classList.add("hidden");
     window.location.reload();
   } catch (e) {
     if (err) { err.textContent = e.message; err.hidden = false; }
+    if (btn) btn.disabled = false;
+    // A race (or another admin) may have completed setup meanwhile —
+    // switch the modal back to normal sign-in.
+    const me = await api("GET", "/api/auth/me").catch(() => null);
+    if (me && !me.needs_setup) showLogin(true, false);
   }
 }
 
@@ -5042,7 +5321,7 @@ async function runScan() {
       el.className = "scan-model";
       el.dataset.scanPath = m.base_path;
       if (selectedScanPath === m.base_path) el.classList.add("row-selected");
-      el.innerHTML = `<span>${scanModelIconHTML(m.base_path)}${escHtml(m.name)}${m.decision_type ? ` <span class="badge" style="background:var(--ok-dim);color:var(--ok)" title="TypeSafe decision model — serves /v1/systemone only (no chat generation)">decision</span>` : ""} <small>${m.shard_count} shard(s), ${fmtBytes(m.total_size_bytes)}${isConfigured ? " · configured" : ""}</small></span>`;
+      el.innerHTML = `<span>${scanModelIconHTML(m.base_path)}${escHtml(m.name)} ${modelTagsHTML(m)} <small>${m.shard_count} shard(s), ${fmtBytes(m.total_size_bytes)}${isConfigured ? " · configured" : ""}</small></span>`;
       /* click open space -> highlight + load into configure form */
       el.addEventListener("click", (ev) => {
         if (ev.target.closest("button")) return;
@@ -5263,7 +5542,7 @@ async function loadLaunch() {
     const hint = card.querySelector(".launch-ready-hint");
     const notReady = down.length > 0;
     if (btn) {
-      btn.disabled = notReady;
+      btn.disabled = notReady || card.dataset.loading === "1";
       btn.title = notReady ? `unavailable — down: ${down.join(", ")}` : "Launch";
     }
     card.classList.toggle("not-ready", notReady);
@@ -5280,6 +5559,14 @@ async function loadLaunch() {
       const on = loadedSet.has(key);
       cst.className = `serving-ind card-loaded ${on ? "status-ok" : "status-warn"}`;
       cst.textContent = on ? "loaded" : "idle";
+      // nothing to evict unless the model is loaded (or loading: evict
+      // then aborts the load)
+      const ev = card.querySelector('[data-act="stop"]');
+      if (ev) {
+        const busy = card.dataset.loading === "1";
+        ev.disabled = !on && !busy;
+        ev.title = ev.disabled ? "not loaded" : "Unload from llama-swap";
+      }
     }
   }
   const grid = $("#launch-grid");
@@ -5380,6 +5667,8 @@ async function loadLaunch() {
       const headers = {"Content-Type": "application/json"};
       if (_accessKey) headers["Authorization"] = `Bearer ${_accessKey}`;
       btn.disabled = true; btn.textContent = "loading…";
+      card.dataset.loading = "1";
+      refreshLaunchCard(card);
       try {
         // Ensure llama-swap has the current model config, then call the
         // REAL API exactly like a client would (same endpoints the Chat /
@@ -5428,6 +5717,8 @@ async function loadLaunch() {
         if (hint) hint.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> ' + escHtml(err.message);
         toast(err.message, "bad");
       }
+      delete card.dataset.loading;
+      refreshLaunchCard(card);
       btn.disabled = false; btn.textContent = "Load";
     };
   });
@@ -5754,8 +6045,8 @@ on("#aud-record","click", async ()=>{
       <code>media.devices.insecure.enabled</code><br><code>media.getusermedia.insecure.enabled</code><br>
       then <b>fully quit Firefox (all windows)</b> and reopen <code>${escHtml(origin)}</code> — a reload is not enough.<br>
       Also check <code>privacy.resistFingerprinting</code> is <code>false</code> (it hides mediaDevices too).
-      If the prefs reset or still fail, run a local forward: <code>ssh -N -L 8199:10.0.0.104:8199 zazi@10.0.0.104</code> and open <code>http://localhost:8199</code> (localhost is always secure, zero browser hacks).</p>`
-      : `<p class="status-warn"><code>navigator.mediaDevices</code> is unavailable. Chrome/Edge/Brave: <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code> → add <code>${escHtml(origin)}</code> → enable → relaunch. Or use <code>ssh -N -L 8199:10.0.0.104:8199 zazi@10.0.0.104</code> and open <code>http://localhost:8199</code>.</p>`;
+      If the prefs reset or still fail, use your existing VPN/tunnel to expose 8199 locally and open <code>http://localhost:8199</code> (localhost is always secure, zero browser hacks).</p>`
+      : `<p class="status-warn"><code>navigator.mediaDevices</code> is unavailable. Chrome/Edge/Brave: <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code> → add <code>${escHtml(origin)}</code> → enable → relaunch. Or use your VPN/tunnel to expose 8199 locally and open <code>http://localhost:8199</code>.</p>`;
     toast("Mic API hidden by browser — see fix details below", "bad");
     const lv0 = $("#aud-level"); if(lv0) lv0.textContent = "mic API blocked";
     return;
@@ -6483,14 +6774,6 @@ async function loadSettings() {
         ? "Token saved — gated models will use it. Paste a new one to replace."
         : "Not set — gated downloads will 401.";
     }
-    const ftok = $("#set-farm-agent-token");
-    if (ftok) ftok.value = "";
-    const fhint = $("#set-farm-agent-token-hint");
-    if (fhint) {
-      fhint.textContent = s.farm_agent_token_set
-        ? "Farm token saved — discovered agents using it verify automatically."
-        : "Not set — per-machine tokens are used.";
-    }
     appSettings = s;
     applyEngineHints(s);
     if (s.theme_family && !localStorage.getItem("ui-theme-family")) {
@@ -6515,8 +6798,6 @@ on("#set-save", "click", async (e) => {
     // only send the token when the user typed one — empty keeps the saved one
     const tok = $("#set-hf-token")?.value.trim();
     if (tok) payload.hf_token = tok;
-    const ftok = $("#set-farm-agent-token")?.value.trim();
-    if (ftok) payload.farm_agent_token = ftok;
     const engSel = $("#set-engine");
     if (engSel?.value) payload.engine = engSel.value;
     const saved = await api("POST", "/api/settings", payload);
@@ -6556,15 +6837,7 @@ on("#set-save", "click", async (e) => {
     }
     const tokInput = $("#set-hf-token");
     if (tokInput) tokInput.value = "";
-    const fHint = $("#set-farm-agent-token-hint");
-    if (fHint) {
-      fHint.textContent = saved.farm_agent_token_set
-        ? "Farm token saved — discovered agents using it verify automatically."
-        : "Not set — per-machine tokens are used.";
-    }
-    const fInput = $("#set-farm-agent-token");
-    if (fInput) fInput.value = "";
-    box.innerHTML = `<p class="status-ok">Defaults saved${tok ? " (HF token updated)." : "."}${ftok ? " (farm agent token updated)." : ""}</p>`;
+    box.innerHTML = `<p class="status-ok">Defaults saved${tok ? " (HF token updated)." : "."}</p>`;
     toast("Defaults saved", "ok");
   } catch (err) {
     box.innerHTML = `<p class="status-bad">${escHtml(err.message)}</p>`;
@@ -6573,22 +6846,6 @@ on("#set-save", "click", async (e) => {
   btn.disabled = false; btn.textContent = "Save defaults";
 });
 
-on("#set-farm-agent-token-toggle", "click", () => {
-  const inp = $("#set-farm-agent-token");
-  if (inp) inp.type = inp.type === "password" ? "text" : "password";
-});
-on("#set-farm-agent-token-clear", "click", async (e) => {
-  e.currentTarget.disabled = true;
-  try {
-    const saved = await api("POST", "/api/settings", { clear_farm_agent_token: true });
-    const hint = $("#set-farm-agent-token-hint");
-    if (hint) hint.textContent = saved.farm_agent_token_set
-      ? "Farm token saved."
-      : "Not set — per-machine tokens are used.";
-    toast(saved.farm_agent_token_set ? "Farm token cleared" : "No farm token was saved", saved.farm_agent_token_set ? "warn" : "ok");
-  } catch (err) { toast(err.message, "bad"); }
-  e.currentTarget.disabled = false;
-});
 on("#set-hf-token-toggle", "click", () => {
   const inp = $("#set-hf-token");
   if (!inp) return;
@@ -6635,12 +6892,11 @@ async function loadToolStatus() {
       const ok = e.found;
       const icon = ok ? "fa-circle-check status-ok" : "fa-circle-question status-warn";
       const loc = e.path || e.configured || "not found";
-      const stale = ok && e.configured && e.configured !== e.path ? " (configured path differs)" : "";
       const ver = e.version ? " · " + escHtml(e.version) : (ok ? " · version unknown" : "");
       return '<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0">'
         + '<span><i class="fa-solid ' + icon + '"></i> <strong>' + escHtml(label) + '</strong>'
         + '<small style="color:var(--muted)">' + ver + '</small></span>'
-        + '<small style="color:var(--muted);text-align:right">' + escHtml(loc) + escHtml(stale) + '</small>'
+        + '<small style="color:var(--muted);text-align:right">' + escHtml(loc) + '</small>'
         + '</div>';
     }).join('');
   } catch (err) {
@@ -6656,133 +6912,6 @@ async function loadToolStatus() {
 });
 
 
-/* ---------------- installer modal (UX-2) ----------------
-   One modal for ALL tools (llama.cpp / llama-swap): node
-   picker (machines.yaml, "this machine" first), tool set, role, dry-run.
-   Submits POST /api/tools/install and consumes the NDJSON progress
-   stream ({event: log|done}) — busy state + per-step log + result
-   summary. Skips render as "already installed" (re-run for a provisioned
-   node shows only skip lines). No native confirm/alert dialogs. */
-
-function instModalClose() {
-  $("#inst-modal").classList.add("hidden");
-  $("#inst-modal").setAttribute("aria-hidden", "true");
-}
-
-async function openInstModal() {
-  const sel = $("#inst-machine");
-  try {
-    const machines = await api("GET", "/api/machines");
-    const opts = [`<option value="__local__">this machine (UI host)</option>`]
-      .concat((machines || []).map(m =>
-        `<option value="${escHtml(m.name)}">${escHtml(m.name)}${m.role === "master" ? " (master)" : ""} · ${escHtml(m.os || "?")}</option>`));
-    sel.innerHTML = opts.join("");
-  } catch (_) {
-    sel.innerHTML = `<option value="__local__">this machine (UI host)</option>`;
-  }
-  // reset to form view
-  $("#inst-form").hidden = false;
-  $("#inst-progress").hidden = true;
-  $("#inst-result").innerHTML = "";
-  $("#inst-log").textContent = "";
-  $("#inst-progress-head").innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Planning…`;
-  const submit = $("#inst-submit");
-  submit.disabled = false; submit.textContent = "Run install";
-  $("#inst-modal").classList.remove("hidden");
-  $("#inst-modal").setAttribute("aria-hidden", "false");
-}
-
-function fmtInstSummary(summary) {
-  const done = (summary.installed || []).length
-    + (summary.repaired || []).length;
-  const skipped = (summary.skipped || []).length;
-  const failed = (summary.failures || []).length;
-  const cls = failed ? "status-bad" : done ? "status-ok" : "status-ok";
-  const icon = failed ? "fa-triangle-exclamation" : "fa-circle-check";
-  const bits = [];
-  if (done) bits.push(`${done} installed/repaired`);
-  if (skipped) bits.push(`${skipped} skipped (already present)`);
-  if (failed) bits.push(`${failed} failed`);
-  if (!bits.length) bits.push("nothing to do");
-  return `<p class="${cls}"><i class="fa-solid ${icon}"></i> ${escHtml(bits.join(" · "))}</p>`;
-}
-
-on("#install-open-modal", "click", openInstModal);
-on("#inst-modal-close", "click", instModalClose);
-on("#inst-modal-done", "click", instModalClose);
-on("#inst-modal-backdrop", "click", instModalClose);
-on("#inst-submit", "click", async (e) => {
-  const btn = e.currentTarget;
-  const machine = $("#inst-machine").value;
-  const toolSel = $("#inst-tools").value;
-  const role = $("#inst-role").value;
-  const dryRun = $("#inst-dry-run").checked;
-  const tools = toolSel === "all" ? [] : [toolSel];
-  btn.disabled = true; btn.textContent = "installing…";
-  $("#inst-form").hidden = true;
-  $("#inst-progress").hidden = false;
-  $("#inst-result").innerHTML = "";
-  const logEl = $("#inst-log");
-  try {
-    const resp = await fetch("/api/tools/install", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ machine, tools, role, dry_run: dryRun }),
-    });
-    if (!resp.ok && !resp.body) throw new Error(`HTTP ${resp.status}`);
-    const reader = resp.body.getReader();
-    const dec = new TextDecoder();
-    let buf = "", summary = null;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line) continue;
-        let ev;
-        try { ev = JSON.parse(line); } catch (_) { continue; }
-        if (ev.event === "log") {
-          logEl.textContent += ev.message + "\n";
-          logEl.scrollTop = logEl.scrollHeight;
-        } else if (ev.event === "done") {
-          summary = ev.summary || {};
-        } else if (ev.event === "timeout") {
-          throw new Error("installer timed out (no activity for 5 min)");
-        }
-      }
-    }
-    const failures = summary ? (summary.failures || []) : [{ error: "no result from server" }];
-    const skipped = summary ? (summary.skipped || []) : [];
-    const installed = summary
-      ? (summary.installed || []).concat(summary.repaired || [])
-      : [];
-    $("#inst-progress-head").innerHTML = failures.length
-      ? `<i class="fa-solid fa-triangle-exclamation status-bad"></i> finished with failures`
-      : `<i class="fa-solid fa-circle-check status-ok"></i> finished`;
-    let html = fmtInstSummary(summary || {});
-    if (skipped.length) {
-      html += `<small class="hint" style="display:block">skipped: ${escHtml(skipped.join(", "))} — already installed, nothing re-run</small>`;
-    }
-    if (failures.length) {
-      const rows = failures.map(f =>
-        `<div style="padding:6px 8px;border-bottom:1px solid var(--border-soft);font-size:12px"><i class="fa-solid fa-triangle-exclamation status-bad"></i> ${escHtml(f.error || JSON.stringify(f))}${(f.context || {}).tool ? ` <small>(${escHtml(f.context.tool)})</small>` : ""}</div>`).join("");
-      html += `<div class="card" style="padding:0;overflow:hidden;margin-top:6px">${rows}</div>`;
-    }
-    $("#inst-result").innerHTML = html;
-    toast(failures.length ? "install finished with failures"
-            : installed.length ? "install complete"
-            : "already up to date",
-          failures.length ? "bad" : "ok");
-  } catch (err) {
-    $("#inst-progress-head").innerHTML = `<i class="fa-solid fa-triangle-exclamation status-bad"></i> failed`;
-    $("#inst-result").innerHTML = `<p class="status-bad">${escHtml(err.message)}</p>`;
-    toast(err.message, "bad");
-  }
-  btn.disabled = false; btn.textContent = "Run install";
-});
 on("#install-llama-cpp", "click", async (e) => {
   const btn = e.currentTarget;
   btn.disabled = true; btn.textContent = "installing…";
@@ -6805,122 +6934,57 @@ on("#install-llama-cpp", "click", async (e) => {
   btn.disabled = false; btn.textContent = "Install llama.cpp (this host)";
 });
 
-/* Install-on-machines modal: engine-parameterized checklist. Opened by
-   the per-engine "Install on other machines…" buttons; lists every
-   configured machine except the local host, auto-checks install state
-   (existing installs are reported, never touched), and installs only on
-   the ticked machines via the batch endpoints' `machines` subset. */
-function installModalEndpoint() {
-  return "/api/install-llama-cpp/all";
-}
-function installModalLabel() {
-  return "llama.cpp";
-}
-function openInstallModal() {
-  const modal = $("#install-modal");
-  if (!modal) return;
-  $("#install-modal-title").innerHTML =
-    `<i class="fa-solid fa-server"></i> Install ${escHtml(installModalLabel())} on other machines`;
-  $("#install-modal-sub").textContent =
-    `Tick machines to check. Existing installs are skipped — only missing ones get the ${installModalLabel()} prebuilt for its machine type.`;
-  $("#install-modal-list").innerHTML =
-    `<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Loading machines…</p>`;
-  modal.classList.remove("hidden");
-  modal.setAttribute("aria-hidden", "false");
-  loadInstallModalMachines();
-}
-function closeInstallModal() {
-  const modal = $("#install-modal");
-  if (!modal) return;
-  modal.classList.add("hidden");
-  modal.setAttribute("aria-hidden", "true");
-}
-async function loadInstallModalMachines() {
-  const box = $("#install-modal-list");
+/* Farm-app version/update lives on the master machine row. */
+async function hydrateAppVersion(pill) {
+  if (!pill) return;
   try {
-    const [machines, settings] = await Promise.all([
-      api("GET", "/api/machines"),
-      api("GET", "/api/swap/settings"),
-    ]);
-    const localName = settings.host_name || settings.host;
-    const remotes = (machines || []).filter(m => m.name !== localName);
-    if (!remotes.length) {
-      box.innerHTML = `<p class="hint">No other machines configured — add one on the Machines tab first.</p>`;
-      return;
-    }
-    box.innerHTML = `<div class="checkbox-list">` + remotes.map(m => {
-      const gpus = (m.detected && m.detected.gpu_names) || [];
-      return `
-      <label class="server-chip" data-machine="${escHtml(m.name)}" title="tick to include in check/install">
-        <input type="checkbox" class="install-modal-tick" value="${escHtml(m.name)}" checked>
-        <span class="chip-name">${escHtml(m.name)}${m.role === "master" ? ' <span class="badge badge-master">master</span>' : ""}</span>
-        <span class="chip-sub">${escHtml(m.ip || "")} · ${escHtml(m.os || "linux")} · ${gpus.length || "?"} GPU</span>
-        <span class="badge install-modal-status">not checked</span>
-      </label>`;
-    }).join("") + `</div>`;
-    // auto-check on open so the user sees state before ticking
-    await runInstallModalCheck();
-  } catch (err) {
-    box.innerHTML = `<p class="status-bad">${escHtml(err.message)}</p>`;
+    const d = await api("GET", "/api/app-version");
+    const label = `app ${d.current || "?"}${d.latest && d.latest !== d.current ? ` → ${d.latest}` : ""}`;
+    const updatable = d.source
+      ? (!!(d.latest && !d.on_latest) && !d.dirty)
+      : !!(d.latest && !d.on_latest);
+    pill.textContent = label;
+    pill.dataset.label = label;
+    pill.dataset.source = d.source ? "1" : "";
+    pill.disabled = !updatable;
+    pill.style.cursor = updatable ? "pointer" : "default";
+    pill.style.opacity = updatable ? "1" : "0.75";
+    pill.title = d.source
+      ? (d.dirty ? "source tree has local changes — commit or stash before updating"
+                 : updatable ? `Download release ${d.latest} source and restart`
+                             : "source checkout is current")
+      : (updatable ? `Update to ${d.latest} and restart`
+                   : "farm app is current");
+  } catch (_) {
+    pill.textContent = "app ?";
   }
 }
-function installModalRowStatus(name, kind, text) {
-  // badge idiom matches the launch-grid server-chips: ok / down / warn
-  const badge = kind === "ok" ? "" : kind === "bad" ? " badge-down" : " badge-local";
-  const row = document.querySelector(`#install-modal-list .server-chip[data-machine="${CSS.escape(name)}"] .install-modal-status`);
-  if (row) { row.className = "badge install-modal-status" + badge; row.textContent = text; }
-}
-function installModalTicked() {
-  return Array.from(document.querySelectorAll("#install-modal-list .install-modal-tick:checked"))
-    .map(el => el.value);
-}
-async function runInstallModalCheck() {
-  const names = installModalTicked();
-  names.forEach(n => installModalRowStatus(n, "warn", "checking…"));
-  try {
-    const resp = await api("POST", installModalEndpoint(), {install_missing: false, machines: names});
-    for (const r of (resp.results || [])) {
-      const ok = r.status === "already-installed" || r.status === "installed";
-      const kind = ok ? "ok" : r.status === "offline" ? "warn" : "bad";
-      installModalRowStatus(r.machine, kind, r.status + (r.bin ? ` — ${r.bin}` : r.reason ? ` — ${r.reason}` : ""));
-      // pre-untick machines that need nothing, so Install hits only gaps
-      if (ok || r.status === "offline") {
-        const tick = document.querySelector(`#install-modal-list .server-chip[data-machine="${CSS.escape(r.machine)}"] .install-modal-tick`);
-        if (tick) tick.checked = false;
-      }
-    }
-    const missing = (resp.missing || []).length;
-    toast(resp.summary || "Check complete", missing ? "warn" : "ok");
-  } catch (err) {
-    toast(err.message, "bad");
-  }
-}
-async function runInstallModalInstall(btn) {
-  const names = installModalTicked();
-  if (!names.length) { toast("Tick at least one machine", "warn"); return; }
-  btn.disabled = true; btn.textContent = "installing…";
-  names.forEach(n => installModalRowStatus(n, "warn", "installing…"));
-  try {
-    const resp = await api("POST", installModalEndpoint(), {install_missing: true, machines: names});
-    for (const r of (resp.results || [])) {
-      const ok = r.status === "already-installed" || r.status === "installed";
-      const kind = ok ? "ok" : r.status === "offline" ? "warn" : "bad";
-      installModalRowStatus(r.machine, kind, r.status + (r.bin ? ` — ${r.bin}` : r.reason ? ` — ${r.reason}` : ""));
-    }
-    const box = $("#install-all-status");
-    if (box) box.innerHTML = `<p class="status-ok">${escHtml(resp.summary || "Install complete")}</p>`;
-    toast(resp.summary || "Install complete", "ok");
-  } catch (err) {
-    toast(err.message, "bad");
-  }
-  btn.disabled = false; btn.textContent = "Install selected";
-}
-on("#install-llama-cpp-others", "click", () => openInstallModal());
-on("#install-modal-close", "click", closeInstallModal);
-on("#install-modal-backdrop", "click", closeInstallModal);
-on("#install-modal-check", "click", runInstallModalCheck);
-on("#install-modal-install", "click", (e) => runInstallModalInstall(e.currentTarget));
 
+function wireAppUpdate(btn) {
+  if (!btn) return;
+  btn.onclick = async (e) => {
+    const b = e.currentTarget;
+    const source = b.dataset.source === "1";
+    const msg = source
+      ? "Download the latest release source, update this checkout, and restart the app?"
+      : "Download and install the latest farm-app release? The app will restart.";
+    if (!window.confirm(msg)) return;
+    b.disabled = true; b.textContent = "Updating…";
+    try {
+      const r = await api("POST", "/api/app/update", {});
+      if (r.ok) {
+        toast(source ? "Source updated — restarting" : `Updated to ${r.version || "latest"} — restarting`, "ok");
+        setTimeout(() => location.reload(), 4000);
+      } else {
+        toast(r.detail || "update failed", "bad");
+        b.disabled = false; b.textContent = b.dataset.label || "app";
+      }
+    } catch (err) {
+      toast(err.message, "bad");
+      b.disabled = false; b.textContent = b.dataset.label || "app";
+    }
+  };
+}
 
 /* tool status rides along with the settings load (same panel, same tab) */
 const _loadSettings = loadSettings;
@@ -6987,7 +7051,7 @@ function openFsBrowse(targetInputId, machineName) {
   if (!modal) return;
   const init = $(`#${targetInputId}`)?.value?.trim() || "";
   const hint = $("#fs-machine-hint");
-  if (hint) hint.textContent = fsTargetMachine ? `Browsing on ${fsTargetMachine} via SSH — pick a folder on that machine` : `Browsing on this host (app server) — works on Linux & Windows clients`;
+  if (hint) hint.textContent = fsTargetMachine ? `Browsing on ${fsTargetMachine} via the peer agent — pick a folder on that machine` : `Browsing on this host (app server) — works on Linux & Windows clients`;
   modal.classList.remove("hidden");
   modal.setAttribute("aria-hidden", "false");
   fsLoad(init || "~");
@@ -7039,8 +7103,8 @@ on("#m-llama-bin-browse", "click", () => {
   let machine = null;
   if (orig) machine = orig;
   else if (ip && user) {
-    // unsaved machine — cannot SSH without being saved; fall back to local with hint
-    toast("Save the machine first to browse its own filesystem via SSH — showing this host for now", "info");
+    // unsaved machine — cannot browse remotely until saved; fall back to local with hint
+    toast("Save the machine first to browse its own filesystem through the agent — showing this host for now", "info");
   }
   openFsBrowse("m-llama-bin", machine);
 });
@@ -7573,6 +7637,116 @@ async function selectHfModel(modelId){
       : `<p class="status-bad">${escHtml(msg)}</p>`;
   }
 }
+/* Live token check for gated repos: 1-byte range GET proves the saved
+   token can download. Granted → green banner, warning dismissed.
+   Denied → warning with the concrete reason + a Re-check button (use
+   right after clicking Agree on the HF page). */
+async function checkHfAccess(data, testFile) {
+  const box = $("#hf-access-box");
+  if (!box) return;
+  const hfLink = `https://huggingface.co/${data.id}`;
+  const deniedHTML = (reason) => `
+    <div class="hint-box" style="border-left:3px solid var(--warn); padding-left:8px">
+      <i class="fa-solid fa-lock"></i> <strong>Gated model</strong> — requires agreement.
+      Visit <a href="${escHtml(hfLink)}" target="_blank">${escHtml(data.id)}</a>, click “Agree and access repository”,
+      then paste your token in <code>Settings → Defaults → Hugging Face token</code> and retry.
+      <br><small class="hint">Check: ${escHtml(reason)}</small>
+      <div style="margin-top:6px"><button class="small" id="hf-recheck">Re-check access</button></div>
+    </div>`;
+  try {
+    const parts = (data.id || "").split("/");
+    const author = parts.shift() || "";
+    const name = parts.join("/");
+    const q = testFile ? `?file=${encodeURIComponent(testFile)}` : "";
+    const r = await api("GET", `/api/hf/access/${encodeURIComponent(author)}/${encodeURIComponent(name)}${q}`);
+    if (r.access === "granted") {
+      box.innerHTML = `
+        <div class="hint-box" style="border-left:3px solid var(--ok); padding-left:8px">
+          <i class="fa-solid fa-circle-check" style="color:var(--ok)"></i>
+          <strong>Access granted</strong> — your saved token works for this repo. Downloads will succeed.
+        </div>`;
+    } else {
+      box.innerHTML = deniedHTML(r.reason || `HF answered ${r.status || "denied"}`);
+      on("#hf-recheck", "click", () => {
+        box.innerHTML = `<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Checking saved token against this repo…</p>`;
+        checkHfAccess(data, testFile);
+      });
+    }
+  } catch (e) {
+    box.innerHTML = deniedHTML(`couldn't verify: ${e.message}`);
+    on("#hf-recheck", "click", () => {
+      box.innerHTML = `<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Checking saved token against this repo…</p>`;
+      checkHfAccess(data, testFile);
+    });
+  }
+}
+function hfSetQuant(q){
+  hfQuant = q||"";
+  document.querySelectorAll("#hf-quant-chips .hw-chip").forEach(b=> b.classList.toggle("active", b.dataset.quant===hfQuant));
+  // reflective: company/collection lists depend on quant
+  loadHfCompanies();
+  if(hfCompany) loadHfCollections(hfCompany);
+  doHfSearch(true);
+}
+function hfSetTask(t){
+  hfTask = t||"";
+  document.querySelectorAll("#hf-task-chips .hw-chip").forEach(b=> b.classList.toggle("active", b.dataset.task===hfTask));
+  const sel=$("#hf-pipeline-select"); if(sel) sel.value = hfTask;
+  // reflective: company/collection lists depend on task
+  loadHfCompanies();
+  if(hfCompany) loadHfCollections(hfCompany);
+  doHfSearch(true);
+}
+on("#hf-search-btn","click", ()=> doHfSearch(true));
+on("#hf-query","keydown", (e)=>{ if(e.key==="Enter") doHfSearch(true); });
+on("#hf-query","input", ()=>{
+  clearTimeout(hfDebounce);
+  hfDebounce = setTimeout(()=> doHfSearch(true), 400);
+});
+on("#hf-sort","change", ()=> doHfSearch(true));
+on("#hf-store","change", ()=>{
+  const v=$("#hf-store").value; if(v && $("#dl-store")) $("#dl-store").value=v;
+  // re-render detail to update store hint
+  if(hfActiveId) selectHfModel(hfActiveId);
+});
+document.querySelectorAll("#hf-quant-chips .hw-chip").forEach(b=>{
+  b.addEventListener("click", ()=> hfSetQuant(b.dataset.quant||""));
+});
+document.querySelectorAll("#hf-task-chips .hw-chip").forEach(b=>{
+  b.addEventListener("click", ()=> hfSetTask(b.dataset.task||""));
+});
+on("#hf-pipeline-select","change", ()=>{
+  const v=$("#hf-pipeline-select").value || "";
+  hfTask = v;
+  document.querySelectorAll("#hf-task-chips .hw-chip").forEach(b=> b.classList.toggle("active", b.dataset.task===hfTask));
+  loadHfCompanies();
+  if(hfCompany) loadHfCollections(hfCompany);
+  doHfSearch(true);
+});
+on("#hf-recommended","click", ()=>{
+  hfRecommended = !hfRecommended;
+  const chip=$("#hf-recommended"); if(chip){ chip.classList.toggle("active", hfRecommended); chip.dataset.recommended = hfRecommended?"true":"false"; }
+  loadHfCompanies();
+  if(hfCompany) loadHfCollections(hfCompany);
+  doHfSearch(true);
+});
+on("#hf-company","change", async ()=>{
+  hfCompany = $("#hf-company").value || "";
+  hfCollection = "";
+  const sel=$("#hf-collection"); if(sel) sel.value="";
+  await loadHfCollections(hfCompany);
+  doHfSearch(true);
+});
+on("#hf-collection","change", ()=>{
+  hfCollection = $("#hf-collection").value || "";
+  doHfSearch(true);
+});
+on("#hf-company-search","input", (e)=>{
+  clearTimeout(hfCompanyFilterDebounce);
+  hfCompanyFilterDebounce = setTimeout(()=> filterHfCompaniesLocal(e.target.value), 200);
+});
+on("#hf-prev","click", ()=>{ if(hfPage>0){ hfPage--; doHfSearch(false); } });
+on("#hf-next","click", ()=>{ hfPage++; doHfSearch(false); });
 /* format is always GGUF quants (llama.cpp). */
 function hfSetFormat(fmt){
   hfFormat = "gguf";

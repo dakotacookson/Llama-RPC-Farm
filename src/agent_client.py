@@ -1,8 +1,9 @@
-"""Client for the optional peer agent.
+"""Client for the peer agent — the ONLY runtime transport to peers.
 
-The agent is a SEPARATE, optional service on peers. SSH remains the
-default and permanent fallback: machine `transport` is `auto` (probe the
-agent, else SSH), `ssh` (never use the agent), or `agent` (require it).
+The agent runs on every configured peer. `transport()` always returns
+"agent" and `should_use_agent()` always returns true; the legacy
+legacy `transport:` values are accepted for config compatibility but
+no longer change behaviour. There is no remote shell fallback.
 
 Protocol v1 endpoints (see docs/peer-agent.md):
   GET  /health, /version, /capabilities, /info, /status, /processes,
@@ -58,10 +59,22 @@ def _token(machine) -> str:
     if override:
         return override
     try:
-        return secrets_vault.get_machine_agent_token(machine)
+        tok = secrets_vault.get_machine_agent_token(machine)
+        if tok:
+            return tok
     except Exception:
-        return (os.environ.get("FARM_AGENT_TOKEN")
-                or os.environ.get("AGENT_TOKEN") or "").strip()
+        pass
+    # Farm-wide token (vault): paired agents accept this when no
+    # per-machine token is stored. This is what lets a freshly discovered
+    # agent be health-checked/paird without restarting the app.
+    try:
+        tok = secrets_vault.get_farm_agent_token()
+        if tok:
+            return tok
+    except Exception:
+        pass
+    return (os.environ.get("FARM_AGENT_TOKEN")
+            or os.environ.get("AGENT_TOKEN") or "").strip()
 
 
 def _base(machine) -> str:
@@ -320,6 +333,12 @@ def agent_update(machine, wheel_bytes, version="", timeout=200.0) -> dict:
     }, timeout=timeout)
 
 
+def agent_update_binary(machine, url, version="", sha256="", timeout=300.0) -> dict:
+    return _request(machine, "POST", "/agent/update-binary", {
+        "url": url, "version": version, "sha256": sha256,
+    }, timeout=timeout)
+
+
 def build_probe(machine, llama_bin, timeout=30.0) -> dict:
     query = urllib.parse.urlencode({"llama_bin": llama_bin})
     return _request(machine, "GET", f"/build/probe?{query}",
@@ -383,6 +402,6 @@ def _cache_key(machine) -> str:
 
 
 def should_use_agent(machine) -> bool:
-    """Agent-only: always true. SSH is no longer a runtime transport —
+    """Agent-only: always true. There is no remote shell transport —
     agents are installed from their own platform packages."""
     return True

@@ -18,7 +18,7 @@ the resolved key. A key with `models:` sees ONLY those tokens (exact
 grants — bare mid = base entry only, mid--label = that variant). Keys
 with NO `models:` (or any request with NO key once keys exist) see
 everything per the open-mode semantics. In-process callers (boot
-reconcile, tuner, stats, SSH housekeeping) see everything — the gate is
+reconcile, tuner, stats, agent housekeeping) see everything — the gate is
 opt-in hiding, never an accidental lockout.
 
 Admin status is a KEY FLAG, not an IP: `admin: true` keys open control
@@ -164,6 +164,11 @@ def request_token_from_scope(scope) -> str:
     tok = (headers.get("x-api-key") or "").strip()
     if tok:
         return tok
+    # Firefox can reject/drop the HttpOnly session cookie; the UI mirrors
+    # the same session id in a header as a fallback.
+    sid = (headers.get("x-farm-session") or "").strip()
+    if sid:
+        return _session_token(sid)
     cookie = (headers.get("cookie") or "")
     for part in cookie.split(";"):
         if "=" in part:

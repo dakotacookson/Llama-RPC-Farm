@@ -29,7 +29,11 @@ def discover(address="255.255.255.255", port=DEFAULT_DISCOVERY_PORT,
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("127.0.0.1", 0))
+    # Explicit bind keeps the macOS socket usable; bind the wildcard, NOT
+    # loopback — a 127.0.0.1 source address makes LAN agents reply to an
+    # address this host can't receive (observed: discovery returned 0
+    # agents instead of 3).
+    sock.bind(("", 0))
     deadline = time.monotonic() + max(0.1, float(timeout))
     found = {}
     try:

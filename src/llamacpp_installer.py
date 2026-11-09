@@ -1,7 +1,7 @@
 """Machine-type-aware llama.cpp installer.
 
 Picks the correct official prebuilt for each machine (os + gpu_vendor +
-arch) and installs it over SSH (or locally):
+arch) and installs it through the peer agent (or locally):
 
   macOS arm64/x64     -> bin-macos-*  (Metal built in)
   Linux + AMD (ROCm)  -> bin-ubuntu-rocm-<ver>-<arch>.tar.gz
@@ -39,6 +39,9 @@ GITHUB_LATEST_DL = "https://github.com/ggml-org/llama.cpp/releases/latest/downlo
 LINUX_VER = "10.0"   # ubuntu-rocm-<ver>
 WIN_CUDA_VER = "12.4"
 WIN_ROCM_VER = "10.0"
+# CUDA 12.4 GA needs >= 551.61 on Windows. Older drivers keep working with
+# the Vulkan prebuilt (same llama.cpp/RPC feature set, no CUDA).
+WIN_CUDA_MIN_DRIVER = (551, 61)
 LINUX_CUDA_VER = "13.4"   # ubuntu-cuda-<ver>; upstream also ships 12.8
 LINUX_CUDA_VER_OLD = "12.8"   # fallback when the newest CUDA asset is absent
 DEST_POSIX = "~/llama.cpp/bin"
@@ -164,6 +167,39 @@ def _fetch_latest_assets(limit=30):
     return None, [], GITHUB_LATEST_DL
 
 
+def _driver_tuple(text):
+    """'551.61' / '551.61.0' -> (551, 61); None when unknown."""
+    import re
+    m = re.search(r"(\d+)\.(\d+)", str(text or ""))
+    try:
+        return (int(m.group(1)), int(m.group(2))) if m else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _windows_nvidia_driver(machine, run=None, is_local=True):
+    """Detected NVIDIA driver tuple on a Windows machine, or None."""
+    dv = ((machine.get("detected") or {}).get("driver_version")
+          or machine.get("driver_version") or "")
+    if dv:
+        return _driver_tuple(dv)
+    if not is_local and agent_client.should_use_agent(machine):
+        try:
+            sd = agent_client.system_detail(machine) or {}
+            return _driver_tuple(sd.get("driver_version") or sd.get("driver"))
+        except Exception:
+            return None
+    if run is not None and is_local:
+        try:
+            _c, out = run("nvidia-smi --query-gpu=driver_version "
+                          "--format=csv,noheader")
+        except Exception:
+            return None
+        first = (out or "").strip().splitlines()
+        return _driver_tuple(first[0] if first else "")
+    return None
+
+
 def _glibc_from_text(text):
     import re
     m = re.search(r"(\d+)\.(\d+)", str(text or ""))
@@ -188,7 +224,7 @@ def _glibc_version(cmd_prefix, run):
         return None
 
 
-def _pick_assets(machine, tag, assets, glibc=None):
+def _pick_assets(machine, tag, assets, glibc=None, driver_version=None):
     """Choose release asset name(s) for a machine. Returns
     (asset_names, dest, backend_note, is_win_zip) or raises ValueError."""
     os_type = machine.get("os", "linux")
@@ -207,6 +243,18 @@ def _pick_assets(machine, tag, assets, glibc=None):
             return [f"llama-{tag}-bin-win-rocm-{WIN_ROCM_VER}-{arch_kind}.zip"], \
                 DEST_WIN, "HIP/ROCm backend", True
         if vendor == "nvidia" and not is_arm:
+            if (driver_version is not None
+                    and driver_version < WIN_CUDA_MIN_DRIVER):
+                vulkan = f"llama-{tag}-bin-win-vulkan-{arch_kind}.zip"
+                if vulkan in assets:
+                    return [vulkan], DEST_WIN, (
+                        f"Vulkan backend (NVIDIA driver "
+                        f"{driver_version[0]}.{driver_version[1]} is older "
+                        f"than CUDA {WIN_CUDA_VER}'s minimum)"), True
+                cpu = f"llama-{tag}-bin-win-cpu-{arch_kind}.zip"
+                return [cpu], DEST_WIN, (
+                    "CPU backend (old NVIDIA driver, no Windows Vulkan "
+                    "asset upstream)"), True
             cud = f"cudart-llama-bin-win-cuda-{WIN_CUDA_VER}-{arch_kind}.zip"
             return [f"llama-{tag}-bin-win-cuda-{WIN_CUDA_VER}-{arch_kind}.zip",
                     cud], DEST_WIN, f"CUDA {WIN_CUDA_VER} backend (+cudart)", True
@@ -262,7 +310,11 @@ def plan(machine):
     except Exception as e:
         return {"ok": False, "error": f"cannot reach GitHub releases: {e}"}
     try:
-        names, dest, note, _zip = _pick_assets(machine, tag, assets)
+        names, dest, note, _zip = _pick_assets(
+            machine, tag, assets,
+            driver_version=_driver_tuple(
+                (machine.get("detected") or {}).get("driver_version")
+                or machine.get("driver_version")))
     except ValueError as e:
         return {"ok": False, "error": str(e)}
     missing = [n for n in names if n not in assets]
@@ -271,7 +323,7 @@ def plan(machine):
 
 
 def install_on(machine, log=lambda m: None):
-    """Install the right prebuilt on a machine (local or via SSH).
+    """Install the right prebuilt on a machine (local or via the agent).
     Returns dict {ok, machine, bin, detail}."""
     import config_loader as cfg
     import local_node
@@ -335,7 +387,12 @@ def install_on(machine, log=lambda m: None):
                 glibc = _glibc_from_text(sd.get("glibc"))
             except Exception:
                 glibc = None
-        names, dest, note, _zip = _pick_assets(machine, tag, assets, glibc)
+        driver = None
+        if is_win and (machine.get("gpu_vendor") or "").lower() == "nvidia":
+            driver = _windows_nvidia_driver(machine, run=run,
+                                            is_local=is_local)
+        names, dest, note, _zip = _pick_assets(
+            machine, tag, assets, glibc, driver_version=driver)
         plan_info = {"ok": True, "tag": tag, "assets": names, "dest": dest,
                      "backend": note,
                      "missing": [n for n in names if n not in assets]}
@@ -355,27 +412,59 @@ def install_on(machine, log=lambda m: None):
             agent_client.install_artifact(
                 machine, urls, dest,
                 archive="zip" if is_win else "tar.gz",
-                strip_components=1, mode=None if is_win else 0o755)
+                # Windows release zips are flat (no top-level directory);
+                # stripping one component discarded every member.
+                strip_components=0 if is_win else 1,
+                mode=None if is_win else 0o755)
             bin_name = "llama-server.exe" if is_win else "llama-server"
+            rpc_name = "ggml-rpc-server.exe" if is_win else "ggml-rpc-server"
             v = agent_client.install_verify(machine, f"{dest}/{bin_name}")
-            if v.get("returncode") == 0:
-                bin_path = f"{dest}/{bin_name}"
-                try:
-                    cfg.machines.update(name, {"llama_bin": dest})
-                except Exception:
-                    pass
-                return {"ok": True, "machine": name, "bin": bin_path,
-                        "backend": plan_info["backend"],
-                        "detail": f"installed {', '.join(plan_info['assets'])} "
-                                  f"({plan_info['tag']}) to {dest}"}
-            return {"ok": False, "machine": name,
-                    "detail": f"installed but verify failed: "
-                              f"{v.get('output', '')[-300:]}"}
-        except Exception as e:
-            if agent_client.transport(machine) == "agent":
+            if v.get("returncode") != 0:
                 return {"ok": False, "machine": name,
-                        "detail": f"agent install failed: {e}"}
-            print(f"[agent] {name}: install failed, falling back to SSH: {e}")
+                        "detail": f"installed but llama-server verify failed: "
+                                  f"{v.get('output', '')[-300:]}"}
+            # RPC builds disagree on --version; --help is the reliable
+            # load/run probe (and detects missing shared-library symlinks).
+            rpc_ok = False
+            rpc_out = ""
+            for args in (["--help"], ["--version"]):
+                try:
+                    rv = agent_client.install_verify(
+                        machine, f"{dest}/{rpc_name}", args, timeout=35) or {}
+                    rpc_out = str(rv.get("output") or "")
+                    if rv.get("returncode") == 0:
+                        rpc_ok = True
+                        break
+                except Exception as e:
+                    rpc_out = str(e)
+                    if "not allowed" in rpc_out:
+                        # Older agents cannot verify RPC; presence is the
+                        # best available check until the agent is updated.
+                        try:
+                            rst = agent_client.file_stat(
+                                machine, f"{dest}/{rpc_name}") or {}
+                            rpc_ok = bool(rst.get("exists")
+                                          and rst.get("is_file"))
+                        except Exception:
+                            rpc_ok = False
+                        break
+            if not rpc_ok:
+                return {"ok": False, "machine": name,
+                        "detail": f"installed but llama RPC verify failed "
+                                  f"({rpc_name}): {rpc_out[-300:]}"}
+            bin_path = f"{dest}/{bin_name}"
+            try:
+                cfg.machines.update(name, {"llama_bin": dest})
+            except Exception:
+                pass
+            return {"ok": True, "machine": name, "bin": bin_path,
+                    "backend": plan_info["backend"],
+                    "detail": f"installed {', '.join(plan_info['assets'])} "
+                              f"({plan_info['tag']}) to {dest} (llama-server + "
+                              f"ggml-rpc-server)"}
+        except Exception as e:
+            return {"ok": False, "machine": name,
+                    "detail": f"agent install failed: {e}"}
     # download+extract budget: CUDA+cuDART archives are ~1 GB total; a
     # flat 600s was tight on slow uplinks and killed the run mid-download
     # (fixed 2026-10-31). 20 min per asset set, verify keeps its own.
@@ -438,9 +527,22 @@ def install_on(machine, log=lambda m: None):
         vcode, vout = 1, f"verify crashed: {e}"
     if vcode != 0:
         return {"ok": False, "machine": name,
-                "detail": f"installed but verify failed "
+                "detail": f"installed but llama-server verify failed "
                           f"(exit {vcode}): {(vout or '')[-300:]}"}
     bin_dir = DEST_WIN if is_win else DEST_POSIX
+    rpc_name = "ggml-rpc-server.exe" if is_win else "ggml-rpc-server"
+    if is_win:
+        rpc_cmd = f'if exist "{bin_dir}\\{rpc_name}" (exit 0) else (exit 1)'
+    else:
+        rpc_cmd = f'test -x "{bin_dir}/{rpc_name}"'
+    try:
+        rcode, rout = run(rpc_cmd, timeout=60)
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+        rcode, rout = 1, f"verify crashed: {e}"
+    if rcode != 0:
+        return {"ok": False, "machine": name,
+                "detail": f"installed but llama RPC verify failed "
+                          f"({rpc_name}): {(rout or '')[-300:]}"}
     bin_path = (f"{bin_dir}\\llama-server.exe" if is_win
                 else f"{bin_dir}/llama-server")
     # Windows: the upgrade just (re)wrote the exes — re-ensure the
@@ -465,7 +567,8 @@ def install_on(machine, log=lambda m: None):
     except Exception:
         pass
     detail = (f"installed {', '.join(plan_info['assets'])} "
-              f"({plan_info['tag']}) to {bin_dir}")
+              f"({plan_info['tag']}) to {bin_dir} (llama-server + "
+              f"ggml-rpc-server)")
     if fw_note:
         detail += f"; {fw_note}"
     return {"ok": True, "machine": name, "bin": bin_path,
@@ -481,8 +584,8 @@ def install_on(machine, log=lambda m: None):
 # custom CUDA build broke every --device CUDA* launch on the farm.
 
 def _machine_run(machine):
-    """(run, is_local) for a machine — bash -c locally, raw SSH
-    remotely (POSIX; Windows peers never take the source path)."""
+    """(run, is_local) for a machine — bash -c locally. Remote source
+    work goes through the peer agent and never reaches this helper."""
     import local_node
     is_local = local_node.is_local(machine)
 
@@ -524,12 +627,9 @@ def probe_setup(machine, log=lambda m: None):
             res = agent_client.build_probe(machine, lb)
             res["machine"] = machine.get("name", "?")
             return res
-        except Exception as e:
-            if agent_client.transport(machine) == "agent":
-                out["machine"] = machine.get("name", "?")
-                return out
-            print(f"[agent] {machine.get('name')}: build probe failed, "
-                  f"falling back to SSH: {e}")
+        except Exception:
+            out["machine"] = machine.get("name", "?")
+            return out
     if not lb or machine.get("os", "linux") == "windows":
         # Windows can't remote-source-build (no MSVC toolchain
         # assumption) and an empty llama_bin just needs a prebuilt.
@@ -572,8 +672,11 @@ def probe_setup(machine, log=lambda m: None):
         out["src_root"] = root
         # Read the flags this build carries, for the log + sanity.
         cmd = (f'grep -E "^(GGML_CUDA:BOOL|GGML_HIP:BOOL|GGML_VULKAN:BOOL|'
+               f'GGML_SYCL:BOOL|GGML_METAL:BOOL|GGML_OPENCL:BOOL|'
                f'GGML_RPC:BOOL|GGML_CUDA_FA:BOOL|GGML_CUDA_NCCL:BOOL|'
-               f'CMAKE_CUDA_ARCHITECTURES:|CMAKE_CUDA_COMPILER:FILEPATH|'
+               f'GGML_BLAS:BOOL|GGML_NATIVE:BOOL|LLAMA_CURL:BOOL|'
+               f'CMAKE_BUILD_TYPE:STRING|CMAKE_CUDA_ARCHITECTURES:|'
+               f'CMAKE_CUDA_COMPILER:FILEPATH|'
                f'GGML_CUDA_COMPRESSION_MODE:STRING)" '
                f'"{out["build_dir"]}/CMakeCache.txt" 2>/dev/null')
         _c, flags_blob = run(cmd)
@@ -585,6 +688,20 @@ def probe_setup(machine, log=lambda m: None):
                     # strip the cmake type prefix (BOOL=/FILEPATH=/…)
                     v = v.split("=", 1)[1]
                 out["flags"][k.strip()] = v
+        # Record the current binaries so bootstrap/manifest can report
+        # them without re-probing. Both are required: llama-server serves
+        # models, ggml-rpc-server is the peer's RPC backend.
+        try:
+            _c, vout = run(f'"{out["llama_bin"]}/llama-server" --version 2>&1 | head -1')
+            out["version"] = (vout or "").strip()
+        except Exception:
+            out["version"] = ""
+        try:
+            _c, rout = run(f'test -x "{out["llama_bin"]}/ggml-rpc-server" '
+                           '&& echo RPC || echo NORPC')
+            out["rpc"] = "RPC" in (rout or "")
+        except Exception:
+            out["rpc"] = False
         out["kind"] = "source"
         return out
     except Exception as e:
@@ -618,22 +735,33 @@ def update_source_on(machine, probe=None, log=lambda m: None):
     src_root = probe["src_root"]
     if (not local_node.is_local(machine)
             and agent_client.should_use_agent(machine)):
-        try:
-            bin_path = (f"{probe.get('llama_bin') or build_dir + '/bin'}"
-                        f"/llama-server")
-            res = agent_client.build_update(
-                machine, src_root, build_dir, bin_path)
-            if res.get("ok"):
-                return {"ok": True, "machine": name, "bin": bin_path,
-                        "detail": f"source build updated to "
-                                  f"{res.get('version', '')}"}
-            return {"ok": False, "machine": name,
-                    "detail": res.get("error") or "source update failed"}
-        except Exception as e:
-            if agent_client.transport(machine) == "agent":
+        bin_path = (f"{probe.get('llama_bin') or build_dir + '/bin'}"
+                    f"/llama-server")
+        last_err = None
+        # A just-updated agent can close the first long request while it is
+        # still settling after restart. Retry once after confirming health.
+        for attempt in (1, 2):
+            try:
+                res = agent_client.build_update(
+                    machine, src_root, build_dir, bin_path)
+                if res.get("ok"):
+                    return {"ok": True, "machine": name, "bin": bin_path,
+                            "detail": f"source build updated to "
+                                      f"{res.get('version', '')}"}
                 return {"ok": False, "machine": name,
-                        "detail": f"agent source update failed: {e}"}
-            print(f"[agent] {name}: source update failed, falling back to SSH: {e}")
+                        "detail": res.get("error") or "source update failed"}
+            except Exception as e:
+                last_err = e
+                if attempt == 1:
+                    import time as _t
+                    _t.sleep(5)
+                    try:
+                        agent_client.health(machine, timeout=5)
+                    except Exception:
+                        pass
+                    continue
+        return {"ok": False, "machine": name,
+                "detail": f"agent source update failed: {last_err}"}
     run, _is_local = _machine_run(machine)
 
     try:
@@ -680,6 +808,28 @@ def update_source_on(machine, probe=None, log=lambda m: None):
         log(f"building with -j{jobs} (cores={cores}, "
             f"available_ram={ram_avail_mb}MB)")
 
+        # A stale CMAKE_COMMAND in the cache (snap/venv path deleted)
+        # makes gmake fail before compiling. Reconfigure with the cmake on
+        # PATH; cached CMake options are preserved.
+        stale_cmake = ""
+        try:
+            with open(os.path.join(build_dir, "CMakeCache.txt"),
+                      encoding="utf-8", errors="replace") as _cf:
+                for _line in _cf:
+                    if _line.startswith("CMAKE_COMMAND:"):
+                        stale_cmake = _line.split("=", 1)[-1].strip()
+                        break
+        except OSError:
+            pass
+        if stale_cmake and not os.path.isfile(stale_cmake):
+            log(f"{name}: CMake cache points at missing {stale_cmake} — "
+                "reconfiguring with cmake on PATH")
+            code, out = run(f"cmake -S '{src_root}' -B '{build_dir}' "
+                            "2>&1 | tail -3", timeout=900)
+            if code != 0:
+                return {"ok": False, "machine": name,
+                        "detail": f"cmake reconfigure failed: "
+                                  f"{(out or '')[-300:]}"}
         build_cmd = (f"cd '{src_root}' && cmake --build '{build_dir}' "
                      f"-j {jobs} > /tmp/llamacpp-build.log 2>&1; "
                      "_ec=$?; tail -3 /tmp/llamacpp-build.log; exit $_ec")
@@ -690,11 +840,18 @@ def update_source_on(machine, probe=None, log=lambda m: None):
                               f"{(out or '')[-400:]}"}
 
         bin_path = f"{probe.get('llama_bin') or build_dir + '/bin'}/llama-server"
+        rpc_path = f"{probe.get('llama_bin') or build_dir + '/bin'}/ggml-rpc-server"
         code, out = run(f"'{bin_path}' --version 2>&1 | head -1")
         version = (out or "").strip()
-        log(f"{name} now: {version}")
+        code, out = run(f"test -x '{rpc_path}' && echo RPC || echo NORPC")
+        if "RPC" not in (out or ""):
+            return {"ok": False, "machine": name,
+                    "detail": "source build did not produce ggml-rpc-server "
+                              "(enable GGML_RPC=ON in the build cache)"}
+        log(f"{name} now: {version} (llama-server + ggml-rpc-server)")
         return {"ok": True, "machine": name, "bin": bin_path,
-                "detail": f"source build updated to {version}"}
+                "detail": f"source build updated to {version} "
+                          f"(llama-server + ggml-rpc-server)"}
     except Exception as e:
         return {"ok": False, "machine": name,
                 "detail": f"source update failed: {e}"}

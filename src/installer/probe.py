@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -116,11 +117,14 @@ SETTINGS_KEYS = {
 }
 
 
-def _settings_merge_step(tool, found_path, current_value, fs, force=False):
+def _settings_merge_step(tool, found_path, current_value, fs, force=False,
+                         settings_root=""):
     """One WriteSettings step or None, per §6 rules a/b/c."""
     if tool not in SETTINGS_KEYS or not found_path:
         return None
     path, key = SETTINGS_KEYS[tool]
+    if settings_root and not os.path.isabs(path):
+        path = os.path.join(settings_root, path)
     resolved = fs.expanduser(found_path)
     if force:
         reason = "force"
@@ -199,10 +203,19 @@ def probe_swap(fs, run) -> Tuple[Optional[str], Optional[str]]:
 def probe(info: SystemInfo, fs: FS, run: RunCmd,
           role: str = "main", pinned: Optional[Dict] = None,
           force_settings: bool = False,
-          manifest: Optional[Dict] = None) -> Plan:
-    """Pure: decide skip/install/repair per tool + settings prefill steps."""
+          manifest: Optional[Dict] = None,
+          resolved: Optional[Dict] = None,
+          source_probe: Optional[Dict] = None,
+          settings_root: str = "") -> Plan:
+    """Pure: decide skip/install/repair per tool + settings prefill steps.
+
+    `resolved` is the network-resolved latest-release plan from bootstrap
+    ({tool: {version, assets, base, dest, note}}). probe stays hermetic:
+    it never fetches; callers pass the resolved data. When absent, the
+    pinned fallback is used (offline / lookup failure)."""
     pinned = pinned or {}
     manifest = manifest or {}
+    resolved = resolved or {}
     plan: Plan = []
 
     def version_cmp(have, want):
@@ -223,51 +236,121 @@ def probe(info: SystemInfo, fs: FS, run: RunCmd,
         return h == w
 
     # --- llama.cpp --------------------------------------------------------
-    need_lcpp = pinned.get("llama.cpp", {}).get("version", "b10000")
-    found, ver = probe_llama_cpp(fs, run, role)
-    if found and ver and version_cmp(ver, need_lcpp):
-        plan.append(SkipTool("llama.cpp", "present-current", found, ver))
-    elif found and not ver:
-        plan.append(PlanNote("warn", "llama.cpp",
-                             f"{found} exists but --version fails — repair"))
-        plan.append(RepairTool("llama.cpp", "prebuilt", need_lcpp,
-                               backend=LLCPP_BACKEND.get((info.os, info.gpu_vendor), "cpu"),
-                               dest=found, broken_version=None))
+    r_lc = resolved.get("llama.cpp") or {}
+    need_lcpp = r_lc.get("version") or pinned.get(
+        "llama.cpp", {}).get("version", "b10000")
+    lc_backend = r_lc.get("backend") or LLCPP_BACKEND.get(
+        (info.os, info.gpu_vendor), "cpu")
+    lc_extra = {"arch": info.arch}
+    if info.glibc:
+        lc_extra["glibc"] = info.glibc
+    if r_lc.get("assets"):
+        lc_extra.update({"assets": r_lc["assets"],
+                         "base": r_lc.get("base") or "",
+                         "note": r_lc.get("note") or ""})
+    lc_dest = r_lc.get("dest") or "~/llama.cpp/bin"
+    sp = source_probe or {}
+    if sp.get("kind") == "source" and sp.get("src_root") and sp.get("build_dir"):
+        # Existing source build: rebuild in place so every CMakeCache flag
+        # (backend, CUDA arch list, GGML_RPC/FA/NCCL, compiler) is preserved.
+        # Never replace it with a prebuilt — that is how custom builds get
+        # silently downgraded to Vulkan/CPU and lose RPC.
+        src_bin = sp.get("llama_bin") or (sp["build_dir"] + "/bin")
+        src_ver = sp.get("version") or need_lcpp
+        plan.append(InstallTool(
+            "llama.cpp", "source", src_ver, backend=lc_backend,
+            dest=src_bin,
+            extra={"src_root": sp["src_root"],
+                   "build_dir": sp["build_dir"],
+                   "flags": sp.get("flags") or {},
+                   "rpc_required": True}))
+        plan.append(ManifestUpdate(
+            "llama.cpp", {"version": src_ver, "method": "source"}))
     else:
-        plan.append(InstallTool("llama.cpp", "prebuilt", need_lcpp,
-                                backend=LLCPP_BACKEND.get((info.os, info.gpu_vendor), "cpu"),
-                                dest="~/llama.cpp/bin"))
-    plan.append(ManifestUpdate("llama.cpp",
-                {"version": ver or need_lcpp, "method": "prebuilt"}))
+        found, ver = probe_llama_cpp(fs, run, role)
+        rpc_ok = True
+        if found and role != "client":
+            rpc_name = ("ggml-rpc-server.exe" if info.os == "windows"
+                        else "ggml-rpc-server")
+            rpc_ok = fs.isfile(fs.expanduser(
+                os.path.join(os.path.dirname(found), rpc_name)))
+        lc_current = bool(found and ver and version_cmp(ver, need_lcpp)
+                          and rpc_ok)
+        if lc_current:
+            plan.append(SkipTool("llama.cpp", "present-current", found, ver))
+        elif found and ver and not rpc_ok:
+            plan.append(PlanNote(
+                "warn", "llama.cpp",
+                f"{found} exists but ggml-rpc-server is missing — "
+                "reinstalling the llama.cpp bundle"))
+            plan.append(InstallTool("llama.cpp", "prebuilt", need_lcpp,
+                                    backend=lc_backend, dest=lc_dest,
+                                    extra=dict(lc_extra)))
+        elif found and not ver:
+            plan.append(PlanNote("warn", "llama.cpp",
+                                 f"{found} exists but --version fails — repair"))
+            plan.append(RepairTool("llama.cpp", "prebuilt", need_lcpp,
+                                   backend=lc_backend, dest=found,
+                                   broken_version=None, extra=dict(lc_extra)))
+        else:
+            plan.append(InstallTool("llama.cpp", "prebuilt", need_lcpp,
+                                    backend=lc_backend, dest=lc_dest,
+                                    extra=dict(lc_extra)))
+        plan.append(ManifestUpdate(
+            "llama.cpp",
+            {"version": ver if lc_current else need_lcpp,
+             "method": "prebuilt"}))
 
     # --- llama-swap (main only) -------------------------------------------
     if role == "main":
-        need_swap = pinned.get("llama-swap", {}).get("version", "255")
+        r_sw = resolved.get("llama-swap") or {}
+        need_swap = r_sw.get("version") or pinned.get(
+            "llama-swap", {}).get("version", "255")
+        sw_extra = {}
+        if r_sw.get("assets"):
+            sw_extra.update({"assets": r_sw["assets"],
+                             "base": r_sw.get("base") or ""})
+        sw_dest = r_sw.get("dest") or "~/.local/bin"
         found, ver = probe_swap(fs, run)
-        if found and ver and version_cmp(ver, need_swap):
+        sw_current = bool(found and ver and version_cmp(ver, need_swap))
+        if sw_current:
             plan.append(SkipTool("llama-swap", "present-current", found, ver))
         elif found and not ver:
             plan.append(RepairTool("llama-swap", "prebuilt", need_swap,
-                                   dest=found, broken_version=ver))
+                                   dest=found, broken_version=ver,
+                                   extra=dict(sw_extra)))
         else:
             plan.append(InstallTool("llama-swap", "prebuilt", need_swap,
-                                    dest="~/.local/bin"))
-        plan.append(ManifestUpdate("llama-swap", {"version": ver or need_swap}))
+                                    dest=sw_dest, extra=dict(sw_extra)))
+        plan.append(ManifestUpdate("llama-swap",
+                    {"version": ver if sw_current else need_swap}))
 
     # --- settings prefill (§6): discovered path wins; user values kept -----
     if role == "main":
         for step in list(plan):
             found_path = getattr(step, "found_path", None)
             if found_path is None and isinstance(step, InstallTool):
-                found_path = step.dest
+                if (step.name == "llama-swap"
+                        and not isinstance(step, RepairTool)):
+                    # swap.yaml `binary` is the executable FILE; the step
+                    # dest is its directory. Writing the dir here made
+                    # llama-swap's ExecStart point at a directory.
+                    exe = ("llama-swap.exe" if info.os == "windows"
+                           else "llama-swap")
+                    found_path = os.path.join(step.dest, exe)
+                else:
+                    found_path = step.dest
             if found_path is None:
                 continue
             tool = getattr(step, "name", None)
             if tool not in SETTINGS_KEYS:
                 continue
             path, key = SETTINGS_KEYS[tool]
+            if settings_root and not os.path.isabs(path):
+                path = os.path.join(settings_root, path)
             cur = _read_setting(fs, path, key)
-            s = _settings_merge_step(tool, found_path, cur, fs, force_settings)
+            s = _settings_merge_step(tool, found_path, cur, fs,
+                                     force_settings, settings_root)
             if s:
                 plan.append(s)
 
