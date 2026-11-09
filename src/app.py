@@ -7395,7 +7395,28 @@ async def scan_models(path: str, recursive: bool = False):
 
 # ---------------- cluster ops ----------------
 
+def _ensure_stdio():
+    """Give a missing sys.stdout / sys.stderr a sink.
+
+    A detached start (Restart App on Windows, pythonw, a service) can run
+    with no standard streams; uvicorn's log formatter calls
+    sys.stdout.isatty() and the app died with "'NoneType' object has no
+    attribute 'isatty'" / "Unable to configure formatter 'default'".
+    Missing streams append to the same llama-web.log the restart paths
+    use, falling back to os.devnull."""
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name) is not None:
+            continue
+        try:
+            stream = open(os.path.join(tempfile.gettempdir(), "llama-web.log"),
+                          "a", encoding="utf-8", buffering=1)
+        except OSError:
+            stream = open(os.devnull, "w", encoding="utf-8")
+        setattr(sys, name, stream)
+
+
 if __name__ == "__main__":
+    _ensure_stdio()
     # SINGLETON GUARD: every restart path (/api/restart, engine save) spawns
     # this module detached while the old process was supposed to die — and
     # sometimes it doesn't (observed: 4 Oct-1 orphans lived for 3 days next
