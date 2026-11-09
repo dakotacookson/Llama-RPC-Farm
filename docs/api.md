@@ -85,6 +85,8 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 | `POST /api/swap/stop` | Stop daemon (peers stay up) |
 | `GET /api/swap/status` | Running + port |
 | `GET /api/swap/loaded` | Currently loaded model ids (from llama-swap) |
+| `GET /api/swap/activity?limit=200` | Recent requests from llama-swap's activity log + per-model totals (scoped keys: granted models only, no client address) |
+| `GET /api/swap/performance?minutes=15&points=180` | Swap host GPU/CPU/RAM samples from llama-swap, cut to the window and thinned |
 | `POST /api/swap/evict/{model_id}`, `/api/swap/evict-all` | Evict loaded models |
 | `GET /api/swap/reload-status` | Async reload progress |
 

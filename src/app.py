@@ -6824,6 +6824,168 @@ async def swap_loaded_models(request: Request):
         return {"loaded": [], "running": True, "error": str(e)}
 
 
+# ---------------- llama-swap activity & performance ----------------
+# llama-swap records every proxied request (/api/metrics/activity) and
+# samples the swap host's GPUs/CPU/RAM (/api/performance). The farm
+# shows both on its own Activity tab; these endpoints only READ them.
+
+def _swap_api_url(st, path):
+    host = ("127.0.0.1"
+            if local_node.is_local(cfg.machines.require(st["host"]))
+            else st.get("host_ip"))
+    return f"http://{host}:{st['port']}{path}"
+
+
+def _swap_api_get(st, path, timeout=5):
+    import urllib.request, json as _json
+    with urllib.request.urlopen(_swap_api_url(st, path), timeout=timeout) as r:
+        return _json.load(r)
+
+
+def _caller_model_filter():
+    """None when the caller sees every model (console / unrestricted
+    admin / open gate); else a predicate over model ids built from the
+    caller's grants — the same rule /api/swap/loaded applies."""
+    import access as _a
+    if (_a.gate_open() and _a.view_allow() is None) \
+            or _a.admin_sees_everything():
+        return None
+    rec = _a.raw_key_record()
+    if rec is None:
+        return lambda mid: False
+    allow = rec.get("models") or set()
+    from swap_gateway import _mid_allowed
+    return lambda mid: _mid_allowed(str(mid or ""), allow)
+
+
+def _activity_row(r):
+    """One llama-swap activity row, trimmed to what the tab shows.
+    Embedding responses carry no llama-server timings (speeds are -1),
+    so input tokens per second is derived from the request duration."""
+    tok = r.get("tokens") or {}
+    def _n(k):
+        v = tok.get(k)
+        return v if isinstance(v, (int, float)) and v >= 0 else None
+    dur = r.get("duration_ms") or 0
+    inp, out = _n("input_tokens"), _n("output_tokens")
+    return {
+        "id": r.get("id"), "ts": r.get("timestamp"), "src": r.get("src"),
+        "model": r.get("model"), "task": r.get("task"),
+        "path": r.get("req_path"), "status": r.get("resp_status_code"),
+        "duration_ms": dur, "input_tokens": inp, "output_tokens": out,
+        "cache_tokens": _n("cache_tokens"),
+        "prompt_tps": _n("prompt_per_second"),
+        "gen_tps": _n("tokens_per_second"),
+        "input_tps": (round(inp / (dur / 1000.0), 1)
+                      if inp and dur > 0 else None),
+    }
+
+
+@app.get("/api/swap/activity")
+async def swap_activity(limit: int = 200):
+    """Recent llama-swap requests plus per-model totals over them.
+    Scoped keys see only rows for models they are granted, without the
+    client address."""
+    st = swap_manager.status()
+    if not st.get("running"):
+        return {"running": False, "rows": [], "models": []}
+    limit = max(1, min(int(limit or 200), 1000))
+    allowed = _caller_model_filter()
+
+    def fetch():
+        data = _swap_api_get(st, f"/api/metrics/activity?limit={limit}&page=1")
+        rows = [_activity_row(r) for r in (data.get("data") or [])]
+        if allowed is not None:
+            rows = [dict(r, src=None) for r in rows if allowed(r["model"])]
+        per = {}
+        for r in rows:
+            m = per.setdefault(r["model"] or "?", {
+                "model": r["model"] or "?", "requests": 0, "errors": 0,
+                "input_tokens": 0, "output_tokens": 0, "duration_ms": 0,
+                "gen_tps": [], "task": r["task"]})
+            m["requests"] += 1
+            if (r["status"] or 0) >= 400:
+                m["errors"] += 1
+            m["input_tokens"] += r["input_tokens"] or 0
+            m["output_tokens"] += r["output_tokens"] or 0
+            m["duration_ms"] += r["duration_ms"] or 0
+            if r["gen_tps"]:
+                m["gen_tps"].append(r["gen_tps"])
+        models = []
+        for m in per.values():
+            secs = m["duration_ms"] / 1000.0
+            g = m.pop("gen_tps")
+            m["input_tps"] = round(m["input_tokens"] / secs, 1) if secs else None
+            m["gen_tps"] = round(sum(g) / len(g), 1) if g else None
+            models.append(m)
+        models.sort(key=lambda m: -m["requests"])
+        return {"running": True, "host": st["host"], "rows": rows,
+                "models": models, "total": data.get("total"),
+                "scoped": allowed is not None}
+    try:
+        return await run_in_threadpool(fetch)
+    except Exception as e:
+        return {"running": True, "rows": [], "models": [], "error": str(e)}
+
+
+@app.get("/api/swap/performance")
+async def swap_performance(minutes: int = 15, points: int = 180):
+    """The swap host's GPU and system samples from llama-swap, cut to
+    the last `minutes` and thinned to at most `points` per series."""
+    st = swap_manager.status()
+    if not st.get("running"):
+        return {"running": False, "gpus": [], "sys": []}
+    minutes = max(1, min(int(minutes or 15), 240))
+    points = max(10, min(int(points or 180), 1000))
+
+    def fetch():
+        from datetime import datetime, timedelta, timezone
+        data = _swap_api_get(st, "/api/performance")
+        if not data.get("enabled", True):
+            return {"running": True, "enabled": False, "gpus": [], "sys": []}
+        cut = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+
+        def recent(rows):
+            out = []
+            for r in rows or []:
+                try:
+                    t = datetime.fromisoformat(
+                        str(r.get("timestamp")).replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=timezone.utc)
+                if t >= cut:
+                    out.append((t, r))
+            step = max(1, -(-len(out) // points))   # ceil
+            return out[::step] + ([out[-1]] if out and (len(out) - 1) % step else [])
+
+        gpus = {}
+        for t, r in recent(data.get("gpu_stats")):
+            g = gpus.setdefault(r.get("id"), {
+                "id": r.get("id"), "name": r.get("name"),
+                "mem_total_mb": r.get("mem_total_mb"), "samples": []})
+            g["samples"].append({
+                "ts": t.isoformat(), "util": r.get("gpu_util_pct"),
+                "mem_used_mb": r.get("mem_used_mb"),
+                "power_w": r.get("power_draw_w"), "temp_c": r.get("temp_c")})
+        sys_rows = []
+        for t, r in recent(data.get("sys_stats")):
+            cores = r.get("cpu_util_per_core") or []
+            sys_rows.append({
+                "ts": t.isoformat(),
+                "cpu": round(sum(cores) / len(cores), 1) if cores else None,
+                "mem_used_mb": r.get("mem_used_mb"),
+                "mem_total_mb": r.get("mem_total_mb")})
+        return {"running": True, "enabled": True, "host": st["host"],
+                "minutes": minutes, "gpus": list(gpus.values()),
+                "sys": sys_rows}
+    try:
+        return await run_in_threadpool(fetch)
+    except Exception as e:
+        return {"running": True, "gpus": [], "sys": [], "error": str(e)}
+
+
 @app.post("/api/swap/load/{model_id}")
 async def swap_load_model(model_id: str, request: Request):
     """Load one model through the running swap daemon: this fires a minimal

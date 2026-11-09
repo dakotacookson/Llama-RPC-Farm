@@ -244,6 +244,7 @@ document.querySelectorAll("nav button").forEach((btn) => {
     if (btn.dataset.tab === "groups") { loadGroups(); renderGroupMachines([]); }
     if (btn.dataset.tab === "visualizer") { initFlowVisualizer(); }
     if (btn.dataset.tab === "logs") { initLogsTab(); }
+    if (btn.dataset.tab === "swapmetrics") smStart(); else smStop();
     if (btn.dataset.tab === "models") {
       loadModels();
       getAppSettings().then(s => {
@@ -9420,3 +9421,129 @@ async function loadDecodeSpeed() {
     if (box) box.textContent = "speed data failed: " + err.message;
   }
 }
+
+/* ---------------- Activity & Performance (llama-swap metrics) ----------------
+   llama-swap records every request it proxies and samples the swap host's
+   GPUs/CPU/RAM. /api/swap/activity and /api/swap/performance read those
+   (scoped keys see only their granted models); peers' GPUs come from the
+   farm's own /api/stats. One chart per measure, no dual axes. */
+let smTimer = null, smBusy = false;
+const smNum = (v) => (v == null ? "–" : Number(v).toLocaleString());
+function smTime(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? "" : d.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+}
+function smTimeS(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? "" : d.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+}
+function smDur(ms) {
+  if (ms == null) return "–";
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms)} ms`;
+}
+/* single-series line: max top-left, latest value top-right, first/last
+   time under the plot, full-height hover columns with the exact value */
+function smLine(samples, key, {max, color, fmt, unit, title}) {
+  const W = 360, H = 120, padL = 8, padR = 8, padT = 24, padB = 18;
+  const pts = samples.filter(s => s[key] != null);
+  if (pts.length < 2) return `<div class="sm-chart"><div class="sm-chart-title">${escHtml(title)}</div><div class="hint">no samples yet</div></div>`;
+  const vals = pts.map(s => Number(s[key]));
+  const top = max || Math.max(1, ...vals);
+  const iw = W - padL - padR, ih = H - padT - padB;
+  const x = i => padL + (i / (pts.length - 1)) * iw;
+  const y = v => padT + ih - (Math.min(v, top) / top) * ih;
+  const line = pts.map((s, i) => `${i ? "L" : "M"} ${x(i).toFixed(1)} ${y(vals[i]).toFixed(1)}`).join(" ");
+  const last = vals[vals.length - 1];
+  let svg = `<text x="${padL}" y="12" font-size="10" font-weight="600" fill="var(--muted, #999)">max ${escHtml(fmt(top))}${escHtml(unit)}</text>
+    <text x="${W - padR}" y="13" font-size="13" font-weight="700" text-anchor="end" fill="var(--text)">${escHtml(fmt(last))}${escHtml(unit)}</text>
+    <line x1="${padL}" x2="${W - padR}" y1="${padT + ih}" y2="${padT + ih}" stroke="var(--border-soft)" stroke-width="1"/>
+    <path d="${line} L ${x(pts.length - 1).toFixed(1)} ${padT + ih} L ${padL} ${padT + ih} Z" fill="${color}" opacity="0.12"/>
+    <path d="${line}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>`;
+  const colW = iw / pts.length;
+  pts.forEach((s, i) => {
+    svg += `<rect x="${(x(i) - colW / 2).toFixed(1)}" y="${padT}" width="${colW.toFixed(1)}" height="${ih}" fill="transparent"><title>${escHtml(smTime(s.ts))} — ${escHtml(fmt(vals[i]))}${escHtml(unit)}</title></rect>`;
+  });
+  svg += `<text x="${padL}" y="${H - 4}" font-size="10" fill="var(--muted, #999)">${escHtml(smTime(pts[0].ts))}</text>
+    <text x="${W - padR}" y="${H - 4}" font-size="10" text-anchor="end" fill="var(--muted, #999)">${escHtml(smTime(pts[pts.length - 1].ts))}</text>`;
+  return `<div class="sm-chart"><div class="sm-chart-title">${escHtml(title)}</div><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${escHtml(title)}" style="width:100%; height:auto; overflow:visible">${svg}</svg></div>`;
+}
+function smRenderActivity(a) {
+  const tiles = $("#sm-tiles"), models = $("#sm-models"), rows = $("#sm-rows");
+  if (!a.running) {
+    tiles.innerHTML = ""; models.innerHTML = `<p class="hint">llama-swap is not running — use Launch All.</p>`;
+    rows.innerHTML = ""; return;
+  }
+  if (a.error) { models.innerHTML = `<p class="status-bad">${escHtml(a.error)}</p>`; return; }
+  const sum = (k) => a.models.reduce((t, m) => t + (m[k] || 0), 0);
+  const req = sum("requests"), inTok = sum("input_tokens"), outTok = sum("output_tokens"), ms = sum("duration_ms");
+  const gens = a.models.filter(m => m.gen_tps);
+  const tile = (label, value, sub) => `<div class="sm-tile"><div class="sm-tile-label">${escHtml(label)}</div><div class="sm-tile-value">${value}</div>${sub ? `<div class="sm-tile-sub">${escHtml(sub)}</div>` : ""}</div>`;
+  tiles.innerHTML =
+    tile("Requests", smNum(req), a.total != null && !a.scoped ? `last ${smNum(a.rows.length)} of ${smNum(a.total)}` : `last ${smNum(a.rows.length)}`) +
+    tile("Input tokens", smNum(inTok), "prompt / text sent in") +
+    tile("Output tokens", smNum(outTok), outTok ? "generated" : "none (embeddings generate none)") +
+    tile("Input speed", ms ? `${smNum(Math.round(inTok / (ms / 1000)))} <small>tok/s</small>` : "–", "input tokens ÷ request time") +
+    tile("Generation speed", gens.length ? `${smNum(Math.round(gens.reduce((t, m) => t + m.gen_tps, 0) / gens.length))} <small>tok/s</small>` : "–", gens.length ? "llama-server timings" : "no chat requests yet");
+  $("#sm-models-note").textContent = a.scoped ? "· only models your key can use" : `· over the last ${a.rows.length} requests`;
+  models.innerHTML = a.models.length ? `<table class="sm-table"><thead><tr><th>Model</th><th>Task</th><th>Requests</th><th>Errors</th><th>Input tok</th><th>Output tok</th><th>Input tok/s</th><th>Gen tok/s</th></tr></thead><tbody>${
+    a.models.map(m => `<tr><td>${escHtml(m.model)}</td><td>${escHtml(m.task || "–")}</td><td>${smNum(m.requests)}</td><td>${m.errors ? `<span class="status-bad">${smNum(m.errors)}</span>` : "0"}</td><td>${smNum(m.input_tokens)}</td><td>${smNum(m.output_tokens)}</td><td>${smNum(m.input_tps)}</td><td>${smNum(m.gen_tps)}</td></tr>`).join("")
+  }</tbody></table>` : `<p class="hint">No requests recorded yet.</p>`;
+  rows.innerHTML = a.rows.length ? `<table class="sm-table"><thead><tr><th>Time</th><th>Model</th><th>Path</th><th>Status</th><th>Input tok</th><th>Output tok</th><th>Duration</th><th>Speed</th>${a.scoped ? "" : "<th>Client</th>"}</tr></thead><tbody>${
+    a.rows.slice(0, 100).map(r => {
+      const ok = (r.status || 0) < 400;
+      const speed = r.gen_tps ? `${smNum(Math.round(r.gen_tps))} gen tok/s` : r.input_tps ? `${smNum(Math.round(r.input_tps))} in tok/s` : "–";
+      return `<tr><td>${escHtml(smTimeS(r.ts))}</td><td>${escHtml(r.model || "–")}</td><td><code>${escHtml(r.path || "")}</code></td><td><span class="${ok ? "status-ok" : "status-bad"}"><i class="fa-solid ${ok ? "fa-circle-check" : "fa-triangle-exclamation"}"></i> ${escHtml(String(r.status ?? "–"))}</span></td><td>${smNum(r.input_tokens)}</td><td>${smNum(r.output_tokens)}</td><td>${smDur(r.duration_ms)}</td><td>${speed}</td>${a.scoped ? "" : `<td>${escHtml((r.src || "").replace(/^ip:/, ""))}</td>`}</tr>`;
+    }).join("")
+  }</tbody></table>` : "";
+}
+function smRenderPerf(p, stats) {
+  const box = $("#sm-perf"), peers = $("#sm-peers");
+  $("#sm-perf-host").textContent = p.host ? `· ${p.host} (llama-swap host)` : "";
+  if (!p.running) { box.innerHTML = ""; peers.innerHTML = ""; return; }
+  if (p.error) { box.innerHTML = `<p class="status-bad">${escHtml(p.error)}</p>`; return; }
+  if (p.enabled === false) { box.innerHTML = `<p class="hint">llama-swap performance sampling is off.</p>`; return; }
+  const c = "var(--accent)";
+  const pct = v => Math.round(v), gb = v => (v / 1024).toFixed(1);
+  let html = "";
+  for (const g of p.gpus) {
+    const s = g.samples;
+    html += smLine(s, "util", {max: 100, color: c, fmt: pct, unit: " %", title: `${g.name} — utilization`});
+    html += smLine(s, "mem_used_mb", {max: g.mem_total_mb || null, color: c, fmt: gb, unit: " GB", title: `${g.name} — VRAM used`});
+    const temps = s.filter(x => x.temp_c > 0);
+    if (temps.length > 1) html += smLine(temps, "temp_c", {max: 100, color: c, fmt: pct, unit: " °C", title: `${g.name} — temperature`});
+  }
+  const total = p.sys.length ? p.sys[p.sys.length - 1].mem_total_mb : null;
+  html += smLine(p.sys, "cpu", {max: 100, color: c, fmt: pct, unit: " %", title: "CPU (all cores)"});
+  html += smLine(p.sys, "mem_used_mb", {max: total, color: c, fmt: gb, unit: " GB", title: "RAM used"});
+  box.innerHTML = html;
+  // peers: llama-swap only sees its own host — show the other machines'
+  // GPUs as current values from the farm's agent stats
+  const others = ((stats && stats.data) || []).filter(m => m.name !== p.host && (m.gpus || []).length);
+  peers.innerHTML = others.length ? `<h4 style="margin:12px 0 6px">Other machines <span class="hint">(current values from the agents)</span></h4><table class="sm-table"><thead><tr><th>Machine</th><th>GPU</th><th>Utilization</th><th>VRAM</th></tr></thead><tbody>${
+    others.flatMap(m => m.gpus.map(g => `<tr><td>${escHtml(m.name)}</td><td>${escHtml(g.name || "")}</td><td>${smNum(Math.round(g.util))} %</td><td>${g.mem_used_gb} / ${g.mem_total_gb} GB</td></tr>`)).join("")
+  }</tbody></table>` : "";
+}
+async function smRefresh() {
+  if (smBusy) return;
+  smBusy = true;
+  const st = $("#sm-status");
+  const minutes = $("#sm-minutes")?.value || 15;
+  try {
+    const [a, p, stats] = await Promise.all([
+      api("GET", "/api/swap/activity?limit=200"),
+      api("GET", `/api/swap/performance?minutes=${minutes}`),
+      api("GET", "/api/stats").catch(() => null),
+    ]);
+    smRenderActivity(a);
+    smRenderPerf(p, stats);
+    if (st) { st.textContent = a.running ? "live" : "swap down"; st.className = `serving-ind ${a.running ? "status-ok" : "status-warn"}`; }
+  } catch (e) {
+    if (st) { st.textContent = "error"; st.className = "serving-ind status-bad"; }
+    toast(e.message, "bad");
+  }
+  smBusy = false;
+}
+function smStart() { smRefresh(); clearInterval(smTimer); smTimer = setInterval(smRefresh, 5000); }
+function smStop() { clearInterval(smTimer); smTimer = null; }
+on("#sm-refresh", "click", smRefresh);
+on("#sm-minutes", "change", smRefresh);

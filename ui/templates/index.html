@@ -72,7 +72,8 @@
         </button>
         <div class="nav-sec-body">
         <button data-tab="launch" title="Launch"><i class="fa-solid fa-rocket"></i><span>Launch</span></button>
-        <button data-tab="servegroups" title="Serve Groups"><i class="fa-solid fa-object-group"></i><span>Serve Groups</span></button></div>
+        <button data-tab="servegroups" title="Serve Groups"><i class="fa-solid fa-object-group"></i><span>Serve Groups</span></button>
+        <button data-tab="swapmetrics" title="llama-swap activity &amp; performance"><i class="fa-solid fa-chart-line"></i><span>Activity</span></button></div>
       </div>
       <div class="nav-sec collapsible" data-nav-open="1">
         <button type="button" class="nav-collapse-btn" aria-expanded="true">
@@ -390,6 +391,37 @@
     </section>
 
     <!-- Live Logs -->
+    <section id="tab-swapmetrics" class="tab">
+      <div class="row" style="align-items:center; justify-content:space-between; margin-bottom:8px">
+        <h2 style="margin:0">Activity &amp; Performance <span id="sm-status" class="serving-ind">…</span></h2>
+        <div class="row" style="gap:8px; align-items:center">
+          <label class="hint" style="display:flex; align-items:center; gap:6px">window
+            <select id="sm-minutes" style="width:auto">
+              <option value="5">5 min</option>
+              <option value="15" selected>15 min</option>
+              <option value="60">60 min</option>
+            </select>
+          </label>
+          <button class="flow-ctrl-btn" id="sm-refresh" title="Refresh now"><i class="fa-solid fa-rotate"></i></button>
+        </div>
+      </div>
+      <p class="hint">Requests and hardware samples recorded by llama-swap, the server every client request goes through. Refreshes every 5 s while this tab is open.</p>
+      <div class="sm-tiles" id="sm-tiles"></div>
+      <div class="card">
+        <h3>Per model <span class="hint" id="sm-models-note"></span></h3>
+        <div id="sm-models"></div>
+      </div>
+      <div class="card">
+        <h3>Performance <span class="hint" id="sm-perf-host"></span></h3>
+        <div class="sm-charts" id="sm-perf"></div>
+        <div id="sm-peers"></div>
+      </div>
+      <div class="card">
+        <h3>Recent requests</h3>
+        <div id="sm-rows" class="sm-rows"></div>
+      </div>
+    </section>
+
     <section id="tab-logs" class="tab">
       <div class="row" style="align-items:center; justify-content:space-between; margin-bottom:8px">
         <h2 style="margin:0">Live Logs <span id="logs-status" class="serving-ind">…</span></h2>

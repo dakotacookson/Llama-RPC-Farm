@@ -2724,3 +2724,26 @@ body.login-locked #login-modal * { pointer-events: auto !important; }
   border-radius: 6px;
   white-space: nowrap;
 }
+
+/* ---------------- Activity & Performance tab (llama-swap metrics) ---------------- */
+.sm-tiles {
+  display: grid; gap: 10px; margin-bottom: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+.sm-tile {
+  background: var(--surface); border: 1px solid var(--border-soft);
+  border-radius: 8px; padding: 10px 12px;
+}
+.sm-tile-label { font-size: 12px; color: var(--text-2); }
+.sm-tile-value { font-size: 22px; font-weight: 700; margin-top: 2px; }
+.sm-tile-value small { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.sm-tile-sub { font-size: 11px; color: var(--muted, var(--text-2)); margin-top: 2px; }
+.sm-charts {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+.sm-chart-title { font-size: 12px; color: var(--text-2); margin-bottom: 2px; }
+.sm-table { width: 100%; font-size: 12px; }
+.sm-table td, .sm-table th { white-space: nowrap; }
+.sm-rows { max-height: 420px; overflow: auto; }
+#sm-models, #sm-peers { overflow-x: auto; }
