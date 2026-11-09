@@ -35,8 +35,20 @@ RESPONSE=$(curl -sS --max-time 180 \
       stream: false,
       chat_template_kwargs: {enable_thinking: false}
     }')" \
+  -w '\n%{http_code}' \
 )
+HTTP_STATUS="${RESPONSE##*$'\n'}"
+RESPONSE="${RESPONSE%$'\n'*}"
 cleanup
+
+if [[ "$HTTP_STATUS" == "503" ]]; then
+  if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+    printf '\033[31mLoading model\033[0m, please wait\n' >&2
+  else
+    printf 'Loading model, please wait\n' >&2
+  fi
+  exit 0
+fi
 ELAPSED=$(perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'printf "%.3f", clock_gettime(CLOCK_MONOTONIC) - shift' "$REQUEST_START")
 RATE_COLOR=""
 RESET=""
