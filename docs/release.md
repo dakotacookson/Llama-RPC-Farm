@@ -82,6 +82,37 @@ asset (or the universal wheel). Standalone packaged agents update through
 per machine so an asset whose internal build number lags the release tag
 does not create an update loop.
 
+## Component update detection
+
+A rolling release is produced for every `main` push, but the app and the
+peer agent usually did not both change. Comparing each component to the
+release *tag* made every release look like an update for both sides.
+
+Each release therefore publishes `release-manifest.json`:
+
+```json
+{ "release_version": "2.0.0", "app_commit": "…", "agent_commit": "…" }
+```
+
+The `prepare` job computes those with
+`git log -1 --format=%H -- <component paths>` (full-history checkout):
+
+- **app** — the last commit touching `src`, `ui`, `packaging`, `scripts`,
+  `requirements.txt`, the run/install/restart scripts, or `.github/workflows`
+- **agent** — the last commit touching `peer_agent/`
+
+`scripts/stamp_build_info.py` bakes those commits into generated,
+git-ignored `build_info` modules. The app compares its baked `APP_COMMIT`
+to the manifest; the peer agent reports `build_commit` from `/version` and
+the master compares that to the manifest's `agent_commit`. When the
+commits match, the component is **on latest even if the release tag is
+newer**; an app-only release therefore never prompts agents, and an
+agent-only release never prompts the app. Docs/tests-only pushes do not
+change the app commit.
+
+Older releases/agents without a manifest or `build_commit` fall back to
+the previous tag comparison until they are updated once.
+
 ## First-run automation
 
 Packaged binaries self-register a login service (systemd user unit,
