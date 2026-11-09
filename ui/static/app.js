@@ -16,7 +16,19 @@ console.log("[ui] app.js loaded");
    token). Keys scope model visibility server-side; loopback console
    needs none. */
 let _accessKey = null;
-try { _accessKey = localStorage.getItem("farm-access-key") || null; } catch (_) {}
+let _farmSession = null;
+try {
+  _accessKey = localStorage.getItem("farm-access-key") || null;
+  _farmSession = localStorage.getItem("farm-session") || null;
+} catch (_) {}
+
+function setFarmSession(s) {
+  _farmSession = (s || "").trim() || null;
+  try {
+    if (_farmSession) localStorage.setItem("farm-session", _farmSession);
+    else localStorage.removeItem("farm-session");
+  } catch (_) {}
+}
 
 function setAccessKey(k) {
   _accessKey = (k || "").trim() || null;
@@ -29,6 +41,7 @@ function setAccessKey(k) {
 async function api(method, url, body) {
   const opts = { method, headers: { "Content-Type": "application/json" } };
   if (_accessKey) opts.headers["Authorization"] = `Bearer ${_accessKey}`;
+  if (_farmSession) opts.headers["X-Farm-Session"] = _farmSession;
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res = await fetch(url, opts);
   if (!res.ok) {
@@ -540,6 +553,7 @@ document.querySelectorAll("#user-subtabs [data-utab]").forEach(b => {
 
 on("#user-logout", "click", async () => {
   try { await api("POST", "/api/auth/logout", {}); } catch (_) {}
+  setFarmSession("");
   window.location.href = "/";
 });
 
