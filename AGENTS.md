@@ -95,8 +95,11 @@ install.bat           # Windows equivalent (cmd.exe)
 - llama-swap serving (`:8080`) + view gateway (`:8090`,
   `src/swap_gateway.py`) are the client-facing endpoints; model list per
   client is filtered by views (`config/settings.yaml`) / access keys.
-  The gateway is embedded — app startup runs it in-process (leave an
-  existing `:8090` listener alone; `FARM_GATEWAY_DISABLE=1` to opt out).
+  The gateway is embedded — app startup runs it in-process and takes over
+  `:8090` by stopping a stale standalone `swap_gateway.py` listener (so
+  gateway code can never outlive the app); unrelated port owners are left
+  alone. `FARM_GATEWAY_DISABLE=1` opts out for a deliberately external
+  gateway.
 - Never kill a peer's `ggml-rpc-server` / host `llama-server` blindly:
   stop them via the swap/UI lifecycle paths — llama-server processes hold
   model state a user may be serving from right now.
