@@ -92,8 +92,10 @@ jobs:
             --name llama-peer-agent \
             --hidden-import llama_peer_agent.selfservice \
             --paths peer_agent packaging/agent_entry.py
-      - name: Stage raw agent binary (Linux)
-        run: cp dist/llama-peer-agent dist/llama-peer-agent-linux-x86_64
+      - name: Stage raw binaries (Linux)
+        run: |
+          cp dist/llama-peer-agent dist/llama-peer-agent-linux-x86_64
+          cp dist/llama-rpc-farm dist/llama-rpc-farm-linux-x86_64
       - name: Package Linux
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -206,6 +208,8 @@ jobs:
             *.deb
             *.sha256
             dist/llama-peer-agent-linux-x86_64
+            dist/llama-rpc-farm-linux-x86_64
+            agent-wheel/*.whl
 
   macos:
     name: Build (macOS)
@@ -306,8 +310,10 @@ jobs:
           pkgbuild --root pkgroot-agent --identifier com.llamarpc.farm.agent \
             --version "${VERSION%%-*}" --scripts scripts-agent \
             "llama-peer-agent_${VERSION}_macos-arm64.pkg"
-      - name: Stage raw agent binary (macOS)
-        run: cp dist/llama-peer-agent dist/llama-peer-agent-macos-arm64
+      - name: Stage raw binaries (macOS)
+        run: |
+          cp dist/llama-peer-agent dist/llama-peer-agent-macos-arm64
+          cp dist/llama-rpc-farm dist/llama-rpc-farm-macos-arm64
       - name: Sign + notarize macOS pkgs (if configured)
         env:
           MACOS_INSTALLER_SIGN_ID: ${{ secrets.MACOS_INSTALLER_SIGN_ID }}
@@ -364,6 +370,7 @@ jobs:
             *.pkg
             *.sha256
             dist/llama-peer-agent-macos-arm64
+            dist/llama-rpc-farm-macos-arm64
 
   windows:
     name: Build (Windows)
@@ -393,9 +400,11 @@ jobs:
             --name llama-peer-agent \
             --hidden-import llama_peer_agent.selfservice \
             --paths peer_agent packaging/agent_entry.py
-      - name: Stage raw agent binary (Windows)
+      - name: Stage raw binaries (Windows)
         shell: pwsh
-        run: Copy-Item dist\llama-peer-agent.exe dist\llama-peer-agent-windows-x64.exe
+        run: |
+          Copy-Item dist\llama-peer-agent.exe dist\llama-peer-agent-windows-x64.exe
+          Copy-Item dist\llama-rpc-farm.exe dist\llama-rpc-farm-windows-x64.exe
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
       - name: Sign Windows binaries (if configured)
@@ -482,6 +491,7 @@ jobs:
           path: |
             dist/*setup.exe
             dist/llama-peer-agent-windows-x64.exe
+            dist/llama-rpc-farm-windows-x64.exe
             *.sha256
 
   publish:

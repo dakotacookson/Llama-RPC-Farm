@@ -40,6 +40,8 @@ import rpc_manager
 import agent_client
 import reaper
 import gguf_inspect
+import platform as _platform
+import version as app_version
 
 from runtime_paths import asset_dir, data_dir, ensure_runtime_layout
 BASE_DIR = data_dir()
@@ -132,10 +134,7 @@ def seed_local_master():
     ensure_runtime_layout()
     local_node.ensure_local_master()
     try:
-        import secrets as _secrets
-        import secrets_vault as _vault
-        if not _vault.farm_agent_token_set():
-            _vault.set_farm_agent_token(_secrets.token_urlsafe(32))
+        _ensure_farm_agent_token()
     except Exception:
         pass
     start_swap_gateway()
@@ -448,7 +447,7 @@ async def auth_login(l: LoginIn, response: Response):
     response.set_cookie(LOGIN_COOKIE, sid, max_age=30 * 24 * 3600,
                         httponly=True, samesite="lax",
                         path="/")
-    return {"ok": True, "user": user}
+    return {"ok": True, "user": user, "session": sid}
 
 
 @app.post("/api/auth/logout")
@@ -704,7 +703,7 @@ async def auth_bootstrap(l: FirstLoginIn, response: Response):
     _vault.set_web_session(sid, name)
     response.set_cookie(LOGIN_COOKIE, sid, max_age=30 * 24 * 3600,
                         httponly=True, samesite="lax", path="/")
-    return {"ok": True, "user": name, "key_created": True}
+    return {"ok": True, "user": name, "session": sid, "key_created": True}
 
 
 # ---------------- pages ----------------
@@ -853,6 +852,19 @@ async def machine_agent_check(p: AgentCheckIn):
     return {"ok": True, **out}
 
 
+def _ensure_farm_agent_token():
+    """Farm token is app-managed: generated once and reused; never exposed
+    for manual override in Settings."""
+    import secrets as _secrets
+    import secrets_vault as _vault
+    try:
+        if not _vault.farm_agent_token_set():
+            _vault.set_farm_agent_token(_secrets.token_urlsafe(32))
+        return _vault.get_farm_agent_token()
+    except Exception:
+        return ""
+
+
 def _persist_farm_token_if_missing(machine):
     """A successfully reached agent with no per-machine vault token is using
     the farm token; persist it so the machine shows agent_token_set=true and
@@ -861,7 +873,7 @@ def _persist_farm_token_if_missing(machine):
         import secrets_vault as _vault
         mid = machine.get("id")
         if mid and not _vault.get_machine_agent_token(machine):
-            farm = _vault.get_farm_agent_token()
+            farm = _ensure_farm_agent_token()
             if farm:
                 _vault.set_machine_agent_token(mid, farm)
     except Exception:
@@ -893,7 +905,7 @@ def _auto_agent_token(machine, requested=""):
         _ok, err = _ensure_agent_ready(machine, existing)
         if not err:
             return existing
-    farm = _vault.get_farm_agent_token()
+    farm = _ensure_farm_agent_token()
     if farm:
         _ok, err = _ensure_agent_ready(machine)
         if not err:
@@ -942,11 +954,7 @@ def _ensure_agent_ready(machine, token_override="", timeout=4):
                 return out, None
             except Exception as e:
                 return None, str(e)
-        try:
-            import secrets_vault as _vault
-            farm = _vault.get_farm_agent_token()
-        except Exception:
-            farm = ""
+        farm = _ensure_farm_agent_token()
         if farm:
             pair_err = None
             try:
@@ -3692,8 +3700,6 @@ class AppSettingsIn(pydantic.BaseModel):
     theme_mode: str = "dark"
     hf_token: str | None = None  # only a non-empty value updates the stored token
     clear_hf_token: bool = False
-    farm_agent_token: str | None = None  # shared by all agents when set
-    clear_farm_agent_token: bool = False
     engine: str | None = None  # llama_cpp — None leaves the stored value
 
 
@@ -3788,9 +3794,7 @@ async def save_settings(s: AppSettingsIn, r: Request):
         or access.is_admin(None)
     _key_name_for_ui = access.key_display_name()
     if not _control_identity and (s.engine is not None
-                                  or s.hf_token or s.clear_hf_token
-                                  or s.farm_agent_token
-                                  or s.clear_farm_agent_token):
+                                  or s.hf_token or s.clear_hf_token):
         raise HTTPException(404, "not found")
     # merge over the CURRENT FILE so unknown/future keys survive the write;
     # loaded via the comment-preserving persister (B9c) — a plain
@@ -3800,8 +3804,6 @@ async def save_settings(s: AppSettingsIn, r: Request):
     update = s.model_dump()
     tok = (update.pop("hf_token", None) or "").strip()
     clear_tok = update.pop("clear_hf_token", False)
-    farm_tok = (update.pop("farm_agent_token", None) or "").strip()
-    clear_farm_tok = update.pop("clear_farm_agent_token", False)
     engine = update.pop("engine", None)
     # per-key UI state: scoped identities write theme_family/theme_mode
     # into THEIR access_keys ui: block instead of the shared file —
@@ -3847,10 +3849,6 @@ async def save_settings(s: AppSettingsIn, r: Request):
         _vault.set_hf_token("")
     elif tok:
         _vault.set_hf_token(tok)
-    if clear_farm_tok:
-        _vault.set_farm_agent_token("")
-    elif farm_tok:
-        _vault.set_farm_agent_token(farm_tok)
     # don't echo the raw token back; write via the comment-preserving
     # persister (B9c) so unrelated keys, key order, and all comments
     # survive — never a wholesale rewrite from the request dict
@@ -4460,52 +4458,280 @@ def _agent_binary_asset(machine):
     return None
 
 
+_RELEASE_FEED_CACHE = {"ts": 0.0, "versions": [], "commits": {}}
+
+
+def _release_feed_versions():
+    """Newest release versions from the public releases Atom feed.
+
+    The GitHub REST API is rate-limited (60/hr unauthenticated) and its
+    array order changes when releases are recreated. The Atom feed is
+    unauthenticated, ordered by publish time, and enough to construct the
+    deterministic release asset URLs.
+    """
+    now = time.time()
+    with _LLAMA_UPDATES_LOCK:
+        if now - _RELEASE_FEED_CACHE["ts"] < 60:
+            return list(_RELEASE_FEED_CACHE["versions"])
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            f"https://github.com/{_AGENT_REPO}/releases.atom",
+            headers={"User-Agent": "llama-rpc-farm"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            body = r.read().decode("utf-8", "replace")
+        vers = re.findall(r"/releases/tag/release-(\d+\.\d+\.\d+)", body)
+        seen = []
+        for v in vers:
+            if v not in seen:
+                seen.append(v)
+        seen.sort(key=lambda v: tuple(int(p) for p in v.split(".")),
+                  reverse=True)
+        commits = {}
+        for entry in re.findall(r"<entry>.*?</entry>", body, re.S):
+            vm = re.search(r"release-(\d+\.\d+\.\d+)", entry)
+            cm = re.search(r"/commit/([0-9a-f]{7,40})", entry)
+            if vm and cm:
+                commits[vm.group(1)] = cm.group(1)
+    except Exception:
+        seen = []
+    with _LLAMA_UPDATES_LOCK:
+        _RELEASE_FEED_CACHE.update(ts=now, versions=list(seen),
+                                   commits=locals().get("commits") or {})
+    return seen
+
+
+def _release_commit(version):
+    _release_feed_versions()
+    with _LLAMA_UPDATES_LOCK:
+        return _RELEASE_FEED_CACHE["commits"].get(version)
+
+
 def _agent_release_info(machine):
-    """Live GitHub release check: newest release carrying this peer's raw
-    agent binary. The release tag is the authoritative agent version."""
+    """Latest release agent asset (release tag is the authoritative version)."""
     asset = _agent_binary_asset(machine)
     if not asset:
         return {"asset": None, "url": None, "version": None}
-    now = time.time()
-    with _LLAMA_UPDATES_LOCK:
-        if now - _AGENT_RELEASE_CACHE["ts"] < 60:
-            hit = _AGENT_RELEASE_CACHE["by_asset"].get(asset)
-            if hit:
-                return dict(hit)
-    import json
-    import urllib.request
-    req = urllib.request.Request(
-        f"https://api.github.com/repos/{_AGENT_REPO}/releases?per_page=100",
-        headers={"User-Agent": "llama-rpc-farm",
-                 "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        releases = json.load(r)
-    # The releases API is NOT guaranteed to be ordered by version (deleting
-    # and recreating releases reorders it). Pick the highest semantic
-    # release tag, not the first matching array element.
-    best = None
-    best_key = None
-    for rel in releases:
-        tag = str(rel.get("tag_name") or "")
-        m = re.fullmatch(r"release-(\d+\.\d+\.\d+)", tag)
-        if not m:
-            continue
-        key = tuple(int(p) for p in m.group(1).split("."))
-        for a in rel.get("assets") or []:
-            if a.get("name") == asset and a.get("browser_download_url"):
-                if best_key is None or key > best_key:
-                    best_key = key
-                    best = {"asset": asset,
-                            "url": a["browser_download_url"],
-                            "version": m.group(1)}
-                break
-    with _LLAMA_UPDATES_LOCK:
-        _AGENT_RELEASE_CACHE["ts"] = now
-        if best:
-            _AGENT_RELEASE_CACHE["by_asset"][asset] = dict(best)
-    if best:
-        return best
-    return {"asset": asset, "url": None, "version": None}
+    versions = _release_feed_versions()
+    if not versions:
+        return {"asset": asset, "url": None, "version": None}
+    version = versions[0]
+    base = (f"https://github.com/{_AGENT_REPO}/releases/download/"
+            f"release-{version}")
+    wheel = f"llama_rpc_farm_agent-{version}-py3-none-any.whl"
+    return {"asset": asset, "url": f"{base}/{asset}",
+            "wheel_url": f"{base}/{wheel}", "version": version}
+
+
+_APP_RELEASE_CACHE = {"ts": 0.0, "by_asset": {}}
+
+
+def _app_binary_asset():
+    """Raw farm-app release asset for this host platform."""
+    os_name = _platform.system().lower()
+    arch = _platform.machine().lower()
+    if os_name == "windows":
+        return "llama-rpc-farm-windows-x64.exe"
+    if os_name == "darwin":
+        return ("llama-rpc-farm-macos-arm64"
+                if arch in ("arm64", "aarch64") else None)
+    if os_name == "linux":
+        return ("llama-rpc-farm-linux-x86_64"
+                if arch in ("x86_64", "amd64") else None)
+    return None
+
+
+def _app_release_info():
+    """Latest release farm-app binary (tag is the authoritative version)."""
+    asset = _app_binary_asset()
+    if not asset:
+        return {"asset": None, "url": None, "version": None}
+    versions = _release_feed_versions()
+    if not versions:
+        return {"asset": asset, "url": None, "version": None}
+    version = versions[0]
+    return {"asset": asset,
+            "url": (f"https://github.com/{_AGENT_REPO}/releases/download/"
+                    f"release-{version}/{asset}"),
+            "version": version}
+
+
+def _app_version_payload():
+    current = getattr(app_version, "__version__", "")
+    packaged = bool(getattr(sys, "frozen", False))
+    try:
+        info = _app_release_info()
+        latest = info.get("version")
+    except Exception:
+        latest = None
+    dirty = False
+    if not packaged:
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        try:
+            d = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
+                               capture_output=True, text=True, timeout=10)
+            dirty = bool((d.stdout or "").strip())
+        except Exception:
+            pass
+    return {"current": current, "latest": latest,
+            "on_latest": bool(latest and current == latest),
+            "packaged": packaged, "source": not packaged,
+            "dirty": dirty}
+
+
+def _restart_app_binary():
+    import time as _t
+    _t.sleep(1.5)
+    exe = os.path.abspath(sys.executable)
+    args = [exe] + list(sys.argv[1:])
+    try:
+        if os.name == "nt":
+            subprocess.Popen(args, close_fds=True)
+            os._exit(0)
+        os.execv(exe, args)
+    except Exception:
+        pass
+
+
+def _update_app_binary():
+    if not getattr(sys, "frozen", False):
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if not os.path.isdir(os.path.join(repo, ".git")):
+            return {"ok": False, "source": True,
+                    "detail": "source install is not a git checkout — "
+                              "update with git or the release installer"}
+        try:
+            dirty = subprocess.run(
+                ["git", "-C", repo, "status", "--porcelain"],
+                capture_output=True, text=True, timeout=60)
+            if (dirty.stdout or "").strip():
+                return {"ok": False, "source": True,
+                        "detail": "source tree has local changes — commit or "
+                                  "stash them before updating"}
+            info = _app_release_info()
+            version = info.get("version")
+            if not version:
+                return {"ok": False, "source": True,
+                        "detail": "could not determine the latest release"}
+            rel_sha = _release_commit(version)
+            if rel_sha:
+                head = subprocess.run(
+                    ["git", "-C", repo, "rev-parse", "HEAD"],
+                    capture_output=True, text=True).stdout.strip()
+                if rel_sha != head:
+                    chk = subprocess.run(
+                        ["git", "-C", repo, "merge-base", "--is-ancestor",
+                         rel_sha, "HEAD"], capture_output=True, text=True)
+                    if chk.returncode == 0:
+                        return {"ok": False, "source": True,
+                                "detail": f"source is newer than release "
+                                          f"{version}; wait for the next "
+                                          f"release"}
+            archive = (f"https://github.com/{_AGENT_REPO}/archive/refs/tags/"
+                       f"release-{version}.tar.gz")
+            import tarfile
+            import urllib.request
+            with tempfile.TemporaryDirectory(prefix="farm-src-") as tmp:
+                tarpath = os.path.join(tmp, "src.tar.gz")
+                with urllib.request.urlopen(archive, timeout=180) as r, \
+                        open(tarpath, "wb") as out:
+                    shutil.copyfileobj(r, out)
+                with tarfile.open(tarpath, "r:gz") as tar:
+                    members = tar.getmembers()
+                    for mem in members:
+                        pth = os.path.normpath(mem.name)
+                        if pth.startswith("..") or os.path.isabs(pth):
+                            raise RuntimeError("unsafe archive path")
+                    tar.extractall(tmp)
+                roots = [os.path.join(tmp, d) for d in os.listdir(tmp)
+                         if os.path.isdir(os.path.join(tmp, d))]
+                if not roots:
+                    raise RuntimeError("release archive has no source dir")
+                src = roots[0]
+                for name in ("src", "ui", "peer_agent", "scripts",
+                             "packaging"):
+                    sdir = os.path.join(src, name)
+                    ddir = os.path.join(repo, name)
+                    if os.path.isdir(sdir):
+                        shutil.copytree(sdir, ddir, dirs_exist_ok=True)
+                for name in ("VERSION", "requirements.txt", "install.sh",
+                             "install.bat", "run.sh", "run.bat",
+                             "restart.sh", "restart-llama-swap.sh"):
+                    sp = os.path.join(src, name)
+                    if os.path.isfile(sp):
+                        shutil.copy2(sp, os.path.join(repo, name))
+            subprocess.run([sys.executable,
+                            os.path.join(repo, "scripts", "stamp_version.py"),
+                            version], capture_output=True, text=True,
+                           timeout=120)
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q",
+                            "-r", os.path.join(repo, "requirements.txt")],
+                           capture_output=True, text=True, timeout=600)
+        except Exception as e:
+            return {"ok": False, "source": True,
+                    "detail": f"source release update failed: {e}"}
+
+        def _restart_source():
+            import time as _t
+            _t.sleep(1.5)
+            script = os.path.join(repo, "src", "app.py")
+            try:
+                os.execv(sys.executable, [sys.executable, script])
+            except Exception:
+                pass
+        threading.Thread(target=_restart_source, daemon=True).start()
+        return {"ok": True, "source": True, "version": version,
+                "restarting": True,
+                "detail": f"source updated to release {version}; restarting"}
+    info = _app_release_info()
+    url = info.get("url")
+    version = info.get("version")
+    if not url:
+        return {"ok": False, "detail": "no published farm-app binary for "
+                                       "this platform"}
+    exe = os.path.abspath(sys.executable)
+    dest_dir = os.path.dirname(exe)
+    tmp = None
+    try:
+        import urllib.request
+        fd, tmp = tempfile.mkstemp(prefix=".farm-update-", dir=dest_dir)
+        os.close(fd)
+        with urllib.request.urlopen(url, timeout=180) as r, \
+                open(tmp, "wb") as out:
+            shutil.copyfileobj(r, out)
+        size = os.path.getsize(tmp)
+        if size < 1024 * 1024 or size > 500 * 1024 * 1024:
+            raise RuntimeError(f"unexpected app size: {size} bytes")
+        if os.name != "nt":
+            os.chmod(tmp, 0o755)
+            os.replace(tmp, exe)
+        else:
+            backup = exe + ".old"
+            try:
+                os.replace(exe, backup)
+            except OSError:
+                pass
+            os.replace(tmp, exe)
+    except Exception as e:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+        return {"ok": False, "detail": f"app update failed: {e}"}
+    threading.Thread(target=_restart_app_binary, daemon=True).start()
+    return {"ok": True, "version": version, "asset": info.get("asset"),
+            "restarting": True}
+
+
+@app.get("/api/app-version")
+async def app_version_info():
+    return await run_in_threadpool(_app_version_payload)
+
+
+@app.post("/api/app/update")
+async def app_update():
+    return await run_in_threadpool(_update_app_binary)
 
 
 def _agent_version_payload(machine):
@@ -4539,17 +4765,55 @@ def _update_agent_remote(machine):
         return {"ok": True, "machine": name, "skipped": True, "local": True,
                 "detail": "local master uses the app directly; no peer agent"}
     av = _agent_version_payload(machine)
-    if not av.get("packaged"):
-        return {"ok": False, "machine": name, "reinstall": True,
-                "detail": "peer agent is not a standalone release build — "
-                          "reinstall the peer agent package from the latest "
-                          "release"}
+    prev_version = str(av.get("current") or "")
     try:
         info = _agent_release_info(machine)
     except Exception as e:
         return {"ok": False, "machine": name, "frozen": True,
                 "detail": f"could not check GitHub releases: {e}"}
-    asset, url, version = info.get("asset"), info.get("url"), info.get("version")
+    version = info.get("version")
+    if not av.get("packaged"):
+        # Pip/source-installed agents update through the release wheel.
+        wheel_url = info.get("wheel_url")
+        if not wheel_url:
+            return {"ok": False, "machine": name, "reinstall": True,
+                    "detail": "no release agent wheel is published — "
+                              "reinstall the peer agent package"}
+        try:
+            import urllib.request
+            with urllib.request.urlopen(wheel_url, timeout=120) as r:
+                blob = r.read()
+            res = agent_client.agent_update(machine, blob, version or "")
+        except Exception as e:
+            return {"ok": False, "machine": name,
+                    "detail": f"could not install release wheel: {e}"}
+        if not res.get("ok"):
+            return {"ok": False, "machine": name,
+                    "detail": res.get("error") or "agent wheel update failed"}
+        for _ in range(20):
+            import time as _t
+            _t.sleep(1)
+            try:
+                h = agent_client.health(machine, timeout=3)
+                hver = h.get("agent_version")
+                if hver and (hver == version or hver != prev_version):
+                    if version:
+                        try:
+                            cfg.machines.update(name,
+                                                {"agent_release": version})
+                        except Exception:
+                            pass
+                    return {"ok": True, "machine": name,
+                            "agent_version": hver,
+                            "agent_release": version,
+                            "method": "wheel"}
+            except Exception:
+                continue
+        return {"ok": False, "machine": name,
+                "detail": "agent installed the release wheel but did not "
+                          "come back healthy"}
+    asset = info.get("asset")
+    url = info.get("url")
     if not asset:
         return {"ok": False, "machine": name, "frozen": True,
                 "detail": "no standalone agent asset is published for this "
@@ -4573,14 +4837,15 @@ def _update_agent_remote(machine):
         _t.sleep(1)
         try:
             h = agent_client.health(machine, timeout=3)
-            if h.get("agent_version"):
+            hver = h.get("agent_version")
+            if hver and (hver == version or hver != prev_version):
                 if version:
                     try:
                         cfg.machines.update(name, {"agent_release": version})
                     except Exception:
                         pass
                 return {"ok": True, "machine": name,
-                        "agent_version": h.get("agent_version"),
+                        "agent_version": hver,
                         "agent_release": version,
                         "protocol_version": h.get("protocol_version"),
                         "method": "binary", "asset": asset}
@@ -4625,7 +4890,7 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
     machine = cfg.machines.require(name)
     with _LLAMA_UPDATES_LOCK:
         for j in _LLAMA_UPDATES.values():
-            if j["machine"] == name and j["state"] in ("stopping", "installing"):
+            if j["machine"] == name and j["state"] in ("stopping", "installing", "updating"):
                 return JSONResponse(
                     status_code=409,
                     content={"detail": f"update already running on {name}",
@@ -5289,29 +5554,49 @@ def _readiness_for(machine, swap_host_name):
                             "error": None}
             lp = (caps or {}).get("llama_binary")
             rp = (caps or {}).get("rpc_binary")
-            out["llama_cpp"]["path"] = lp or None
-            out["llama_rpc"]["path"] = rp or None
-            # A path existing on the agent is not enough — old/partial
-            # binaries must not be reported as installed. Run each one.
-            if lp:
+            # The machine's configured llama_bin is the launch path; the
+            # agent's capability search can point at a different (stale)
+            # build tree. Prefer the configured dir, then fall back to the
+            # agent-discovered path.
+            os_type = (machine.get("os") or "linux").lower()
+            server_name = "llama-server.exe" if os_type == "windows" else "llama-server"
+            rpc_name = "ggml-rpc-server.exe" if os_type == "windows" else "ggml-rpc-server"
+            sep = "\\" if os_type == "windows" else "/"
+            cfg_cpp = cfg_rpc = None
+            lb = (machine.get("llama_bin") or "").strip()
+            if lb:
+                base = lb.rstrip("/\\")
+                if base.endswith(server_name):
+                    cfg_cpp = base
+                    base = base.rsplit(sep, 1)[0]
+                else:
+                    cfg_cpp = base + sep + server_name
+                cfg_rpc = base + sep + rpc_name
+            last_err = None
+            for cand in dict.fromkeys([c for c in (cfg_cpp, lp) if c]):
                 try:
                     v = agent_client.install_verify(
-                        machine, lp, ["--version"], timeout=35) or {}
+                        machine, cand, ["--version"], timeout=35) or {}
                     if v.get("returncode") == 0:
                         out["llama_cpp"]["installed"] = True
+                        out["llama_cpp"]["path"] = cand
                         from installer.probe import _version_from_output
                         out["llama_cpp"]["version"] = _version_from_output(
                             str(v.get("output") or ""))
-                    else:
-                        out["llama_cpp"]["error"] = (
-                            str(v.get("output") or "verify failed"))[-300:]
+                        break
+                    last_err = (str(v.get("output") or "verify failed"))[-300:]
                 except Exception as e:
-                    out["llama_cpp"]["error"] = str(e)
-            if rp:
-                rpc_ok, rpc_err = _rpc_verify_remote(machine, rp)
-                out["llama_rpc"]["installed"] = rpc_ok
-                if not rpc_ok:
-                    out["llama_rpc"]["error"] = rpc_err
+                    last_err = str(e)
+            out["llama_cpp"]["error"] = None if out["llama_cpp"]["installed"] else last_err
+            last_rpc_err = None
+            for cand in dict.fromkeys([c for c in (cfg_rpc, rp) if c]):
+                rpc_ok, rpc_err = _rpc_verify_remote(machine, cand)
+                if rpc_ok:
+                    out["llama_rpc"]["installed"] = True
+                    out["llama_rpc"]["path"] = cand
+                    break
+                last_rpc_err = rpc_err
+            out["llama_rpc"]["error"] = None if out["llama_rpc"]["installed"] else last_rpc_err
     try:
         import swap_installer
         found, path = swap_installer.detect_on(machine)

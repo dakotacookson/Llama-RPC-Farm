@@ -1,8 +1,9 @@
 # Setup & installation guide
 
 End-to-end path from a bare folder to a working farm: web UI up, machines
-added, models visible, llama-swap serving, clients hitting the gateway.
-Nothing outside the project folder is ever modified.
+added, models visible, llama-swap serving, clients hitting the gateway. The app's own config lives under
+the project folder (or the platform data dir for packaged builds); engines
+and the agent are installed to standard user locations.
 
 ## 0. Prerequisites
 
@@ -30,6 +31,9 @@ and installs `requirements.txt`.
 # Windows (from cmd.exe)
 install.bat
 ```
+
+This installs the app and Python requirements only. Engines and llama-swap
+are installed from the UI after the app starts (step 2's setup checklist).
 
 ## 2. Start the web UI
 
@@ -70,8 +74,9 @@ each machine row.
 | Dashboard | Live status of every machine: reachability, RPC server, GPU VRAM/temp |
 | Machines | Add/edit machines (IP, agent port, agent token, GPUs); start/stop RPC servers |
 | Groups | Cluster groups of machines for multi-AI setups |
-| Models | Scan directories for GGUF files (shards shown as ONE model); per-model: servers, tensor split, flags key/value editor |
-| Run | Generate the full bash script (RPC startup on peers + llama-server) for any model + server set |
+| Models | Scan directories for GGUF files (shards shown as ONE model); per-model: servers, variants, tensor split, flags key/value editor |
+| Launch | Load a model through the selected engines/peers and watch live state |
+| Downloads | Search Hugging Face, filter GGUF models, and download into a `store://` path |
 
 ## 3. Secrets vault (`.env`)
 
@@ -103,11 +108,11 @@ machine is auto-registered as master.
 **Auto-discovery is near zero-touch.** The agent's UDP responder reports
 identity **and** hardware (GPU vendor/names, VRAM, RAM, cores) for
 NVIDIA, AMD ROCm, Intel SYCL and Apple GPUs, so a discovered agent
-prefills the form. The agent token is never broadcast
-(that would hand the peer to anyone on the LAN); set a **Farm agent token**
-once in Settings if all agents share a token — new discovered agents then
-verify and save without typing it. With per-machine tokens, enter the
-token once for that machine.
+prefills the form. Agent tokens are never broadcast (that would hand the
+peer to anyone on the LAN). The app manages one farm token automatically
+in the encrypted vault — there is no Settings field for it. Fresh agents in
+their pairing window enroll against it; per-machine tokens are generated
+when needed.
 
 **Packaged binaries self-register.** On first run the app/agent installs a
 login service (systemd user unit on Linux, LaunchAgent on macOS, Scheduled
@@ -141,30 +146,36 @@ metadata (from the repo, or from its declared `base_model` when the GGUF
 repo omits them), LICENSE/README files, and a `farm-bundle.json` manifest.
 Existing flat files keep working; only new downloads use bundles.
 
-## 6. Build llama.cpp (UI: llama.cpp installer)
+## 6. Install llama.cpp + RPC (UI: Install engines)
 
-From the UI, install/build `llama-server` per machine (or point
+Use the Dashboard **Setup needed** panel or the Machines page per-machine
+**Install engines / Reinstall engines** action. The app installs the right
+prebuilt through the peer agent (or locally on the master), then verifies
+`llama-server` and `ggml-rpc-server` actually run. You can also point
 `llama_bin` at an existing build dir, e.g.
-`/home/you/llama.cpp/build/bin`). Linux CUDA builds need glibc ≥ 2.38
+`/home/you/llama.cpp/build/bin`. Linux CUDA builds need glibc ≥ 2.38
 (Ubuntu 24.04+); Vulkan builds only need 2.34 and are the automatic
 fallback. Peers run `ggml-rpc-server` from the same build.
 
-## 7. Start RPC servers + launch models (Run tab)
+## 7. Start RPC servers + launch models (Launch tab)
 
-The Run tab generates a full launch script. Every peer is started through
+Launching a model starts the required RPC servers, then llama-server. Every peer is started through
 its peer agent's typed endpoints (`/rpc/ensure`, `/rpc/stop`), with ports
 rolled per model if busy (base 50052 is legacy), then the `llama-server`
 command runs with your per-model flags. The script contains no secrets;
 agent tokens come from the pushed `swap-secrets.env` sidecar.
 
-## 8. Install llama-swap and push config (Swap tab)
+## 8. Install llama-swap and serve
 
-1. **Install** — the UI downloads the right official llama-swap prebuilt
-   per platform (`~/.local/bin/llama-swap` POSIX,
+1. **Install** — when the swap host is missing llama-swap, the Dashboard
+   **Setup needed** panel and the Machines page show **Install llama-swap**.
+   It downloads the right official prebuilt for the platform
+   (`~/.local/bin/llama-swap` POSIX,
    `%USERPROFILE%\llama-swap\llama-swap.exe` Windows).
-2. **Push** — `src/swap_manager.py` renders `config/swap.yaml` + per-model
-   start scripts to the swap host (`~/.config/llama-swap/`). Do not
-   hand-edit that pushed copy; edit config in the app and re-push.
+2. **Push** — saving a model or variant pushes `config/swap.yaml` +
+   per-model start scripts to the swap host
+   (`~/.config/llama-swap/`). Do not hand-edit that pushed copy; edit
+   configs in the app.
 3. **Serve** — llama-swap listens on `:8080` and starts/stops model
    servers on demand. It launches scripts as a systemd **user** unit
    (`llama-swap.service`, `Restart=on-failure`) when available; secrets

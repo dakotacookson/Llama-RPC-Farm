@@ -1567,7 +1567,8 @@ def build_llama_command(model_cfg, servers, master_name=None):
         device_order_clean = _device_order_to_llama(
             device_order, master, peers,
             model_cfg.get("device_order_policy", "as-selected"))
-        parts.append(f'--device "{device_order_clean}"')
+        if device_order_clean:
+            parts.append(f'--device "{device_order_clean}"')
 
     if split_mode == "fit":
         parts.append("--fit on")
@@ -2215,7 +2216,26 @@ def _remote_local_model(model_cfg, master):
     if isinstance(raw_gpus, str):
         raw_gpus = raw_gpus.split(",")
     gpus = [d.strip() for d in raw_gpus if str(d).strip()]
+    orig_order = str(model_cfg.get("device_order") or "")
     model_cfg["device_order"] = ",".join(gpus)
+    # CPU-only local box: fit mode has no VRAM devices to target and emits an
+    # empty --fit-target, which llama-server rejects. Keep the RAM device and
+    # use auto mode.
+    if not gpus:
+        ram = bool(expose.get("ram")) or orig_order.endswith("-RAM")
+        model_cfg["device_order"] = (f"{master['name']}-RAM" if ram else "")
+        model_cfg["tensor_split_mode"] = "auto"
+        model_cfg["tensor_split"] = ""
+        # No accelerators: never offload layers. Vulkan/llvmpipe may be
+        # auto-detected on a CPU-only box and then hang during upload.
+        flags = dict(model_cfg.get("flags") or {})
+        for k in list(flags):
+            if k.lstrip("-").replace("_", "-") in (
+                    "n-gpu-layers", "ngl"):
+                flags[k] = 0
+        flags["n-gpu-layers"] = 0
+        model_cfg["flags"] = flags
+        return model_cfg
     # keep an explicit variant split; otherwise fit mode — except a single
     # Metal device, where fit mode is broken and auto mode is required.
     is_metal_single = (master.get("os") == "macos"

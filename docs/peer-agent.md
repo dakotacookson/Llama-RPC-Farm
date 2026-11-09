@@ -71,8 +71,10 @@ A tiny peer agent makes those deterministic with typed operations.
   `cmdStop` is agent-aware.
 - Remote-local models and custom Windows `.bat` runtimes use typed agent
   endpoints (`/llama/*`, `/custom/*`).
-- In-place agent updates use `/agent/update`; the Machines page exposes
-  current→latest version state and an Agent update button.
+- Agent updates are release-driven: the Machines page compares the running
+  version with the highest published GitHub release. Pip-installed agents
+  use `/agent/update` with the release wheel; standalone packaged agents
+  use `/agent/update-binary` to replace and restart their executable.
 - Linux installs enable the systemd user unit with linger; Windows uses
   a boot-triggered Scheduled Task (`LlamaPeerAgent`). Both survive reboot.
 - Stats/tuner use `/metrics`, `/system/detail`, and `/speedtest`;
@@ -105,8 +107,8 @@ the same typed agent endpoints on every OS.
 
 ## Agent shape
 
-- Single small process per peer (`python -m peer_agent` initially; a
-  static binary later if needed).
+- One small process per peer, shipped either as a pip package or a
+  standalone PyInstaller binary.
 - Binds to the LAN/Tailscale interface only. Loopback plus an allowlist.
 - Token auth (`Authorization: Bearer <agent-token>`), token stored in a
   peer-local 0600 file; master stores it in the Fernet vault.
@@ -118,7 +120,7 @@ the same typed agent endpoints on every OS.
 | Method + path | Purpose |
 |---|---|
 | `GET /health` | version, os/arch, uptime |
-| `GET /version` | protocol version + agent version |
+| `GET /version` | protocol version + agent version + `packaged` flag |
 | `GET /capabilities` | binaries, model roots, RPC/llama availability |
 | `GET /info` | hostname, machine id/MAC, addresses, agent port, OS/arch |
 | `GET /status` | RPC/llama/swap processes, counts, GPU rows |
@@ -128,6 +130,8 @@ the same typed agent endpoints on every OS.
 | `GET /speedtest?mb=N` | bounded throughput stream (1..256 MB) |
 | `GET /system/rdma` | RoCE device/port/GID/IP discovery |
 | `POST /install/artifact`, `/install/verify` | typed installs |
+| `POST /agent/update` | pip wheel self-update + restart |
+| `POST /agent/update-binary` | standalone binary self-replace + restart |
 | `GET /build/probe`, `POST /build/update` | llama.cpp source probe/update |
 | `GET /logs/tail?name=&lines=` | bounded tail of known log files only |
 | `GET /logs/list` | known log filenames |
@@ -184,13 +188,14 @@ remote-shell call site.
 
 ## Install / lifecycle
 
-- Install from the existing installer UI/CLI:
+- Install from the release packages (`.deb`, `.pkg`, `setup.exe`):
   - Linux: systemd user unit `llama-peer-agent.service`, enabled with
     linger so it starts at boot without a login.
   - Windows: boot-triggered Scheduled Task `LlamaPeerAgent`, running the
     venv entry point through a token-loading `.cmd` wrapper.
-  - macOS: launchd agent (planned; not packaged yet).
+  - macOS: launchd LaunchAgent installed by the `.pkg` postinstall.
 - Agent reads a 0600 env file for the token; never writes secrets to logs.
+  The farm token itself is auto-generated and managed by the app.
 - `GET /health` returns the protocol version; the master warns on drift but
   keeps working when the contract is compatible.
 - Discovery binds UDP `8199` (configurable with `PEER_AGENT_DISCOVERY_PORT`
@@ -220,12 +225,13 @@ remote-shell call site.
    Add Machine auto-fill and connection detection.
 3. **Agent operations (done)**: files, service control, installers,
    build probe/update, RDMA, stats/tuner probes, custom runtimes.
-4. **Agent lifecycle (done)**: Linux linger/systemd and Windows boot task,
-   in-place `/agent/update`, version display/update button.
-5. **Packaging**: signed/standalone agent and app installers for Linux,
-   Windows, and macOS.
-6. **Metrics**: Prometheus endpoint and dashboard integration.
-7. **macOS parity**: launchd installer and live validation.
+4. **Agent lifecycle (done)**: Linux linger/systemd, Windows boot task,
+   macOS LaunchAgent, release wheel/binary updates, version display and
+   update button.
+5. **Packaging (done)**: signed/standalone agent and app installers for
+   Linux, Windows, and macOS, plus raw agent binaries and a universal wheel.
+6. **Metrics (done)**: `/metrics` agent endpoint and dashboard probes.
+7. **macOS parity (done)**: launchd installer and live validation.
 
 Every slice is agent-backed; there is no parallel shell runtime path.
 
@@ -234,8 +240,9 @@ Every slice is agent-backed; there is no parallel shell runtime path.
 Source stays in this monorepo; releases are rolling artifacts built on
 every `main` push:
 
-- agent: Linux `.deb`, macOS `.pkg`, Windows Inno Setup `setup.exe`
-  plus SHA-256 checksums in each versioned rolling prerelease
+- agent: Linux `.deb`, macOS `.pkg`, Windows Inno Setup `setup.exe`,
+  raw per-platform standalone binaries, and a universal pip wheel, plus
+  SHA-256 checksums in each versioned rolling prerelease
 - app: the same three installer formats in the same release
 
 `main-latest` is a moving pointer to the newest versioned release; older

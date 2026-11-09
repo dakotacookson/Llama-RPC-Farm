@@ -412,7 +412,10 @@ def install_on(machine, log=lambda m: None):
             agent_client.install_artifact(
                 machine, urls, dest,
                 archive="zip" if is_win else "tar.gz",
-                strip_components=1, mode=None if is_win else 0o755)
+                # Windows release zips are flat (no top-level directory);
+                # stripping one component discarded every member.
+                strip_components=0 if is_win else 1,
+                mode=None if is_win else 0o755)
             bin_name = "llama-server.exe" if is_win else "llama-server"
             rpc_name = "ggml-rpc-server.exe" if is_win else "ggml-rpc-server"
             v = agent_client.install_verify(machine, f"{dest}/{bin_name}")
@@ -732,20 +735,33 @@ def update_source_on(machine, probe=None, log=lambda m: None):
     src_root = probe["src_root"]
     if (not local_node.is_local(machine)
             and agent_client.should_use_agent(machine)):
-        try:
-            bin_path = (f"{probe.get('llama_bin') or build_dir + '/bin'}"
-                        f"/llama-server")
-            res = agent_client.build_update(
-                machine, src_root, build_dir, bin_path)
-            if res.get("ok"):
-                return {"ok": True, "machine": name, "bin": bin_path,
-                        "detail": f"source build updated to "
-                                  f"{res.get('version', '')}"}
-            return {"ok": False, "machine": name,
-                    "detail": res.get("error") or "source update failed"}
-        except Exception as e:
-            return {"ok": False, "machine": name,
-                    "detail": f"agent source update failed: {e}"}
+        bin_path = (f"{probe.get('llama_bin') or build_dir + '/bin'}"
+                    f"/llama-server")
+        last_err = None
+        # A just-updated agent can close the first long request while it is
+        # still settling after restart. Retry once after confirming health.
+        for attempt in (1, 2):
+            try:
+                res = agent_client.build_update(
+                    machine, src_root, build_dir, bin_path)
+                if res.get("ok"):
+                    return {"ok": True, "machine": name, "bin": bin_path,
+                            "detail": f"source build updated to "
+                                      f"{res.get('version', '')}"}
+                return {"ok": False, "machine": name,
+                        "detail": res.get("error") or "source update failed"}
+            except Exception as e:
+                last_err = e
+                if attempt == 1:
+                    import time as _t
+                    _t.sleep(5)
+                    try:
+                        agent_client.health(machine, timeout=5)
+                    except Exception:
+                        pass
+                    continue
+        return {"ok": False, "machine": name,
+                "detail": f"agent source update failed: {last_err}"}
     run, _is_local = _machine_run(machine)
 
     try:
@@ -792,6 +808,28 @@ def update_source_on(machine, probe=None, log=lambda m: None):
         log(f"building with -j{jobs} (cores={cores}, "
             f"available_ram={ram_avail_mb}MB)")
 
+        # A stale CMAKE_COMMAND in the cache (snap/venv path deleted)
+        # makes gmake fail before compiling. Reconfigure with the cmake on
+        # PATH; cached CMake options are preserved.
+        stale_cmake = ""
+        try:
+            with open(os.path.join(build_dir, "CMakeCache.txt"),
+                      encoding="utf-8", errors="replace") as _cf:
+                for _line in _cf:
+                    if _line.startswith("CMAKE_COMMAND:"):
+                        stale_cmake = _line.split("=", 1)[-1].strip()
+                        break
+        except OSError:
+            pass
+        if stale_cmake and not os.path.isfile(stale_cmake):
+            log(f"{name}: CMake cache points at missing {stale_cmake} — "
+                "reconfiguring with cmake on PATH")
+            code, out = run(f"cmake -S '{src_root}' -B '{build_dir}' "
+                            "2>&1 | tail -3", timeout=900)
+            if code != 0:
+                return {"ok": False, "machine": name,
+                        "detail": f"cmake reconfigure failed: "
+                                  f"{(out or '')[-300:]}"}
         build_cmd = (f"cd '{src_root}' && cmake --build '{build_dir}' "
                      f"-j {jobs} > /tmp/llamacpp-build.log 2>&1; "
                      "_ec=$?; tail -3 /tmp/llamacpp-build.log; exit $_ec")

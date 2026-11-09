@@ -12,9 +12,6 @@ Per machine:
 - id: aibox1            # legacy identifier (see warning)
   name: aibox1          # THE key used by ~all code
   ip: 127.0.0.1         # localhost = the machine running the app
-  username: zazi
-  password: ...         # legacy plaintext field; vault wins (see secrets.md)
-  port: 22
   role: master          # master | peer; master = this app's box
   os: linux             # linux | windows | macos
   rpc_port: 50052       # legacy base; per-model ports are rolled at launch
@@ -34,9 +31,10 @@ Per machine:
   rdma: false           # RDMA/RoCE transport (opt-in; TCP default)
   rdma_ip: / rdma_dev: / rdma_gid: / rdma_cm: false
   transport: agent      # accepted for compatibility; runtime is agent-only
-  agent_port: 8198      # agent HTTP port
+  agent_port: 8198      # peer-agent HTTP port
   # agent_token is write-only in the Add/Edit form; it is stored in the
-  # Fernet vault, never in machines.yaml.
+  # Fernet vault, never in machines.yaml. There is no SSH/remote-login
+  # password: all peer work goes through the agent.
 ```
 
 **Warning:** `id` and `name` can diverge (historical rename: id `aibox2`,
