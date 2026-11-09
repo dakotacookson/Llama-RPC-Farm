@@ -913,6 +913,16 @@ navCollapseInit();
 function barColor(pct) { return pct >= 90 ? "red" : pct >= 70 ? "yellow" : "green"; }
 function valColor(pct) { return pct >= 90 ? "var(--bad)" : pct >= 70 ? "var(--warn)" : "var(--ok)"; }
 
+/* "NVIDIA GeForce RTX 5060 Laptop GPU" -> "RTX 5060 Laptop": the vendor
+   prefix and trailing "GPU" add width, not information, on a narrow card
+   (the full name stays in the cell's title). */
+function shortGpuName(name) {
+  return String(name || "")
+    .replace(/^(NVIDIA\s+(GeForce\s+)?|AMD\s+(Radeon\s+)?|Intel(\(R\))?\s+)/i, "")
+    .replace(/\s+GPU$/i, "")
+    .trim() || String(name || "");
+}
+
 function statCardHTML(m) {
   const online = m.status === "online";
   const gpus = m.gpus || [];
@@ -928,7 +938,7 @@ function statCardHTML(m) {
         <span class="card-label">
           <span class="status-dot ${online ? "on" : "off"}"></span>
           <i class="fa-solid fa-server card-label-icon"></i>
-          ${m.name}
+          <span class="card-name">${m.name}</span>
           ${m.is_master ? '<span class="badge badge-master">master</span>' : ""}
         </span>
         <div class="card-actions">
@@ -939,12 +949,12 @@ function statCardHTML(m) {
       <div class="card-sub">${cardSub}</div>
       ${gpus.length ? `
         <table class="gpu-table">
-          <thead><tr><th>Idx</th><th>GPU</th><th>Util</th><th>VRAM</th><th>Temp</th></tr></thead>
+          <thead><tr><th class="gpu-idx">Idx</th><th>GPU</th><th>Util</th><th>VRAM</th><th>Temp</th></tr></thead>
           <tbody>
             ${gpus.map(g => `
               <tr>
-                <td>${g.index}</td>
-                <td class="gpu-name">${g.name}</td>
+                <td class="gpu-idx">${g.index}</td>
+                <td class="gpu-name" title="${escHtml(g.name)}">${escHtml(shortGpuName(g.name))}</td>
                 <td class="gpu-util">${g.util}%</td>
                 <td class="gpu-vram">${g.mem_used_gb}/${g.mem_total_gb}GB</td>
                 <td class="gpu-temp ${g.temp >= 75 ? "hot" : ""}">${g.temp}°C</td>
