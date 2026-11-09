@@ -4458,58 +4458,57 @@ def _agent_binary_asset(machine):
     return None
 
 
+_RELEASE_FEED_CACHE = {"ts": 0.0, "versions": []}
+
+
+def _release_feed_versions():
+    """Newest release versions from the public releases Atom feed.
+
+    The GitHub REST API is rate-limited (60/hr unauthenticated) and its
+    array order changes when releases are recreated. The Atom feed is
+    unauthenticated, ordered by publish time, and enough to construct the
+    deterministic release asset URLs.
+    """
+    now = time.time()
+    with _LLAMA_UPDATES_LOCK:
+        if now - _RELEASE_FEED_CACHE["ts"] < 60:
+            return list(_RELEASE_FEED_CACHE["versions"])
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            f"https://github.com/{_AGENT_REPO}/releases.atom",
+            headers={"User-Agent": "llama-rpc-farm"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            body = r.read().decode("utf-8", "replace")
+        vers = re.findall(r"/releases/tag/release-(\d+\.\d+\.\d+)", body)
+        seen = []
+        for v in vers:
+            if v not in seen:
+                seen.append(v)
+        seen.sort(key=lambda v: tuple(int(p) for p in v.split(".")),
+                  reverse=True)
+    except Exception:
+        seen = []
+    with _LLAMA_UPDATES_LOCK:
+        _RELEASE_FEED_CACHE["ts"] = now
+        _RELEASE_FEED_CACHE["versions"] = list(seen)
+    return seen
+
+
 def _agent_release_info(machine):
-    """Live GitHub release check: newest release carrying this peer's raw
-    agent binary. The release tag is the authoritative agent version."""
+    """Latest release agent asset (release tag is the authoritative version)."""
     asset = _agent_binary_asset(machine)
     if not asset:
         return {"asset": None, "url": None, "version": None}
-    now = time.time()
-    with _LLAMA_UPDATES_LOCK:
-        if now - _AGENT_RELEASE_CACHE["ts"] < 60:
-            hit = _AGENT_RELEASE_CACHE["by_asset"].get(asset)
-            if hit:
-                return dict(hit)
-    import json
-    import urllib.request
-    req = urllib.request.Request(
-        f"https://api.github.com/repos/{_AGENT_REPO}/releases?per_page=100",
-        headers={"User-Agent": "llama-rpc-farm",
-                 "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        releases = json.load(r)
-    # The releases API is NOT guaranteed to be ordered by version (deleting
-    # and recreating releases reorders it). Pick the highest semantic
-    # release tag, not the first matching array element.
-    best = None
-    best_key = None
-    for rel in releases:
-        tag = str(rel.get("tag_name") or "")
-        m = re.fullmatch(r"release-(\d+\.\d+\.\d+)", tag)
-        if not m:
-            continue
-        key = tuple(int(p) for p in m.group(1).split("."))
-        agent_url = None
-        wheel_url = None
-        for a in rel.get("assets") or []:
-            name = str(a.get("name") or "")
-            if name == asset:
-                agent_url = a.get("browser_download_url")
-            elif (name.startswith("llama_rpc_farm_agent-")
-                  and name.endswith(".whl")):
-                wheel_url = a.get("browser_download_url")
-        if agent_url and (best_key is None or key > best_key):
-            best_key = key
-            best = {"asset": asset, "url": agent_url,
-                    "wheel_url": wheel_url,
-                    "version": m.group(1)}
-    with _LLAMA_UPDATES_LOCK:
-        _AGENT_RELEASE_CACHE["ts"] = now
-        if best:
-            _AGENT_RELEASE_CACHE["by_asset"][asset] = dict(best)
-    if best:
-        return best
-    return {"asset": asset, "url": None, "version": None}
+    versions = _release_feed_versions()
+    if not versions:
+        return {"asset": asset, "url": None, "version": None}
+    version = versions[0]
+    base = (f"https://github.com/{_AGENT_REPO}/releases/download/"
+            f"release-{version}")
+    wheel = f"llama_rpc_farm_agent-{version}-py3-none-any.whl"
+    return {"asset": asset, "url": f"{base}/{asset}",
+            "wheel_url": f"{base}/{wheel}", "version": version}
 
 
 _APP_RELEASE_CACHE = {"ts": 0.0, "by_asset": {}}
@@ -4531,46 +4530,18 @@ def _app_binary_asset():
 
 
 def _app_release_info():
-    """Live GitHub check for the newest raw farm-app binary."""
+    """Latest release farm-app binary (tag is the authoritative version)."""
     asset = _app_binary_asset()
     if not asset:
         return {"asset": None, "url": None, "version": None}
-    now = time.time()
-    with _LLAMA_UPDATES_LOCK:
-        if now - _APP_RELEASE_CACHE["ts"] < 60:
-            hit = _APP_RELEASE_CACHE["by_asset"].get(asset)
-            if hit:
-                return dict(hit)
-    import urllib.request
-    req = urllib.request.Request(
-        f"https://api.github.com/repos/{_AGENT_REPO}/releases?per_page=100",
-        headers={"User-Agent": "llama-rpc-farm",
-                 "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        releases = json.load(r)
-    best = None
-    best_key = None
-    for rel in releases:
-        tag = str(rel.get("tag_name") or "")
-        m = re.fullmatch(r"release-(\d+\.\d+\.\d+)", tag)
-        if not m:
-            continue
-        key = tuple(int(p) for p in m.group(1).split("."))
-        if best_key is not None and key <= best_key:
-            continue
-        url = None
-        for a in rel.get("assets") or []:
-            if (a.get("name") == asset
-                    and a.get("browser_download_url")):
-                url = a["browser_download_url"]
-                break
-        best_key = key
-        best = {"asset": asset, "url": url, "version": m.group(1)}
-    with _LLAMA_UPDATES_LOCK:
-        _APP_RELEASE_CACHE["ts"] = now
-        if best:
-            _APP_RELEASE_CACHE["by_asset"][asset] = dict(best)
-    return best or {"asset": asset, "url": None, "version": None}
+    versions = _release_feed_versions()
+    if not versions:
+        return {"asset": asset, "url": None, "version": None}
+    version = versions[0]
+    return {"asset": asset,
+            "url": (f"https://github.com/{_AGENT_REPO}/releases/download/"
+                    f"release-{version}/{asset}"),
+            "version": version}
 
 
 def _app_version_payload():
