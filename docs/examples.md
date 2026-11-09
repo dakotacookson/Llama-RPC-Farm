@@ -10,3 +10,5 @@ Run a small model (fits in less than X GB RAM) and performs a request over a wor
 From guidance from PLAN_cli.md expand details
 </agent>
 
+./get_model.sh
+
