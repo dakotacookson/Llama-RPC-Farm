@@ -732,20 +732,33 @@ def update_source_on(machine, probe=None, log=lambda m: None):
     src_root = probe["src_root"]
     if (not local_node.is_local(machine)
             and agent_client.should_use_agent(machine)):
-        try:
-            bin_path = (f"{probe.get('llama_bin') or build_dir + '/bin'}"
-                        f"/llama-server")
-            res = agent_client.build_update(
-                machine, src_root, build_dir, bin_path)
-            if res.get("ok"):
-                return {"ok": True, "machine": name, "bin": bin_path,
-                        "detail": f"source build updated to "
-                                  f"{res.get('version', '')}"}
-            return {"ok": False, "machine": name,
-                    "detail": res.get("error") or "source update failed"}
-        except Exception as e:
-            return {"ok": False, "machine": name,
-                    "detail": f"agent source update failed: {e}"}
+        bin_path = (f"{probe.get('llama_bin') or build_dir + '/bin'}"
+                    f"/llama-server")
+        last_err = None
+        # A just-updated agent can close the first long request while it is
+        # still settling after restart. Retry once after confirming health.
+        for attempt in (1, 2):
+            try:
+                res = agent_client.build_update(
+                    machine, src_root, build_dir, bin_path)
+                if res.get("ok"):
+                    return {"ok": True, "machine": name, "bin": bin_path,
+                            "detail": f"source build updated to "
+                                      f"{res.get('version', '')}"}
+                return {"ok": False, "machine": name,
+                        "detail": res.get("error") or "source update failed"}
+            except Exception as e:
+                last_err = e
+                if attempt == 1:
+                    import time as _t
+                    _t.sleep(5)
+                    try:
+                        agent_client.health(machine, timeout=5)
+                    except Exception:
+                        pass
+                    continue
+        return {"ok": False, "machine": name,
+                "detail": f"agent source update failed: {last_err}"}
     run, _is_local = _machine_run(machine)
 
     try:
