@@ -40,9 +40,13 @@ class _FakeMachines:
 def test_machines_endpoint_never_echoes_agent_token(monkeypatch):
     import asyncio
     import app as app_module
+    import secrets_vault
+    # Hermetic: the vault/env on the test machine must not decide whether
+    # this record reports a token (CI has no vault entry, a dev box does).
+    monkeypatch.setattr(secrets_vault, "machine_agent_token_set",
+                        lambda machine: True)
     monkeypatch.setattr(app_module.cfg, "machines", _FakeMachines([
-        {"name": "m1", "_agent_token": "super-secret", "password": "pw",
-         "agent_token_set": True},
+        {"name": "m1", "_agent_token": "super-secret", "password": "pw"},
     ]))
     rows = asyncio.run(app_module.list_machines())
     assert rows and rows[0]["name"] == "m1"
