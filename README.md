@@ -1,10 +1,22 @@
 # Llama RPC Farm
 
+[![Stars](https://img.shields.io/github/stars/dakotacookson/Llama-RPC-Farm?style=flat-square)](https://github.com/dakotacookson/Llama-RPC-Farm/stargazers)
+[![Release](https://img.shields.io/github/v/release/dakotacookson/Llama-RPC-Farm?include_prereleases&style=flat-square)](https://github.com/dakotacookson/Llama-RPC-Farm/releases)
+[![CI](https://github.com/dakotacookson/Llama-RPC-Farm/actions/workflows/ci.yml/badge.svg)](https://github.com/dakotacookson/Llama-RPC-Farm/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/dakotacookson/Llama-RPC-Farm?style=flat-square)](LICENSE)
+
 **True llama.cpp, from one box to your whole house.** One dashboard for
 real llama.cpp serving: run a model on a single machine, pool GPUs and RAM
 across machines over RPC, or serve many models on demand through
 llama-swap — any mix of Linux, Windows, and macOS machines. Any client
 that speaks OpenAI.
+
+It started with the GPUs already in the house: a few machines, different
+cards, and no clean way to make them one usable endpoint. Hand-rolled
+`llama-server --rpc` scripts worked until a second model, a Windows box, or
+a family member needed access. Llama RPC Farm is the dashboard that grew
+out of that: stock llama.cpp underneath, one place to arrange machines and
+models, and one OpenAI-compatible endpoint on top.
 
 Real llama.cpp means real features: full CUDA, tensor-split across GPUs,
 spec decoding, KV-cache options, 128k+ contexts — the raw llama-server
@@ -162,6 +174,15 @@ instead of at first load.
 ./run.sh        # then open http://localhost:8199
 ```
 
+> **LAN/VPN only.** llama.cpp's RPC server is unauthenticated by design.
+> Keep RPC ports, the UI, and the gateway on a trusted network or VPN — do
+> not port-forward them to the internet. Details: [Security model](#security-model).
+
+**No cluster yet?** Run it solo on one machine first — one GPU, several
+GPUs, or CPU/RAM only. The same UI, model configs, and endpoint work when
+you add peers later; nothing needs to be rebuilt. A two-machine test path
+is in [docs/examples.md](docs/examples.md).
+
 The install script sets up the app and Python environment only. On first
 launch, the dashboard's **Setup needed** panel installs llama.cpp + RPC on
 peers and llama-swap on the swap host. The full walkthrough (vault,
@@ -257,7 +278,10 @@ Each backend speaks the same tokens (`CUDA0/1..`, `ROCm0/1..`, `Metal`,
 `CPU`) and flows through identical launch scripts — see
 [docs/rpc-model.md](docs/rpc-model.md) for internals. If your setup is in
 the 🧪 rows and it works (or breaks), that's a valuable bug report /
-contribution — pull requests welcome.
+contribution — [open an issue](https://github.com/dakotacookson/Llama-RPC-Farm/issues)
+with your hardware, logs, and what you tried, or start a thread in
+[Discussions](https://github.com/dakotacookson/Llama-RPC-Farm/discussions).
+"Works on my box" reports are exactly what turns a 🧪 row into ✅.
 
 ## How it works, in one breath
 
@@ -278,16 +302,46 @@ physics, and it's the price of using GPUs that would otherwise sit idle.
 The farm never pretends otherwise; if a model fits on one machine, keep
 it there, and use the cluster for the ones that don't.
 
-### Why this and not exo / etc.
+#### Measured on a real farm
 
-Flexibility. exo invents its own device mesh with its own inference
-runtime — the farm instead drives **stock llama.cpp builds**, so every
-llama-server flag and backend upgrade works as-is, and adds llama-swap's
-on-demand start/stop so many models share one endpoint. Machines and
-models are pools you arrange however your household needs: some machines
-as one pool of GPUs for a giant model, another pool for a second model,
-llama-swap routing between them, per-user keys deciding who reaches what.
-It's a farm you shape, not a fixed topology.
+From the maintainer's auto-tune history — server-reported llama.cpp
+timings, decode tok/s (prefill excluded), 64 generated tokens. These are
+real runs, not a controlled benchmark:
+
+| Scenario | Model | Placement | Context | Decode |
+|---|---|---|---|---|
+| 4B Q4_K over RPC | 4B-class Q4_K | 3 Linux boxes, 6 GPUs, split `8,3,3,2,1,1` | 16k | ~130 tok/s |
+| 27B Q8_0 over RPC + MTP | Qwen3.8-27B-Uncensored Q8_0 | 3 Linux boxes, 6 GPUs | 180k | ~24.6 tok/s |
+
+Both are real RPC runs from the maintainer's fleet; a single-box run of the
+same weights is faster (that is the trade-off above). The tuner writes
+every trial to `generated/tune-history.csv`, so you can reproduce or
+replace these with your own numbers. Methodology and a contribution
+template: [docs/benchmarks.md](docs/benchmarks.md).
+
+### How is this different?
+
+| | Llama RPC Farm | Hand-rolled llama.cpp RPC | exo |
+|---|---|---|---|
+| **Inference engine** | Stock llama.cpp builds | Stock llama.cpp | Its own runtime/device mesh |
+| **Cluster setup** | UI: pick machines + GPU/RAM chips | You write the `--rpc` scripts | Automatic peer discovery |
+| **Many models, one endpoint** | llama-swap on demand + serve groups | You wire it yourself | Different model/runtime model |
+| **Lifecycle** | Start/stop/status per model and per machine | Shell scripts + manual cleanup | Managed by exo |
+| **Mixed OS fleet** | Linux, Windows, macOS peers via typed agent | Per-OS scripts and quoting | Varies by support |
+| **Client access** | Per-key model allowlists + `:8090` gateway | Not included | Not the focus |
+| **Tensor placement visibility** | Live per-tensor Flow Visualizer from llama.cpp sched logs | Logs only | Not llama.cpp sched |
+
+The trade-off is deliberate: the farm does **not** invent a new inference
+runtime. It drives the same llama.cpp binaries you would use by hand, so
+every upstream flag and backend upgrade works as-is. If you already have a
+working hand-rolled script, the farm removes the per-model/per-machine
+script sprawl and adds llama-swap's on-demand start/stop, the dashboard,
+and per-user keys. If you want a fully automatic device mesh with its own
+runtime, exo is a different (and better-fit) tool.
+
+Likewise, it is not a replacement for LocalAI/vLLM model zoos or serving
+stacks — it is for people who want **stock llama.cpp** and explicit control
+over where every layer runs.
 
 ## Security model
 
@@ -309,6 +363,7 @@ configs or scripts). Everything else stays inside the project folder.
 | [docs/secrets.md](docs/secrets.md) | The encrypted vault, how passwords flow |
 | [docs/configuration.md](docs/configuration.md) | Every config file, what owns it |
 | [docs/api.md](docs/api.md) | Full HTTP/WebSocket endpoint reference |
+| [docs/benchmarks.md](docs/benchmarks.md) | What was measured, how to reproduce it, and how to submit your numbers |
 | [docs/README.md](docs/README.md) | Full documentation index |
 
 ## Standing on giants
@@ -332,8 +387,12 @@ llama.cpp, llama-swap, and every other wrapped tool:
 
 ## Status
 
-Rolling `1.0.x` prereleases — see GitHub Releases for the current version.
-llama.cpp RPC + llama-swap is the supported engine.
+Current release line: **2.0.x** — see
+[GitHub Releases](https://github.com/dakotacookson/Llama-RPC-Farm/releases)
+for the newest build and installers. llama.cpp RPC + llama-swap is the
+supported engine. The rolling build publishes Linux `.deb`, macOS `.pkg`,
+and Windows `setup.exe` artifacts, plus the peer-agent packages, on every
+`main` build.
 
 Licensed under **Apache-2.0** (this project's own code; download engines
 llama.cpp and llama-swap remain MIT under their own terms) — free for

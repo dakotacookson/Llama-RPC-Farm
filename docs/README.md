@@ -17,6 +17,7 @@ Frontend is vanilla JS; all state lives in `config/*.yaml`.
 | [cross-platform.md](cross-platform.md) | Linux/Windows/macOS handling: remote exec patterns, process mgmt, paths, installer + glibc rules |
 | [rpc-model.md](rpc-model.md) | RPC numbering, `compute_rpc_map`, device tokens, ports, generated scripts |
 | [visualizer.md](visualizer.md) | Flow visualizer + Live Logs: data sources, sched parsing, attribution policy, priming |
+| [benchmarks.md](benchmarks.md) | Real measured runs, how to reproduce them, and a template for submitting yours |
 | [tuner.md](tuner.md) | Auto-tune: math estimate, staged live search, safe defaults |
 | [models-and-variants.md](models-and-variants.md) | Model configs, flags, device_order, variants, serve groups |
 | [development.md](development.md) | Running, testing, the string-assertion test style, common pitfalls (see also `AGENTS.md`) |
