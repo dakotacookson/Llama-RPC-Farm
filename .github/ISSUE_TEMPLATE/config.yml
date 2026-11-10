@@ -1,0 +1,14 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions & setup help
+    url: https://github.com/dakotacookson/Llama-RPC-Farm/discussions
+    about: Ask in Discussions instead of opening an issue.
+  - name: Read the docs
+    url: https://github.com/dakotacookson/Llama-RPC-Farm/blob/main/docs/README.md
+    about: Setup, topologies, access keys, benchmarks, FAQ, and internals.
+  - name: Roadmap / feedback
+    url: https://github.com/dakotacookson/Llama-RPC-Farm/issues/108
+    about: Tell us what would make the farm more useful to you.
+  - name: Security vulnerability
+    url: https://github.com/dakotacookson/Llama-RPC-Farm/blob/main/SECURITY.md
+    about: Use private vulnerability reporting; do not open a public issue.
