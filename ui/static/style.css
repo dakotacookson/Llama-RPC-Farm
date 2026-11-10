@@ -2800,3 +2800,18 @@ body.login-locked #login-modal * { pointer-events: auto !important; }
 .pf-tip { position: absolute; top: 6px; pointer-events: none; background: var(--raised, var(--surface)); border: 1px solid var(--border);
   border-radius: 6px; padding: 6px 8px; font-size: 12px; white-space: nowrap; box-shadow: 0 4px 14px rgba(0,0,0,.35); }
 .pf-tip-time { color: var(--text-2); margin-bottom: 2px; }
+
+/* Keep every card's CPU/RAM/VRAM strip on the same line: reserve at least
+   3 GPU rows, or the tallest machine's GPU count in that group. Metrics
+   are pinned to the bottom, so cards with fewer GPUs get clean space. */
+.machine-status-card { display: flex; flex-direction: column; }
+.gpu-area {
+  min-height: var(--gpu-area-h, 0);
+  flex: 0 0 auto;
+  padding: 4px 0;
+}
+.gpu-area .gpu-table { margin: 0; }
+.machine-status-card .card-metrics {
+  margin-top: auto;
+  padding-top: var(--s-2);
+}

@@ -1037,7 +1037,8 @@ function statCardHTML(m) {
         </div>
       </div>
       <div class="card-sub">${cardSub}</div>
-      ${gpus.length ? `
+      <div class="gpu-area">
+        ${gpus.length ? `
         <table class="gpu-table">
           <thead><tr><th class="gpu-idx">Idx</th><th>GPU</th><th>Util</th><th>VRAM</th><th>Temp</th></tr></thead>
           <tbody>
@@ -1051,6 +1052,7 @@ function statCardHTML(m) {
               </tr>`).join("")}
           </tbody>
         </table>` : `<div class="no-gpus">no GPUs</div>`}
+      </div>
       <div class="card-metrics">
         <div class="card-metric">
           <div class="card-metric-label"><i class="fa-solid fa-gauge-high"></i> CPU</div>
@@ -1489,6 +1491,21 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("#machine-detail-modal")?.classList.contains("hidden")) closeMachineDetail();
 });
 
+/* Reserve the same GPU-area height across a group: at least 3 rows, or
+   the tallest machine's GPU count. Metrics then line up across all cards. */
+function applyGpuAreaHeight(grid) {
+  if (!grid) return;
+  const cards = [...grid.querySelectorAll(".machine-status-card")];
+  if (!cards.length) return;
+  const counts = cards.map(c =>
+    c.querySelectorAll(".gpu-table tbody tr").length);
+  const maxRows = Math.max(3, ...counts);
+  const table = grid.querySelector(".gpu-table");
+  const rowH = table?.tBodies?.[0]?.rows?.[0]?.offsetHeight || 24;
+  const headH = table?.tHead?.offsetHeight || (table ? 24 : 0);
+  grid.style.setProperty("--gpu-area-h", `${headH + rowH * maxRows}px`);
+}
+
 function renderGroupedStats(machines, groups) {
   const byName = Object.fromEntries(machines.map(m => [m.name, m]));
   const claimed = new Set();
@@ -1504,6 +1521,7 @@ function renderGroupedStats(machines, groups) {
     const grid = document.createElement("div");
     grid.className = "grid group-members";
     grid.innerHTML = members.map(statCardHTML).join("");
+    applyGpuAreaHeight(grid);
     archBody.appendChild(grid);
     // append the online/sub line under the header
     const subEl = document.createElement("div");
@@ -1519,6 +1537,7 @@ function renderGroupedStats(machines, groups) {
     const grid = document.createElement("div");
     grid.className = "grid group-members";
     grid.innerHTML = rest.map(statCardHTML).join("");
+    applyGpuAreaHeight(grid);
     archBody.appendChild(grid);
     const subEl = document.createElement("div");
     subEl.className = "group-card-sub";
@@ -1626,6 +1645,8 @@ function _upsertMachineCard(m) {
     }
   }
   old.replaceWith(fresh);
+  const groupGrid = fresh.closest(".grid.group-members");
+  if (groupGrid) requestAnimationFrame(() => applyGpuAreaHeight(groupGrid));
   // next frame: glide to the new values (transition triggers on change)
   requestAnimationFrame(() => requestAnimationFrame(() => {
     const vals = cardBarValues(m);
