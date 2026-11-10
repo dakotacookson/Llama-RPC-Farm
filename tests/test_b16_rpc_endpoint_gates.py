@@ -18,7 +18,10 @@ import pytest
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-import app as app_module  # noqa: E402
+import app as app_module
+import engine_registry
+import rpc_manager  # noqa: E402
+import settings_store
 import config_loader  # noqa: E402
 
 
@@ -31,7 +34,7 @@ def settings_file(tmp_path, monkeypatch):
     import engine_registry
     eng = tmp_path / "settings.yaml"
     eng.write_text("")
-    monkeypatch.setattr(app_module, "SETTINGS_FILE", str(eng))
+    monkeypatch.setattr(settings_store, "SETTINGS_FILE", str(eng))
     monkeypatch.setattr(engine_registry, "SETTINGS_FILE", str(eng))
 
     machines = tmp_path / "machines.yaml"
@@ -86,7 +89,7 @@ class _LcppEngine:
 
 
 def _engine(engine_obj, monkeypatch):
-    monkeypatch.setattr(app_module.engine_registry, "get_engine",
+    monkeypatch.setattr(engine_registry, "get_engine",
                         lambda s=None: engine_obj)
 
 
@@ -109,7 +112,7 @@ def test_stop_all_llama_cpp_unchanged(client, settings_file, monkeypatch):
     """llama.cpp mode: stops a peer on every machine — unchanged."""
     _engine(_LcppEngine(), monkeypatch)
     stopped = []
-    monkeypatch.setattr(app_module.rpc_manager, "stop_rpc",
+    monkeypatch.setattr(rpc_manager, "stop_rpc",
                         lambda name: stopped.append(name) or
                         {"machine": name, "killed": True, "port": None})
     r = client.post("/api/rpc/stop-all")
@@ -128,13 +131,13 @@ def test_rpc_map_llama_cpp_unchanged(client, settings_file, monkeypatch):
     monkeypatch.setattr(app_module.swap_manager, "get_host",
                         lambda: {"name": "aibox1"})
     map_calls = []
-    real_map = app_module.rpc_manager.compute_rpc_map
+    real_map = rpc_manager.compute_rpc_map
 
     def _spy(model_cfg, master, peers):
         map_calls.append(model_cfg.get("model_id"))
         return real_map(model_cfg, master, peers)
 
-    monkeypatch.setattr(app_module.rpc_manager, "compute_rpc_map", _spy)
+    monkeypatch.setattr(rpc_manager, "compute_rpc_map", _spy)
     _save_model()
     r = client.get("/api/rpc-map")
     assert r.status_code == 200, r.text
@@ -151,7 +154,7 @@ def test_model_test_llama_cpp_unchanged(client, settings_file, monkeypatch):
     500-on-error contract as before."""
     _engine(_LcppEngine(), monkeypatch)
     calls = []
-    monkeypatch.setattr(app_module.rpc_manager, "validate_model",
+    monkeypatch.setattr(rpc_manager, "validate_model",
                         lambda mid: calls.append(mid) or
                         {"model_id": mid, "ok": True, "issues": []})
     _save_model()

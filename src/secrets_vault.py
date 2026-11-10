@@ -226,6 +226,18 @@ def get_machine_password(machine):
     return (machine or {}).get("password") or ""
 
 
+def machine_password_set(machine):
+    """True when this machine has a readable password in the vault."""
+    mid = (machine or {}).get("id") or (machine or {}).get("name") or ""
+    enc = (os.environ.get(machine_env_key(mid)) or "").strip()
+    if not enc:
+        return False
+    try:
+        return bool(decrypt_value(enc))
+    except Exception:
+        return False
+
+
 # ---------------- peer-agent tokens ----------------
 def machine_agent_env_key(machine_id):
     return f"MACHINE_{_safe_id(machine_id)}_AGENT_TOKEN_ENC"
@@ -261,6 +273,25 @@ def get_machine_agent_token(machine):
         except Exception:
             return ""
     return ""
+
+
+def machine_agent_token_stored(machine):
+    """True only when this machine has its OWN readable vault token.
+
+    Unlike ``machine_agent_token_set``/``get_machine_agent_token`` this does
+    not fall back to the farm token. Callers that must not overwrite a
+    legacy per-machine token use this to distinguish "stored" from
+    "authenticatable via the farm token". A corrupt/unreadable entry counts
+    as not stored so a legacy value can replace it.
+    """
+    mid = (machine or {}).get("id") or (machine or {}).get("name") or ""
+    enc = (os.environ.get(machine_agent_env_key(mid)) or "").strip()
+    if not enc:
+        return False
+    try:
+        return bool(decrypt_value(enc))
+    except Exception:
+        return False
 
 
 def machine_agent_token_set(machine):

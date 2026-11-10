@@ -17,6 +17,7 @@ from fastapi import HTTPException
 
 import access
 import app as app_module
+import routes.swap as swap_routes
 import swap_captures as sc
 
 # the real failed request seen live: Turkish text sent as cp1254, not UTF-8
@@ -86,24 +87,24 @@ def _admin(monkeypatch):
 def test_endpoint_serves_kept_capture(monkeypatch):
     _admin(monkeypatch)
     sc.remember("bad1", sc.summarize(_cap(), {"capture_id": "bad1"}))
-    r = asyncio.run(app_module.swap_capture("bad1"))
+    r = asyncio.run(swap_routes.swap_capture("bad1"))
     assert r["source"] == "kept" and r["req_body_utf8"] is False
 
 
 def test_endpoint_live_and_expired(monkeypatch):
     _admin(monkeypatch)
-    monkeypatch.setattr(app_module.swap_manager, "status", lambda: {
+    monkeypatch.setattr(swap_routes.swap_manager, "status", lambda: {
         "running": True, "host": "h", "host_ip": "127.0.0.1", "port": 8080})
     live = {"live1": _cap('{"input": "ok"}'.encode())}
-    monkeypatch.setattr(app_module, "_swap_api_get",
+    monkeypatch.setattr(swap_routes, "_swap_api_get",
                         lambda st, path, timeout=5: live.get(
                             path.rsplit("/", 1)[1],
                             {"error": {"message": "capture not found"}}))
-    r = asyncio.run(app_module.swap_capture("live1"))
+    r = asyncio.run(swap_routes.swap_capture("live1"))
     assert r["source"] == "live" and r["req_body_utf8"] is True
     assert r["req_headers"]["Authorization"] == "[redacted]"
     with pytest.raises(HTTPException) as e:
-        asyncio.run(app_module.swap_capture("expired"))
+        asyncio.run(swap_routes.swap_capture("expired"))
     assert e.value.status_code == 404
 
 
@@ -114,5 +115,5 @@ def test_endpoint_is_admin_only(monkeypatch):
                         lambda: {"name": "k", "models": {"m"}, "admin": False})
     sc.remember("bad1", sc.summarize(_cap(), {"capture_id": "bad1"}))
     with pytest.raises(HTTPException) as e:
-        asyncio.run(app_module.swap_capture("bad1"))
+        asyncio.run(swap_routes.swap_capture("bad1"))
     assert e.value.status_code == 403

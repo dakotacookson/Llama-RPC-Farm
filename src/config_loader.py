@@ -3,8 +3,10 @@
 All configs live in ./config next to the app. Nothing outside this
 folder is ever written to.
 """
+import json
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import yaml
@@ -12,30 +14,47 @@ import yaml
 import path_resolver
 from runtime_paths import data_dir
 import gguf_inspect
+from secret_fields import strip_secret_keys
 
 # Cache for MTP detection results keyed by resolved absolute path to avoid re-reading GGUF files
 _mtp_cache = {}
-# Cache for architecture detection
-_arch_cache = {}
-# Cache for TypeSafe decision-type detection (same pattern as _arch_cache)
-_decision_cache = {}
+# One GGUF header read yields both values (architecture + decision type).
+# Keyed by the config's store:// path; a network store has high per-read
+# latency, so this cache is what makes the model list fast after boot.
+_meta_cache = {}
+
+
+def _get_model_meta(gguf_path):
+    if not gguf_path or not gguf_path.lower().endswith('.gguf'):
+        return "unknown", ""
+    if gguf_path in _meta_cache:
+        return _meta_cache[gguf_path]
+    arch, dtype = "unknown", ""
+    try:
+        meta = gguf_inspect.metadata(path_resolver.resolve(gguf_path))
+        arch = str(meta.get("general.architecture", "") or "").strip().lower() \
+            or "unknown"
+        if arch != "unknown":
+            dtype = str(meta.get(f"{arch}.decision.type", "") or "") \
+                .strip().lower()
+    except Exception:
+        pass
+    _meta_cache[gguf_path] = (arch, dtype)
+    return arch, dtype
+
+
+def _bulk_model_meta(paths):
+    """Warm the GGUF metadata cache for many models concurrently."""
+    unique = [p for p in dict.fromkeys(paths)
+              if p and p.lower().endswith('.gguf')]
+    if not unique:
+        return
+    with ThreadPoolExecutor(max_workers=min(16, len(unique))) as pool:
+        list(pool.map(_get_model_meta, unique))
 
 
 def _get_model_architecture(gguf_path):
-    """Return the model architecture from GGUF metadata."""
-    if not gguf_path:
-        return "unknown"
-    if not gguf_path.lower().endswith('.gguf'):
-        return "unknown"
-    if gguf_path in _arch_cache:
-        return _arch_cache[gguf_path]
-    try:
-        resolved = path_resolver.resolve(gguf_path)
-        result = gguf_inspect.get_architecture(resolved)
-    except Exception:
-        result = "unknown"
-    _arch_cache[gguf_path] = result
-    return result
+    return _get_model_meta(gguf_path)[0]
 
 
 def _get_decision_type(gguf_path):
@@ -43,23 +62,12 @@ def _get_decision_type(gguf_path):
     <arch>.decision.type serve only /v1/systemone (no text generation),
     so the editor/safe-defaults treat them like a distinct model class
     (same shape as embeddings/ASR, not chat)."""
-    if not gguf_path:
-        return ""
-    if not gguf_path.lower().endswith('.gguf'):
-        return ""
-    if gguf_path in _decision_cache:
-        return _decision_cache[gguf_path]
-    try:
-        resolved = path_resolver.resolve(gguf_path)
-        result = gguf_inspect.get_decision_type(resolved)
-    except Exception:
-        result = ""
-    _decision_cache[gguf_path] = result
-    return result
+    return _get_model_meta(gguf_path)[1]
 
 BASE_DIR = data_dir()
 CONFIG_DIR = os.path.join(BASE_DIR, "config")
 MODELS_DIR = os.path.join(CONFIG_DIR, "models")
+FLOW_LAYOUT_FILE = os.path.join(CONFIG_DIR, "flow_layout.json")
 
 # ---------------- engine selection (settings.yaml) -------------------------
 # Schema owned by src/engine_registry.py (load_settings / get_engine);
@@ -114,20 +122,33 @@ class _YamlCollection:
         self.path = path
         self.key = key
         self.defaults = dict(defaults)
+        self._cache = None
         os.makedirs(os.path.dirname(path), exist_ok=True)
 
     def _load(self):
-        if not os.path.exists(self.path):
+        try:
+            st = os.stat(self.path)
+        except OSError:
             return []
+        key = (self.path, st.st_mtime_ns, st.st_size)
+        if self._cache and self._cache[0] == key:
+            return self._cache[1]
         with open(self.path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
-        return data.get(self.key) or []
+        items = data.get(self.key) or []
+        self._cache = (key, items)
+        return items
 
     def _save(self, items):
         with open(self.path, "w", encoding="utf-8") as f:
             yaml.safe_dump(
                 {self.key: items}, f, default_flow_style=False, sort_keys=False
             )
+        try:
+            st = os.stat(self.path)
+            self._cache = ((self.path, st.st_mtime_ns, st.st_size), items)
+        except OSError:
+            self._cache = None
 
     def all(self):
         return self._load()
@@ -253,44 +274,76 @@ machines = _YamlCollection(
 )
 
 
-def _inject_machine_secret(m):
-    """In-memory only: resolve the legacy vault password field.
+_MACHINE_DERIVED_FIELDS = ("password_set", "agent_token_set")
 
-    Kept for config/API compatibility; runtime transport is agent-only, so
-    nothing consumes this as a shell transport. The YAML NEVER holds the secret
-    after migration (it stays ""). Nothing here writes to disk.
+
+def _read_safe_machine(m):
+    """Return a machine record safe to hand to callers: no secret fields.
+
+    The vault is the only secret store. A record in memory must never carry
+    a plaintext password or token, so reads strip every secret-named field.
+    Response-only flags (``password_set``/``agent_token_set``) are also
+    dropped: they are recomputed from the vault at the API boundary.
     """
-    try:
-        import secrets_vault as _vault
-        m = dict(m)
-        if not m.get("password"):
-            pw = _vault.get_machine_password(m)
-            if pw:
-                m["password"] = pw
-        m["password_set"] = bool((m.get("password") or "").strip())
-        return m
-    except Exception:
-        m = dict(m)
-        m["password_set"] = bool((m.get("password") or "").strip())
-        return m
+    m = strip_secret_keys(dict(m))
+    for key in _MACHINE_DERIVED_FIELDS:
+        m.pop(key, None)
+    return m
 
 
 def _strip_machine_secret(item):
-    """Split a machine payload: vault the password, return YAML-safe item."""
+    """Write-boundary scrub: vault secrets, then return a YAML-safe copy.
+
+    Called for every item on save, so it must be idempotent: a password that
+    already matches the vault is not re-encrypted (that used to rewrite
+    .env once per machine on every save). A legacy/transient token is
+    vaulted when this machine has no per-machine entry yet, then dropped.
+    If the vault is unavailable the secret is kept in place rather than
+    silently lost.
+    """
     item = dict(item)
-    # An in-memory token must never reach machines.yaml (vault only).
-    item.pop("_agent_token", None)
-    pw = item.pop("password", "")
     mid = item.get("id") or item.get("name") or ""
-    if pw and not str(pw).startswith("env:"):
-        try:
-            import secrets_vault as _vault
-            _vault.set_machine_password(mid, pw)
-        except Exception:
-            item["password"] = pw  # vault unavailable: keep legacy behavior
-            return item
-    item["password"] = ""
-    return item
+    try:
+        import secrets_vault as _vault
+    except Exception:
+        _vault = None
+
+    kept = {}
+    for key in ("_agent_token", "agent_token"):
+        token = str(item.pop(key, "") or "").strip()
+        if not token:
+            continue
+        if _vault is not None and mid:
+            try:
+                if _vault.machine_agent_token_stored(item):
+                    continue
+                _vault.set_machine_agent_token(mid, token)
+                continue
+            except Exception:
+                pass
+        kept[key] = token
+
+    password = str(item.pop("password", "") or "")
+    if password and not password.startswith("env:"):
+        vaulted = False
+        if _vault is not None and mid:
+            try:
+                if _vault.get_machine_password({"id": mid}) == password:
+                    vaulted = True
+                else:
+                    _vault.set_machine_password(mid, password)
+                    vaulted = True
+            except Exception:
+                pass
+        if not vaulted:
+            kept["password"] = password
+
+    safe = strip_secret_keys(item)
+    for key in _MACHINE_DERIVED_FIELDS:
+        safe.pop(key, None)
+    safe["password"] = kept.pop("password", "")
+    safe.update(kept)
+    return safe
 
 
 _orig_machines_all = machines.all
@@ -298,38 +351,68 @@ _orig_machines_get = machines.get
 _orig_machines_require = machines.require
 _orig_machines_add = machines.add
 _orig_machines_update = machines.update
+_orig_machines_save = machines._save
+
+
+def _machines_save(items):
+    """The single machines.yaml write boundary.
+
+    Every add/update/delete funnels through here, so a password or token
+    can never be written back as plaintext. Legacy values are vaulted by
+    ``_strip_machine_secret`` before the YAML is written.
+    """
+    _orig_machines_save([_strip_machine_secret(item) for item in items])
 
 
 def _machines_all():
-    return [_inject_machine_secret(m) for m in _orig_machines_all()]
+    return [_read_safe_machine(m) for m in _orig_machines_all()]
 
 
 def _machines_get(name):
     m = _orig_machines_get(name)
-    return _inject_machine_secret(m) if m else None
+    return _read_safe_machine(m) if m else None
 
 
 def _machines_require(name):
-    return _inject_machine_secret(_orig_machines_require(name))
+    return _read_safe_machine(_orig_machines_require(name))
 
 
 def _machines_add(item):
-    return _inject_machine_secret(_orig_machines_add(_strip_machine_secret(item)))
+    # The save boundary vaults any password and drops secret fields, so this
+    # is just the secret-free view of the stored record.
+    return _read_safe_machine(_orig_machines_add(item))
 
 
 def _machines_update(name, updates):
     updates = dict(updates)
-    if "password" in updates:
-        pw = updates.pop("password")
-        # non-empty = rotate secret; empty/missing = keep existing vault value
-        if pw:
-            try:
-                import secrets_vault as _vault
-                target = _orig_machines_get(name) or {}
-                _vault.set_machine_password(target.get("id") or name, pw)
-            except Exception:
-                updates["password"] = pw
-    return _inject_machine_secret(_orig_machines_update(name, updates))
+    # Empty/missing password means "keep the existing vault value"; a
+    # non-empty one is vaulted by the save boundary.
+    if not str(updates.get("password") or "").strip():
+        updates.pop("password", None)
+    return _read_safe_machine(_orig_machines_update(name, updates))
+
+
+def migrate_machine_secrets():
+    """Force the write boundary when secrets are still at rest in YAML.
+
+    Historical builds could persist a plaintext ``_agent_token`` (or a
+    hand-edited ``agent_token``/``password``). A save vaults and strips
+    them; this hook simply triggers that once at startup instead of waiting
+    for the next machine edit. Idempotent and best-effort.
+    """
+    raw = _orig_machines_all()
+
+    def has_secret(item):
+        if str(item.get("password") or "").strip():
+            return True
+        return any(str(item.get(key) or "").strip()
+                   for key in ("_agent_token", "agent_token"))
+
+    if any(has_secret(item) for item in raw):
+        try:
+            machines._save(raw)
+        except Exception:
+            pass
 
 
 machines.all = _machines_all
@@ -337,6 +420,7 @@ machines.get = _machines_get
 machines.require = _machines_require
 machines.add = _machines_add
 machines.update = _machines_update
+machines._save = _machines_save
 
 
 # DEC-03 (AUDIT-T6 §1.6): per-engine swap-config override keys for machine
@@ -442,29 +526,110 @@ def _is_mtp_draft(gguf_path):
     return result
 
 
-def list_models():
+def _rename_model_machine_refs(value, old, new):
+    """Rewrite machine references inside one model config.
+
+    Targeted keys only (servers / device_order / expose): a model id or
+    display name that happens to equal a machine name must never change.
+    """
+    changed = False
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if key == "servers" and isinstance(item, list):
+                nv = [new if str(x) == old else x for x in item]
+                changed = changed or nv != item
+                out[key] = nv
+            elif key == "device_order" and isinstance(item, str):
+                token = f"{old}-"
+                nv = item.replace(token, f"{new}-") if token in item else item
+                changed = changed or nv != item
+                out[key] = nv
+            elif key == "expose" and isinstance(item, dict):
+                nv = {}
+                for mk, mv in item.items():
+                    nk = new if str(mk) == old else mk
+                    changed = changed or nk != mk
+                    nv[nk] = mv
+                out[key] = nv
+            else:
+                nv, ch = _rename_model_machine_refs(item, old, new)
+                changed = changed or ch
+                out[key] = nv
+        return out, changed
+    if isinstance(value, list):
+        out = []
+        for item in value:
+            nv, ch = _rename_model_machine_refs(item, old, new)
+            changed = changed or ch
+            out.append(nv)
+        return out, changed
+    return value, False
+
+
+def rename_machine_references(old, new):
+    """Cascade a machine rename into model configs, groups, and flow layout.
+
+    Machine records are keyed by name; models/groups/layout reference that
+    name. Without this, a rename silently orphans every deployment on the
+    machine (swap generation skips them). Returns what changed.
+    """
+    old = str(old or "").strip()
+    new = str(new or "").strip()
+    if not old or not new or old == new:
+        return {}
+    result = {"models": [], "groups": 0, "flow_layout": 0}
+
     os.makedirs(MODELS_DIR, exist_ok=True)
-    # First pass: collect all target base_paths (store:// strings) from model configs and variants
-    target_base_paths = set()
     for fname in sorted(os.listdir(MODELS_DIR)):
-        if not fname.endswith(".yaml"):
+        if not fname.endswith(".yaml") or "__tune_tmp" in fname                 or "__ab_single" in fname:
             continue
-        if "__tune_tmp" in fname or "__ab_single" in fname:
-            continue
+        path = os.path.join(MODELS_DIR, fname)
         try:
-            with open(os.path.join(MODELS_DIR, fname), "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
         except yaml.YAMLError:
             continue
-        base_path = data.get("base_path")
-        if base_path:
-            target_base_paths.add(base_path)
-        for variant in data.get("variants", []):
-            v_base_path = variant.get("base_path")
-            if v_base_path:
-                target_base_paths.add(v_base_path)
-    # Second pass: build the model list
-    models = []
+        updated, changed = _rename_model_machine_refs(data, old, new)
+        if not changed:
+            continue
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            yaml.safe_dump(updated, f, default_flow_style=False,
+                           sort_keys=False)
+        os.replace(tmp, path)
+        result["models"].append(fname[:-5])
+
+    items = groups.all()
+    gchanged = False
+    for g in items:
+        machines = g.get("machines")
+        if isinstance(machines, list) and old in machines:
+            g["machines"] = [new if str(m) == old else m for m in machines]
+            gchanged = True
+    if gchanged:
+        groups._save(items)
+        result["groups"] = 1
+
+    if os.path.exists(FLOW_LAYOUT_FILE):
+        try:
+            with open(FLOW_LAYOUT_FILE, "r", encoding="utf-8") as f:
+                layout = json.load(f) or {}
+            key = f"machine:{old}"
+            nkey = f"machine:{new}"
+            if key in layout and nkey not in layout:
+                layout[nkey] = layout.pop(key)
+                with open(FLOW_LAYOUT_FILE, "w", encoding="utf-8") as f:
+                    json.dump(layout, f, indent=2)
+                result["flow_layout"] = 1
+        except Exception:
+            pass
+    return result
+
+
+def list_models():
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    loaded = []
     for fname in sorted(os.listdir(MODELS_DIR)):
         if not fname.endswith(".yaml"):
             continue
@@ -475,29 +640,41 @@ def list_models():
                 data = yaml.safe_load(f) or {}
         except yaml.YAMLError:
             continue
-        # Private-model gate (access.py): `private: true` configs vanish
-        # for untrusted viewers — checked before anything else so no
-        # trace (arch, decision_type, id) leaks into the listing.
+        loaded.append((fname, data))
+
+    # MTP draft detection needs the FULL config set (before visibility
+    # filtering): only a draft referenced as some model's target may stay.
+    target_base_paths = set()
+    for _fname, data in loaded:
+        base_path = data.get("base_path")
+        if base_path:
+            target_base_paths.add(base_path)
+        for variant in data.get("variants") or []:
+            if isinstance(variant, dict) and variant.get("base_path"):
+                target_base_paths.add(variant["base_path"])
+
+    candidates = []
+    for fname, data in loaded:
         if not _is_private_visible(data):
             continue
         data["_file"] = fname
         if "variants" not in data or data["variants"] is None:
             data["variants"] = []
         base_path = data.get("base_path")
-        # Skip if the base_path is a .gguf file and the basename contains "mtp" or "MTP" and it is not a target
         if base_path and base_path.lower().endswith('.gguf'):
-            # Extract the filename (the last component of the path)
-            # For store://llm-models/file.gguf, we want 'file.gguf'
-            filename = base_path.split('/')[-1]
-            if 'mtp' in filename.lower():
-                # Check if this base_path is in the target_base_paths
-                if base_path not in target_base_paths:
-                    # Skip this model config because it is an MTP draft not used as a target
-                    continue
-        data["architecture"] = _get_model_architecture(base_path)
-        # TypeSafe decision models (laya/clef/...): serve /v1/systemone
-        # only — surfaces the class next to the architecture everywhere.
-        data["decision_type"] = _get_decision_type(base_path)
+            if ('mtp' in base_path.split('/')[-1].lower()
+                    and base_path not in target_base_paths):
+                continue
+        candidates.append(data)
+
+    # Header reads are the cold-start cost (network store): do them once,
+    # concurrently, instead of two serial reads per model.
+    _bulk_model_meta([d.get("base_path") for d in candidates])
+
+    models = []
+    for data in candidates:
+        data["architecture"] = _get_model_architecture(data.get("base_path"))
+        data["decision_type"] = _get_decision_type(data.get("base_path"))
         data["variants"] = _filtered_variants(data)
         models.append(data)
     return models

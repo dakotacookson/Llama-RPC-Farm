@@ -966,6 +966,47 @@ tr.row-selected td:first-child {
   font-size: 15px;
 }
 .loaded-model-banner .banner-icon { margin-right: 8px; }
+.loaded-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.loaded-head span { font-size: 13px; }
+.loaded-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  overflow: hidden;
+  position: relative;
+}
+.loaded-chip {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.25;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(158, 206, 106, 0.12);
+  border: 1px solid rgba(158, 206, 106, 0.28);
+  color: var(--ok);
+  max-width: min(420px, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.loaded-more {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ok);
+  background: transparent;
+  border: 1px solid rgba(158, 206, 106, 0.35);
+  border-radius: 999px;
+  padding: 2px 9px;
+  cursor: pointer;
+}
+.loaded-more:hover { background: rgba(158, 206, 106, 0.12); }
+.loaded-more[hidden] { display: none; }
 .loaded-model-banner.idle {
   color: var(--warn);
   background: var(--warn-dim);
@@ -1017,7 +1058,7 @@ tr.row-selected td:first-child {
   background: var(--bar-track, rgba(0,0,0,0.35));
   border-radius: var(--r-full);
   overflow: hidden;
-  /* stable track so fills can animate against it on every 1s poll */
+  /* stable track so fills can animate against it on every 2s poll */
   position: relative;
   isolation: isolate;
 }

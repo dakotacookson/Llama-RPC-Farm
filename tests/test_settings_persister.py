@@ -17,18 +17,19 @@ sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 import app as app_module  # noqa: E402
+import settings_store
 
 
 @pytest.fixture
 def settings_file(tmp_path, monkeypatch):
     """Redirect the app's SETTINGS_FILE into the pytest tmp dir."""
     path = tmp_path / "settings.yaml"
-    app_module.SETTINGS_FILE = str(path)
+    settings_store.SETTINGS_FILE = str(path)
     import access
     monkeypatch.setattr(access, "_settings_path", lambda: str(path))
     yield path
-    app_module.SETTINGS_FILE = os.path.join(
-        app_module.BASE_DIR, "config", "settings.yaml")
+    settings_store.SETTINGS_FILE = os.path.join(
+        settings_store.BASE_DIR, "config", "settings.yaml")
 
 
 @pytest.fixture
@@ -127,9 +128,9 @@ def test_persister_helper_round_trips_comments(tmp_path):
     one key, write — comments and key order are byte-stable."""
     p = tmp_path / "settings.yaml"
     _write_raw(p, SAMPLE_SETTINGS)
-    data = app_module._load_settings_yaml_preserving(str(p))
+    data = settings_store._load_settings_yaml_preserving(str(p))
     data["theme_mode"] = "dark"
-    app_module._dump_settings_yaml_preserving(data, str(p))
+    settings_store._dump_settings_yaml_preserving(data, str(p))
     text = _read_raw(p)
     assert "STARTUP ERROR" in text
     assert "#engine: llama_cpp" in text
@@ -139,15 +140,15 @@ def test_persister_helper_round_trips_comments(tmp_path):
     assert text.index("model_dir:") < text.index("llama_bin:") \
         < text.index("theme_family:")
     # idempotent: another round trip changes nothing
-    data2 = app_module._load_settings_yaml_preserving(str(p))
-    app_module._dump_settings_yaml_preserving(data2, str(p))
+    data2 = settings_store._load_settings_yaml_preserving(str(p))
+    settings_store._dump_settings_yaml_preserving(data2, str(p))
     assert _read_raw(p) == text
 
 
 def test_persister_helper_creates_file_when_missing(tmp_path):
     """First save with no settings file: writes a valid mapping."""
     p = tmp_path / "settings.yaml"
-    app_module._dump_settings_yaml_preserving({"engine": "llama_cpp"}, str(p))
+    settings_store._dump_settings_yaml_preserving({"engine": "llama_cpp"}, str(p))
     assert yaml.safe_load(_read_raw(p))["engine"] == "llama_cpp"
 
 
@@ -166,9 +167,9 @@ def test_persister_helper_falls_back_without_ruamel(tmp_path, monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
     p = tmp_path / "settings.yaml"
     _write_raw(p, SAMPLE_SETTINGS)
-    data = app_module._load_settings_yaml_preserving(str(p))
+    data = settings_store._load_settings_yaml_preserving(str(p))
     data["theme_family"] = "steel"
-    app_module._dump_settings_yaml_preserving(data, str(p))
+    settings_store._dump_settings_yaml_preserving(data, str(p))
     on_disk = yaml.safe_load(_read_raw(p))
     assert on_disk["theme_family"] == "steel"
     assert on_disk["legacy_unknown_key"] == "keep-me"
@@ -177,7 +178,7 @@ def test_persister_helper_falls_back_without_ruamel(tmp_path, monkeypatch):
 def test_ruamel_is_a_declared_requirement():
     """requirements.txt must declare ruamel.yaml — the comment-preserving
     persister is not optional on a real install."""
-    req = os.path.join(app_module.BASE_DIR, "requirements.txt")
+    req = os.path.join(settings_store.BASE_DIR, "requirements.txt")
     with open(req, "r", encoding="utf-8") as f:
         text = f.read()
     assert "ruamel.yaml" in text

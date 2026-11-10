@@ -115,9 +115,15 @@ Per-machine readiness checklist (peer agent, `llama-server`,
 `ggml-rpc-server`, llama-swap on the swap host) plus daemon state.
 Exits nonzero if anything is missing or the daemon is down.
 
+A failing readiness probe does **not** abort the command: the readiness
+error is reported and the daemon section is still printed. With `--json`,
+the payload includes `readiness_error` (empty string when the probe
+succeeded).
+
 ```bash
 ./farmctl doctor
 ./farmctl --json doctor | jq '.readiness.machines'
+./farmctl --json doctor | jq '.readiness_error'
 ```
 
 APIs: `/api/readiness`, `/api/swap/status`, `/api/machines`.

@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.join(
 import pytest
 
 import app as app_module
+import routes.scanning as scanning_routes
 import stats_history
 
 
@@ -71,7 +72,7 @@ def test_history_endpoint(monkeypatch):
                                  {"name": "laptop", "role": "peer"}])
     stats_history.record("laptop", _stats(3))
     stats_history.record("laptop", _stats(4))
-    r = asyncio.run(app_module.get_stats_history(minutes=15, points=400))
+    r = asyncio.run(scanning_routes.get_stats_history(minutes=15, points=400))
     assert r["enabled"] == (stats_history.INTERVAL > 0)
     names = [m["name"] for m in r["machines"]]
     assert names == ["master", "laptop"]          # config order, even without samples
@@ -94,10 +95,10 @@ def test_interval_endpoint_is_admin_only(monkeypatch):
     monkeypatch.setattr(stats_history, "INTERVAL", 10)
     monkeypatch.setattr(access, "is_admin", lambda _=None: False)
     with pytest.raises(HTTPException) as e:
-        asyncio.run(app_module.set_stats_history_interval({"seconds": 5}))
+        asyncio.run(scanning_routes.set_stats_history_interval({"seconds": 5}))
     assert e.value.status_code == 403
     monkeypatch.setattr(access, "is_admin", lambda _=None: True)
-    assert asyncio.run(app_module.set_stats_history_interval({"seconds": 5})) == {"interval": 5}
+    assert asyncio.run(scanning_routes.set_stats_history_interval({"seconds": 5})) == {"interval": 5}
     with pytest.raises(HTTPException) as e:
-        asyncio.run(app_module.set_stats_history_interval({"seconds": "x"}))
+        asyncio.run(scanning_routes.set_stats_history_interval({"seconds": "x"}))
     assert e.value.status_code == 400

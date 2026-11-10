@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 import app as app_module  # noqa: E402
+import settings_store
 import engine_registry  # noqa: E402
 from engine_registry import LlamaCppAdapter  # noqa: E402
 
@@ -87,7 +88,7 @@ def settings_file(tmp_path, monkeypatch):
     import types
     eng = tmp_path / "settings.yaml"
     eng.write_text("")
-    monkeypatch.setattr(app_module, "SETTINGS_FILE", str(eng))
+    monkeypatch.setattr(settings_store, "SETTINGS_FILE", str(eng))
     monkeypatch.setattr(engine_registry, "SETTINGS_FILE", str(eng))
     import access
     monkeypatch.setattr(access, "_settings_path", lambda: str(eng))
@@ -128,7 +129,7 @@ def test_endpoints_dispatch_through_adapter(client, monkeypatch):
             seen.append("aud")
             return [{"model_id": "a1"}]
 
-    monkeypatch.setattr(app_module.engine_registry, "get_engine",
+    monkeypatch.setattr(engine_registry, "get_engine",
                         lambda s=None: _Engine())
     for url, tag in [("/api/embeddings/models", "e"),
                      ("/api/vision/models", "v"),
@@ -163,7 +164,7 @@ def test_settings_endpoint_exposes_hidden_tabs(client, monkeypatch):
         def validate_hosts(self, machines):
             return []
 
-    monkeypatch.setattr(app_module.engine_registry, "get_engine",
+    monkeypatch.setattr(engine_registry, "get_engine",
                         lambda s=None: _Engine())
     r = client.get("/api/settings")
     assert r.status_code == 200

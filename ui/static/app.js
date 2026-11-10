@@ -339,7 +339,7 @@ document.querySelectorAll("nav button").forEach((btn) => {
         $("#scan-path").value = s.model_dir || "store://llm-models";
         const lbl = $("#scan-path-label");
         if (lbl) lbl.textContent = `scanning ${s.model_dir || "store://llm-models"}`;
-        if (scanDirty || !$("#scan-results").querySelector(".scan-model")) runScan();
+        if (scanDirty || !$("#scan-results").querySelector(".scan-model")) runScan(scanDirty);
         scanDirty = false;
       });
       startScanRefresh();
@@ -1214,7 +1214,7 @@ async function refreshLiveMachineState() {
     _liveRefreshBusy = false;
   }
 }
-setInterval(refreshLiveMachineState, 3000);
+setInterval(refreshLiveMachineState, 5000);
 
 /* ---- machine detail modal (dashboard card click) ---- */
 // per-machine detail cache: render the last result INSTANTLY on reopen,
@@ -1740,36 +1740,104 @@ async function _loadStatusInner() {
   } catch (e) { /* stats already rendered; swap pill keeps last state */ }
   try {
     const l = await api("GET", "/api/swap/loaded");
-    const banner = $("#ov-loaded-model");
-    if (!banner) return;
-    if (l.loaded && l.loaded.length) {
-      banner.className = "loaded-model-banner";
-      banner.textContent = `▶ ${l.loaded.join(" + ")}`;
-    } else if (l.running) {
-      banner.className = "loaded-model-banner idle";
-      banner.innerHTML = `<i class="fa-solid fa-cube banner-icon"></i> no model loaded`;
-    } else {
-      banner.className = "loaded-model-banner down";
-      banner.innerHTML = `<i class="fa-solid fa-cube banner-icon"></i> llama-swap down`;
-    }
+    renderLoadedBanner($("#ov-loaded-model"), l);
   } catch (e) { /* banner keeps last state */ }
 }
 
-let statsTimer = null;
-let autoRefreshOn = () => localStorage.getItem("auto-refresh") !== "0";
-function paintRefreshChip() {
-  const chip = $("#auto-refresh-chip");
-  if (chip) {
-    chip.setAttribute("aria-pressed", String(autoRefreshOn()));
-    // spin the knob only while the poll loop actually runs
-    chip.classList.toggle("spinning", autoRefreshOn() && statsTimer !== null);
+/* Loaded-model banner: one chip per model, wrapped left->right then down.
+   5 rows max; anything below is folded into a measured "+N more" that
+   expands the banner in place (no internal scroll). */
+let _loadedBannerExpanded = false;
+let _loadedMeasure = null;
+let _loadedResizeHooked = false;
+
+function renderLoadedBanner(banner, l) {
+  if (!banner) return;
+  _loadedMeasure = null;
+  if (!(l && l.loaded && l.loaded.length)) {
+    _loadedBannerExpanded = false;
+    if (l && l.running) {
+      banner.className = "loaded-model-banner idle";
+      banner.innerHTML = '<i class="fa-solid fa-cube banner-icon"></i> no model loaded';
+    } else {
+      banner.className = "loaded-model-banner down";
+      banner.innerHTML = '<i class="fa-solid fa-cube banner-icon"></i> llama-swap down';
+    }
+    return;
   }
+
+  banner.className = "loaded-model-banner";
+  banner.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "loaded-head";
+  const status = document.createElement("span");
+  const n = l.loaded.length;
+  status.textContent = `▶ ${n} model${n === 1 ? "" : "s"} loaded`;
+  const more = document.createElement("button");
+  more.type = "button";
+  more.className = "loaded-more";
+  more.hidden = true;
+  head.append(status, more);
+
+  const chips = document.createElement("div");
+  chips.className = "loaded-chips";
+  for (const id of l.loaded) {
+    const chip = document.createElement("span");
+    chip.className = "loaded-chip";
+    chip.textContent = id;
+    chip.title = id;
+    chips.appendChild(chip);
+  }
+  banner.append(head, chips);
+
+  if (!_loadedResizeHooked) {
+    _loadedResizeHooked = true;
+    window.addEventListener("resize", () => { if (_loadedMeasure) _loadedMeasure(); });
+  }
+
+  const MAX_ROWS = 5;
+  const measure = () => {
+    if (!banner.isConnected || !chips.isConnected) return;
+    const chip = chips.firstElementChild;
+    if (!chip) return;
+    const cs = getComputedStyle(chips);
+    const gap = parseFloat(cs.rowGap || cs.gap || "6") || 6;
+    const rowH = chip.offsetHeight || 24;
+    const tops = [...new Set([...chips.children].map(c => c.offsetTop))]
+      .sort((a, b) => a - b);
+    const overflow = tops.length > MAX_ROWS;
+    more.hidden = !overflow;
+    if (!overflow) {
+      _loadedBannerExpanded = false;
+      chips.style.maxHeight = "none";
+      more.textContent = "";
+      more.setAttribute("aria-expanded", "false");
+      return;
+    }
+    if (_loadedBannerExpanded) {
+      chips.style.maxHeight = "none";
+      more.textContent = "Show less";
+      more.setAttribute("aria-expanded", "true");
+      return;
+    }
+    const cutoff = tops[MAX_ROWS];
+    const hidden = [...chips.children].filter(c => c.offsetTop >= cutoff).length;
+    more.textContent = `+${hidden} more`;
+    more.setAttribute("aria-expanded", "false");
+    chips.style.maxHeight = `${(rowH * MAX_ROWS) + (gap * (MAX_ROWS - 1))}px`;
+  };
+  _loadedMeasure = measure;
+  more.onclick = () => {
+    _loadedBannerExpanded = !_loadedBannerExpanded;
+    measure();
+  };
+  requestAnimationFrame(measure);
 }
+
+let statsTimer = null;
 function startAutoRefresh() {
   clearInterval(statsTimer);
-  statsTimer = null;
-  if (autoRefreshOn()) statsTimer = setInterval(loadStatus, 1000);
-  paintRefreshChip();
+  statsTimer = setInterval(loadStatus, 2000);
   loadStatus();
   loadReadiness();
 }
@@ -1787,12 +1855,7 @@ document.addEventListener("visibilitychange", () => {
 function stopAutoRefresh() {
   clearInterval(statsTimer);
   statsTimer = null;
-  paintRefreshChip();
 }
-on("#auto-refresh-chip", "click", () => {
-  localStorage.setItem("auto-refresh", autoRefreshOn() ? "0" : "1");
-  startAutoRefresh();
-});
 
 /* Two-click arm (no native confirm()/alert() — those get blocked or
    suppressed and leave dead buttons with zero feedback). First click
@@ -2548,42 +2611,44 @@ function modelIconHTML(modelId) {
   // placeholder until resolved
   return `<span class="model-avatar model-avatar-ph" data-model="${escHtml(modelId)}"><i class="fa-solid fa-cube"></i></span>`;
 }
+function applyModelIcon(key, url) {
+  if (!url) return;
+  const src = proxiedImgSrc(url);
+  if (!src) return;
+  document.querySelectorAll(`.model-avatar-ph[data-model="${CSS.escape(key)}"]`).forEach(el => {
+    el.outerHTML = `<img class="model-avatar" src="${escHtml(src)}" alt="" loading="lazy" onerror="this.outerHTML='<span class=&quot;model-avatar model-avatar-ph&quot; data-model=&quot;${escHtml(key)}&quot;><i class=&quot;fa-solid fa-cube&quot;></i></span>'">`;
+  });
+}
+async function resolveModelIconsBatch(items) {
+  const list = (items || []).filter(it => it && it.key);
+  if (!list.length) return {};
+  try {
+    const r = await api("POST", "/api/models/icons/resolve", {items: list});
+    const icons = r.icons || {};
+    for (const [k, v] of Object.entries(icons)) {
+      modelIconCache[k] = v || "";
+      applyModelIcon(k, v);
+    }
+    return icons;
+  } catch (_) { return {}; }
+}
 async function resolveModelIcon(modelId) {
   if (modelIconCache[modelId]) return;
-  try {
-    const r = await api("GET", `/api/models/${encodeURIComponent(modelId)}/icon`);
-    modelIconCache[modelId] = r.icon;
-    // swap any placeholder for this model (empty icon -> keep the cube)
-    if (r.icon) {
-      document.querySelectorAll(`.model-avatar-ph[data-model="${CSS.escape(modelId)}"]`).forEach(el => {
-        el.outerHTML = `<img class="model-avatar" src="${escHtml(proxiedImgSrc(r.icon))}" alt="" loading="lazy" onerror="this.outerHTML='<span class=&quot;model-avatar model-avatar-ph&quot; data-model=&quot;${escHtml(modelId)}&quot;><i class=&quot;fa-solid fa-cube&quot;></i></span>'">`;
-      });
-    }
-  } catch (_) { /* leave placeholder */ }
+  await resolveModelIconsBatch([{key: modelId}]);
 }
 
 // icon for a SCAN row (unconfigured GGUF file). Reuses the icon of any
-// configured model that points at the same file (instant), else resolves
-// via the ?path= endpoint (cached server-side under file:<basename> so
-// the whole quant/shard family shares one entry + one HF lookup).
+// configured model that points at the same file (instant); otherwise it
+// queues the key and the scan render flushes ONE batched resolve request.
+let scanIconPending = new Map();
 function scanModelIconHTML(basePath) {
   const fname = (basePath || "").split("/").pop();
-  // configured model with the same file? reuse its icon key
   const byFile = scanFileIconKey[fname];
   if (byFile && modelIconCache[byFile]) return modelIconHTML(byFile);
   const key = `file:${fname}`;
   if (modelIconCache[key] !== undefined) return modelIconHTML(key);
-  // unknown yet: placeholder now, resolve async then swap placeholders
-  modelIconCache[key] = ""; // mark in-progress so we don't re-request
-  api("GET", `/api/models/${encodeURIComponent("file:" + fname)}/icon?path=${encodeURIComponent(basePath)}`)
-    .then(r => {
-      modelIconCache[key] = r.icon || "";
-      if (r.icon) {
-        document.querySelectorAll(`.model-avatar-ph[data-model="${CSS.escape(key)}"]`).forEach(el => {
-          el.outerHTML = `<img class="model-avatar" src="${escHtml(proxiedImgSrc(r.icon))}" alt="" loading="lazy" onerror="this.outerHTML='<span class=&quot;model-avatar model-avatar-ph&quot; data-model=&quot;${escHtml(key)}&quot;><i class=&quot;fa-solid fa-cube&quot;></i></span>'">`;
-        });
-      }
-    }).catch(() => {});
+  modelIconCache[key] = ""; // mark pending so repeated renders don't queue it
+  scanIconPending.set(key, basePath || "");
   return modelIconHTML(key);
 }
 
@@ -4557,6 +4622,7 @@ async function loadModels() {
     groups.get(arch).push(m);
   }
   const sortedArchs = Array.from(groups.keys()).sort();
+  const pendingIcons = [];
   for (const arch of sortedArchs) {
     const archModels = groups.get(arch).sort((a, b) =>
       (a.model_id || "").toLowerCase().localeCompare((b.model_id || "").toLowerCase()));
@@ -4607,7 +4673,7 @@ async function loadModels() {
         } catch (err) { toast(`Delete files failed: ${err.message}`, "bad"); }
         btn.disabled = false; btn.textContent = "Delete files";
         await loadModels();
-        runScan();  // files changed → re-sync the Source list
+        runScan(true);  // files changed → re-sync the Source list
       };
       tr.querySelector('[data-act="pin"]').onclick = async (e) => {
         const btn = e.currentTarget;
@@ -4643,10 +4709,11 @@ async function loadModels() {
         if (selectedModelId) modelFormLoad(m, true);
       });
       archBody.appendChild(tr);
-      resolveModelIcon(m.model_id);
+      if (modelIconCache[m.model_id] === undefined) pendingIcons.push({key: m.model_id});
     }
     body.appendChild(sec);
   }
+  if (pendingIcons.length) resolveModelIconsBatch(pendingIcons);
 }
 
 /* keep-warm active */
@@ -5097,8 +5164,6 @@ function applyEngineHints(s) {
     startAll.textContent = "Start All";
     startAll.title = "Start RPC servers on every machine, then llama-swap";
   }
-  const eng = $("#set-engine");
-  if (eng) eng.value = engine;
   renderFlagPresets();
 }
 
@@ -5130,11 +5195,6 @@ function renderFlagPresets() {
   });
 }
 
-on("#set-engine", "change", () => {
-  // engine switch must re-gate the machine chips — re-render the group
-  // wizard list if it's on screen
-  if (document.querySelector("#g-machines-chip-list")) renderGroupMachines(readGroupMachines());
-});
 
 /* ---------------- on page load ---------------- */
 window.addEventListener("DOMContentLoaded", async () => {
@@ -5465,9 +5525,10 @@ async function recommendPlacement(){
 on("#mo-recommend", "click", recommendPlacement);
 
 
-async function runScan() {
+async function runScan(force = false) {
   if (runScan._running) return;  // interval overlap guard
   runScan._running = true;
+  scanIconPending.clear();
   try {
   if (!$("#scan-path").value.trim()) {
     const s = await getAppSettings();
@@ -5480,7 +5541,7 @@ async function runScan() {
   if (!box.querySelector(".scan-model") && !box.querySelector(".arch-section"))
     box.innerHTML = loadingSpinner("Scanning for models…");
   try {
-    const data = await api("GET", `/api/scan?path=${encodeURIComponent(path)}&recursive=${recursive}`);
+    const data = await api("GET", `/api/scan?path=${encodeURIComponent(path)}&recursive=${recursive}&refresh=${force ? 1 : 0}`);
     // configured-ness rides the scan payload now: the server derives it
     // from the FULL config set (not this viewer's view-filtered list),
     // so restricted users can't mistake another view's configured model
@@ -5571,7 +5632,7 @@ async function runScan() {
             r.errors && r.errors.length ? "bad" : "ok");
         } catch (err) { toast(`Delete failed: ${err.message}`, "bad"); }
         delBtn.disabled = false; delBtn.textContent = "Delete files";
-        runScan();
+        runScan(true);
       };
       actions.appendChild(delBtn);
       el.appendChild(actions);
@@ -5583,6 +5644,11 @@ async function runScan() {
       const p = document.createElement("p");
       p.innerHTML = `<small>Projectors (not models): ${data.projectors.map(x => x.name).join(", ")}</small>`;
       box.appendChild(p);
+    }
+    if (scanIconPending.size) {
+      const items = [...scanIconPending].map(([key, path]) => ({key, path}));
+      scanIconPending.clear();
+      resolveModelIconsBatch(items);
     }
     // drop a highlight if its file vanished since (deleted/downloaded over)
     if (selectedScanPath && !data.models.some(m => m.base_path === selectedScanPath))
@@ -5602,7 +5668,7 @@ function scanStepVisible() {
 }
 function startScanRefresh() {
   stopScanRefresh();
-  scanTimer = setInterval(() => { if (scanStepVisible()) runScan(); }, 10000);
+  scanTimer = setInterval(() => { if (scanStepVisible()) runScan(); }, 30000);
 }
 function stopScanRefresh() {
   clearInterval(scanTimer);
@@ -5610,7 +5676,7 @@ function stopScanRefresh() {
 }
 function noteScanDirty() {
   scanDirty = true;
-  if (scanStepVisible()) { scanDirty = false; runScan(); }
+  if (scanStepVisible()) { scanDirty = false; runScan(true); }
 }
 
 function swapPayload() {
@@ -7002,8 +7068,6 @@ on("#set-save", "click", async (e) => {
     // only send the token when the user typed one — empty keeps the saved one
     const tok = $("#set-hf-token")?.value.trim();
     if (tok) payload.hf_token = tok;
-    const engSel = $("#set-engine");
-    if (engSel?.value) payload.engine = engSel.value;
     const saved = await api("POST", "/api/settings", payload);
     // engine flip (T4-G7): wholesale refresh, not a merge. The POST
     // response lacks ui_manifest (only GET injects it), and every
@@ -7024,7 +7088,7 @@ on("#set-save", "click", async (e) => {
       loadModels();
       scanDirty = true;
       if (document.querySelector("#tab-models.active")) {
-        runScan();
+        runScan(true);
         scanDirty = false;
       }
       loadDownloads();
@@ -7107,36 +7171,6 @@ async function loadToolStatus() {
     panel.innerHTML = '<p class="status-bad">' + escHtml(err.message) + '</p>';
   }
 }
-
-/* keep the old element ids alive as no-ops: the buttons are hidden in the
-   template; any stray trigger is a no-op instead of a dead fetch. */
-["#install-llama-cpp", "#install-llama-cpp-all",
- "#install-llama-swap"].forEach(sel => {
-  on(sel, "click", () => {});
-});
-
-
-on("#install-llama-cpp", "click", async (e) => {
-  const btn = e.currentTarget;
-  btn.disabled = true; btn.textContent = "installing…";
-  const box = $("#set-status");
-  try {
-    const resp = await api("POST", "/api/install-llama-cpp", {});
-    btn.disabled = false; btn.textContent = "Installed";
-    if (resp.status === "success") {
-      $("#set-llama-bin").value = resp.llama_bin;
-      box.innerHTML = `<p class="status-ok">${resp.message}</p>`;
-      toast("llama.cpp installed", "ok");
-    } else {
-      box.innerHTML = `<p class="status-bad">${resp.message}</p>`;
-      toast(resp.message, "bad");
-    }
-  } catch (err) {
-    box.innerHTML = `<p class="status-bad">${escHtml(err.message)}</p>`;
-    toast(err.message, "bad");
-  }
-  btn.disabled = false; btn.textContent = "Install llama.cpp (this host)";
-});
 
 /* Farm-app version/update lives on the master machine row. */
 async function hydrateAppVersion(pill) {

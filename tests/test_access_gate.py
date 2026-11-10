@@ -15,6 +15,7 @@ import access
 import config_loader
 import engine_registry
 import app as app_module
+import routes.machines as machines_routes
 
 
 @pytest.fixture(autouse=True)
@@ -140,11 +141,11 @@ def test_groups_with_private_member_hidden_when_restricted(
     monkeypatch.setattr(config_loader.swap_groups, "path", str(sg))
     engine_registry.get_engine()  # warm (default llama_cpp)
     # open scope: both groups
-    out = app_module._engine_groups(config_loader.swap_groups)
+    out = machines_routes._engine_groups(config_loader.swap_groups)
     assert [g["name"] for g in out] == ["scar-group", "open-group"]
     # restricted: scar-group vanishes (member is private)
     access.set_restricted(True)
-    out = app_module._engine_groups(config_loader.swap_groups)
+    out = machines_routes._engine_groups(config_loader.swap_groups)
     assert [g["name"] for g in out] == ["open-group"]
     # variant labels ("base--variant") catch too
     access.set_restricted(False)
@@ -156,7 +157,7 @@ def test_groups_with_private_member_hidden_when_restricted(
         "  swap: true\n"
         "  engine: llama_cpp\n", encoding="utf-8")
     access.set_restricted(True)
-    out = app_module._engine_groups(config_loader.swap_groups)
+    out = machines_routes._engine_groups(config_loader.swap_groups)
     assert out == []
 
 
@@ -173,7 +174,7 @@ def test_group_with_private_and_open_members_hidden_when_restricted(
         "  engine: llama_cpp\n", encoding="utf-8")
     monkeypatch.setattr(config_loader.swap_groups, "path", str(sg))
     access.set_restricted(True)
-    out = app_module._engine_groups(config_loader.swap_groups)
+    out = machines_routes._engine_groups(config_loader.swap_groups)
     assert out == []
 
 

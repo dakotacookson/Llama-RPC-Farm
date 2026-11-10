@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 import app as app_module  # noqa: E402
+import settings_store
 import config_loader  # noqa: E402
 import engine_registry  # noqa: E402
 
@@ -29,7 +30,7 @@ import engine_registry  # noqa: E402
 def settings_file(tmp_path, monkeypatch):
     eng = tmp_path / "settings.yaml"
     eng.write_text("")  # empty -> default engine (llama_cpp)
-    monkeypatch.setattr(app_module, "SETTINGS_FILE", str(eng))
+    monkeypatch.setattr(settings_store, "SETTINGS_FILE", str(eng))
     monkeypatch.setattr(engine_registry, "SETTINGS_FILE", str(eng))
 
     machines = tmp_path / "machines.yaml"

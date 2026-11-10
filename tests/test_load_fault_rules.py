@@ -12,7 +12,7 @@ import sys
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-import app as app_module
+import routes.flow as flow_module
 
 
 BENIGN = [
@@ -41,12 +41,12 @@ FAULTS = {
 
 def test_benign_lines_are_not_load_faults():
     for line in BENIGN:
-        assert app_module._parse_load_fault(line) is None, line
+        assert flow_module._parse_load_fault(line) is None, line
 
 
 def test_real_projector_and_mtp_failures_are_classified():
     for line, code in FAULTS.items():
-        got = app_module._parse_load_fault(line)
+        got = flow_module._parse_load_fault(line)
         assert got is not None, line
         assert got[0] == code, (line, got)
 
@@ -60,7 +60,7 @@ def test_streamed_response_chatter_is_ignored():
         '[INFO] Request 127.0.0.1 "GET /v1/models HTTP/1.1" 200',
     ]
     for line in lines:
-        assert app_module._TRAFFIC_RE.search(line), line
+        assert flow_module._TRAFFIC_RE.search(line), line
 
 
 def test_model_ready_clears_the_load_window():
@@ -70,4 +70,4 @@ def test_model_ready_clears_the_load_window():
         "server is listening on 127.0.0.1:8080",
     ]
     for line in lines:
-        assert app_module._MODEL_READY_RE.search(line), line
+        assert flow_module._MODEL_READY_RE.search(line), line

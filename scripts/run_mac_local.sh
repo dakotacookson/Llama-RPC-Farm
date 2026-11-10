@@ -41,11 +41,24 @@ echo "Context:       $CTX_SIZE tokens"
 echo "GPU layers:    $GPU_LAYERS"
 echo "Press Ctrl-C to stop."
 
-exec "$LLAMA_SERVER" \
+SERVER_PID=""
+cleanup() {
+  if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+"$LLAMA_SERVER" \
   -m "$MODEL_PATH" \
   --ctx-size "$CTX_SIZE" \
   -ngl "$GPU_LAYERS" \
   --flash-attn on \
   --jinja \
   --host "$HOST" \
-  --port "$HTTP_PORT"
+  --port "$HTTP_PORT" &
+SERVER_PID=$!
+wait "$SERVER_PID"

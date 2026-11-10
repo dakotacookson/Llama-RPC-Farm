@@ -43,11 +43,18 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+
+from secret_fields import is_secret_key
 
 DEFAULT_URL = "http://127.0.0.1:8199"
 _ENV_URLS = ("FARMCTL_URL", "FARM_URL", "LLAMA_FARM_URL")
 _ENV_KEYS = ("FARMCTL_KEY", "FARM_API_KEY", "FARM_ACCESS_KEY")
-_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _opener():
+    """Fresh opener per request: no shared mutable opener across threads."""
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 class FarmError(RuntimeError):
@@ -103,7 +110,7 @@ class Client:
         req = urllib.request.Request(url, data=data, method=method,
                                      headers=headers)
         try:
-            with _OPENER.open(req, timeout=timeout or self.timeout) as resp:
+            with _opener().open(req, timeout=timeout or self.timeout) as resp:
                 return _decode(resp.read(8 * 1024 * 1024),
                                resp.headers.get("Content-Type", ""))
         except urllib.error.HTTPError as exc:
@@ -202,10 +209,17 @@ def _machine_conf_map(machines):
 # --------------------------------------------------------------------------
 
 def cmd_status(args, client):
-    machines = client.get("/api/machines")
-    stats = client.get("/api/stats", timeout=args.timeout)
-    swap = _safe_get(client, "/api/swap/status", timeout=15)
-    loaded = _safe_get(client, "/api/swap/loaded", timeout=15)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        f_machines = pool.submit(client.get, "/api/machines",
+                                 timeout=args.timeout)
+        f_stats = pool.submit(client.get, "/api/stats",
+                              timeout=args.timeout)
+        f_swap = pool.submit(_safe_get, client, "/api/swap/status", 15)
+        f_loaded = pool.submit(_safe_get, client, "/api/swap/loaded", 15)
+        machines = f_machines.result()
+        stats = f_stats.result()
+        swap = f_swap.result()
+        loaded = f_loaded.result()
     conf = _machine_conf_map(machines)
     stats_rows = (stats or {}).get("data") or []
     by_name = {s.get("name"): s for s in stats_rows if isinstance(s, dict)}
@@ -281,14 +295,20 @@ def cmd_status(args, client):
 
 
 def cmd_doctor(args, client):
-    readiness = client.get("/api/readiness", timeout=args.timeout)
-    swap = _safe_get(client, "/api/swap/status", timeout=15)
-    if isinstance(readiness, dict) and isinstance(readiness.get("error"), str):
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_readiness = pool.submit(_safe_get, client, "/api/readiness",
+                                  args.timeout)
+        f_swap = pool.submit(_safe_get, client, "/api/swap/status", 15)
+        readiness = f_readiness.result()
+        swap = f_swap.result()
+    readiness_error = ""
+    if isinstance(readiness, dict) and readiness.get("error"):
+        readiness_error = str(readiness["error"])
         readiness = {}
 
     if args.json:
         _print_json({"url": client.base, "readiness": readiness,
-                     "swap": swap})
+                     "readiness_error": readiness_error, "swap": swap})
         return 0 if (readiness.get("ready_all")
                      and isinstance(swap, dict) and swap.get("running")) else 1
 
@@ -297,7 +317,10 @@ def cmd_doctor(args, client):
     print()
     rows = (readiness or {}).get("machines") or {}
     if not rows:
-        print("FAIL  readiness endpoint returned no machines")
+        if readiness_error:
+            print(f"FAIL  readiness: {readiness_error}")
+        else:
+            print("FAIL  readiness endpoint returned no machines")
         issues += 1
     for name, row in rows.items():
         ready = bool(row.get("ready"))
@@ -423,6 +446,16 @@ def cmd_stop(args, client):
     return 0 if stopped else 1
 
 
+def _model_row(label, flags, servers, split, variant_count):
+    return [
+        label,
+        ",".join(servers or []) or "-",
+        flags.get("ctx-size", flags.get("c", "-")),
+        split or "auto",
+        variant_count,
+    ]
+
+
 def cmd_models(args, client):
     models = client.get("/api/models", timeout=args.timeout)
     if not isinstance(models, list):
@@ -438,29 +471,21 @@ def cmd_models(args, client):
     for m in models:
         mid = m.get("model_id") or m.get("name") or "?"
         flags = m.get("flags") or {}
-        ctx = flags.get("ctx-size", flags.get("c", "-"))
-        rows.append([
-            mid,
-            ",".join(m.get("servers") or []) or "-",
-            ctx,
-            m.get("tensor_split_mode") or "auto",
-            len(m.get("variants") or []),
-        ])
-        for var in m.get("variants") or []:
+        variants = m.get("variants") or []
+        rows.append(_model_row(
+            mid, flags, m.get("servers"), m.get("tensor_split_mode"),
+            len(variants)))
+        for var in variants:
             label = (var.get("label") or "").strip()
             if not label:
                 continue
             vflags = dict(flags)
             vflags.update(var.get("flags") or {})
-            vctx = vflags.get("ctx-size", vflags.get("c", "-"))
-            rows.append([
-                f"  {mid}--{label}",
-                ",".join(var.get("servers") or m.get("servers") or []) or "-",
-                vctx,
-                var.get("tensor_split_mode") or
-                m.get("tensor_split_mode") or "auto",
-                "-",
-            ])
+            rows.append(_model_row(
+                f"  {mid}--{label}", vflags,
+                var.get("servers") or m.get("servers"),
+                var.get("tensor_split_mode") or m.get("tensor_split_mode"),
+                "-"))
     _print_table(["MODEL", "SERVERS", "CTX", "SPLIT", "VARIANTS"], rows)
     return 0
 
@@ -480,21 +505,13 @@ def cmd_unload(args, client):
     return 1
 
 
-def _redact(value, parent_key=""):
-    """Drop secret-bearing fields before a snapshot leaves the machine."""
+def _redact(value):
+    """Drop secret-named fields before a snapshot leaves the machine."""
     if isinstance(value, dict):
-        out = {}
-        for key, item in value.items():
-            low = str(key).lower()
-            if low in ("password", "_agent_token", "agent_token", "secret",
-                       "api_key", "access_key", "token"):
-                continue
-            if low.endswith("_token") and not low.endswith("_token_set"):
-                continue
-            out[key] = _redact(item, str(key))
-        return out
+        return {key: _redact(item) for key, item in value.items()
+                if not is_secret_key(key)}
     if isinstance(value, list):
-        return [_redact(item, parent_key) for item in value]
+        return [_redact(item) for item in value]
     return value
 
 
@@ -512,14 +529,18 @@ def cmd_snapshot(args, client):
     ]
     if args.fast:
         sections = [s for s in sections if s[0] != "readiness"]
-    data = {}
-    errors = {}
-    for name, path in sections:
+
+    def fetch(section):
+        name, path = section
         try:
-            data[name] = _redact(client.get(path, timeout=args.timeout))
+            return name, _redact(client.get(path, timeout=args.timeout)), ""
         except FarmError as exc:
-            errors[name] = str(exc)
-            data[name] = {"error": str(exc)}
+            return name, {"error": str(exc)}, str(exc)
+
+    with ThreadPoolExecutor(max_workers=len(sections) or 1) as pool:
+        results = list(pool.map(fetch, sections))
+    data = {name: value for name, value, _ in results}
+    errors = {name: error for name, _, error in results if error}
     snapshot = {
         "farmctl_snapshot": 1,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -537,10 +558,8 @@ def cmd_snapshot(args, client):
     if parent:
         os.makedirs(parent, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.write(fd, (text + "\n").encode("utf-8"))
-    finally:
-        os.close(fd)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text + "\n")
     try:
         os.chmod(path, 0o600)
     except OSError:
@@ -560,9 +579,13 @@ def cmd_snapshot(args, client):
 # --------------------------------------------------------------------------
 
 def _common_parser():
+    # SUPPRESS keeps a flag accepted both before and after the subcommand
+    # without the subparser overwriting a value already set by the parent.
+    # Help text therefore must not interpolate %(default)s here: argparse
+    # drops the default from the formatting params when it is SUPPRESS.
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--url", default=argparse.SUPPRESS,
-                        help="farm app base URL (default: %(default)s)")
+                        help="farm app base URL (FARMCTL_URL/FARM_URL)")
     common.add_argument("--key", default=argparse.SUPPRESS,
                         help="access key (or FARMCTL_KEY)")
     common.add_argument("--json", action="store_true",
@@ -639,8 +662,6 @@ def build_parser():
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if getattr(args, "url", None) is None:
-        args.url = DEFAULT_URL
     client = Client(args.url, getattr(args, "key", ""),
                     getattr(args, "timeout", 120.0))
     try:

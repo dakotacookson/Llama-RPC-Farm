@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 import app as app_module          # noqa: E402
+import settings_store
 import access                     # noqa: E402
 import engine_registry            # noqa: E402
 import secrets_vault              # noqa: E402
@@ -24,7 +25,7 @@ import secrets_vault              # noqa: E402
 def fresh_install(tmp_path, monkeypatch):
     settings = tmp_path / "settings.yaml"
     settings.write_text("engine: llama_cpp\n", encoding="utf-8")
-    monkeypatch.setattr(app_module, "SETTINGS_FILE", str(settings))
+    monkeypatch.setattr(settings_store, "SETTINGS_FILE", str(settings))
     monkeypatch.setattr(engine_registry, "SETTINGS_FILE", str(settings))
     monkeypatch.setenv("FARM_SETTINGS_FILE", str(settings))
     monkeypatch.setattr(access, "_settings_path", lambda: str(settings))
