@@ -463,7 +463,7 @@ body {
 }
 
 /* ============================== sidebar (left nav) ============================== */
-:root { --sidebar-w: 242px; --sidebar-collapsed-w: 68px; }
+:root { --sidebar-w: 242px; }
 
 body {
   display: flex;
@@ -606,7 +606,7 @@ body {
 .sidebar-hint i { font-size: 11px; opacity: 0.8; }
 
 #sidebar-toggle {
-  display: inline-grid;
+  display: none;
   place-items: center;
   position: fixed;
   top: 14px;
@@ -623,8 +623,6 @@ body {
 }
 #sidebar-toggle:hover { background: var(--hover); color: var(--text); border-color: var(--border-strong); }
 #sidebar-toggle i { font-size: 12px; transition: transform 0.22s ease; }
-body.sidebar-collapsed #sidebar-toggle { left: calc(var(--sidebar-collapsed-w) - 18px); }
-body.sidebar-collapsed #sidebar-toggle i { transform: rotate(180deg); }
 
 main {
   flex: 1;
@@ -634,22 +632,6 @@ main {
   padding: var(--s-5) var(--s-6) var(--s-7);
   overflow-x: hidden;
 }
-
-/* collapsed (icon-only) — opt-in via body.sidebar-collapsed */
-body.sidebar-collapsed #sidebar { width: var(--sidebar-collapsed-w); min-width: var(--sidebar-collapsed-w); }
-body.sidebar-collapsed #sidebar .brand-text,
-body.sidebar-collapsed #sidebar nav button span,
-body.sidebar-collapsed .nav-label,
-body.sidebar-collapsed .sidebar-footer span { opacity: 0; pointer-events: none; width: 0; overflow: hidden; }
-body.sidebar-collapsed #sidebar nav button span { display: none; }
-body.sidebar-collapsed .nav-label { display: none; }
-body.sidebar-collapsed #sidebar nav { gap: 6px; }
-body.sidebar-collapsed .nav-sec { gap: 2px; }
-body.sidebar-collapsed #sidebar .brand-text { display: none; }
-body.sidebar-collapsed #sidebar nav button { justify-content: center; padding: 11px 0; gap: 0; }
-body.sidebar-collapsed .sidebar-brand { justify-content: center; padding-left: 0; padding-right: 0; }
-body.sidebar-collapsed .sidebar-hint { justify-content: center; }
-body.sidebar-collapsed .sidebar-hint span { display: none; }
 
 /* subtle fade for labels when transitioning */
 #sidebar .brand-text, #sidebar nav button span, .nav-label, .sidebar-footer span {
@@ -668,18 +650,11 @@ body.sidebar-collapsed .sidebar-hint span { display: none; }
     min-width: var(--sidebar-w);
   }
   body.sidebar-hidden #sidebar { transform: translateX(-100%); }
-  /* on mobile the handle sticks to viewport edge when hidden */
-  #sidebar-toggle { left: 12px; }
+  /* desktop has no collapse control; the mobile drawer needs one */
+  #sidebar-toggle { display: inline-grid; left: 12px; }
   body:not(.sidebar-hidden) #sidebar-toggle { left: calc(var(--sidebar-w) - 18px); }
   body.sidebar-hidden #sidebar-toggle i { transform: rotate(180deg); }
   body:not(.sidebar-hidden) #sidebar-toggle i { transform: rotate(0deg); }
-  /* ignore collapsed width on mobile */
-  body.sidebar-collapsed #sidebar { width: var(--sidebar-w); min-width: var(--sidebar-w); }
-  body.sidebar-collapsed #sidebar .brand-text,
-  body.sidebar-collapsed #sidebar nav button span,
-  body.sidebar-collapsed .sidebar-footer span { opacity: 1; pointer-events: auto; width: auto; display: flex; }
-  body.sidebar-collapsed #sidebar nav button { justify-content: flex-start; padding: 10px 12px; gap: 12px; }
-  body.sidebar-collapsed .sidebar-brand { justify-content: flex-start; padding: 18px 16px 16px; }
   main { padding-top: 56px; }
 }
 @media (max-width: 560px) {
@@ -1125,15 +1100,17 @@ tr.row-selected td:first-child {
   height: 1px;
   background: var(--border);
 }
-/* machines of one group sit in a horizontal row, scrolling if needed */
+/* machines of one group wrap into a responsive grid: more cards per row,
+   no horizontal scrolling. auto-fill (not auto-fit) keeps a partial last
+   row left-aligned instead of stretching a few cards across the width. */
 #status-grid .group-card .grid {
-  display: flex !important;
+  display: grid !important;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: var(--s-3);
-  overflow-x: auto;
   padding-bottom: var(--s-2);
+  overflow-x: visible;
 }
 #status-grid .group-card .grid .machine-status-card {
-  flex: 0 0 300px;
   margin-bottom: 0;
 }
 

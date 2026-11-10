@@ -1450,34 +1450,24 @@ technical | bugs, errors, login problems</textarea></label>
     if (!btn) return;
     const mq = window.matchMedia('(max-width: 880px)');
     const syncBtn = () => {
-      const collapsed = document.body.classList.contains('sidebar-collapsed');
       const hidden = document.body.classList.contains('sidebar-hidden');
-      const isMobile = mq.matches;
-      const expanded = isMobile ? !hidden : !collapsed;
-      btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-      btn.setAttribute('aria-label', isMobile ? (hidden ? 'Open navigation' : 'Close navigation') : (collapsed ? 'Expand sidebar' : 'Collapse sidebar'));
-      btn.title = isMobile ? (hidden ? 'Open' : 'Close') : (collapsed ? 'Expand' : 'Collapse');
+      btn.setAttribute('aria-expanded', mq.matches && !hidden ? 'true' : 'false');
+      btn.setAttribute('aria-label', hidden ? 'Open navigation' : 'Close navigation');
+      btn.title = hidden ? 'Open' : 'Close';
     };
     const applyRestore = () => {
-      if (mq.matches) {
-        document.body.classList.add('sidebar-hidden');
-        document.body.classList.remove('sidebar-collapsed');
-      } else {
-        const collapsed = localStorage.getItem('sidebar-collapsed') === '1';
-        document.body.classList.toggle('sidebar-collapsed', collapsed);
-        document.body.classList.remove('sidebar-hidden');
-      }
+      // Desktop: no collapse — the sidebar is always open.
+      document.body.classList.remove('sidebar-collapsed');
+      localStorage.removeItem('sidebar-collapsed');
+      if (mq.matches) document.body.classList.add('sidebar-hidden');
+      else document.body.classList.remove('sidebar-hidden');
       syncBtn();
     };
     applyRestore();
     mq.addEventListener('change', applyRestore);
     btn.addEventListener('click', () => {
-      if (mq.matches) {
-        document.body.classList.toggle('sidebar-hidden');
-      } else {
-        const collapsed = document.body.classList.toggle('sidebar-collapsed');
-        localStorage.setItem('sidebar-collapsed', collapsed ? '1' : '0');
-      }
+      if (!mq.matches) return;   // desktop has no collapse control
+      document.body.classList.toggle('sidebar-hidden');
       syncBtn();
     });
     // close drawer after picking a tab on mobile
