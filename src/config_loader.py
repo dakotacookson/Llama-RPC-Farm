@@ -278,6 +278,8 @@ def _inject_machine_secret(m):
 def _strip_machine_secret(item):
     """Split a machine payload: vault the password, return YAML-safe item."""
     item = dict(item)
+    # An in-memory token must never reach machines.yaml (vault only).
+    item.pop("_agent_token", None)
     pw = item.pop("password", "")
     mid = item.get("id") or item.get("name") or ""
     if pw and not str(pw).startswith("env:"):
