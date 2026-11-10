@@ -1564,6 +1564,10 @@ try {
   if (raw) _lastStats = JSON.parse(raw);
 } catch (_) { /* corrupt: cold start */ }
 let _lastGroups = null;
+try {
+  const raw = sessionStorage.getItem("last-groups");
+  if (raw) _lastGroups = JSON.parse(raw);
+} catch (_) { /* corrupt: treat as cold start */ }
 
 async function loadStatus() {
   if (_loadStatusInFlight) return; // never pile up overlapping polls
@@ -1684,9 +1688,13 @@ async function _loadStatusInner() {
   const grid = $("#status-grid");
   // cold start with a cache: paint the last-good cards IMMEDIATELY, then
   // refresh in place when the fetch returns (no dead spinner, no flicker)
-  if (_lastStats && !grid.querySelector(".arch-section") && !grid.querySelector(".machine-status-card"))
+  // Do not paint cached cards until the grouping is known: painting with
+  // unknown groups briefly labels every machine "Ungrouped". An explicit
+  // empty group list is fine (it genuinely means there are no groups).
+  if (_lastStats && _lastGroups !== null &&
+      !grid.querySelector(".arch-section") && !grid.querySelector(".machine-status-card"))
     _paintStats(_lastStats, _lastGroups);
-  // only show the spinner when we have NOTHING to show
+  // only show the spinner when we have NOTHING (or no grouping) to show
   else if (!grid.querySelector(".arch-section") && !grid.querySelector(".machine-status-card"))
     grid.innerHTML = loadingSpinner("Loading cluster status…");
   try {
@@ -1724,6 +1732,7 @@ async function _loadStatusInner() {
     }
     const groups = await api("GET", "/api/groups").catch(() => []);
     _lastGroups = groups;
+    try { sessionStorage.setItem("last-groups", JSON.stringify(groups)); } catch (_) {}
     // full repaint only when grouping changed (per-card updates above
     // already refreshed each card in place)
     const wanted = (groups || []).map(g => g.name).join(",");
@@ -1740,6 +1749,7 @@ async function _loadStatusInner() {
       try { sessionStorage.setItem("last-stats", JSON.stringify(r)); } catch (_) {}
       const groups = await api("GET", "/api/groups").catch(() => []);
       _lastGroups = groups;
+      try { sessionStorage.setItem("last-groups", JSON.stringify(groups)); } catch (_) {}
       _paintedGrouping = (groups || []).map(g => g.name).join(",");
       _paintStats(r, groups);
     } catch (e2) {
