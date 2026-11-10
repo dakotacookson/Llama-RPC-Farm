@@ -97,6 +97,11 @@ login and include the embedded gateway.
 ```bash
 ./install.sh    # Linux/macOS     (Windows: install.bat)
 ./run.sh        # then open http://localhost:8199
+
+./farmctl status                       # headless CLI over the same API
+./farmctl start                       # start llama-swap (loads on demand)
+./farmctl launch --model my-model     # warm ONE model
+./farmctl doctor                      # readiness checklist
 ```
 
 The install script sets up the app and Python environment only. On first

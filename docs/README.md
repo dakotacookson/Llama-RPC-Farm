@@ -17,6 +17,7 @@ Frontend is vanilla JS; all state lives in `config/*.yaml`.
 | [faq.md](faq.md) | RPC speed, matching GPUs, Windows/macOS, security, common questions |
 | [architecture.md](architecture.md) | Module map, request flow, data flow, what owns what |
 | [api.md](api.md) | Every HTTP + WebSocket endpoint (105 routes), grouped by tab |
+| [cli.md](cli.md) | `farmctl`: headless CLI over the same API — status, models, start/stop, launch/unload one model, doctor, snapshot |
 | [configuration.md](configuration.md) | All `config/` files: what each stores, who writes it, safe-to-edit rules |
 | [secrets.md](secrets.md) | The Fernet vault, agent tokens, `.env` keys, sidecar, injection tests |
 | [../SECURITY.md](../SECURITY.md) | Threat model, trusted-network rules, vulnerability reporting, hardening |
