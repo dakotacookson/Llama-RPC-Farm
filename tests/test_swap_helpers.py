@@ -125,13 +125,31 @@ def test_resolve_binary_local_absolute(monkeypatch):
         _host(), "/opt/ls/llama-swap") == "/opt/ls/llama-swap"
 
 
-def test_resolve_binary_local_via_path(monkeypatch):
+def test_resolve_binary_local_via_path(monkeypatch, tmp_path):
     import shutil
+    # Hermetic: a real llama-swap installed at ~/.local/bin on the test
+    # machine would short-circuit the PATH branch before which() runs.
+    monkeypatch.setattr(
+        swap_manager, "_installer_swap_path",
+        lambda host: str(tmp_path / "no-installer-here" / "llama-swap"))
     monkeypatch.setattr(shutil, "which",
                         lambda p: "/usr/bin/llama-swap" if p == "llama-swap"
                         else None)
     assert swap_manager._resolve_binary(_host(), "llama-swap") == \
         "/usr/bin/llama-swap"
+
+
+def test_resolve_binary_local_prefers_installer_path(monkeypatch, tmp_path):
+    # Intent of #60: a bare "llama-swap" resolves to the installer's
+    # location when that file exists, ahead of PATH.
+    installed = tmp_path / "llama-swap"
+    installed.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(swap_manager, "_installer_swap_path",
+                        lambda host: str(installed))
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda *a: "/usr/bin/llama-swap")
+    assert swap_manager._resolve_binary(_host(), "llama-swap") == \
+        str(installed)
 
 
 # ---------------- settings round-trip ----------------
