@@ -1,0 +1,86 @@
+name: Hardware report
+description: '"Works on my box" or "breaks on my box" report for the hardware matrix'
+title: "hardware: "
+labels: ["help wanted"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the most useful report for the 🧪 rows in the README. A working setup is enough; failures with logs are even better. **Redact secrets, IPs, usernames, and tokens.**
+  - type: dropdown
+    id: hardware
+    attributes:
+      label: Hardware class
+      options:
+        - AMD GPU (ROCm/HIP)
+        - Intel GPU (SYCL/XPU)
+        - Apple Silicon (Metal)
+        - CPU / RAM only
+        - NVIDIA (CUDA) - new combination
+        - Mixed machines
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU / CPU model(s) + VRAM / RAM
+      placeholder: 2x RTX 3060 12GB + RX 6800 16GB, 32GB RAM
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS, kernel, driver/runtime
+      placeholder: Ubuntu 24.04, kernel 6.8, ROCm 6.2
+    validations:
+      required: true
+  - type: dropdown
+    id: role
+    attributes:
+      label: Role
+      options:
+        - Master (runs the app)
+        - Peer
+        - Both / mixed
+    validations:
+      required: true
+  - type: dropdown
+    id: topology
+    attributes:
+      label: Topology tested
+      options:
+        - Single box
+        - Multi-box RPC
+        - Peer-local
+        - Custom runtime
+        - MLX
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model / quant / context
+      placeholder: Qwen3.5-4B Q4_K_M, ctx 32k
+  - type: textarea
+    id: result
+    attributes:
+      label: What worked / what failed
+      description: Include device tokens shown in the UI (CUDA0/ROCm0/SYCL0/Metal/CPU), stats behavior, and Visualizer behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Redact secrets/IPs. Agent, llama-server, ggml-rpc-server, or app logs.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I removed secrets, IPs, usernames, and tokens from this report.
+          required: true
+        - label: I am OK with this report being added to the hardware table / docs.
+          required: true

@@ -1,0 +1,84 @@
+name: Bug report
+description: Something broke or behaved unexpectedly
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Redact secrets, IPs, usernames, tokens, and model paths before posting logs.** Security issues should go through the private process in SECURITY.md, not here.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag or `git rev-parse --short HEAD`.
+      placeholder: release-2.0.4 / 7b866ae
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install method
+      options:
+        - Release package (.deb / .pkg / setup.exe)
+        - Source checkout (install.sh / run.sh)
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS + Python
+      placeholder: Ubuntu 24.04, Python 3.12
+    validations:
+      required: true
+  - type: dropdown
+    id: topology
+    attributes:
+      label: Deployment topology
+      options:
+        - Single box
+        - Multi-box RPC
+        - Peer-local
+        - Custom runtime
+        - MLX
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: App log (`/tmp/llama-web.log` or `%TEMP%\llama-web.log`), launch report, llama-swap/llama-server logs. Redact secrets.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I removed secrets, IPs, usernames, and tokens from this report.
+          required: true
+        - label: This is not a security vulnerability (see SECURITY.md).
+          required: true

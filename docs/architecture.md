@@ -14,6 +14,18 @@ A single FastAPI process (`src/app.py`) that:
    WebSockets for the visualizer and live-logs tabs.
 6. Serves a native Chat tab (vanilla JS + `GET /api/chat/models` / streaming `POST /api/chat`, forwarded server-side to llama-swap) — no separate chat service.
 
+## How it works, in one breath
+
+The machine running the UI is the master; everything else is a peer. Model
+configs live as YAML, and each deployment chooses its topology: single-box
+local, multi-box RPC, peer-local, custom runtime or MLX. The app generates
+the exact launch plan/scripts (RPC peers first, llama-server last, or the
+peer agent start for local deployments), and llama-swap fronts it all so
+clients always hit one endpoint. The app also runs the `:8090` view/access
+gateway in-process — no separate service to install. Secrets (agent tokens,
+HF token) live in an encrypted vault on your box, never in configs, never in
+scripts.
+
 ## Module map (src/)
 
 | Module | Responsibility |

@@ -10,14 +10,19 @@ Frontend is vanilla JS; all state lives in `config/*.yaml`.
 | Doc | What it covers |
 |-----|----------------|
 | [setup.md](setup.md) | Full setup & installation guide: prerequisites, vault, machines, stores, llama.cpp build, llama-swap, gateway, client config, troubleshooting |
+| [topologies.md](topologies.md) | Single-box, RPC, peer-local, custom, MLX; deployment recipes and anti-patterns |
+| [access.md](access.md) | Users, API keys, per-key model grants, gateway, client config |
+| [benchmarks.md](benchmarks.md) | Real measured runs, how to reproduce them, and a template for submitting yours |
+| [testing.md](testing.md) | In-app test bench and the development/e2e test suite |
+| [faq.md](faq.md) | RPC speed, matching GPUs, Windows/macOS, security, common questions |
 | [architecture.md](architecture.md) | Module map, request flow, data flow, what owns what |
 | [api.md](api.md) | Every HTTP + WebSocket endpoint (105 routes), grouped by tab |
 | [configuration.md](configuration.md) | All `config/` files: what each stores, who writes it, safe-to-edit rules |
 | [secrets.md](secrets.md) | The Fernet vault, agent tokens, `.env` keys, sidecar, injection tests |
+| [../SECURITY.md](../SECURITY.md) | Threat model, trusted-network rules, vulnerability reporting, hardening |
 | [cross-platform.md](cross-platform.md) | Linux/Windows/macOS handling: remote exec patterns, process mgmt, paths, installer + glibc rules |
 | [rpc-model.md](rpc-model.md) | RPC numbering, `compute_rpc_map`, device tokens, ports, generated scripts |
 | [visualizer.md](visualizer.md) | Flow visualizer + Live Logs: data sources, sched parsing, attribution policy, priming |
-| [benchmarks.md](benchmarks.md) | Real measured runs, how to reproduce them, and a template for submitting yours |
 | [tuner.md](tuner.md) | Auto-tune: math estimate, staged live search, safe defaults |
 | [models-and-variants.md](models-and-variants.md) | Model configs, flags, device_order, variants, serve groups |
 | [development.md](development.md) | Running, testing, the string-assertion test style, common pitfalls (see also `AGENTS.md`) |
