@@ -17,20 +17,21 @@ sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 import app as app_module  # noqa: E402
+import settings_store
 
 
 @pytest.fixture
 def settings_file(tmp_path, monkeypatch):
     """Redirect the app's SETTINGS_FILE into the pytest tmp dir."""
     path = tmp_path / "settings.yaml"
-    app_module.SETTINGS_FILE = str(path)
+    settings_store.SETTINGS_FILE = str(path)
     # access.py reads its own settings path (env override + repo default);
     # without this the real access_keys table gates POST /api/settings and
     # returns 404 in a local run that has keys configured.
     import access
     monkeypatch.setattr(access, "_settings_path", lambda: str(path))
     yield path
-    app_module.SETTINGS_FILE = os.path.join(
+    settings_store.SETTINGS_FILE = os.path.join(
         app_module.BASE_DIR, "config", "settings.yaml")
 
 

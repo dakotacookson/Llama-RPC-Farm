@@ -15,7 +15,10 @@ import pytest
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-import app as app_module  # noqa: E402
+import app as app_module
+import settings_store
+import routes.install as install_routes  # noqa: E402
+import routes.tools_install as tools_install_routes  # noqa: E402
 
 
 @pytest.fixture
@@ -25,7 +28,7 @@ def settings_file(tmp_path, monkeypatch):
     import engine_registry
     eng = tmp_path / "settings.yaml"
     eng.write_text("")
-    monkeypatch.setattr(app_module, "SETTINGS_FILE", str(eng))
+    monkeypatch.setattr(settings_store, "SETTINGS_FILE", str(eng))
     monkeypatch.setattr(engine_registry, "SETTINGS_FILE", str(eng))
 
     machines = tmp_path / "machines.yaml"
@@ -78,8 +81,8 @@ def test_install_sync_runs_plan_with_stubbed_executor(client, monkeypatch):
         calls["runner"] = runner
         return dict(_CANNED_SUMMARY)
 
-    monkeypatch.setattr(app_module, "_execute_plan", fake_execute)
-    monkeypatch.setattr(app_module, "_tools_plan",
+    monkeypatch.setattr(tools_install_routes, "_execute_plan", fake_execute)
+    monkeypatch.setattr(tools_install_routes, "_tools_plan",
                         lambda m, role, log: ([object()], object(),
                                               object(), object()))
     r = client.post("/api/tools/install/sync",
@@ -95,9 +98,9 @@ def test_install_sync_runs_plan_with_stubbed_executor(client, monkeypatch):
 
 
 def test_install_sync_unknown_machine_404(client, monkeypatch):
-    monkeypatch.setattr(app_module, "_execute_plan",
+    monkeypatch.setattr(tools_install_routes, "_execute_plan",
                         lambda *a, **k: dict(_CANNED_SUMMARY))
-    monkeypatch.setattr(app_module, "_tools_plan",
+    monkeypatch.setattr(tools_install_routes, "_tools_plan",
                         lambda m, role, log: ([], object(), object(), object()))
     r = client.post("/api/tools/install/sync",
                     json={"machine": "ghost"})
@@ -169,7 +172,7 @@ def test_install_sync_local_alias_resolves_to_this_host(client, monkeypatch):
     import app as app_module
     seen = {}
 
-    monkeypatch.setattr(app_module, "_tools_plan",
+    monkeypatch.setattr(tools_install_routes, "_tools_plan",
                         lambda m, role, log: ([object()], object(),
                                               object(), object()))
 
@@ -177,7 +180,7 @@ def test_install_sync_local_alias_resolves_to_this_host(client, monkeypatch):
         seen["machine"] = "local"
         return dict(_CANNED_SUMMARY, installed=["llama.cpp"])
 
-    monkeypatch.setattr(app_module, "_execute_plan", fake_execute)
+    monkeypatch.setattr(tools_install_routes, "_execute_plan", fake_execute)
     r = client.post("/api/tools/install/sync",
                     json={"machine": "__local__", "tools": ["llama.cpp"],
                           "dry_run": True})
@@ -201,7 +204,7 @@ def test_remote_tools_install_uses_agent_and_reports_failures(monkeypatch):
         lambda machine, log: (called.append("llama-swap") or
                               {"ok": False, "detail": "swap failed"}))
     machine = {"name": "peer1", "ip": "10.0.0.50", "os": "linux"}
-    summary = app_module._install_remote_tools(
+    summary = tools_install_routes._install_remote_tools(
         machine, "main", [], False, lambda m: None)
     assert called == ["llama.cpp", "llama-swap"]
     assert summary["installed"] == ["llama.cpp"]
@@ -219,7 +222,7 @@ def test_remote_tools_install_dry_run_does_not_call_agent(monkeypatch):
     monkeypatch.setattr(llamacpp_installer, "install_on", boom)
     monkeypatch.setattr(swap_installer, "install_on", boom)
     logs = []
-    summary = app_module._install_remote_tools(
+    summary = tools_install_routes._install_remote_tools(
         {"name": "peer1", "ip": "10.0.0.50", "os": "linux"},
         "main", [], True, logs.append)
     assert summary["planned"] == ["llama.cpp", "llama-swap"]

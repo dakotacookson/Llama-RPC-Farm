@@ -20,6 +20,9 @@ sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 import app as app_module  # noqa: E402
+import engine_registry  # noqa: E402
+import rpc_manager  # noqa: E402
+import settings_store
 
 
 # ---------------- fixtures ------------------------------------------------
@@ -36,7 +39,7 @@ def settings_file(tmp_path, monkeypatch):
     # BOTH module globals MUST point here: a test that POSTs /api/settings
     # writes through app_module.SETTINGS_FILE — if that still points at
     # the repo file, the suite corrupts the user's real settings.yaml.
-    monkeypatch.setattr(app_module, "SETTINGS_FILE", str(eng))
+    monkeypatch.setattr(settings_store, "SETTINGS_FILE", str(eng))
     monkeypatch.setattr(engine_registry, "SETTINGS_FILE", str(eng))
     import access
     monkeypatch.setattr(access, "_settings_path", lambda: str(eng))
@@ -117,7 +120,7 @@ def test_machine_status_llama_cpp_unchanged(client, settings_file, monkeypatch):
             probe_calls.append(a)
             raise AssertionError("llama_cpp mode must not probe /health")
 
-    monkeypatch.setattr(app_module.engine_registry, "get_engine",
+    monkeypatch.setattr(engine_registry, "get_engine",
                         lambda s=None: _Engine())
 
     def fake_status(name):
@@ -125,7 +128,7 @@ def test_machine_status_llama_cpp_unchanged(client, settings_file, monkeypatch):
                 "rpc_running": True, "gpus": [], "is_local": True,
                 "is_master": True}
 
-    monkeypatch.setattr(app_module.rpc_manager, "machine_status", fake_status)
+    monkeypatch.setattr(rpc_manager, "machine_status", fake_status)
     r = client.get("/api/machines/aibox1/status")
     assert r.status_code == 200
     body = r.json()
@@ -156,13 +159,13 @@ def test_machine_status_unknown_machine_404(client, settings_file, monkeypatch):
         def capable(self, capability):
             return capability == "rpc_cluster"
 
-    monkeypatch.setattr(app_module.engine_registry, "get_engine",
+    monkeypatch.setattr(engine_registry, "get_engine",
                         lambda s=None: _Engine())
 
     def boom(name):
         raise ValueError(f"machine '{name}' not found")
 
-    monkeypatch.setattr(app_module.rpc_manager, "machine_status", boom)
+    monkeypatch.setattr(rpc_manager, "machine_status", boom)
     r = client.get("/api/machines/nope/status")
     assert r.status_code == 404
 
@@ -212,7 +215,7 @@ def test_save_model_llama_cpp_path_unchanged(client, settings_file,
             raise AssertionError(
                 "llama_cpp save path must not call validate_model_config")
 
-    monkeypatch.setattr(app_module.engine_registry, "get_engine",
+    monkeypatch.setattr(engine_registry, "get_engine",
                         lambda s=None: _Engine())
     monkeypatch.setattr(app_module.swap_manager, "status",
                         lambda: {"running": False})
@@ -237,7 +240,7 @@ def test_launch_llama_cpp_mode_still_works(client, settings_file, monkeypatch):
                          mode)
         return {"ok": True, "failed": False}
 
-    monkeypatch.setattr(app_module.rpc_manager, "launch_model", fake_launch)
+    monkeypatch.setattr(rpc_manager, "launch_model", fake_launch)
     r = client.post("/api/launch",
                     json={"model_id": "Qwen3-8B", "servers": ["aibox1"],
                           "port": 8080})

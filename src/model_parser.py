@@ -15,6 +15,7 @@ the path.
 """
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 # shard patterns: llama.cpp split convention + human "part N of N"
 SHARD_PATTERNS = [
@@ -27,6 +28,24 @@ MMPROJ_PREFIX = "mmproj-"
 # HF repo root marker: present in every safetensors model directory
 HF_CONFIG_MARKER = "config.json"
 SAFETENSORS_EXT = ".safetensors"
+
+
+def _file_size(path):
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def _file_sizes(paths):
+    """Stat files concurrently: a network store (CIFS/NFS) has high per-stat
+    latency, so a serial walk of a few hundred files can take tens of
+    seconds. Bounded fan-out keeps the first scan responsive."""
+    if not paths:
+        return []
+    with ThreadPoolExecutor(max_workers=min(16, len(paths))) as pool:
+        return list(pool.map(_file_size, paths))
+
 
 
 def _shard_match(fname):
@@ -78,14 +97,10 @@ def _hf_entry(dirpath):
         groups.setdefault(base, []).append(name)
     # dominant group = the real weight shards (ties/strays: largest wins)
     shard_names = max(groups.values(), key=len) if groups else []
-    files = {}
-    for name in shard_names:
-        full = os.path.join(dirpath, name)
-        try:
-            size = os.path.getsize(full)
-        except OSError:
-            size = 0
-        files[name] = {"size_bytes": size, "path": full}
+    full_paths = [os.path.join(dirpath, name) for name in shard_names]
+    sizes = _file_sizes(full_paths)
+    files = {name: {"size_bytes": size, "path": full}
+             for name, full, size in zip(shard_names, full_paths, sizes)}
     return {
         "name": os.path.basename(os.path.normpath(dirpath)) or dirpath,
         "base_path": dirpath,
@@ -108,28 +123,30 @@ def scan_directory(path, recursive=False):
 
     ggufs = []
     hf_dirs = []
+    pending = []  # (root, name)
     if recursive:
         for root, dirs, names in os.walk(path):
             if _is_hf_model_dir(root):
                 hf_dirs.append(root)
                 dirs[:] = []  # one model per dir; its contents are not models
                 continue
-            for name in names:
-                if not name.lower().endswith(".gguf"):
-                    continue
-                full = os.path.join(root, name)
-                ggufs.append((root, name, os.path.getsize(full)))
+            pending += [(root, name) for name in names
+                        if name.lower().endswith(".gguf")]
     else:
         entries = os.listdir(path)
         for name in entries:
             full = os.path.join(path, name)
             if os.path.isfile(full) and name.lower().endswith(".gguf"):
-                ggufs.append((path, name, os.path.getsize(full)))
+                pending.append((path, name))
         # HF models live one level down in per-model subdirectories; the
         # scanned path itself may already be a model directory.
         for entry in [path] + [os.path.join(path, n) for n in entries]:
             if os.path.isdir(entry) and _is_hf_model_dir(entry):
                 hf_dirs.append(entry)
+    all_paths = [os.path.join(root, name) for root, name in pending]
+    for (root, name), full, size in zip(pending, all_paths,
+                                        _file_sizes(all_paths)):
+        ggufs.append((root, name, size))
 
     models = {}      # (root, base_name) -> {filename: {size, path}}
     projectors = []

@@ -264,7 +264,7 @@ _CANON_MODELS: list = []
 _CANON_TS: float = 0.0
 
 
-def canonical_model(mid: str) -> str:
+async def canonical_model(mid: str) -> str:
     """Full canonical model id for a caller-provided string. The farm's
     rule: usage buckets carry the FULL deployment name, never a client
     shorthand — llama-swap's /v1/models is the authority (exact id first,
@@ -277,7 +277,7 @@ def canonical_model(mid: str) -> str:
     now = time.time()
     if not _CANON_MODELS or now - _CANON_TS > 30:
         try:
-            data = client.get("/v1/models", timeout=4)
+            data = await client.get("/v1/models", timeout=4)
             _CANON_MODELS = [m.get("id") or "" for m in
                              (data.json().get("data") or [])]
             _CANON_TS = now
@@ -337,7 +337,7 @@ async def proxy(request: Request, path: str):
             payload = json.loads(body or b"{}")
         except Exception:
             payload = {}
-        mid = canonical_model(
+        mid = await canonical_model(
             (payload.get("model") or "").strip())
         if allow is not None and not _mid_allowed(mid, allow):
             raise _model_not_found(mid)

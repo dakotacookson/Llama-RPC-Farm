@@ -6,6 +6,9 @@ sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 import app as app_module          # noqa: E402
+import machine_tokens as mt  # noqa: E402
+import routes.machines as machines_routes
+import routes.readiness as readiness_module  # noqa: E402
 import agent_client               # noqa: E402
 import swap_installer             # noqa: E402
 
@@ -17,10 +20,10 @@ def _local_engines(*_a, **_k):
 
 
 def test_readiness_local_swap_host_requires_swap(monkeypatch):
-    monkeypatch.setattr(app_module.local_node, "is_local", lambda m: True)
-    monkeypatch.setattr(app_module, "_local_engine_readiness", _local_engines)
+    monkeypatch.setattr(readiness_module.local_node, "is_local", lambda m: True)
+    monkeypatch.setattr(readiness_module, "_local_engine_readiness", _local_engines)
     monkeypatch.setattr(swap_installer, "detect_on", lambda m: (False, None))
-    r = app_module._readiness_for({"name": "node1", "os": "linux"}, "node1")
+    r = readiness_module._readiness_for({"name": "node1", "os": "linux"}, "node1")
     assert r["ready"] is False
     assert r["is_swap_host"] is True
     assert r["llama_swap"]["required"] is True
@@ -28,7 +31,7 @@ def test_readiness_local_swap_host_requires_swap(monkeypatch):
 
 
 def test_readiness_peer_ready_without_swap(monkeypatch):
-    monkeypatch.setattr(app_module.local_node, "is_local", lambda m: False)
+    monkeypatch.setattr(readiness_module.local_node, "is_local", lambda m: False)
     monkeypatch.setattr(agent_client, "health",
                         lambda m, timeout=4: {"agent_version": "0.3.4",
                                              "protocol_version": 1})
@@ -42,7 +45,7 @@ def test_readiness_peer_ready_without_swap(monkeypatch):
                         lambda m, path, args=None, timeout=35:
                         {"returncode": 0, "output": "version: b12211"})
     monkeypatch.setattr(swap_installer, "detect_on", lambda m: (False, None))
-    r = app_module._readiness_for({"name": "peer1", "os": "linux"}, "host1")
+    r = readiness_module._readiness_for({"name": "peer1", "os": "linux"}, "host1")
     assert r["ready"] is True
     assert r["llama_cpp"]["installed"] is True
     assert r["llama_rpc"]["installed"] is True
@@ -50,7 +53,7 @@ def test_readiness_peer_ready_without_swap(monkeypatch):
 
 
 def test_readiness_reports_missing_rpc_and_agent(monkeypatch):
-    monkeypatch.setattr(app_module.local_node, "is_local", lambda m: False)
+    monkeypatch.setattr(readiness_module.local_node, "is_local", lambda m: False)
     monkeypatch.setattr(agent_client, "health",
                         lambda m, timeout=4: {"agent_version": "0.3.4"})
     monkeypatch.setattr(agent_client, "capabilities", lambda m, timeout=8: {
@@ -63,7 +66,7 @@ def test_readiness_reports_missing_rpc_and_agent(monkeypatch):
                         lambda m, path, args=None, timeout=35:
                         {"returncode": 0, "output": "version: b12211"})
     monkeypatch.setattr(swap_installer, "detect_on", lambda m: (False, None))
-    r = app_module._readiness_for({"name": "peer1", "os": "linux"}, "host1")
+    r = readiness_module._readiness_for({"name": "peer1", "os": "linux"}, "host1")
     assert r["ready"] is False
     assert r["llama_cpp"]["installed"] is True
     assert r["llama_rpc"]["installed"] is False
@@ -94,7 +97,7 @@ def test_ensure_agent_ready_pairs_fresh_agent(monkeypatch):
                         or {"ok": True})
     monkeypatch.setattr(secrets_vault, "get_farm_agent_token",
                         lambda: "farm-tok")
-    ok, err = app_module._ensure_agent_ready(
+    ok, err = mt._ensure_agent_ready(
         {"name": "fresh", "ip": "10.0.0.178"}, "")
     assert err is None and ok["llama_available"] is True
     assert paired == ["farm-tok"]
@@ -120,7 +123,7 @@ def test_auto_agent_token_pairs_fresh_agent_with_farm(monkeypatch):
                         lambda m: "")
     monkeypatch.setattr(secrets_vault, "get_farm_agent_token",
                         lambda: "farm-tok")
-    tok = app_module._auto_agent_token(
+    tok = mt._auto_agent_token(
         {"id": "fresh", "name": "fresh", "ip": "10.0.0.178"})
     assert tok == "farm-tok"
     assert state["paired"] is True
@@ -140,7 +143,7 @@ def test_auto_agent_token_keeps_existing_machine_token(monkeypatch):
                         lambda m: "machine-tok")
     monkeypatch.setattr(secrets_vault, "get_farm_agent_token",
                         lambda: "farm-tok")
-    assert app_module._auto_agent_token(
+    assert mt._auto_agent_token(
         {"id": "m1", "name": "m1", "ip": "10.0.0.178"}) == "machine-tok"
 
 
@@ -159,7 +162,7 @@ def test_auto_agent_token_fails_when_agent_has_unknown_token(monkeypatch):
     monkeypatch.setattr(secrets_vault, "get_farm_agent_token",
                         lambda: "farm-tok")
     with pytest.raises(ValueError, match="could not auto-pair"):
-        app_module._auto_agent_token(
+        mt._auto_agent_token(
             {"id": "m1", "name": "m1", "ip": "10.0.0.178"})
 
 
@@ -176,7 +179,7 @@ def test_delete_machine_clears_vault_agent_token(monkeypatch):
                         lambda key: calls.append(("env", key)))
     monkeypatch.setattr(secrets_vault, "machine_env_key",
                         lambda ident: f"MACHINE_{ident}_PASSWORD_ENC")
-    asyncio.run(app_module.delete_machine("node1"))
+    asyncio.run(machines_routes.delete_machine("node1"))
     ids = {c[1] for c in calls if c[0] == "tok"}
     assert {"m1", "node1"} <= ids
     assert all(c[2] == "" for c in calls if c[0] == "tok")

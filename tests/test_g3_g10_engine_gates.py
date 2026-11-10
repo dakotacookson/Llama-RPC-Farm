@@ -20,6 +20,12 @@ sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 import app as app_module  # noqa: E402
+import engine_registry  # noqa: E402
+import rpc_manager  # noqa: E402
+import settings_store
+import routes.launch as launch_routes
+import routes.scanning as scanning_routes
+import routes.swap as swap_routes
 import config_loader  # noqa: E402
 
 
@@ -37,7 +43,7 @@ def settings_file(tmp_path, monkeypatch):
     import engine_registry
     eng = tmp_path / "settings.yaml"
     eng.write_text("")
-    monkeypatch.setattr(app_module, "SETTINGS_FILE", str(eng))
+    monkeypatch.setattr(settings_store, "SETTINGS_FILE", str(eng))
     monkeypatch.setattr(engine_registry, "SETTINGS_FILE", str(eng))
     import access
     monkeypatch.setattr(access, "_settings_path", lambda: str(eng))
@@ -116,7 +122,7 @@ class _LcppEngine:
 
 
 def _engine(engine_obj, monkeypatch):
-    monkeypatch.setattr(app_module.engine_registry, "get_engine",
+    monkeypatch.setattr(engine_registry, "get_engine",
                         lambda s=None: engine_obj)
 
 
@@ -141,7 +147,7 @@ def test_rpc_start_llama_cpp_unchanged(client, settings_file, monkeypatch):
         calls.append(name)
         return {"machine": name, "running": True, "port": 50052}
 
-    monkeypatch.setattr(app_module.rpc_manager, "start_rpc", fake_start)
+    monkeypatch.setattr(rpc_manager, "start_rpc", fake_start)
     r = client.post("/api/machines/aibox1/rpc/start")
     assert r.status_code == 200, r.text
     assert r.json() == {"machine": "aibox1", "running": True, "port": 50052}
@@ -157,7 +163,7 @@ def test_start_all_llama_cpp_starts_rpc_then_swap(client, settings_file,
     launches — the original behavior, unchanged."""
     _engine(_LcppEngine(), monkeypatch)
     rpc_names = []
-    monkeypatch.setattr(app_module.rpc_manager, "start_rpc",
+    monkeypatch.setattr(rpc_manager, "start_rpc",
                         lambda name: rpc_names.append(name) or
                         {"machine": name, "running": True, "port": 50052})
     launches = []
@@ -200,7 +206,7 @@ def test_save_model_llama_cpp_never_host_gated(client, settings_file,
     _engine(_LcppEngine(), monkeypatch)
     _swap_down(monkeypatch)
     _add_windows_machine()
-    monkeypatch.setattr(app_module.rpc_manager, "validate_model",
+    monkeypatch.setattr(rpc_manager, "validate_model",
                         lambda mid: {"issues": []})
     r = client.post("/api/models", json=_model_payload())
     assert r.status_code == 200, r.text
@@ -224,8 +230,8 @@ def test_launch_stop_llama_cpp_unchanged(client, settings_file, monkeypatch):
                          launch_port)
         return [{"machine": servers[0], "stopped": True}]
 
-    monkeypatch.setattr(app_module.rpc_manager, "stop_model", fake_stop)
-    monkeypatch.setattr(app_module, "_proxy_swap_unload",
+    monkeypatch.setattr(rpc_manager, "stop_model", fake_stop)
+    monkeypatch.setattr(launch_routes, "_proxy_swap_unload",
                         lambda model_id: (_ for _ in ()).throw(
                             AssertionError("llama_cpp stop must not proxy")))
     r = client.post("/api/launch/stop",
@@ -248,14 +254,14 @@ def test_launch_stop_remote_proxy_unloads_via_swap(client, settings_file,
             "mode": "local", "box": "aibox3", "peers": ["aibox3"],
             "swap_key": "qwen3-8b--DAD"})
     stopped = []
-    monkeypatch.setattr(app_module.rpc_manager, "stop_model",
+    monkeypatch.setattr(rpc_manager, "stop_model",
                         lambda *a, **k: stopped.append((a, k)) or [])
 
     async def fake_unload(model_id):
         proxied.append(model_id)
         return {"ok": True}
 
-    monkeypatch.setattr(app_module, "_proxy_swap_unload", fake_unload)
+    monkeypatch.setattr(launch_routes, "_proxy_swap_unload", fake_unload)
     _add_peer_aibox3()
     r = client.post("/api/launch/stop",
                     json={"model_id": "qwen3-8b", "servers": ["aibox3"],
@@ -296,7 +302,7 @@ def test_launch_auto_resolves_remote_box_to_local(client, settings_file,
                             mode=mode)
             return {"ok": True, "failed": False}
 
-    monkeypatch.setattr(app_module.engine_registry, "get_engine",
+    monkeypatch.setattr(engine_registry, "get_engine",
                          lambda s=None: _AutoEngine())
     monkeypatch.setattr(
         app_module.swap_manager, "deployment_launch_mode",
@@ -324,7 +330,7 @@ def test_launch_explicit_rpc_still_passes_through(client, settings_file,
             captured.update(master_name=master_name, mode=mode)
             return {"ok": True, "failed": False}
 
-    monkeypatch.setattr(app_module.engine_registry, "get_engine",
+    monkeypatch.setattr(engine_registry, "get_engine",
                          lambda s=None: _AutoEngine())
     monkeypatch.setattr(app_module.swap_manager, "deployment_launch_mode",
                         lambda *a, **k: (_ for _ in ()).throw(
@@ -346,7 +352,7 @@ def test_swap_evict_shares_proxy_helper(client, settings_file, monkeypatch):
                         lambda: {"running": False})
     r = client.post("/api/swap/evict/Qwen3-8B")
     assert r.status_code == 503, r.text
-    monkeypatch.setattr(app_module.rpc_manager, "stop_model",
+    monkeypatch.setattr(rpc_manager, "stop_model",
                         lambda *a, **k: (_ for _ in ()).throw(
                             AssertionError("no rpc path here")))
 

@@ -289,3 +289,57 @@ def test_models_lists_variants_and_json(monkeypatch, capsys):
     assert farmctl.main(["models", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data[0]["model_id"] == "base"
+
+
+def test_subcommand_help_does_not_crash(capsys):
+    # A shared parent parser uses SUPPRESS defaults so flags work before or
+    # after the subcommand; help must not interpolate %(default)s (argparse
+    # drops it), which used to raise KeyError: 'default'.
+    with pytest.raises(SystemExit) as exc:
+        farmctl.main(["status", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "--url" in out and "--json" in out
+
+
+def test_snapshot_redacts_nested_tokens():
+    redacted = farmctl._redact({
+        "machines": [{"name": "m1", "_agent_token": "x",
+                      "agent_token_set": True,
+                      "nested": {"hf_token": "y", "note": "keep"}}],
+    })
+    machine = redacted["machines"][0]
+    assert "_agent_token" not in machine
+    assert "hf_token" not in machine["nested"]
+    assert machine["agent_token_set"] is True
+    assert machine["nested"]["note"] == "keep"
+
+
+def test_client_builds_fresh_opener_per_request(monkeypatch):
+    built = []
+
+    class _Resp:
+        headers = {"Content-Type": "application/json"}
+
+        def read(self, n=-1):
+            return b'{"ok": true}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _Opener:
+        def open(self, req, timeout=None):
+            return _Resp()
+
+    def make_opener():
+        built.append(1)
+        return _Opener()
+
+    monkeypatch.setattr(farmctl, "_opener", make_opener)
+    client = farmctl.Client("http://example")
+    assert client.get("/a") == {"ok": True}
+    assert client.get("/b") == {"ok": True}
+    assert len(built) == 2  # no shared opener across (possibly threaded) calls

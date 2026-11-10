@@ -29,6 +29,8 @@ Download `Qwen_Qwen3.5-0.8B-Q4_K_M.gguf` into `$HOME/models` (override with `MOD
 ```
 
 Wait until the model finishes loading. The HTTP endpoint is `http://127.0.0.1:8084`.
+Ctrl-C stops the server; the script traps EXIT/INT/TERM so a backgrounded
+run is cleaned up too.
 
 ![alt text](img/run_mac_local.png)
 
@@ -105,6 +107,10 @@ open (`GET /port/open`). Use it as `./start_worker_linux.sh <ip|name|id>
 This runs `llama-server` locally on the Mac with `--rpc <worker>:50052`
 and `--device MTL0,RPC0`. Wait until the model finishes loading; the HTTP
 endpoint is `http://127.0.0.1:8084`.
+
+Ctrl-C cleans up both sides: the local `llama-server` and the remote RPC
+worker this script started (via `stop_all.sh`), so a smoke test never
+leaves an orphaned `ggml-rpc-server`.
 
 ![Inference server](img/run_cli.png)
 

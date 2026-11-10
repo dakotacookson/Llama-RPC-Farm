@@ -56,9 +56,23 @@ echo "Model:         $MODEL_PATH"
 echo "Server binary: $LLAMA_SERVER"
 echo "RPC worker:    $WORKER_IP:$RPC_PORT"
 echo "HTTP endpoint: http://127.0.0.1:$HTTP_PORT"
-echo "Press Ctrl-C to stop."
+echo "Press Ctrl-C to stop (also stops the remote RPC worker)."
 
-exec "$LLAMA_SERVER" \
+SERVER_PID=""
+cleanup() {
+  if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  fi
+  # Same lifecycle as the app's full restart: stop the worker this test
+  # started instead of leaving an orphaned ggml-rpc-server behind.
+  HTTP_PORT="$HTTP_PORT" "$SCRIPT_DIR/stop_all.sh" "$WORKER_IP" "$RPC_PORT" || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+"$LLAMA_SERVER" \
   -m "$MODEL_PATH" \
   --ctx-size "$CTX_SIZE" \
   -ngl "$GPU_LAYERS" \
@@ -67,4 +81,6 @@ exec "$LLAMA_SERVER" \
   --rpc "$WORKER_IP:$RPC_PORT" \
   --device "MTL0,RPC0" \
   --host 127.0.0.1 \
-  --port "$HTTP_PORT"
+  --port "$HTTP_PORT" &
+SERVER_PID=$!
+wait "$SERVER_PID"

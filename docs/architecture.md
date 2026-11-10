@@ -30,8 +30,18 @@ scripts.
 
 | Module | Responsibility |
 |--------|----------------|
-| `app.py` | All HTTP/WS routes. Thin: validates, calls modules, returns. Also: flow-log parsing (`_parse_sched_line` etc.), UI state endpoints (accordion/flow layout), machine detail. |
-| `config_loader.py` | YAML CRUD store classes (`machines`, `groups`, `models`, `swap_groups`), model helpers (`list_models`, variant resolution), hardware fingerprinting, model↔hardware sync. Owns the engine enum vocabulary. |
+| `app.py` | FastAPI assembly, middleware, startup/gateway lifecycle, the index page, and cluster ops (`__main__`). |
+| `routes/` | APIRouter modules by feature: `flow`, `hf`, `chat`, `inference`, `scanning`, `swap`, `readiness`, `hardware`, `files`, `ui_state`, `views`, `install`, `tools`, `tools_install`, `auth`, `machines`, `models`, `settings`, `launch`. Each imports canonical modules directly. |
+| `web_shared.py` | Cross-router HTTP policy: access-key model filtering, gateway URL/headers, private-model raw lookup, session cookie name, token masking. |
+| `settings_store.py` | Canonical `settings.yaml` location + comment-preserving load/save + view-name lookup (shared by app and routers). |
+| `update_state.py` | Shared lock for long-running update/install jobs. |
+| `llama_version.py` | llama.cpp build/version probing + latest-release TTL cache. |
+| `hf_icons.py` | Permanent model-icon cache (`config/model_icons.json`) shared by HF and model routes. |
+| `swap_client.py` | Low-level llama-swap HTTP helpers (activity reads, unload proxy) shared by routes and startup. |
+| `swap_apply.py` | Cascades major config mutations into the swap deployment: regenerate config/scripts + background daemon reload. |
+| `machine_conn.py` | One-machine connectivity probe (local vs peer agent) shared by machine and scanning views. |
+| `config_loader.py` | YAML CRUD store classes (`machines`, `groups`, `models`, `swap_groups`), model helpers (`list_models`, variant resolution), hardware fingerprinting, model↔hardware sync. Owns the engine enum vocabulary. Machine reads strip secret fields; all writes funnel through one vaulting/sanitizing save boundary. |
+| `secret_fields.py` | Single naming policy for secret fields (`is_secret_key` / `strip_secret_keys`) shared by the machine store, API responses, and `farmctl` snapshot redaction. |
 | `engine_registry.py` | Engine adapter seam (`llama_cpp`): `load_settings` applies the engine schema (enum — bad values are startup errors, never silent fallback); `get_engine(settings)` is the one seam app.py dispatches on. Adapters implement the `EngineAdapter` Protocol (build_command / probe / swap_entries / validate_model_config / validate_hosts / ui_hints); `LlamaCppAdapter` is pure delegation to rpc_manager/swap_manager. |
 | `rpc_manager.py` | The biggest module (~2.6k lines): RPC server start/stop/status, port rolling, per-port state files, `build_llama_command`, `compute_rpc_map`, bash/PowerShell script generation, RDMA gating, llama-swap host bin resolution. |
 | `swap_manager.py` | llama-swap daemon: settings, `generate()` (builds full config.yaml plan from model configs), push, `launch()` orchestration, `stop()`, `reload_daemon()`, systemd/win/mac service paths, backup + validation. |
@@ -41,6 +51,7 @@ scripts.
 | `stats_collector.py` | GPU/CPU/RAM stats: local or peer-agent; three OS branches (linux `/proc`+nvidia-smi, Windows PowerShell, macOS sysctl/top). |
 | `discovery.py` | LAN identity helpers: UDP peer-agent discovery + ARP/MAC healing. No network sweep. |
 | `local_node.py` | Which machine am I? `is_local()` decides master vs peer everywhere. |
+| `machine_tokens.py` | Peer-agent token lifecycle: farm-token generation, per-machine vault persistence, pairing + readiness guards. Extracted from `app.py` so HTTP routes don't own token policy. |
 | `gpu_vendor.py` | Vendor normalization + device token prefixes (`CUDA0`, `ROCm0`, `SYCL0`, `Metal`). |
 | `model_parser.py` | Directory scan for GGUF; collapses `-000XX-of-000YY` shards into one model. |
 | `gguf_inspect.py` | Minimal GGUF metadata reader (arch, tensor count, MTP layers, byte sizes) without deps. |

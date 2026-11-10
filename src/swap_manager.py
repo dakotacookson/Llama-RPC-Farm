@@ -1521,7 +1521,6 @@ def _start_windows_remote(host, binary, config_path, port):
             host, "llama-swap", binary, config_path, port)
     except Exception as e:
         return {"error": f"agent service start failed: {e}"}
-    return {"method": "win32-remote", "pid": pid}
 
 
 def _installer_swap_path(host):

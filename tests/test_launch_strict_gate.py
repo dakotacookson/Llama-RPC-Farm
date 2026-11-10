@@ -23,6 +23,8 @@ sys.path.insert(0, os.path.join(
 import pytest
 
 import app as app_module
+import rpc_manager
+import settings_store
 
 
 @pytest.fixture
@@ -37,7 +39,7 @@ def settings_file(tmp_path, monkeypatch):
     import engine_registry
     eng = tmp_path / "settings.yaml"
     eng.write_text("engine: llama_cpp\n")
-    monkeypatch.setattr(app_module, "SETTINGS_FILE", str(eng))
+    monkeypatch.setattr(settings_store, "SETTINGS_FILE", str(eng))
     monkeypatch.setattr(engine_registry, "SETTINGS_FILE", str(eng))
     # access.py owns its settings path (env override + repo-relative
     # default) — point the env at the same tmp file
@@ -69,7 +71,6 @@ def settings_file(tmp_path, monkeypatch):
     monkeypatch.setattr(config_loader.machines, "path", str(machines))
     import rpc_manager
     monkeypatch.setattr(rpc_manager, "cfg", config_loader)
-    monkeypatch.setattr(app_module, "rpc_manager", rpc_manager)
 
     models_dir = tmp_path / "models"
     models_dir.mkdir()
@@ -212,7 +213,7 @@ def test_launch_granted_variant_ok(client, scoped_dad, monkeypatch):
         calls["args"] = (model_id, servers, port)
         return {"ok": True, "failed": False}
 
-    monkeypatch.setattr(app_module.rpc_manager, "launch_model", fake_launch)
+    monkeypatch.setattr(rpc_manager, "launch_model", fake_launch)
     r = client.post("/api/launch", headers=_hdr(), json={
         "model_id": f"{BASE_MID}--dad", "servers": ["aibox1"], "port": 8098})
     assert r.status_code == 200, r.text
@@ -276,7 +277,7 @@ def test_unrestricted_and_console_unchanged(client, settings_file,
         calls["args"] = (model_id, servers)
         raise ValueError("model 'x' not found")
 
-    monkeypatch.setattr(app_module.rpc_manager, "launch_model", fake_launch)
+    monkeypatch.setattr(rpc_manager, "launch_model", fake_launch)
     r = client.post("/api/launch", json={
         "model_id": "ghost-model", "servers": ["aibox1"]})
     assert r.status_code == 500, r.text  # engine ValueError -> failed report
