@@ -6692,6 +6692,106 @@ const THEMES = [
     swatch: ["#20130a", "#e08a2e", "#ffd98a"] },
   { id: "topaz", name: "Topaz", dark: "topaz-dark", light: "topaz-light",
     swatch: ["#2b1a06", "#ffb627", "#4fd8c8"] },
+  { id: "amberterm", name: "Amber Terminal", genre: "retro", dark: "amberterm-dark", light: "amberterm-light",
+    swatch: ["#140f06", "#ffb000", "#ff7a00"] },
+  { id: "c64", name: "Commodore 64", genre: "retro", dark: "c64-dark", light: "c64-light",
+    swatch: ["#14123a", "#8f88ff", "#6f68ff"] },
+  { id: "gameboy", name: "Game Boy", genre: "retro", dark: "gameboy-dark", light: "gameboy-light",
+    swatch: ["#0d1708", "#9fe05a", "#6fcf3f"] },
+  { id: "vaporwave", name: "Vaporwave", genre: "retro", dark: "vaporwave-dark", light: "vaporwave-light",
+    swatch: ["#160b2e", "#ff71ce", "#01cdfe"] },
+  { id: "blueprint", name: "Blueprint", genre: "retro", dark: "blueprint-dark", light: "blueprint-light",
+    swatch: ["#061d36", "#58c7ff", "#9adcff"] },
+  { id: "oscilloscope", name: "Oscilloscope", genre: "retro", dark: "oscilloscope-dark", light: "oscilloscope-light",
+    swatch: ["#04140b", "#4dff88", "#8affb0"] },
+  { id: "nes", name: "8-Bit NES", genre: "retro", dark: "nes-dark", light: "nes-light",
+    swatch: ["#17181a", "#e60012", "#9a9a9a"] },
+  { id: "floppy", name: "Floppy Disk", genre: "retro", dark: "floppy-dark", light: "floppy-light",
+    swatch: ["#1a1d24", "#7aa2ff", "#ff8a5c"] },
+  { id: "wii", name: "Wii", genre: "retro", dark: "wii-dark", light: "wii-light",
+    swatch: ["#1c1f24", "#38bdf8", "#7dd3fc"] },
+  { id: "nds", name: "Nintendo DS", genre: "retro", dark: "nds-dark", light: "nds-light",
+    swatch: ["#171a21", "#2f8df0", "#6aa9ff"] },
+  { id: "n3ds", name: "Nintendo 3DS", genre: "retro", dark: "n3ds-dark", light: "n3ds-light",
+    swatch: ["#1a1418", "#ff3b4e", "#ff6b7a"] },
+  { id: "gamecube", name: "GameCube", genre: "retro", dark: "gamecube-dark", light: "gamecube-light",
+    swatch: ["#171329", "#a78bfa", "#ff9e3d"] },
+  { id: "ps2", name: "PlayStation 2", genre: "retro", dark: "ps2-dark", light: "ps2-light",
+    swatch: ["#10151f", "#2d7dff", "#7aa2ff"] },
+  { id: "ps1", name: "PlayStation", genre: "retro", dark: "ps1-dark", light: "ps1-light",
+    swatch: ["#1a1a1c", "#e60012", "#3b82f6"] },
+  { id: "snes", name: "Super Nintendo", genre: "retro", dark: "snes-dark", light: "snes-light",
+    swatch: ["#1b1926", "#8b6cf0", "#6aa9ff"] },
+  { id: "n64", name: "Nintendo 64", genre: "retro", dark: "n64-dark", light: "n64-light",
+    swatch: ["#1b1b1b", "#e60012", "#2d7dff"] },
+  { id: "dreamcast", name: "Dreamcast", genre: "retro", dark: "dreamcast-dark", light: "dreamcast-light",
+    swatch: ["#161b1f", "#ff6b00", "#ff9a5a"] },
+  { id: "xbox", name: "Xbox", genre: "retro", dark: "xbox-dark", light: "xbox-light",
+    swatch: ["#141a14", "#7bd84a", "#a3e635"] },
+  { id: "psp", name: "PSP", genre: "retro", dark: "psp-dark", light: "psp-light",
+    swatch: ["#16181d", "#7aa2ff", "#c0c8d8"] },
+  { id: "genesis", name: "Genesis", genre: "retro", dark: "genesis-dark", light: "genesis-light",
+    swatch: ["#17141a", "#ff3b5c", "#3b82f6"] },
+  { id: "dbz", name: "Dragon Ball Z", genre: "shows", dark: "dbz-dark", light: "dbz-light",
+    swatch: ["#10182b", "#ff8a00", "#3b82f6"] },
+  { id: "naruto", name: "Naruto", genre: "shows", dark: "naruto-dark", light: "naruto-light",
+    swatch: ["#1b1208", "#ff8c1a", "#ffd166"] },
+  { id: "onepiece", name: "One Piece", genre: "shows", dark: "onepiece-dark", light: "onepiece-light",
+    swatch: ["#101b2a", "#e63946", "#ffd166"] },
+  { id: "sailormoon", name: "Sailor Moon", genre: "shows", dark: "sailormoon-dark", light: "sailormoon-light",
+    swatch: ["#24122b", "#ff8ac2", "#ffd166"] },
+  { id: "pokemon", name: "Pokémon", genre: "shows", dark: "pokemon-dark", light: "pokemon-light",
+    swatch: ["#1a1710", "#ffcb05", "#3d7dca"] },
+  { id: "adventuretime", name: "Adventure Time", genre: "shows", dark: "adventuretime-dark", light: "adventuretime-light",
+    swatch: ["#101c24", "#7fffd4", "#ff6ec7"] },
+  { id: "rickmorty", name: "Rick & Morty", genre: "shows", dark: "rickmorty-dark", light: "rickmorty-light",
+    swatch: ["#0e1b18", "#97ce4c", "#00b0c8"] },
+  { id: "simpsons", name: "The Simpsons", genre: "shows", dark: "simpsons-dark", light: "simpsons-light",
+    swatch: ["#171a2e", "#ffd90f", "#4f9dff"] },
+  { id: "spongebob", name: "SpongeBob", genre: "shows", dark: "spongebob-dark", light: "spongebob-light",
+    swatch: ["#0c1e2a", "#ffd93d", "#3bb3d9"] },
+  { id: "strangerthings", name: "Stranger Things", genre: "shows", dark: "strangerthings-dark", light: "strangerthings-light",
+    swatch: ["#0e0a0a", "#e50914", "#ff2d55"] },
+  { id: "breakingbad", name: "Breaking Bad", genre: "shows", dark: "breakingbad-dark", light: "breakingbad-light",
+    swatch: ["#131810", "#ffd54f", "#7cb342"] },
+  { id: "got", name: "Game of Thrones", genre: "shows", dark: "got-dark", light: "got-light",
+    swatch: ["#12161c", "#c9a227", "#b22222"] },
+  { id: "office", name: "The Office", genre: "shows", dark: "office-dark", light: "office-light",
+    swatch: ["#1b1f24", "#4a90e2", "#a0a8b8"] },
+  { id: "batmantas", name: "Batman: TAS", genre: "shows", dark: "batmantas-dark", light: "batmantas-light",
+    swatch: ["#12141a", "#ffd166", "#4f6bff"] },
+  { id: "avatar", name: "Avatar: TLA", genre: "shows", dark: "avatar-dark", light: "avatar-light",
+    swatch: ["#0b1f2a", "#4dd0e1", "#ff8a3d"] },
+  { id: "dune", name: "Dune", genre: "books", dark: "dune-dark", light: "dune-light",
+    swatch: ["#1a1206", "#e08a2e", "#4f9dff"] },
+  { id: "neuromancer", name: "Neuromancer", genre: "books", dark: "neuromancer-dark", light: "neuromancer-light",
+    swatch: ["#081418", "#00e5ff", "#ff2d95"] },
+  { id: "foundation", name: "Foundation", genre: "books", dark: "foundation-dark", light: "foundation-light",
+    swatch: ["#101728", "#d4af37", "#5b8dff"] },
+  { id: "martian", name: "The Martian", genre: "books", dark: "martian-dark", light: "martian-light",
+    swatch: ["#1a0e0a", "#ff6b3d", "#9aa8b8"] },
+  { id: "lotr", name: "The Lord of the Rings", genre: "books", dark: "lotr-dark", light: "lotr-light",
+    swatch: ["#121a10", "#d4af37", "#7ec850"] },
+  { id: "harrypotter", name: "Harry Potter", genre: "books", dark: "harrypotter-dark", light: "harrypotter-light",
+    swatch: ["#1a0e12", "#d4af37", "#a32638"] },
+  { id: "nameofthewind", name: "The Name of the Wind", genre: "books", dark: "nameofthewind-dark", light: "nameofthewind-light",
+    swatch: ["#1a1208", "#d99a4e", "#6aa9ff"] },
+  { id: "mistborn", name: "Mistborn", genre: "books", dark: "mistborn-dark", light: "mistborn-light",
+    swatch: ["#15171c", "#6fa8ff", "#c97c3d"] },
+  { id: "witcher", name: "The Witcher", genre: "books", dark: "witcher-dark", light: "witcher-light",
+    swatch: ["#14140f", "#d4af37", "#b22222"] },
+  { id: "warhammer40k", name: "Warhammer 40,000", genre: "books", dark: "warhammer40k-dark", light: "warhammer40k-light",
+    swatch: ["#120c0c", "#d4af37", "#b22222"] },
+  { id: "firstlaw", name: "The First Law", genre: "books", dark: "firstlaw-dark", light: "firstlaw-light",
+    swatch: ["#141416", "#b08d57", "#8b1a1a"] },
+  { id: "asoiaf", name: "A Song of Ice and Fire", genre: "books", dark: "asoiaf-dark", light: "asoiaf-light",
+    swatch: ["#0e1520", "#6fa8ff", "#d94a3d"] },
+  { id: "hungergames", name: "The Hunger Games", genre: "books", dark: "hungergames-dark", light: "hungergames-light",
+    swatch: ["#16130e", "#ff8c1a", "#c0c0c0"] },
+  { id: "darkmaterials", name: "His Dark Materials", genre: "books", dark: "darkmaterials-dark", light: "darkmaterials-light",
+    swatch: ["#101420", "#d4af37", "#5b8dff"] },
+  { id: "discworld", name: "Discworld", genre: "books", dark: "discworld-dark", light: "discworld-light",
+    swatch: ["#1b1026", "#d4af37", "#8b5cf6"] },
   { id: "netflix", name: "Netflix", genre: "famous", dark: "netflix-dark", light: "netflix-light",
     swatch: ["#141414", "#e50914", "#b20710"] },
   { id: "youtube", name: "YouTube", genre: "famous", dark: "youtube-dark", light: "youtube-light",
@@ -6721,6 +6821,13 @@ const THEME_GENRE_DEFAULT = "geology";
 function currentThemeGenre() {
   return localStorage.getItem("theme-genre") || THEME_GENRE_DEFAULT;
 }
+function themeRandomOn() {
+  return localStorage.getItem("ui-theme-random") === "1";
+}
+function paintRandomChip() {
+  const b = $("#set-theme-random");
+  if (b) b.setAttribute("aria-pressed", String(themeRandomOn()));
+}
 function currentMode() {
   const m = localStorage.getItem("ui-theme-mode");
   return m === "light" ? "light" : "dark";
@@ -6734,7 +6841,7 @@ function saveThemeToBackend(family, mode) {
   }).catch(err => console.warn("[settings] theme save failed:", err.message));
 }
 
-function applyTheme(family, mode) {
+function applyTheme(family, mode, persist = true) {
   family = family || currentTheme();
   if (["mynecraft", "mocha", "cobalt"].includes(family)) family = "obsidian";
   if (family === "fiery") family = "ruby";  // retired theme → replacement
@@ -6757,7 +6864,7 @@ function applyTheme(family, mode) {
     localStorage.setItem("ui-theme-family", family);
     paintModeChips(family);
     renderThemeGrid();
-    saveThemeToBackend(family, mode);
+    if (persist) saveThemeToBackend(family, mode);
     return;
   }
   const fam = THEMES.find(t => t.id === family) || THEMES[0];
@@ -6767,7 +6874,7 @@ function applyTheme(family, mode) {
   localStorage.setItem("ui-theme-mode", mode);
   paintModeChips(fam.id);
   renderThemeGrid();
-  saveThemeToBackend(fam.id, mode);
+  if (persist) saveThemeToBackend(fam.id, mode);
 }
 /* sync the segmented control + reflect custom themes (mode chips disabled) */
 function paintModeChips(family) {
@@ -7025,7 +7132,8 @@ function themeBuilderShow(show) {
   wrap.open = !!show;
   // While a draft is open, the external picker is locked: changing the
   // active theme would fight the live preview. Save/cancel unlocks it.
-  for (const sel of ["#theme-grid", "#theme-mode-seg", "#theme-genre"]) {
+  for (const sel of ["#theme-grid", "#theme-mode-seg", "#theme-genre",
+                    "#set-theme-random"]) {
     const el = $(sel);
     if (el) el.classList.toggle("theme-locked", !!show);
   }
@@ -7159,8 +7267,9 @@ api("GET", "/api/settings").then(s => {
 }
 
 // boot theme: localStorage for instant paint, then backend overrides
-// if it differs (theme was saved from another browser)
+// if it differs (theme was saved from another browser).
 applyTheme(currentTheme());
+paintRandomChip();
 loadCustomThemes();
 api("GET", "/api/settings").then(s => {
   if (!localStorage.getItem("ui-theme-family") && s.theme_family) {
@@ -8919,6 +9028,9 @@ const RIBBON_MODES = [
   { id: "topography", name: "Topography" },
   { id: "dotmatrix", name: "Dot Matrix" },
   { id: "hexmesh", name: "Hex Mesh" },
+  { id: "floatinghex", name: "Floating Shapes" },
+  { id: "voronoi", name: "Voronoi" },
+  { id: "circuit", name: "Circuit Board" },
   { id: "none", name: "None" },
 ];
 function currentRibbonMode() {
@@ -8980,6 +9092,267 @@ function vividColor(hex, sat) {
   return `rgb(${Math.round(rr*255)},${Math.round(gg*255)},${Math.round(bb*255)})`;
 }
 
+function _clipPoly(poly, nx, ny, c) {
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    const fa = nx * a[0] + ny * a[1] - c;
+    const fb = nx * b[0] + ny * b[1] - c;
+    if (fa <= 0) out.push(a);
+    if ((fa <= 0) !== (fb <= 0)) {
+      const t = fa / (fa - fb);
+      out.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
+    }
+  }
+  return out;
+}
+
+function _graphEdge(edges, map, adj, a, b) {
+  if (!a || !b) return;
+  const ka = `${Math.round(a[0] * 2)},${Math.round(a[1] * 2)}`;
+  const kb = `${Math.round(b[0] * 2)},${Math.round(b[1] * 2)}`;
+  if (ka === kb) return;
+  const key = ka < kb ? ka + "|" + kb : kb + "|" + ka;
+  if (map.has(key)) return;
+  const edge = { a, b, ka, kb, len: Math.hypot(b[0] - a[0], b[1] - a[1]) };
+  map.set(key, edge);
+  edges.push(edge);
+}
+
+function buildVoronoiGraph(w, h) {
+  const pad = 50;
+  const n = Math.max(50, Math.min(220, Math.round(w * h / 8000)));
+  const sites = Array.from({ length: n }, () => ({
+    x: 30 + Math.random() * (w - 60),
+    y: 30 + Math.random() * (h - 60),
+  }));
+  const edges = [], map = new Map();
+  for (let i = 0; i < sites.length; i++) {
+    const s = sites[i];
+    let poly = [[-pad, -pad], [w + pad, -pad], [w + pad, h + pad], [-pad, h + pad]];
+    for (let j = 0; j < sites.length && poly.length >= 3; j++) {
+      if (i === j) continue;
+      const t = sites[j];
+      const dx = t.x - s.x, dy = t.y - s.y;
+      if (!dx && !dy) continue;
+      poly = _clipPoly(poly, dx, dy,
+        dx * (s.x + t.x) / 2 + dy * (s.y + t.y) / 2);
+    }
+    for (let k = 0; k < poly.length; k++) {
+      _graphEdge(edges, map, null, poly[k], poly[(k + 1) % poly.length]);
+    }
+  }
+  const adj = new Map();
+  edges.forEach((e, i) => {
+    for (const key of [e.ka, e.kb]) {
+      const list = adj.get(key) || [];
+      list.push(i);
+      adj.set(key, list);
+    }
+  });
+  return { edges, adj };
+}
+
+function buildCircuitGraph(w, h) {
+  const sx = 70, sy = 54;
+  const cols = Math.max(2, Math.ceil(w / sx)), rows = Math.max(2, Math.ceil(h / sy));
+  const nodes = [], nodeAt = new Map();
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const key = `${r},${c}`;
+      const p = [c * sx + 35, r * sy + 27];
+      nodeAt.set(key, p);
+      nodes.push(p);
+    }
+  }
+  const edges = [], map = new Map();
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const a = nodeAt.get(`${r},${c}`);
+      if (c + 1 < cols && Math.random() < 0.58) {
+        _graphEdge(edges, map, null, a, nodeAt.get(`${r},${c + 1}`));
+      }
+      if (r + 1 < rows && Math.random() < 0.58) {
+        _graphEdge(edges, map, null, a, nodeAt.get(`${r + 1},${c}`));
+      }
+    }
+  }
+  const adj = new Map();
+  edges.forEach((e, i) => {
+    for (const key of [e.ka, e.kb]) {
+      const list = adj.get(key) || [];
+      list.push(i);
+      adj.set(key, list);
+    }
+  });
+  return { edges, adj, nodes };
+}
+
+function _pickLight(graph, downward) {
+  if (!graph || !graph.edges.length) return null;
+  const e = graph.edges[Math.floor(Math.random() * graph.edges.length)];
+  const flip = downward && e.a[1] > e.b[1];
+  return {
+    edge: e, fromKey: flip ? e.kb : e.ka, toKey: flip ? e.ka : e.kb,
+    pos: 0, speed: 15 + Math.random() * 30, wait: Math.random() * 2,
+    trail: [],
+  };
+}
+
+function _advanceLight(light, graph, h, dt) {
+  if (!light) return;
+  if (light.wait > 0) { light.wait -= dt; return; }
+  light.pos += light.speed * dt;
+  for (let guard = 0; guard < 24 && light.pos >= light.edge.len; guard++) {
+    const e = light.edge, vertex = light.toKey;
+    const vy = e.ka === vertex ? e.a[1] : e.b[1];
+    const cand = (graph.adj.get(vertex) || []).filter(i => graph.edges[i] !== e);
+    const down = cand.filter(i => {
+      const ne = graph.edges[i];
+      const oy = ne.ka === vertex ? ne.b[1] : ne.a[1];
+      return oy >= vy - 1;
+    });
+    const pool = down.length ? down : cand;
+    if (!pool.length || vy > h + 20) {
+      const fresh = _pickLight(graph, true);
+      if (fresh) Object.assign(light, fresh);
+      return;
+    }
+    const ne = graph.edges[pool[Math.floor(Math.random() * pool.length)]];
+    light.pos -= e.len;
+    light.edge = ne;
+    light.fromKey = vertex;
+    light.toKey = ne.ka === vertex ? ne.kb : ne.ka;
+  }
+}
+
+function floatShape(kind) {
+  const V = [], E = [], F = [];
+  const add = (x, y, z) => { V.push([x, y, z]); return V.length - 1; };
+  const edge = (a, b) => E.push([a, b]);
+  const loop = (arr) => arr.forEach((a, i) => edge(a, arr[(i + 1) % arr.length]));
+  if (kind === "box") {
+    const v = [
+      [-0.85, -0.85, -0.85], [0.85, -0.85, -0.85],
+      [0.85, 0.85, -0.85], [-0.85, 0.85, -0.85],
+      [-0.85, -0.85, 0.85], [0.85, -0.85, 0.85],
+      [0.85, 0.85, 0.85], [-0.85, 0.85, 0.85],
+    ].map(([x, y, z]) => add(x, y, z));
+    loop([v[0], v[1], v[2], v[3]]);
+    loop([v[4], v[5], v[6], v[7]]);
+    for (let i = 0; i < 4; i++) edge(v[i], v[i + 4]);
+    F.push([v[0], v[1], v[2], v[3]], [v[4], v[5], v[6], v[7]],
+      [v[0], v[1], v[5], v[4]], [v[1], v[2], v[6], v[5]],
+      [v[2], v[3], v[7], v[6]], [v[3], v[0], v[4], v[7]]);
+  } else if (kind === "pyramid") {
+    const base = [[-0.9, 0.7, -0.9], [0.9, 0.7, -0.9],
+      [0.9, 0.7, 0.9], [-0.9, 0.7, 0.9]].map(([x, y, z]) => add(x, y, z));
+    const apex = add(0, -1.2, 0);
+    loop(base);
+    for (const b of base) edge(b, apex);
+    F.push(base.slice().reverse(), ...base.map((b, i) => [b, base[(i + 1) % 4], apex]));
+  } else if (kind === "tetra") {
+    const v = [[0.9, 0.9, 0.9], [-0.9, -0.9, 0.9],
+      [-0.9, 0.9, -0.9], [0.9, -0.9, -0.9]].map(([x, y, z]) => add(x, y, z));
+    for (let i = 0; i < 4; i++) for (let j = i + 1; j < 4; j++) edge(v[i], v[j]);
+    F.push([v[0], v[1], v[2]], [v[0], v[1], v[3]],
+      [v[0], v[2], v[3]], [v[1], v[2], v[3]]);
+  } else if (kind === "octa") {
+    const v = [[0.95, 0, 0], [-0.95, 0, 0], [0, 0.95, 0],
+      [0, -0.95, 0], [0, 0, 0.95], [0, 0, -0.95]].map(([x, y, z]) => add(x, y, z));
+    for (let i = 0; i < 6; i++) for (let j = i + 1; j < 6; j++) {
+      if ((i >> 1) === (j >> 1)) continue;
+      edge(v[i], v[j]);
+    }
+    F.push([v[0], v[2], v[4]], [v[0], v[2], v[5]], [v[0], v[3], v[4]],
+      [v[0], v[3], v[5]], [v[1], v[2], v[4]], [v[1], v[2], v[5]],
+      [v[1], v[3], v[4]], [v[1], v[3], v[5]]);
+  } else if (kind === "sphere") {
+    const rows = 6, cols = 9, grid = [];
+    for (let i = 0; i <= rows; i++) {
+      const lat = -Math.PI / 2 + Math.PI * i / rows;
+      grid[i] = [];
+      for (let j = 0; j < cols; j++) {
+        const lon = 2 * Math.PI * j / cols;
+        grid[i][j] = add(Math.cos(lat) * Math.cos(lon),
+          Math.sin(lat), Math.cos(lat) * Math.sin(lon));
+      }
+    }
+    for (let i = 0; i <= rows; i++) loop(grid[i]);
+    for (let i = 0; i < rows; i++) for (let j = 0; j < cols; j++) {
+      edge(grid[i][j], grid[i + 1][j]);
+    }
+  } else if (kind === "torus") {
+    const rows = 8, cols = 10, grid = [];
+    for (let i = 0; i < rows; i++) {
+      const u = 2 * Math.PI * i / rows;
+      grid[i] = [];
+      for (let j = 0; j < cols; j++) {
+        const v = 2 * Math.PI * j / cols;
+        const rr = 1 + 0.38 * Math.cos(v);
+        grid[i][j] = add(rr * Math.cos(u), 0.38 * Math.sin(v), rr * Math.sin(u));
+      }
+    }
+    for (let i = 0; i < rows; i++) loop(grid[i]);
+    for (let i = 0; i < rows; i++) for (let j = 0; j < cols; j++) {
+      edge(grid[i][j], grid[(i + 1) % rows][j]);
+    }
+  } else if (kind === "cylinder") {
+    const n = 12, top = [], bot = [];
+    for (let j = 0; j < n; j++) {
+      const a = 2 * Math.PI * j / n;
+      top.push(add(0.8 * Math.cos(a), -0.9, 0.8 * Math.sin(a)));
+      bot.push(add(0.8 * Math.cos(a), 0.9, 0.8 * Math.sin(a)));
+    }
+    loop(top); loop(bot);
+    for (let j = 0; j < n; j++) {
+      edge(top[j], bot[j]);
+      F.push([top[j], top[(j + 1) % n], bot[(j + 1) % n], bot[j]]);
+    }
+    F.push(top.slice(), bot.slice().reverse());
+  } else {
+    const n = 12, base = [];
+    for (let j = 0; j < n; j++) {
+      const a = 2 * Math.PI * j / n;
+      base.push(add(0.85 * Math.cos(a), 0.85, 0.85 * Math.sin(a)));
+    }
+    const apex = add(0, -1.2, 0);
+    loop(base);
+    for (let j = 0; j < n; j++) {
+      edge(base[j], apex);
+      F.push([base[j], base[(j + 1) % n], apex]);
+    }
+    F.push(base.slice().reverse());
+  }
+  return { v: V, e: E, f: F };
+}
+
+function updateMeshCells(cells, tt, t, dt, max = 25) {
+  const active = [];
+  for (const c of cells) {
+    const s = Math.sin(tt * c.sp + c.ph);
+    const inten = (s - c.thr) / (1 - c.thr);
+    if (inten > 0) active.push([inten, c]);
+  }
+  active.sort((a, b) => b[0] - a[0]);
+  let chosen = 0;
+  for (const c of cells) {
+    if (c.target === 1) {
+      if (t >= c.until) c.target = 0;
+      else chosen++;
+    }
+  }
+  for (const [, c] of active) {
+    if (chosen >= max) break;
+    if (c.target === 1 || c.level > 0.01) continue;
+    c.target = 1;
+    c.until = t + 8000 + Math.random() * 9000;
+    chosen++;
+  }
+  const ease = 1 - Math.exp(-dt / 9000);
+  for (const c of cells) c.level += (c.target - c.level) * ease;
+}
+
 function startParticleBackdrop(mode) {
   const cv = document.getElementById("bg-waves");
   if (!cv) return 0;
@@ -8992,7 +9365,9 @@ function startParticleBackdrop(mode) {
   let fx = { glow: 1, sat: 1, alpha: 1 };
   let parts = [];
   let hexes = [];
+  let floaters = [];
   let falls = [];
+  let graph = null, lights = [];
   const num = (v, d) => {
     const f = parseFloat(v);
     return Number.isFinite(f) ? Math.min(2.5, Math.max(0, f)) : d;
@@ -9068,6 +9443,10 @@ function startParticleBackdrop(mode) {
           len: 4 + Math.floor(Math.random() * 5),
         });
       }
+    } else if (mode === "voronoi" || mode === "circuit") {
+      graph = mode === "voronoi" ? buildVoronoiGraph(w, h) : buildCircuitGraph(w, h);
+      lights = Array.from({ length: mode === "circuit" ? 12 : 10 },
+        () => _pickLight(graph)).filter(Boolean);
     } else if (mode === "hexmesh") {
       const R = Math.max(20, Math.min(34, Math.round(Math.min(w, h) / 28)));
       const dx = Math.sqrt(3) * R, dy = 1.5 * R;
@@ -9084,13 +9463,37 @@ function startParticleBackdrop(mode) {
           hexes.push({
             cx, cy: y, pts,
             ph: Math.random() * Math.PI * 2,
-            // very slow breathing: ~80-200s per cycle
             sp: 0.03 + Math.random() * 0.05,
             thr: 0.45 + Math.random() * 0.30,
             level: 0, target: 0, until: 0,
           });
         }
       }
+    } else if (mode === "floatinghex") {
+      const n = Math.max(14, Math.min(26, Math.round(w * h / 65000)));
+      const kinds = ["box", "pyramid", "tetra", "octa",
+        "sphere", "torus", "cylinder", "cone"];
+      floaters = Array.from({ length: n }, () => {
+        const kind = kinds[Math.floor(Math.random() * kinds.length)];
+        return {
+          x: Math.random() * w, y: Math.random() * h,
+          R: 18 + Math.random() * 44,
+          vx: (Math.random() - 0.5) * 10,
+          vy: (Math.random() - 0.5) * 10,
+          rx: Math.random() * Math.PI * 2,
+          ry: Math.random() * Math.PI * 2,
+          rz: Math.random() * Math.PI * 2,
+          vrx: (Math.random() - 0.5) * 0.16,
+          vry: (Math.random() - 0.5) * 0.16,
+          vrz: (Math.random() - 0.5) * 0.12,
+          ph: Math.random() * Math.PI * 2,
+          sp: 0.12 + Math.random() * 0.18,
+          off: 0.06 + Math.random() * 0.06,
+          offAng: Math.random() * Math.PI * 2,
+          alt: Math.random() < 0.35,
+          geo: floatShape(kind),
+        };
+      });
     }
   };
   resize();
@@ -9102,57 +9505,143 @@ function startParticleBackdrop(mode) {
     }
     const alphaMult = fx.alpha <= 1 ? fx.alpha : 1 + (fx.alpha - 1) * 10;
     const glowBoost = fx.glow === 0 ? 1 : 0.75 + 0.25 * fx.glow;
+    const glowScale = fx.glow > 1 ? 1 + (fx.glow - 1) * 0.35 : 1;
     const w = W / ratio, h = H / ratio;
     ctx.clearRect(0, 0, W, H);
     ctx.save();
     ctx.scale(ratio, ratio);
-    if (mode === "dotmatrix") {
-      const tt = t / 1000;
-      const glowSz = fx.glow > 1 ? 1 + (fx.glow - 1) * 0.3 : 1;
-      // quiet base dots
-      ctx.fillStyle = rgba(colorA, 1);
-      ctx.globalAlpha = Math.min(1, 0.09 * alphaMult * glowBoost);
-      for (const p of parts) {
-        const sz = p.base * glowSz;
-        ctx.fillRect(p.x - sz / 2, p.y - sz / 2, sz, sz);
+    if (mode === "voronoi" || mode === "circuit") {
+      if (graph) {
+        const dt = Math.min(0.12, (t - (draw._lightPrev || t)) / 1000);
+        draw._lightPrev = t;
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = rgba(colorA,
+          Math.min(1, 0.085 * alphaMult * glowBoost));
+        ctx.beginPath();
+        for (const e of graph.edges) {
+          ctx.moveTo(e.a[0], e.a[1]);
+          ctx.lineTo(e.b[0], e.b[1]);
+        }
+        ctx.stroke();
+        for (const light of lights) {
+          _advanceLight(light, graph, h, dt);
+          if (!light) continue;
+          const e = light.edge;
+          const f = Math.min(1, light.pos / (e.len || 1));
+          const hx = e.a[0] + (e.b[0] - e.a[0]) * f;
+          const hy = e.a[1] + (e.b[1] - e.a[1]) * f;
+          light.trail.push([hx, hy]);
+          if (light.trail.length > 140) light.trail.shift();
+          for (let i = 1; i < light.trail.length; i++) {
+            const g = i / light.trail.length;
+            ctx.strokeStyle = rgba(colorB,
+              Math.min(1, g * g * 0.55 * alphaMult * glowBoost));
+            ctx.lineWidth = (0.6 + g * 1.4) * glowScale;
+            ctx.beginPath();
+            ctx.moveTo(light.trail[i - 1][0], light.trail[i - 1][1]);
+            ctx.lineTo(light.trail[i][0], light.trail[i][1]);
+            ctx.stroke();
+          }
+          ctx.fillStyle = rgba(colorB,
+            Math.min(1, 0.9 * alphaMult * glowBoost));
+          ctx.beginPath();
+          ctx.arc(hx, hy, 1.4 * glowScale, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
-      // random subset grows and glows asynchronously
-      ctx.fillStyle = rgba(colorB, 1);
+    } else if (mode === "dotmatrix") {
+      const tt = t / 1000;
       for (const p of parts) {
         const s = Math.sin(tt * p.sp + p.ph);
-        if (s <= p.thr) continue;
-        const inten = (s - p.thr) / (1 - p.thr);
-        const sz = p.base * glowSz * (1 + inten * 2.4);
-        ctx.globalAlpha = Math.min(1,
-          (0.10 + inten * 0.55) * alphaMult * glowBoost);
-        ctx.fillRect(p.x - sz / 2, p.y - sz / 2, sz, sz);
+        const inten = Math.max(0, (s - p.thr) / (1 - p.thr));
+        const r = p.base * (1 + inten * 0.9);
+        ctx.fillStyle = rgba(inten > 0.2 ? colorB : colorA,
+          Math.min(1, (0.10 + inten * 0.34) * alphaMult * glowBoost));
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.fill();
       }
-      // occasional Matrix-style falling columns
-      ctx.fillStyle = rgba(colorB, 1);
-      const step = Math.max(18, Math.min(30, Math.round(Math.min(w, h) / 38)));
       for (const f of falls) {
         if (f.wait > 0) { f.wait--; continue; }
         f.y += f.speed;
-        const head = Math.round(f.y / step) * step;
-        for (let k = 0; k < f.len; k++) {
-          const yy = head - k * step;
-          if (yy < 0 || yy > h) continue;
-          const a = (1 - k / (f.len + 1)) * 0.55;
-          ctx.globalAlpha = Math.min(1, a * alphaMult * glowBoost);
-          const sz = (k === 0 ? 2.8 : 1.8) * glowSz;
-          ctx.fillRect(f.x - sz / 2, yy - sz / 2, sz, sz);
-        }
-        if (f.y > h + f.len * step) {
-          f.y = -step * 2;
+        if (f.y > h + 40) {
+          f.y = -20;
+          f.wait = Math.floor(Math.random() * 120);
           f.speed = 0.7 + Math.random() * 1.1;
-          f.wait = Math.floor(Math.random() * 150);
-          f.len = 4 + Math.floor(Math.random() * 5);
+        }
+        for (let k = 0; k < f.len; k++) {
+          const yy = f.y - k * 6;
+          if (yy < 0 || yy > h) continue;
+          const a = (1 - k / f.len) * 0.24;
+          ctx.fillStyle = rgba(k === 0 ? colorB : colorA,
+            Math.min(1, a * alphaMult * glowBoost));
+          ctx.fillRect(f.x, yy, 1.6, 4);
         }
       }
-      ctx.globalAlpha = 1;
+    } else if (mode === "floatinghex") {
+      const tt = t / 1000;
+      const dt = Math.min(0.12, (t - (draw._floatPrev || t)) / 1000);
+      draw._floatPrev = t;
+      for (const f of floaters) {
+        f.x += f.vx * dt;
+        f.y += f.vy * dt;
+        f.rx += f.vrx * dt;
+        f.ry += f.vry * dt;
+        f.rz += f.vrz * dt;
+        if (f.x < -f.R) f.x = w + f.R;
+        if (f.x > w + f.R) f.x = -f.R;
+        if (f.y < -f.R) f.y = h + f.R;
+        if (f.y > h + f.R) f.y = -f.R;
+        const breath = 0.5 + 0.5 * Math.sin(tt * f.sp + f.ph);
+        const e = breath * breath * (3 - 2 * breath);
+        const scale = f.R * (1 + e * 0.06);
+        const ox = Math.cos(f.offAng) * f.R * f.off;
+        const oy = Math.sin(f.offAng) * f.R * f.off;
+        const cx = Math.cos(f.rx), sx = Math.sin(f.rx);
+        const cy = Math.cos(f.ry), sy = Math.sin(f.ry);
+        const cz = Math.cos(f.rz), sz = Math.sin(f.rz);
+        const pts = [], zs = [];
+        for (const [vx0, vy0, vz0] of f.geo.v) {
+          const x1 = vx0 * cy + vz0 * sy;
+          const z1 = -vx0 * sy + vz0 * cy;
+          const y2 = vy0 * cx - z1 * sx;
+          const z2 = vy0 * sx + z1 * cx;
+          const x3 = x1 * cz - y2 * sz;
+          const y3 = x1 * sz + y2 * cz;
+          const persp = 1 / (1 - z2 * 0.18);
+          pts.push([f.x + x3 * scale * persp, f.y + y3 * scale * persp]);
+          zs.push(z2);
+        }
+        const trace = (idx, offX = 0, offY = 0) => {
+          ctx.beginPath();
+          idx.forEach((i, k) => {
+            const [px, py] = pts[i];
+            if (k) ctx.lineTo(px + offX, py + offY);
+            else ctx.moveTo(px + offX, py + offY);
+          });
+          ctx.closePath();
+        };
+        ctx.strokeStyle = rgba(f.alt ? colorB : colorA,
+          Math.min(1, e * 0.06 * alphaMult * glowBoost));
+        ctx.lineWidth = 0.7 * glowScale;
+        ctx.beginPath();
+        for (const [a, b] of f.geo.e) {
+          ctx.moveTo(pts[a][0] + ox, pts[a][1] + oy);
+          ctx.lineTo(pts[b][0] + ox, pts[b][1] + oy);
+        }
+        ctx.stroke();
+        ctx.strokeStyle = rgba(f.alt ? colorB : colorA,
+          Math.min(1, (0.10 + e * 0.11) * alphaMult * glowBoost));
+        ctx.lineWidth = 0.9 * glowScale;
+        ctx.beginPath();
+        for (const [a, b] of f.geo.e) {
+          ctx.moveTo(pts[a][0], pts[a][1]);
+          ctx.lineTo(pts[b][0], pts[b][1]);
+        }
+        ctx.stroke();
+      }
     } else if (mode === "hexmesh") {
       const tt = t / 1000;
-      // outlines
       ctx.beginPath();
       for (const hx of hexes) {
         for (let k = 0; k < 6; k++) {
@@ -9163,39 +9652,14 @@ function startParticleBackdrop(mode) {
       }
       ctx.strokeStyle = rgba(colorA,
         Math.min(1, 0.10 * alphaMult * glowBoost));
-      ctx.lineWidth = 0.8 * (fx.glow > 1 ? 1 + (fx.glow - 1) * 0.35 : 1);
+      ctx.lineWidth = 0.8 * glowScale;
       ctx.stroke();
-      // Stable set of up to 25, with long dwell times; each hex fades its
-      // opacity in/out smoothly over seconds instead of popping or blinking.
-      const active = [];
-      for (const hx of hexes) {
-        const s = Math.sin(tt * hx.sp + hx.ph);
-        const inten = (s - hx.thr) / (1 - hx.thr);
-        if (inten > 0) active.push([inten, hx]);
-      }
-      active.sort((a, b) => b[0] - a[0]);
-      let chosenCount = 0;
-      for (const hx of hexes) {
-        if (hx.target === 1) {
-          if (t >= hx.until) hx.target = 0;
-          else chosenCount++;
-        }
-      }
-      for (const [, hx] of active) {
-        if (chosenCount >= 25) break;
-        if (hx.target === 1 || hx.level > 0.01) continue;
-        hx.target = 1;
-        hx.until = t + 8000 + Math.random() * 9000;
-        chosenCount++;
-      }
-      const dt = Math.min(120, t - (draw._prev || t));
-      draw._prev = t;
-      const ease = 1 - Math.exp(-dt / 9000);
+      const dt = Math.min(120, t - (draw._meshPrev || t));
+      draw._meshPrev = t;
+      updateMeshCells(hexes, tt, t, dt);
       ctx.fillStyle = rgba(colorB, 1);
       for (const hx of hexes) {
-        hx.level += (hx.target - hx.level) * ease;
         if (hx.level <= 0.005) continue;
-        // smoothstep at both ends so fade-in/out never has a visible start
         const e = hx.level * hx.level * (3 - 2 * hx.level);
         ctx.globalAlpha = Math.min(1, e * 0.55 * alphaMult * glowBoost);
         ctx.beginPath();
@@ -9315,7 +9779,8 @@ function applyRibbons() {
   if (mode === "none") { cv.style.display = "none"; return; }
   cv.style.display = "";
   if (mode === "starfield" || mode === "network" || mode === "topography" ||
-      mode === "dotmatrix" || mode === "hexmesh") {
+      mode === "dotmatrix" || mode === "hexmesh" ||
+      mode === "floatinghex" || mode === "voronoi" || mode === "circuit") {
     bgWavesRAF = startParticleBackdrop(mode);
     return;
   }
@@ -9717,6 +10182,14 @@ document.addEventListener("click", (e) => {
 /* ---------------- init ---------------- */
 startAutoRefresh();
 initFaultWatch();  // global persistent load-failure notices (top right)
+// Random applies to the background style, not the color theme. Pick a new
+// one on every page load when enabled (None is intentionally excluded).
+if (themeRandomOn()) {
+  const pool = RIBBON_MODES.filter(m => m.id !== "none");
+  const pick = pool[Math.floor(Math.random() * pool.length)];
+  localStorage.setItem("ui-ribbons-mode", pick.id);
+  localStorage.setItem("ui-ribbons", "1");
+}
 applyRibbons();   // global ribbon backdrop behind every page (toggleable)
 on("#set-ribbons-mode", "change", () => {
   const sel = $("#set-ribbons-mode");
@@ -9732,6 +10205,22 @@ document.querySelectorAll("#theme-mode-seg button").forEach(b => {
     applyTheme(currentTheme(), b.dataset.mode);
   });
 });
+const themeRandomBtn = $("#set-theme-random");
+if (themeRandomBtn) {
+  themeRandomBtn.addEventListener("click", () => {
+    if (themeDraft) return;
+    const on = !themeRandomOn();
+    localStorage.setItem("ui-theme-random", on ? "1" : "0");
+    paintRandomChip();
+    if (on) {
+      const pool = RIBBON_MODES.filter(m => m.id !== "none");
+      const pick = pool[Math.floor(Math.random() * pool.length)];
+      localStorage.setItem("ui-ribbons-mode", pick.id);
+      localStorage.setItem("ui-ribbons", "1");
+      applyRibbons();
+    }
+  });
+}
 const themeGenreSel = $("#theme-genre");
 if (themeGenreSel) {
   themeGenreSel.value = currentThemeGenre();
