@@ -981,6 +981,13 @@ async def list_machines():
     out = []
     for m in cfg.machines.all():
         m = dict(m)  # copy: the flags are response-only
+        # Never echo an agent token, even if a legacy/hand-edited
+        # machines.yaml still carries the old in-memory-only key.
+        for key in list(m):
+            low = str(key).lower()
+            if low == "_agent_token" or (
+                    low.endswith("_token") and not low.endswith("_token_set")):
+                m.pop(key, None)
         try:
             import secrets_vault as _vault
             m["agent_token_set"] = bool(_vault.machine_agent_token_set(m))

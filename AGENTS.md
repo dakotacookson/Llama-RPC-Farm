@@ -120,7 +120,15 @@ install.bat           # Windows equivalent (cmd.exe)
 ./restart.sh --ui                          # UI-only restart (models/VRAM untouched)
 ./restart-llama-swap.sh                    # backwards-compatible alias for ./restart.sh --full
 ./run.sh                                    # (or run.bat) start UI without killing llama processes
+./farmctl status                            # CLI over the :8199 API (docs/cli.md)
+./farmctl models | start | stop             # configs / daemon start (no model load) / daemon stop
+./farmctl launch --model ID | unload ID     # warm ONE model / free ONE model
+./farmctl doctor | snapshot
 ```
+
+`farmctl` is API-only (never reads config or agents directly). A bare
+`launch` is invalid on purpose — llama-swap loads on demand, so `start`
+starts the daemon and `launch --model` warms one model.
 
 - `docs/` has a curated index (docs/README.md): setup, architecture, api,
   secrets, cross-platform, rpc-model, models-and-variants, peer-agent,

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# farmctl — CLI client for the running Llama RPC Farm app (:8199).
+# Part of the main app: it talks to the HTTP API, never to config/ or agents
+# directly. See docs/cli.md.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ -x "$SCRIPT_DIR/.venv/bin/python" ]; then
+  PY="$SCRIPT_DIR/.venv/bin/python"
+elif [ -x "$SCRIPT_DIR/.venv/Scripts/python.exe" ]; then
+  PY="$SCRIPT_DIR/.venv/Scripts/python.exe"
+else
+  PY="$(command -v python3 || command -v python)"
+fi
+
+exec "$PY" "$SCRIPT_DIR/src/farmctl.py" "$@"
