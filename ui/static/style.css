@@ -3405,19 +3405,19 @@ body.login-locked #login-modal * { pointer-events: auto !important; }
 
 /* -- Netflix Light (actual Netflix palette) -- */
 :root[data-theme="netflix-light"] {
-  --bg: #e8e8e5; --surface: #f1f1ee; --raised: #e2e2df; --hover: #d9d9d6;
-  --inset: #ecece9;
-  --border: #d6d6d6; --border-soft: #e5e5e5; --border-strong: #bfbfbf;
-  --text: #141414; --text-2: #4d4d4d; --muted: #737373;
-  --accent: #b20710; --ribbon: #b20710; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
-  --ribbon-dim: rgba(178, 7, 16, 0.14);
-  --accent-dim: rgba(178, 7, 16, 0.16);
-  --ok: #157347; --ok-dim: rgba(21, 115, 71, 0.13);
-  --warn: #8a5a00; --warn-dim: rgba(138, 90, 0, 0.13);
-  --bad: #b02a2a; --bad-dim: rgba(176, 42, 42, 0.14);
-  --header-blur: rgba(232, 232, 229, 0.85);
+  --bg: #5b1a1e; --surface: #6d2226; --raised: #7e2a2e; --hover: #933438;
+  --inset: #421417;
+  --border: #964a4e; --border-soft: #803c40; --border-strong: #ac5d61;
+  --text: #fafafa; --text-2: #e6dbdb; --muted: #cdadae;
+  --accent: #ee777d; --ribbon: #ee636a; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
+  --ribbon-dim: rgba(0.9333333333333333, 0.38823529411764707, 0.41568627450980394, 0.14);
+  --accent-dim: rgba(0.9333333333333333, 0.4666666666666667, 0.49019607843137253, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.3568627450980392, 0.10196078431372549, 0.11764705882352941, 0.85);
   --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
-  --row-hover: rgba(20, 20, 20, 0.03);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
 }
 
 /* -- YouTube Dark (actual YouTube palette) -- */
@@ -3439,19 +3439,19 @@ body.login-locked #login-modal * { pointer-events: auto !important; }
 
 /* -- YouTube Light (actual YouTube palette) -- */
 :root[data-theme="youtube-light"] {
-  --bg: #e8e8e5; --surface: #f1f1ee; --raised: #e2e2df; --hover: #d9d9d6;
-  --inset: #ecece9;
-  --border: #d9d9d9; --border-soft: #e5e5e5; --border-strong: #cccccc;
-  --text: #0f0f0f; --text-2: #606060; --muted: #858585;
-  --accent: #cc0000; --ribbon: #ff0000; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
-  --ribbon-dim: rgba(255, 0, 0, 0.14);
-  --accent-dim: rgba(204, 0, 0, 0.16);
-  --ok: #0f9855; --ok-dim: rgba(15, 157, 88, 0.13);
-  --warn: #b5781f; --warn-dim: rgba(183, 121, 31, 0.13);
-  --bad: #d93025; --bad-dim: rgba(217, 48, 37, 0.14);
-  --header-blur: rgba(232, 232, 229, 0.85);
+  --bg: #5b1a1a; --surface: #6d2222; --raised: #7e2a2a; --hover: #933434;
+  --inset: #421414;
+  --border: #964a4a; --border-soft: #803c3c; --border-strong: #ac5d5d;
+  --text: #fafafa; --text-2: #e6dbdb; --muted: #cdadad;
+  --accent: #ee7777; --ribbon: #ee6363; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
+  --ribbon-dim: rgba(0.9333333333333333, 0.38823529411764707, 0.38823529411764707, 0.14);
+  --accent-dim: rgba(0.9333333333333333, 0.4666666666666667, 0.4666666666666667, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.3568627450980392, 0.10196078431372549, 0.10196078431372549, 0.85);
   --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
-  --row-hover: rgba(15, 15, 15, 0.03);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
 }
 
 /* -- Facebook Dark (actual Facebook palette) -- */
@@ -3473,19 +3473,19 @@ body.login-locked #login-modal * { pointer-events: auto !important; }
 
 /* -- Facebook Light (actual Facebook palette) -- */
 :root[data-theme="facebook-light"] {
-  --bg: #e8e8e5; --surface: #f1f1ee; --raised: #e2e2df; --hover: #d9d9d6;
-  --inset: #ecece9;
-  --border: #ced0d4; --border-soft: #e4e6eb; --border-strong: #bcc0c4;
-  --text: #050505; --text-2: #626468; --muted: #6b7075;
-  --accent: #1877f2; --ribbon: #2d88ff; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
-  --ribbon-dim: rgba(45, 136, 255, 0.14);
-  --accent-dim: rgba(24, 119, 242, 0.16);
-  --ok: #257a1a; --ok-dim: rgba(37, 122, 26, 0.13);
-  --warn: #b5781f; --warn-dim: rgba(183, 121, 31, 0.13);
-  --bad: #fa383e; --bad-dim: rgba(250, 56, 62, 0.14);
-  --header-blur: rgba(232, 232, 229, 0.85);
+  --bg: #1a375b; --surface: #22436d; --raised: #2a4f7e; --hover: #345d93;
+  --inset: #142842;
+  --border: #4a6b96; --border-soft: #3c5a80; --border-strong: #5d80ac;
+  --text: #fafafa; --text-2: #dbe0e6; --muted: #adbbcd;
+  --accent: #77abee; --ribbon: #639fee; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
+  --ribbon-dim: rgba(0.38823529411764707, 0.6235294117647059, 0.9333333333333333, 0.14);
+  --accent-dim: rgba(0.4666666666666667, 0.6705882352941176, 0.9333333333333333, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.10196078431372549, 0.21568627450980393, 0.3568627450980392, 0.85);
   --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
-  --row-hover: rgba(5, 5, 5, 0.03);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
 }
 
 /* -- Twitter Dark (actual Twitter palette) -- */
@@ -3507,19 +3507,19 @@ body.login-locked #login-modal * { pointer-events: auto !important; }
 
 /* -- Twitter Light (actual Twitter palette) -- */
 :root[data-theme="twitter-light"] {
-  --bg: #e8e8e5; --surface: #f1f1ee; --raised: #e2e2df; --hover: #d9d9d6;
-  --inset: #ecece9;
-  --border: #cfd9de; --border-soft: #e1e8ed; --border-strong: #b9cad3;
-  --text: #0f1419; --text-2: #536471; --muted: #536471;
-  --accent: #1a8ad4; --ribbon: #1d9bf0; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
-  --ribbon-dim: rgba(29, 155, 240, 0.14);
-  --accent-dim: rgba(26, 140, 216, 0.16);
-  --ok: #007a52; --ok-dim: rgba(0, 122, 82, 0.13);
-  --warn: #b5781f; --warn-dim: rgba(183, 121, 31, 0.13);
-  --bad: #f4212e; --bad-dim: rgba(244, 33, 46, 0.14);
-  --header-blur: rgba(232, 232, 229, 0.85);
+  --bg: #1a415b; --surface: #224f6d; --raised: #2a5c7e; --hover: #346d93;
+  --inset: #143042;
+  --border: #4a7896; --border-soft: #3c6580; --border-strong: #5d8cac;
+  --text: #fafafa; --text-2: #dbe1e6; --muted: #adc0cd;
+  --accent: #77beee; --ribbon: #63b6ee; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
+  --ribbon-dim: rgba(0.38823529411764707, 0.7137254901960784, 0.9333333333333333, 0.14);
+  --accent-dim: rgba(0.4666666666666667, 0.7450980392156863, 0.9333333333333333, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.10196078431372549, 0.2549019607843137, 0.3568627450980392, 0.85);
   --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
-  --row-hover: rgba(15, 20, 25, 0.03);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
 }
 
 /* -- The Hub Dark (actual site palette) -- */
@@ -3541,19 +3541,19 @@ body.login-locked #login-modal * { pointer-events: auto !important; }
 
 /* -- The Hub Light (actual site palette) -- */
 :root[data-theme="pornhub-light"] {
-  --bg: #e8e8e5; --surface: #f1f1ee; --raised: #e2e2df; --hover: #d9d9d6;
-  --inset: #ecece9;
-  --border: #d9d9d9; --border-soft: #e6e6e6; --border-strong: #bfbfbf;
-  --text: #111111; --text-2: #555555; --muted: #777777;
-  --accent: #c26a00; --ribbon: #ff9000; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
-  --ribbon-dim: rgba(255, 144, 0, 0.14);
-  --accent-dim: rgba(194, 106, 0, 0.16);
-  --ok: #1e8449; --ok-dim: rgba(30, 132, 73, 0.13);
-  --warn: #8a5a00; --warn-dim: rgba(138, 90, 0, 0.13);
-  --bad: #c62828; --bad-dim: rgba(198, 40, 40, 0.14);
-  --header-blur: rgba(232, 232, 229, 0.85);
+  --bg: #5b411a; --surface: #6d4f22; --raised: #7e5c2a; --hover: #936d34;
+  --inset: #423014;
+  --border: #96784a; --border-soft: #80653c; --border-strong: #ac8c5d;
+  --text: #fafafa; --text-2: #e6e1db; --muted: #cdc0ad;
+  --accent: #eebe77; --ribbon: #eeb663; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
+  --ribbon-dim: rgba(0.9333333333333333, 0.7137254901960784, 0.38823529411764707, 0.14);
+  --accent-dim: rgba(0.9333333333333333, 0.7450980392156863, 0.4666666666666667, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.3568627450980392, 0.2549019607843137, 0.10196078431372549, 0.85);
   --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
-  --row-hover: rgba(17, 17, 17, 0.03);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
 }
 
 /* -- Spotify Dark (actual Spotify palette) -- */
@@ -3575,19 +3575,19 @@ body.login-locked #login-modal * { pointer-events: auto !important; }
 
 /* -- Spotify Light (actual Spotify palette) -- */
 :root[data-theme="spotify-light"] {
-  --bg: #e8e8e5; --surface: #f1f1ee; --raised: #e2e2df; --hover: #d9d9d6;
-  --inset: #ecece9;
-  --border: #d9d9d9; --border-soft: #e9e9e9; --border-strong: #bfbfbf;
-  --text: #121212; --text-2: #5a5a5a; --muted: #7a7a7a;
-  --accent: #128a3c; --ribbon: #1db954; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
-  --ribbon-dim: rgba(29, 185, 84, 0.14);
-  --accent-dim: rgba(18, 138, 60, 0.16);
-  --ok: #128a3c; --ok-dim: rgba(18, 138, 60, 0.13);
-  --warn: #8a5a00; --warn-dim: rgba(138, 90, 0, 0.13);
-  --bad: #c62828; --bad-dim: rgba(198, 40, 40, 0.14);
-  --header-blur: rgba(232, 232, 229, 0.85);
+  --bg: #1a5b31; --surface: #226d3c; --raised: #2a7e48; --hover: #349355;
+  --inset: #144225;
+  --border: #4a9665; --border-soft: #3c8054; --border-strong: #5dac79;
+  --text: #fafafa; --text-2: #f3f7f4; --muted: #adcdb8;
+  --accent: #77eea1; --ribbon: #63ee94; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
+  --ribbon-dim: rgba(0.38823529411764707, 0.9333333333333333, 0.5803921568627451, 0.14);
+  --accent-dim: rgba(0.4666666666666667, 0.9333333333333333, 0.6313725490196078, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.10196078431372549, 0.3568627450980392, 0.19215686274509805, 0.85);
   --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
-  --row-hover: rgba(18, 18, 18, 0.03);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
 }
 
 /* -- Discord Dark (actual Discord palette) -- */
@@ -3609,19 +3609,19 @@ body.login-locked #login-modal * { pointer-events: auto !important; }
 
 /* -- Discord Light (actual Discord palette) -- */
 :root[data-theme="discord-light"] {
-  --bg: #e8e8e5; --surface: #f1f1ee; --raised: #e2e2df; --hover: #d9d9d6;
-  --inset: #ecece9;
-  --border: #d0d3d8; --border-soft: #e3e5e8; --border-strong: #b5bac1;
-  --text: #060607; --text-2: #4e5058; --muted: #6d6f78;
-  --accent: #4752c4; --ribbon: #5865f2; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
-  --ribbon-dim: rgba(88, 101, 242, 0.14);
-  --accent-dim: rgba(71, 82, 196, 0.16);
-  --ok: #248046; --ok-dim: rgba(36, 128, 70, 0.13);
-  --warn: #8a5a00; --warn-dim: rgba(138, 90, 0, 0.13);
-  --bad: #c62828; --bad-dim: rgba(198, 40, 40, 0.14);
-  --header-blur: rgba(232, 232, 229, 0.85);
+  --bg: #1a1f5b; --surface: #22286d; --raised: #2a307e; --hover: #343b93;
+  --inset: #141842;
+  --border: #4a5096; --border-soft: #3c4180; --border-strong: #5d63ac;
+  --text: #fafafa; --text-2: #dbdce6; --muted: #adafcd;
+  --accent: #7b84ef; --ribbon: #636fee; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
+  --ribbon-dim: rgba(0.38823529411764707, 0.43529411764705883, 0.9333333333333333, 0.14);
+  --accent-dim: rgba(0.4823529411764706, 0.5176470588235295, 0.9372549019607843, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.10196078431372549, 0.12156862745098039, 0.3568627450980392, 0.85);
   --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
-  --row-hover: rgba(6, 6, 7, 0.03);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
 }
 
 /* -- Reddit Dark (actual Reddit palette) -- */
@@ -3643,19 +3643,19 @@ body.login-locked #login-modal * { pointer-events: auto !important; }
 
 /* -- Reddit Light (actual Reddit palette) -- */
 :root[data-theme="reddit-light"] {
-  --bg: #e8e8e5; --surface: #f1f1ee; --raised: #e2e2df; --hover: #d9d9d6;
-  --inset: #ecece9;
-  --border: #d3d6da; --border-soft: #e5e7e9; --border-strong: #b8bcc0;
-  --text: #1a1a1b; --text-2: #52686f; --muted: #7c7c7c;
-  --accent: #d93a00; --ribbon: #ff4500; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
-  --ribbon-dim: rgba(255, 69, 0, 0.14);
-  --accent-dim: rgba(217, 58, 0, 0.16);
-  --ok: #1e8449; --ok-dim: rgba(30, 132, 73, 0.13);
-  --warn: #8a5a00; --warn-dim: rgba(138, 90, 0, 0.13);
-  --bad: #c62828; --bad-dim: rgba(198, 40, 40, 0.14);
-  --header-blur: rgba(232, 232, 229, 0.85);
+  --bg: #5b2c1a; --surface: #6d3622; --raised: #7e412a; --hover: #934e34;
+  --inset: #422114;
+  --border: #965f4a; --border-soft: #804f3c; --border-strong: #ac735d;
+  --text: #fafafa; --text-2: #e6dedb; --muted: #cdb5ad;
+  --accent: #ee9777; --ribbon: #eea663; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
+  --ribbon-dim: rgba(0.9333333333333333, 0.6509803921568628, 0.38823529411764707, 0.14);
+  --accent-dim: rgba(0.9333333333333333, 0.592156862745098, 0.4666666666666667, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.3568627450980392, 0.17254901960784313, 0.10196078431372549, 0.85);
   --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
-  --row-hover: rgba(26, 26, 27, 0.03);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
 }
 
 /* -- Twitch Dark (actual Twitch palette) -- */
@@ -3677,19 +3677,19 @@ body.login-locked #login-modal * { pointer-events: auto !important; }
 
 /* -- Twitch Light (actual Twitch palette) -- */
 :root[data-theme="twitch-light"] {
-  --bg: #e8e8e5; --surface: #f1f1ee; --raised: #e2e2df; --hover: #d9d9d6;
-  --inset: #ecece9;
-  --border: #d3d3d9; --border-soft: #e5e5e8; --border-strong: #b9b9c0;
-  --text: #0e0e10; --text-2: #53535f; --muted: #6d6d78;
-  --accent: #6b2bd9; --ribbon: #9146ff; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
-  --ribbon-dim: rgba(145, 70, 255, 0.14);
-  --accent-dim: rgba(107, 43, 217, 0.16);
-  --ok: #1e8449; --ok-dim: rgba(30, 132, 73, 0.13);
-  --warn: #8a5a00; --warn-dim: rgba(138, 90, 0, 0.13);
-  --bad: #d00000; --bad-dim: rgba(208, 0, 0, 0.14);
-  --header-blur: rgba(232, 232, 229, 0.85);
+  --bg: #351a5b; --surface: #40226d; --raised: #4c2a7e; --hover: #5a3493;
+  --inset: #271442;
+  --border: #694a96; --border-soft: #583c80; --border-strong: #7d5dac;
+  --text: #fafafa; --text-2: #dfdbe6; --muted: #baadcd;
+  --accent: #a777ee; --ribbon: #c19ff4; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
+  --ribbon-dim: rgba(0.7568627450980392, 0.6235294117647059, 0.9568627450980393, 0.14);
+  --accent-dim: rgba(0.6549019607843137, 0.4666666666666667, 0.9333333333333333, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.20784313725490197, 0.10196078431372549, 0.3568627450980392, 0.85);
   --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
-  --row-hover: rgba(14, 14, 16, 0.03);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
 }
 
 /* -- Instagram Dark (actual Instagram palette) -- */
@@ -3711,18 +3711,1719 @@ body.login-locked #login-modal * { pointer-events: auto !important; }
 
 /* -- Instagram Light (actual Instagram palette) -- */
 :root[data-theme="instagram-light"] {
-  --bg: #e8e8e5; --surface: #f1f1ee; --raised: #e2e2df; --hover: #d9d9d6;
-  --inset: #ecece9;
-  --border: #dbdbdb; --border-soft: #efefef; --border-strong: #c7c7c7;
-  --text: #262626; --text-2: #646464; --muted: #848484;
-  --accent: #b02a67; --ribbon: #f77737; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
-  --ribbon-dim: rgba(247, 119, 55, 0.14);
-  --accent-dim: rgba(176, 42, 103, 0.16);
-  --ok: #2e7d32; --ok-dim: rgba(46, 125, 50, 0.13);
-  --warn: #8a5a00; --warn-dim: rgba(138, 90, 0, 0.13);
-  --bad: #c62828; --bad-dim: rgba(198, 40, 40, 0.14);
-  --header-blur: rgba(232, 232, 229, 0.85);
+  --bg: #5b1a30; --surface: #6d223b; --raised: #7e2a47; --hover: #933454;
+  --inset: #421424;
+  --border: #964a64; --border-soft: #803c53; --border-strong: #ac5d78;
+  --text: #fafafa; --text-2: #e6dbdf; --muted: #cdadb8;
+  --accent: #ee779f; --ribbon: #eea763; --ribbon-glow: 1; --ribbon-sat: 1; --ribbon-alpha: 2.2;
+  --ribbon-dim: rgba(0.9333333333333333, 0.6549019607843137, 0.38823529411764707, 0.14);
+  --accent-dim: rgba(0.9333333333333333, 0.4666666666666667, 0.6235294117647059, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.3568627450980392, 0.10196078431372549, 0.18823529411764706, 0.85);
   --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
-  --row-hover: rgba(38, 38, 38, 0.03);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
 }
 
+
+/* -- Amber Terminal Dark (retro tech) -- */
+:root[data-theme="amberterm-dark"] {
+  --bg: #140f06; --surface: #1c150a; --raised: #241b0e; --hover: #2d2212;
+  --inset: #0e0a04;
+  --border: #3b2b14; --border-soft: #2e220f; --border-strong: #4d391b;
+  --text: #ffe6bf; --text-2: #c8a977; --muted: #9a7f55;
+  --accent: #ffb000; --ribbon: #ff7a00; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(255, 122, 0, 0.14);
+  --accent-dim: rgba(255, 176, 0, 0.14);
+  --ok: #9ee37d; --ok-dim: rgba(158, 227, 125, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b5a; --bad-dim: rgba(255, 107, 90, 0.14);
+  --header-blur: rgba(20, 15, 6, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(255, 230, 191, 0.03);
+}
+
+/* -- Amber Terminal Light (retro tech) -- */
+:root[data-theme="amberterm-light"] {
+  --bg: #5b471a; --surface: #6d5622; --raised: #7e642a; --hover: #937634;
+  --inset: #423414;
+  --border: #967f4a; --border-soft: #806b3c; --border-strong: #ac935d;
+  --text: #fafafa; --text-2: #eeece7; --muted: #cdc3ad;
+  --accent: #eec977; --ribbon: #eea563; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.9333333333333333, 0.6470588235294118, 0.38823529411764707, 0.14);
+  --accent-dim: rgba(0.9333333333333333, 0.788235294117647, 0.4666666666666667, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.3568627450980392, 0.2784313725490196, 0.10196078431372549, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- Commodore 64 Dark (retro tech) -- */
+:root[data-theme="c64-dark"] {
+  --bg: #14123a; --surface: #1c1950; --raised: #241f63; --hover: #2c2675;
+  --inset: #0e0c2b;
+  --border: #3d3785; --border-soft: #2f2a6e; --border-strong: #5149a0;
+  --text: #e0dcff; --text-2: #b0a8e8; --muted: #8a82c8;
+  --accent: #8f88ff; --ribbon: #6f68ff; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(111, 104, 255, 0.14);
+  --accent-dim: rgba(143, 136, 255, 0.14);
+  --ok: #7be3a0; --ok-dim: rgba(123, 227, 160, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b8a; --bad-dim: rgba(255, 107, 138, 0.14);
+  --header-blur: rgba(20, 18, 58, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(224, 220, 255, 0.03);
+}
+
+/* -- Commodore 64 Light (retro tech) -- */
+:root[data-theme="c64-light"] {
+  --bg: #1e1a5b; --surface: #27226d; --raised: #2f2a7e; --hover: #393493;
+  --inset: #171442;
+  --border: #4f4a96; --border-soft: #403c80; --border-strong: #625dac;
+  --text: #fafafa; --text-2: #dcdbe6; --muted: #afadcd;
+  --accent: #9b95f2; --ribbon: #7d77f0; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.49019607843137253, 0.4666666666666667, 0.9411764705882353, 0.14);
+  --accent-dim: rgba(0.6078431372549019, 0.5843137254901961, 0.9490196078431372, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.11764705882352941, 0.10196078431372549, 0.3568627450980392, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- Game Boy Dark (retro tech) -- */
+:root[data-theme="gameboy-dark"] {
+  --bg: #0d1708; --surface: #13230c; --raised: #1a2d12; --hover: #223a16;
+  --inset: #080f04;
+  --border: #34521f; --border-soft: #284017; --border-strong: #436728;
+  --text: #d7f0b0; --text-2: #a8c888; --muted: #7c9a5f;
+  --accent: #9fe05a; --ribbon: #6fcf3f; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(111, 207, 63, 0.14);
+  --accent-dim: rgba(159, 224, 90, 0.14);
+  --ok: #9fe05a; --ok-dim: rgba(159, 224, 90, 0.13);
+  --warn: #d8c94a; --warn-dim: rgba(216, 201, 74, 0.13);
+  --bad: #e06c5a; --bad-dim: rgba(224, 108, 90, 0.14);
+  --header-blur: rgba(13, 23, 8, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(215, 240, 176, 0.03);
+}
+
+/* -- Game Boy Light (retro tech) -- */
+:root[data-theme="gameboy-light"] {
+  --bg: #3c5b1a; --surface: #496d22; --raised: #557e2a; --hover: #659334;
+  --inset: #2c4214;
+  --border: #71964a; --border-soft: #5f803c; --border-strong: #86ac5d;
+  --text: #fafafa; --text-2: #f7f9f6; --muted: #bdcdad;
+  --accent: #b4ee77; --ribbon: #91ee63; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.5686274509803921, 0.9333333333333333, 0.38823529411764707, 0.14);
+  --accent-dim: rgba(0.7058823529411765, 0.9333333333333333, 0.4666666666666667, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.23529411764705882, 0.3568627450980392, 0.10196078431372549, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- Vaporwave Dark (retro tech) -- */
+:root[data-theme="vaporwave-dark"] {
+  --bg: #160b2e; --surface: #1e103c; --raised: #27164d; --hover: #33205f;
+  --inset: #0c061b;
+  --border: #4a2f80; --border-soft: #38225f; --border-strong: #6040a0;
+  --text: #f7edff; --text-2: #c9b4e8; --muted: #9a83bd;
+  --accent: #ff71ce; --ribbon: #01cdfe; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(1, 205, 254, 0.14);
+  --accent-dim: rgba(255, 113, 206, 0.14);
+  --ok: #05d98f; --ok-dim: rgba(5, 217, 143, 0.13);
+  --warn: #fffb96; --warn-dim: rgba(255, 251, 150, 0.13);
+  --bad: #ff5c8a; --bad-dim: rgba(255, 92, 138, 0.14);
+  --header-blur: rgba(22, 11, 46, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(247, 237, 255, 0.03);
+}
+
+/* -- Vaporwave Light (retro tech) -- */
+:root[data-theme="vaporwave-light"] {
+  --bg: #5b1a45; --surface: #6d2253; --raised: #7e2a61; --hover: #933472;
+  --inset: #421432;
+  --border: #964a7c; --border-soft: #803c69; --border-strong: #ac5d91;
+  --text: #fafafa; --text-2: #e6dbe2; --muted: #cdadc2;
+  --accent: #ef81c9; --ribbon: #63d3ee; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.38823529411764707, 0.8274509803921568, 0.9333333333333333, 0.14);
+  --accent-dim: rgba(0.9372549019607843, 0.5058823529411764, 0.788235294117647, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.3568627450980392, 0.10196078431372549, 0.27058823529411763, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- Blueprint Dark (retro tech) -- */
+:root[data-theme="blueprint-dark"] {
+  --bg: #061d36; --surface: #0a2748; --raised: #0e325c; --hover: #123d6b;
+  --inset: #041225;
+  --border: #24568c; --border-soft: #1a4370; --border-strong: #2e6aa8;
+  --text: #d9ecff; --text-2: #a8c8e8; --muted: #7a9cbf;
+  --accent: #58c7ff; --ribbon: #9adcff; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(154, 220, 255, 0.14);
+  --accent-dim: rgba(88, 199, 255, 0.14);
+  --ok: #6be0a0; --ok-dim: rgba(107, 224, 160, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(6, 29, 54, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(217, 236, 255, 0.03);
+}
+
+/* -- Blueprint Light (retro tech) -- */
+:root[data-theme="blueprint-light"] {
+  --bg: #1a455b; --surface: #22546d; --raised: #2a627e; --hover: #347393;
+  --inset: #143342;
+  --border: #4a7d96; --border-soft: #3c6a80; --border-strong: #5d91ac;
+  --text: #fafafa; --text-2: #dbe2e6; --muted: #adc2cd;
+  --accent: #77c6ee; --ribbon: #a4d9f5; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.6431372549019608, 0.8509803921568627, 0.9607843137254902, 0.14);
+  --accent-dim: rgba(0.4666666666666667, 0.7764705882352941, 0.9333333333333333, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.10196078431372549, 0.27058823529411763, 0.3568627450980392, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- Oscilloscope Dark (retro tech) -- */
+:root[data-theme="oscilloscope-dark"] {
+  --bg: #04140b; --surface: #081f12; --raised: #0b2817; --hover: #103522;
+  --inset: #010a05;
+  --border: #1f5330; --border-soft: #164124; --border-strong: #2a6940;
+  --text: #ccffdd; --text-2: #9fd9b8; --muted: #6f9e82;
+  --accent: #4dff88; --ribbon: #8affb0; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(138, 255, 176, 0.14);
+  --accent-dim: rgba(77, 255, 136, 0.14);
+  --ok: #4dff88; --ok-dim: rgba(77, 255, 136, 0.13);
+  --warn: #d8d84a; --warn-dim: rgba(216, 216, 74, 0.13);
+  --bad: #ff6b6b; --bad-dim: rgba(255, 107, 107, 0.14);
+  --header-blur: rgba(4, 20, 11, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(204, 255, 221, 0.03);
+}
+
+/* -- Oscilloscope Light (retro tech) -- */
+:root[data-theme="oscilloscope-light"] {
+  --bg: #1a5b30; --surface: #226d3b; --raised: #2a7e46; --hover: #349353;
+  --inset: #144224;
+  --border: #4a9663; --border-soft: #3c8053; --border-strong: #5dac77;
+  --text: #fafafa; --text-2: #f3f7f4; --muted: #adcdb7;
+  --accent: #77ee9e; --ribbon: #96f3b4; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.5882352941176471, 0.9529411764705882, 0.7058823529411765, 0.14);
+  --accent-dim: rgba(0.4666666666666667, 0.9333333333333333, 0.6196078431372549, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.10196078431372549, 0.3568627450980392, 0.18823529411764706, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- 8-Bit NES Dark (retro tech) -- */
+/* -- 8-Bit NES Dark (charcoal console, red badge, grey plastic) -- */
+:root[data-theme="nes-dark"] {
+  --bg: #17181a; --surface: #202124; --raised: #292b2e; --hover: #34363a;
+  --inset: #101113;
+  --border: #3a3d42; --border-soft: #2e3034; --border-strong: #4a4e55;
+  --text: #f2f2f2; --text-2: #c0c0c0; --muted: #8a8a8a;
+  --accent: #e60012; --ribbon: #9a9a9a; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(154, 154, 154, 0.14);
+  --accent-dim: rgba(230, 0, 18, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff5c6a; --bad-dim: rgba(255, 92, 106, 0.14);
+  --header-blur: rgba(23, 24, 26, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(242, 242, 242, 0.03);
+}
+
+/* -- 8-Bit NES Light (NES grey shell, red badge, dark grey text) -- */
+:root[data-theme="nes-light"] {
+  --bg: #5b1a1f; --surface: #6d2228; --raised: #7e2a31; --hover: #93343b;
+  --inset: #421418;
+  --border: #964a50; --border-soft: #803c42; --border-strong: #ac5d64;
+  --text: #fafafa; --text-2: #e6dbdc; --muted: #cdadaf;
+  --accent: #ee7780; --ribbon: #ee6363; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.9333333333333333, 0.38823529411764707, 0.38823529411764707, 0.14);
+  --accent-dim: rgba(0.9333333333333333, 0.4666666666666667, 0.5019607843137255, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.3568627450980392, 0.10196078431372549, 0.12156862745098039, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- Floppy Disk Dark (retro tech) -- */
+:root[data-theme="floppy-dark"] {
+  --bg: #1a1d24; --surface: #22262f; --raised: #2a2f3a; --hover: #343a47;
+  --inset: #11141a;
+  --border: #424a59; --border-soft: #333a46; --border-strong: #525b6d;
+  --text: #e8ecf5; --text-2: #b4bccb; --muted: #858fa3;
+  --accent: #7aa2ff; --ribbon: #ff8a5c; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(255, 138, 92, 0.14);
+  --accent-dim: rgba(122, 162, 255, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(26, 29, 36, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(232, 236, 245, 0.03);
+}
+
+/* -- Floppy Disk Light (retro tech) -- */
+:root[data-theme="floppy-light"] {
+  --bg: #1a2e5b; --surface: #22396d; --raised: #2a437e; --hover: #345093;
+  --inset: #142242;
+  --border: #4a6196; --border-soft: #3c5180; --border-strong: #5d75ac;
+  --text: #fafafa; --text-2: #dbdee6; --muted: #adb6cd;
+  --accent: #89a8f0; --ribbon: #ef916c; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.9372549019607843, 0.5686274509803921, 0.4235294117647059, 0.14);
+  --accent-dim: rgba(0.5372549019607843, 0.6588235294117647, 0.9411764705882353, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.10196078431372549, 0.1803921568627451, 0.3568627450980392, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- Wii Dark (retro console) -- */
+:root[data-theme="wii-dark"] {
+  --bg: #1c1f24; --surface: #23272d; --raised: #2b3038; --hover: #3f444b;
+  --inset: #14161a;
+  --border: #4f5257; --border-soft: #404348; --border-strong: #7c7f84;
+  --text: #f0f4f8; --text-2: #c0cad4; --muted: #8b97a3;
+  --accent: #38bdf8; --ribbon: #7dd3fc; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(125, 211, 252, 0.14);
+  --accent-dim: rgba(56, 189, 248, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(28, 31, 36, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(240, 244, 248, 0.03);
+}
+
+/* -- Wii Light (retro console) -- */
+:root[data-theme="wii-light"] {
+  --bg: #1a475b; --surface: #22566d; --raised: #2a647e; --hover: #347693;
+  --inset: #143442;
+  --border: #4a7f96; --border-soft: #3c6b80; --border-strong: #5d94ac;
+  --text: #fafafa; --text-2: #dbe3e6; --muted: #adc3cd;
+  --accent: #77c9ee; --ribbon: #87cff2; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.5294117647058824, 0.8117647058823529, 0.9490196078431372, 0.14);
+  --accent-dim: rgba(0.4666666666666667, 0.788235294117647, 0.9333333333333333, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.10196078431372549, 0.2784313725490196, 0.3568627450980392, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- Nintendo DS Dark (retro console) -- */
+:root[data-theme="nds-dark"] {
+  --bg: #171a21; --surface: #20242d; --raised: #282d38; --hover: #3c414b;
+  --inset: #111318;
+  --border: #4b4e55; --border-soft: #3b3e45; --border-strong: #797c83;
+  --text: #eef2fa; --text-2: #b8c2d4; --muted: #8894a8;
+  --accent: #2f8df0; --ribbon: #6aa9ff; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(106, 169, 255, 0.14);
+  --accent-dim: rgba(47, 141, 240, 0.14);
+  --ok: #73d89a; --ok-dim: rgba(115, 216, 154, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(23, 26, 33, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(238, 242, 250, 0.03);
+}
+
+/* -- Nintendo DS Light (retro console) -- */
+:root[data-theme="nds-light"] {
+  --bg: #1a3a5b; --surface: #22466d; --raised: #2a537e; --hover: #346293;
+  --inset: #142b42;
+  --border: #4a6f96; --border-soft: #3c5d80; --border-strong: #5d84ac;
+  --text: #fafafa; --text-2: #dbe0e6; --muted: #adbccd;
+  --accent: #77b1ee; --ribbon: #79abf0; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.4745098039215686, 0.6705882352941176, 0.9411764705882353, 0.14);
+  --accent-dim: rgba(0.4666666666666667, 0.6941176470588235, 0.9333333333333333, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.10196078431372549, 0.22745098039215686, 0.3568627450980392, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- Nintendo 3DS Dark (retro console) -- */
+:root[data-theme="n3ds-dark"] {
+  --bg: #1a1418; --surface: #241c22; --raised: #2e242b; --hover: #42383f;
+  --inset: #130e11;
+  --border: #4f484c; --border-soft: #3f383c; --border-strong: #7e767a;
+  --text: #f8eef2; --text-2: #cdb9c4; --muted: #a08a96;
+  --accent: #ff3b4e; --ribbon: #ff6b7a; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(255, 107, 122, 0.14);
+  --accent-dim: rgba(255, 59, 78, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(26, 20, 24, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(248, 238, 242, 0.03);
+}
+
+/* -- Nintendo 3DS Light (retro console) -- */
+:root[data-theme="n3ds-light"] {
+  --bg: #5b1a21; --surface: #6d2229; --raised: #7e2a32; --hover: #93343d;
+  --inset: #421419;
+  --border: #964a51; --border-soft: #803c43; --border-strong: #ac5d65;
+  --text: #fafafa; --text-2: #e6dbdc; --muted: #cdadb0;
+  --accent: #ee7782; --ribbon: #f07a86; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.9411764705882353, 0.47843137254901963, 0.5254901960784314, 0.14);
+  --accent-dim: rgba(0.9333333333333333, 0.4666666666666667, 0.5098039215686274, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.3568627450980392, 0.10196078431372549, 0.12941176470588237, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- GameCube Dark (retro console) -- */
+:root[data-theme="gamecube-dark"] {
+  --bg: #171329; --surface: #201a38; --raised: #2a2247; --hover: #3e3659;
+  --inset: #110e1e;
+  --border: #4c485c; --border-soft: #3c384d; --border-strong: #7a778a;
+  --text: #f2efff; --text-2: #c4b8e8; --muted: #9486bd;
+  --accent: #a78bfa; --ribbon: #ff9e3d; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(255, 158, 61, 0.14);
+  --accent-dim: rgba(167, 139, 250, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(23, 19, 41, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(242, 239, 255, 0.03);
+}
+
+/* -- GameCube Light (retro console) -- */
+:root[data-theme="gamecube-light"] {
+  --bg: #2b1a5b; --surface: #35226d; --raised: #3f2a7e; --hover: #4c3493;
+  --inset: #201442;
+  --border: #5d4a96; --border-soft: #4e3c80; --border-strong: #715dac;
+  --text: #fafafa; --text-2: #dedbe6; --muted: #b5adcd;
+  --accent: #ab93f2; --ribbon: #eea863; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.9333333333333333, 0.6588235294117647, 0.38823529411764707, 0.14);
+  --accent-dim: rgba(0.6705882352941176, 0.5764705882352941, 0.9490196078431372, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.16862745098039217, 0.10196078431372549, 0.3568627450980392, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- PlayStation 2 Dark (retro console) -- */
+:root[data-theme="ps2-dark"] {
+  --bg: #10151f; --surface: #171e2b; --raised: #1f2838; --hover: #333c4c;
+  --inset: #0c0f16;
+  --border: #444a55; --border-soft: #343a45; --border-strong: #727985;
+  --text: #e8f2ff; --text-2: #b4c6de; --muted: #7f93ad;
+  --accent: #2d7dff; --ribbon: #7aa2ff; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(122, 162, 255, 0.14);
+  --accent-dim: rgba(45, 125, 255, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(16, 21, 31, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(232, 242, 255, 0.03);
+}
+
+/* -- PlayStation 2 Light (retro console) -- */
+:root[data-theme="ps2-light"] {
+  --bg: #1a335b; --surface: #223f6d; --raised: #2a4a7e; --hover: #345893;
+  --inset: #142642;
+  --border: #4a6796; --border-soft: #3c5680; --border-strong: #5d7bac;
+  --text: #fafafa; --text-2: #dbdfe6; --muted: #adb9cd;
+  --accent: #77a4ee; --ribbon: #87a7f2; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.5294117647058824, 0.6549019607843137, 0.9490196078431372, 0.14);
+  --accent-dim: rgba(0.4666666666666667, 0.6431372549019608, 0.9333333333333333, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.10196078431372549, 0.2, 0.3568627450980392, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- PlayStation Dark (retro console) -- */
+:root[data-theme="ps1-dark"] {
+  --bg: #1a1a1c; --surface: #232326; --raised: #2c2c30; --hover: #404044;
+  --inset: #131314;
+  --border: #4e4e50; --border-soft: #3e3e40; --border-strong: #7c7c7e;
+  --text: #f2f2f4; --text-2: #c0c0c6; --muted: #8a8a92;
+  --accent: #e60012; --ribbon: #3b82f6; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(59, 130, 246, 0.14);
+  --accent-dim: rgba(230, 0, 18, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(26, 26, 28, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(242, 242, 244, 0.03);
+}
+
+/* -- PlayStation Light (retro console) -- */
+:root[data-theme="ps1-light"] {
+  --bg: #1a335b; --surface: #223e6d; --raised: #2a4a7e; --hover: #345893;
+  --inset: #142642;
+  --border: #4a6796; --border-soft: #3c5680; --border-strong: #5d7bac;
+  --text: #fafafa; --text-2: #dbdfe6; --muted: #adb9cd;
+  --accent: #77a4ee; --ribbon: #6398ee; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.38823529411764707, 0.596078431372549, 0.9333333333333333, 0.14);
+  --accent-dim: rgba(0.4666666666666667, 0.6431372549019608, 0.9333333333333333, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.10196078431372549, 0.2, 0.3568627450980392, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- Super Nintendo Dark (retro console) -- */
+:root[data-theme="snes-dark"] {
+  --bg: #1b1926; --surface: #242231; --raised: #2d2a3d; --hover: #403e50;
+  --inset: #13121b;
+  --border: #4e4c58; --border-soft: #3f3d49; --border-strong: #7b7985;
+  --text: #f0eef8; --text-2: #c2bcd8; --muted: #918aa8;
+  --accent: #8b6cf0; --ribbon: #6aa9ff; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(106, 169, 255, 0.14);
+  --accent-dim: rgba(139, 108, 240, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(27, 25, 38, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(240, 238, 248, 0.03);
+}
+
+/* -- Super Nintendo Light (retro console) -- */
+:root[data-theme="snes-light"] {
+  --bg: #2a1a5b; --surface: #34226d; --raised: #3e2a7e; --hover: #4a3493;
+  --inset: #1f1442;
+  --border: #5c4a96; --border-soft: #4c3c80; --border-strong: #705dac;
+  --text: #fafafa; --text-2: #dddbe6; --muted: #b4adcd;
+  --accent: #9377ee; --ribbon: #79abf0; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.4745098039215686, 0.6705882352941176, 0.9411764705882353, 0.14);
+  --accent-dim: rgba(0.5764705882352941, 0.4666666666666667, 0.9333333333333333, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.16470588235294117, 0.10196078431372549, 0.3568627450980392, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- Nintendo 64 Dark (retro console) -- */
+:root[data-theme="n64-dark"] {
+  --bg: #1b1b1b; --surface: #242424; --raised: #2d2d2d; --hover: #414141;
+  --inset: #131313;
+  --border: #4f4f4f; --border-soft: #3f3f3f; --border-strong: #7d7d7d;
+  --text: #f2f2f2; --text-2: #c2c2c2; --muted: #8c8c8c;
+  --accent: #e60012; --ribbon: #2d7dff; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(45, 125, 255, 0.14);
+  --accent-dim: rgba(230, 0, 18, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(27, 27, 27, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(242, 242, 242, 0.03);
+}
+
+/* -- Nintendo 64 Light (retro console) -- */
+:root[data-theme="n64-light"] {
+  --bg: #1a335b; --surface: #223f6d; --raised: #2a4a7e; --hover: #345893;
+  --inset: #142642;
+  --border: #4a6796; --border-soft: #3c5680; --border-strong: #5d7bac;
+  --text: #fafafa; --text-2: #dbdfe6; --muted: #adb9cd;
+  --accent: #77a4ee; --ribbon: #6398ee; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.38823529411764707, 0.596078431372549, 0.9333333333333333, 0.14);
+  --accent-dim: rgba(0.4666666666666667, 0.6431372549019608, 0.9333333333333333, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.10196078431372549, 0.2, 0.3568627450980392, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- Dreamcast Dark (retro console) -- */
+:root[data-theme="dreamcast-dark"] {
+  --bg: #161b1f; --surface: #1f252a; --raised: #282f35; --hover: #3c4248;
+  --inset: #101316;
+  --border: #4a4f52; --border-soft: #3a3f43; --border-strong: #787d80;
+  --text: #edf2f5; --text-2: #b8c4cc; --muted: #84929c;
+  --accent: #ff6b00; --ribbon: #ff9a5a; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(255, 154, 90, 0.14);
+  --accent-dim: rgba(255, 107, 0, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(22, 27, 31, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(237, 242, 245, 0.03);
+}
+
+/* -- Dreamcast Light (retro console) -- */
+:root[data-theme="dreamcast-light"] {
+  --bg: #5b351a; --surface: #6d4122; --raised: #7e4d2a; --hover: #935c34;
+  --inset: #422814;
+  --border: #966a4a; --border-soft: #80593c; --border-strong: #ac7e5d;
+  --text: #fafafa; --text-2: #e6e0db; --muted: #cdbaad;
+  --accent: #eea977; --ribbon: #ee9e6b; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.9333333333333333, 0.6196078431372549, 0.4196078431372549, 0.14);
+  --accent-dim: rgba(0.9333333333333333, 0.6627450980392157, 0.4666666666666667, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.3568627450980392, 0.20784313725490197, 0.10196078431372549, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- Xbox Dark (retro console) -- */
+:root[data-theme="xbox-dark"] {
+  --bg: #141a14; --surface: #1c241c; --raised: #242e24; --hover: #384238;
+  --inset: #0e130e;
+  --border: #484f48; --border-soft: #383f38; --border-strong: #767d76;
+  --text: #eef5ee; --text-2: #bfd0bf; --muted: #8aa08a;
+  --accent: #7bd84a; --ribbon: #a3e635; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(163, 230, 53, 0.14);
+  --accent-dim: rgba(123, 216, 74, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(20, 26, 20, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(238, 245, 238, 0.03);
+}
+
+/* -- Xbox Light (retro console) -- */
+:root[data-theme="xbox-light"] {
+  --bg: #315b1a; --surface: #3c6d22; --raised: #477e2a; --hover: #559334;
+  --inset: #244214;
+  --border: #64964a; --border-soft: #54803c; --border-strong: #78ac5d;
+  --text: #fafafa; --text-2: #f7f9f6; --muted: #b8cdad;
+  --accent: #a0ee77; --ribbon: #b9ee63; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.7254901960784313, 0.9333333333333333, 0.38823529411764707, 0.14);
+  --accent-dim: rgba(0.6274509803921569, 0.9333333333333333, 0.4666666666666667, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.19215686274509805, 0.3568627450980392, 0.10196078431372549, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- PSP Dark (retro console) -- */
+:root[data-theme="psp-dark"] {
+  --bg: #16181d; --surface: #1f2229; --raised: #282c35; --hover: #3c4048;
+  --inset: #101115;
+  --border: #4a4c51; --border-soft: #3a3c41; --border-strong: #787a7f;
+  --text: #eef1f6; --text-2: #bcc4d0; --muted: #868f9e;
+  --accent: #7aa2ff; --ribbon: #c0c8d8; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(192, 200, 216, 0.14);
+  --accent-dim: rgba(122, 162, 255, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(22, 24, 29, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(238, 241, 246, 0.03);
+}
+
+/* -- PSP Light (retro console) -- */
+:root[data-theme="psp-light"] {
+  --bg: #1a2e5b; --surface: #22396d; --raised: #2a437e; --hover: #345093;
+  --inset: #142242;
+  --border: #4a6196; --border-soft: #3c5180; --border-strong: #5d75ac;
+  --text: #fafafa; --text-2: #dbdee6; --muted: #adb6cd;
+  --accent: #89a8f0; --ribbon: #a3bef5; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.6392156862745098, 0.7450980392156863, 0.9607843137254902, 0.14);
+  --accent-dim: rgba(0.5372549019607843, 0.6588235294117647, 0.9411764705882353, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.10196078431372549, 0.1803921568627451, 0.3568627450980392, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- Genesis Dark (retro console) -- */
+:root[data-theme="genesis-dark"] {
+  --bg: #17141a; --surface: #201c25; --raised: #29242f; --hover: #3d3843;
+  --inset: #110e13;
+  --border: #4c484f; --border-soft: #3c383f; --border-strong: #7b767e;
+  --text: #f4eef8; --text-2: #c8bdd2; --muted: #968aa2;
+  --accent: #ff3b5c; --ribbon: #3b82f6; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(59, 130, 246, 0.14);
+  --accent-dim: rgba(255, 59, 92, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(23, 20, 26, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(244, 238, 248, 0.03);
+}
+
+/* -- Genesis Light (retro console) -- */
+:root[data-theme="genesis-light"] {
+  --bg: #1a335b; --surface: #223e6d; --raised: #2a4a7e; --hover: #345893;
+  --inset: #142642;
+  --border: #4a6796; --border-soft: #3c5680; --border-strong: #5d7bac;
+  --text: #fafafa; --text-2: #dbdfe6; --muted: #adb9cd;
+  --accent: #77a4ee; --ribbon: #6398ee; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0.38823529411764707, 0.596078431372549, 0.9333333333333333, 0.14);
+  --accent-dim: rgba(0.4666666666666667, 0.6431372549019608, 0.9333333333333333, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(0.5450980392156862, 0.9098039215686274, 0.6666666666666666, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(1.0, 0.8196078431372549, 0.4, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(1.0, 0.7019607843137254, 0.7333333333333333, 0.14);
+  --header-blur: rgba(0.10196078431372549, 0.2, 0.3568627450980392, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(0.9803921568627451, 0.9803921568627451, 0.9803921568627451, 0.03);
+}
+
+/* -- Dragon Ball Z Dark (shows) -- */
+:root[data-theme="dbz-dark"] {
+  --bg: #10182b; --surface: #16203a; --raised: #1d2a4a; --hover: #323e5c;
+  --inset: #0c111f;
+  --border: #454d5e; --border-soft: #353d4f; --border-strong: #747c8b;
+  --text: #eef4ff; --text-2: #b8c8e8; --muted: #8298c0;
+  --accent: #ff8a00; --ribbon: #3b82f6; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(59, 130, 246, 0.14);
+  --accent-dim: rgba(255, 138, 0, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(16, 24, 43, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(238, 244, 255, 0.03);
+}
+
+/* -- Dragon Ball Z Light (shows) -- */
+:root[data-theme="dbz-light"] {
+  --bg: #7a3a08; --surface: #87420c; --raised: #954c12; --hover: #a05d27;
+  --inset: #582a06;
+  --border: #9a673d; --border-soft: #905a2d; --border-strong: #b68e6c;
+  --text: #fff4e6; --text-2: #f5dcc0; --muted: #cfaa7d;
+  --accent: #ffb347; --ribbon: #6aa9ff; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(106, 169, 255, 0.14);
+  --accent-dim: rgba(255, 179, 71, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff9aa5; --bad-dim: rgba(255, 154, 165, 0.14);
+  --header-blur: rgba(122, 58, 8, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(255, 244, 230, 0.03);
+}
+
+/* -- Naruto Dark (shows) -- */
+:root[data-theme="naruto-dark"] {
+  --bg: #1b1208; --surface: #25190b; --raised: #2f2010; --hover: #443525;
+  --inset: #130d06;
+  --border: #52483c; --border-soft: #42382c; --border-strong: #82786a;
+  --text: #fff3e0; --text-2: #d8bfa0; --muted: #a88a66;
+  --accent: #ff8c1a; --ribbon: #ffd166; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(255, 209, 102, 0.14);
+  --accent-dim: rgba(255, 140, 26, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(27, 18, 8, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(255, 243, 224, 0.03);
+}
+
+/* -- Naruto Light (shows) -- */
+:root[data-theme="naruto-light"] {
+  --bg: #7a2f00; --surface: #883808; --raised: #974310; --hover: #a15526;
+  --inset: #582200;
+  --border: #9a5f38; --border-soft: #905127; --border-strong: #b68969;
+  --text: #fff6e8; --text-2: #f0cf9a; --muted: #cfa878;
+  --accent: #ffb347; --ribbon: #ffe08a; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(255, 224, 138, 0.14);
+  --accent-dim: rgba(255, 179, 71, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffe08a; --warn-dim: rgba(255, 224, 138, 0.13);
+  --bad: #ff9aa5; --bad-dim: rgba(255, 154, 165, 0.14);
+  --header-blur: rgba(122, 47, 0, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(255, 246, 232, 0.03);
+}
+
+/* -- One Piece Dark (shows) -- */
+:root[data-theme="onepiece-dark"] {
+  --bg: #101b2a; --surface: #162536; --raised: #1d2f45; --hover: #324358;
+  --inset: #0c131e;
+  --border: #45505d; --border-soft: #35404e; --border-strong: #747e8a;
+  --text: #eef6ff; --text-2: #b8cbe0; --muted: #829ab5;
+  --accent: #e63946; --ribbon: #ffd166; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(255, 209, 102, 0.14);
+  --accent-dim: rgba(230, 57, 70, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(16, 27, 42, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(238, 246, 255, 0.03);
+}
+
+/* -- One Piece Light (shows) -- */
+:root[data-theme="onepiece-light"] {
+  --bg: #7a1018; --surface: #88161f; --raised: #961c26; --hover: #a0313a;
+  --inset: #580c11;
+  --border: #9a464c; --border-soft: #90363c; --border-strong: #b6767a;
+  --text: #fff2f2; --text-2: #f0b8b8; --muted: #c98a8a;
+  --accent: #ff6b6b; --ribbon: #ffd166; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(255, 209, 102, 0.14);
+  --accent-dim: rgba(255, 107, 107, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff9aa5; --bad-dim: rgba(255, 154, 165, 0.14);
+  --header-blur: rgba(122, 16, 24, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(255, 242, 242, 0.03);
+}
+
+/* -- Sailor Moon Dark (shows) -- */
+:root[data-theme="sailormoon-dark"] {
+  --bg: #24122b; --surface: #2e1936; --raised: #392043; --hover: #4d3556;
+  --inset: #1a0d1f;
+  --border: #58475e; --border-soft: #48374f; --border-strong: #86768b;
+  --text: #fdeeff; --text-2: #d8b8d8; --muted: #a888b0;
+  --accent: #ff8ac2; --ribbon: #ffd166; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(255, 209, 102, 0.14);
+  --accent-dim: rgba(255, 138, 194, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(36, 18, 43, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(253, 238, 255, 0.03);
+}
+
+/* -- Sailor Moon Light (shows) -- */
+:root[data-theme="sailormoon-light"] {
+  --bg: #6b1c4a; --surface: #7a2355; --raised: #882b61; --hover: #943f70;
+  --inset: #4d1435;
+  --border: #8f4f74; --border-soft: #844067; --border-strong: #ae7c9a;
+  --text: #fff0fa; --text-2: #e8b8d8; --muted: #c490b0;
+  --accent: #ff9ed2; --ribbon: #ffd166; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(255, 209, 102, 0.14);
+  --accent-dim: rgba(255, 158, 210, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff9aa5; --bad-dim: rgba(255, 154, 165, 0.14);
+  --header-blur: rgba(107, 28, 74, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(255, 240, 250, 0.03);
+}
+
+/* -- Pokémon Dark (shows) -- */
+:root[data-theme="pokemon-dark"] {
+  --bg: #1a1710; --surface: #242016; --raised: #2e291c; --hover: #433e30;
+  --inset: #13110c;
+  --border: #514d42; --border-soft: #403d33; --border-strong: #827d6e;
+  --text: #fff8e0; --text-2: #d8cba0; --muted: #a89a6b;
+  --accent: #ffcb05; --ribbon: #3d7dca; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(61, 125, 202, 0.14);
+  --accent-dim: rgba(255, 203, 5, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(26, 23, 16, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(255, 248, 224, 0.03);
+}
+
+/* -- Pokémon Light (shows) -- */
+:root[data-theme="pokemon-light"] {
+  --bg: #6b5200; --surface: #7a5f00; --raised: #896b00; --hover: #957917;
+  --inset: #4d3b00;
+  --border: #8f7b37; --border-soft: #846f26; --border-strong: #ae9f68;
+  --text: #fffbe6; --text-2: #fff4d8; --muted: #c9b878;
+  --accent: #ffd93d; --ribbon: #6aa9ff; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(106, 169, 255, 0.14);
+  --accent-dim: rgba(255, 217, 61, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffe08a; --warn-dim: rgba(255, 224, 138, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(255, 179, 187, 0.14);
+  --header-blur: rgba(107, 82, 0, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(255, 251, 230, 0.03);
+}
+
+/* -- Adventure Time Dark (shows) -- */
+:root[data-theme="adventuretime-dark"] {
+  --bg: #101c24; --surface: #162631; --raised: #1d303e; --hover: #324551;
+  --inset: #0c141a;
+  --border: #455259; --border-soft: #354249; --border-strong: #748287;
+  --text: #eefeff; --text-2: #b8d8d8; --muted: #82a8a8;
+  --accent: #7fffd4; --ribbon: #ff6ec7; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(255, 110, 199, 0.14);
+  --accent-dim: rgba(127, 255, 212, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(16, 28, 36, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(238, 254, 255, 0.03);
+}
+
+/* -- Adventure Time Light (shows) -- */
+:root[data-theme="adventuretime-light"] {
+  --bg: #0b4f4a; --surface: #13605a; --raised: #1a7068; --hover: #2f7e77;
+  --inset: #083935;
+  --border: #417974; --border-soft: #316c67; --border-strong: #709f9a;
+  --text: #eafffb; --text-2: #c8f0e8; --muted: #8ac8bf;
+  --accent: #7fffd4; --ribbon: #ff8ad8; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(255, 138, 216, 0.14);
+  --accent-dim: rgba(127, 255, 212, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff9aa5; --bad-dim: rgba(255, 154, 165, 0.14);
+  --header-blur: rgba(11, 79, 74, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(234, 255, 251, 0.03);
+}
+
+/* -- Rick & Morty Dark (shows) -- */
+:root[data-theme="rickmorty-dark"] {
+  --bg: #0e1b18; --surface: #142520; --raised: #1a2f28; --hover: #2f443d;
+  --inset: #0a1311;
+  --border: #44524e; --border-soft: #34423e; --border-strong: #74827e;
+  --text: #eefff8; --text-2: #b8d8c8; --muted: #82a898;
+  --accent: #97ce4c; --ribbon: #00b0c8; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(0, 176, 200, 0.14);
+  --accent-dim: rgba(151, 206, 76, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(14, 27, 24, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(238, 255, 248, 0.03);
+}
+
+/* -- Rick & Morty Light (shows) -- */
+:root[data-theme="rickmorty-light"] {
+  --bg: #3d5a16; --surface: #48691c; --raised: #547824; --hover: #648638;
+  --inset: #2c4110;
+  --border: #698248; --border-soft: #5c7639; --border-strong: #90a575;
+  --text: #f4ffe8; --text-2: #e8f5d8; --muted: #a0bf7a;
+  --accent: #b6e35e; --ribbon: #4dd0e1; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(77, 208, 225, 0.14);
+  --accent-dim: rgba(182, 227, 94, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(255, 179, 187, 0.14);
+  --header-blur: rgba(61, 90, 22, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(244, 255, 232, 0.03);
+}
+
+/* -- The Simpsons Dark (shows) -- */
+:root[data-theme="simpsons-dark"] {
+  --bg: #171a2e; --surface: #1e2238; --raised: #262b45; --hover: #3a3f58;
+  --inset: #111321;
+  --border: #4b4e60; --border-soft: #3b3e51; --border-strong: #797c8d;
+  --text: #eef2ff; --text-2: #bcc2e0; --muted: #8a92b8;
+  --accent: #ffd90f; --ribbon: #4f9dff; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(79, 157, 255, 0.14);
+  --accent-dim: rgba(255, 217, 15, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(23, 26, 46, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(238, 242, 255, 0.03);
+}
+
+/* -- The Simpsons Light (shows) -- */
+:root[data-theme="simpsons-light"] {
+  --bg: #5e4e00; --surface: #6b5900; --raised: #7a6600; --hover: #877516;
+  --inset: #443800;
+  --border: #857836; --border-soft: #796b26; --border-strong: #a79d66;
+  --text: #fffbe0; --text-2: #f5e8b8; --muted: #c9bb78;
+  --accent: #ffe23d; --ribbon: #6aa9ff; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(106, 169, 255, 0.14);
+  --accent-dim: rgba(255, 226, 61, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffe08a; --warn-dim: rgba(255, 224, 138, 0.13);
+  --bad: #ff9aa5; --bad-dim: rgba(255, 154, 165, 0.14);
+  --header-blur: rgba(94, 78, 0, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(255, 251, 224, 0.03);
+}
+
+/* -- SpongeBob Dark (shows) -- */
+:root[data-theme="spongebob-dark"] {
+  --bg: #0c1e2a; --surface: #122834; --raised: #183440; --hover: #2d4853;
+  --inset: #09161e;
+  --border: #42535d; --border-soft: #32434e; --border-strong: #72828a;
+  --text: #eefaff; --text-2: #b8d8e8; --muted: #82a8b8;
+  --accent: #ffd93d; --ribbon: #3bb3d9; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(59, 179, 217, 0.14);
+  --accent-dim: rgba(255, 217, 61, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(12, 30, 42, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(238, 250, 255, 0.03);
+}
+
+/* -- SpongeBob Light (shows) -- */
+:root[data-theme="spongebob-light"] {
+  --bg: #0b4f5e; --surface: #126070; --raised: #1a7182; --hover: #2f7f8e;
+  --inset: #083944;
+  --border: #417985; --border-soft: #316c79; --border-strong: #719ea7;
+  --text: #eefcff; --text-2: #e0f4f8; --muted: #8ac0c9;
+  --accent: #ffe23d; --ribbon: #4dd0e1; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(77, 208, 225, 0.14);
+  --accent-dim: rgba(255, 226, 61, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff9aa5; --bad-dim: rgba(255, 154, 165, 0.14);
+  --header-blur: rgba(11, 79, 94, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(238, 252, 255, 0.03);
+}
+
+/* -- Stranger Things Dark (shows) -- */
+:root[data-theme="strangerthings-dark"] {
+  --bg: #0e0a0a; --surface: #171010; --raised: #211717; --hover: #372d2d;
+  --inset: #0a0707;
+  --border: #484141; --border-soft: #373030; --border-strong: #7b7272;
+  --text: #fff0f0; --text-2: #d8b8b8; --muted: #a88888;
+  --accent: #e50914; --ribbon: #ff2d55; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(255, 45, 85, 0.14);
+  --accent-dim: rgba(229, 9, 20, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(14, 10, 10, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(255, 240, 240, 0.03);
+}
+
+/* -- Stranger Things Light (shows) -- */
+:root[data-theme="strangerthings-light"] {
+  --bg: #5e0508; --surface: #6b0a0f; --raised: #7a1016; --hover: #87262c;
+  --inset: #440406;
+  --border: #853d40; --border-soft: #792c2f; --border-strong: #a76f71;
+  --text: #fff0f0; --text-2: #e8a8a8; --muted: #c98888;
+  --accent: #ff3b4f; --ribbon: #ff6b8a; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(255, 107, 138, 0.14);
+  --accent-dim: rgba(255, 59, 79, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff9aa5; --bad-dim: rgba(255, 154, 165, 0.14);
+  --header-blur: rgba(94, 5, 8, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(255, 240, 240, 0.03);
+}
+
+/* -- Breaking Bad Dark (shows) -- */
+:root[data-theme="breakingbad-dark"] {
+  --bg: #131810; --surface: #1c2318; --raised: #252e20; --hover: #3a4234;
+  --inset: #0e110c;
+  --border: #494e44; --border-soft: #393e34; --border-strong: #787e72;
+  --text: #f2f8e8; --text-2: #c0d0b0; --muted: #8aa078;
+  --accent: #ffd54f; --ribbon: #7cb342; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(124, 179, 66, 0.14);
+  --accent-dim: rgba(255, 213, 79, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(19, 24, 16, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(242, 248, 232, 0.03);
+}
+
+/* -- Breaking Bad Light (shows) -- */
+:root[data-theme="breakingbad-light"] {
+  --bg: #3d4f10; --surface: #475c14; --raised: #526a1a; --hover: #62792f;
+  --inset: #2c390c;
+  --border: #697944; --border-soft: #5c6c34; --border-strong: #909f72;
+  --text: #f6ffe8; --text-2: #d8ecb0; --muted: #a0b878;
+  --accent: #d4e157; --ribbon: #8bc34a; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(139, 195, 74, 0.14);
+  --accent-dim: rgba(212, 225, 87, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff9aa5; --bad-dim: rgba(255, 154, 165, 0.14);
+  --header-blur: rgba(61, 79, 16, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(246, 255, 232, 0.03);
+}
+
+/* -- Game of Thrones Dark (shows) -- */
+:root[data-theme="got-dark"] {
+  --bg: #12161c; --surface: #1a2028; --raised: #222a34; --hover: #373e46;
+  --inset: #0d1014;
+  --border: #484a4d; --border-soft: #383a3e; --border-strong: #787878;
+  --text: #f4f0e8; --text-2: #c8c0b0; --muted: #9a9280;
+  --accent: #c9a227; --ribbon: #b22222; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(178, 34, 34, 0.14);
+  --accent-dim: rgba(201, 162, 39, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(18, 22, 28, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(244, 240, 232, 0.03);
+}
+
+/* -- Game of Thrones Light (shows) -- */
+:root[data-theme="got-light"] {
+  --bg: #4a3a0a; --surface: #57450f; --raised: #655116; --hover: #74622b;
+  --inset: #352a07;
+  --border: #75683f; --border-soft: #685a2f; --border-strong: #9c906e;
+  --text: #fff8e8; --text-2: #e0d0a8; --muted: #bfae80;
+  --accent: #e6c34a; --ribbon: #d95c5c; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(217, 92, 92, 0.14);
+  --accent-dim: rgba(230, 195, 74, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff9aa5; --bad-dim: rgba(255, 154, 165, 0.14);
+  --header-blur: rgba(74, 58, 10, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(255, 248, 232, 0.03);
+}
+
+/* -- The Office Dark (shows) -- */
+:root[data-theme="office-dark"] {
+  --bg: #1b1f24; --surface: #242930; --raised: #2d333b; --hover: #40464e;
+  --inset: #13161a;
+  --border: #4e5256; --border-soft: #3f4347; --border-strong: #7b7f83;
+  --text: #f0f2f5; --text-2: #c0c6ce; --muted: #8a929e;
+  --accent: #4a90e2; --ribbon: #a0a8b8; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(160, 168, 184, 0.14);
+  --accent-dim: rgba(74, 144, 226, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(27, 31, 36, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(240, 242, 245, 0.03);
+}
+
+/* -- The Office Light (shows) -- */
+:root[data-theme="office-light"] {
+  --bg: #2f4a6b; --surface: #375778; --raised: #406386; --hover: #527292;
+  --inset: #22354d;
+  --border: #5d738f; --border-soft: #4f6784; --border-strong: #8698ae;
+  --text: #f0f6ff; --text-2: #d0e0f0; --muted: #8fa8c0;
+  --accent: #7ab0ff; --ribbon: #b8c4d8; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(184, 196, 216, 0.14);
+  --accent-dim: rgba(122, 176, 255, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff9aa5; --bad-dim: rgba(255, 154, 165, 0.14);
+  --header-blur: rgba(47, 74, 107, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(240, 246, 255, 0.03);
+}
+
+/* -- Batman: TAS Dark (shows) -- */
+:root[data-theme="batmantas-dark"] {
+  --bg: #12141a; --surface: #191c24; --raised: #21252f; --hover: #363a44;
+  --inset: #0d0e13;
+  --border: #474951; --border-soft: #373940; --border-strong: #767882;
+  --text: #eef2ff; --text-2: #bcc4d8; --muted: #8892a8;
+  --accent: #ffd166; --ribbon: #4f6bff; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(79, 107, 255, 0.14);
+  --accent-dim: rgba(255, 209, 102, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(18, 20, 26, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(238, 242, 255, 0.03);
+}
+
+/* -- Batman: TAS Light (shows) -- */
+:root[data-theme="batmantas-light"] {
+  --bg: #26385e; --surface: #2e426c; --raised: #374d7b; --hover: #495e88;
+  --inset: #1b2844;
+  --border: #566585; --border-soft: #485879; --border-strong: #818da7;
+  --text: #eef4ff; --text-2: #c0d0e8; --muted: #8fa8c8;
+  --accent: #ffd166; --ribbon: #6a8aff; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(106, 138, 255, 0.14);
+  --accent-dim: rgba(255, 209, 102, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffe08a; --warn-dim: rgba(255, 224, 138, 0.13);
+  --bad: #ff9aa5; --bad-dim: rgba(255, 154, 165, 0.14);
+  --header-blur: rgba(38, 56, 94, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(238, 244, 255, 0.03);
+}
+
+/* -- Avatar: TLA Dark (shows) -- */
+:root[data-theme="avatar-dark"] {
+  --bg: #0b1f2a; --surface: #112832; --raised: #17313d; --hover: #2c4550;
+  --inset: #08161e;
+  --border: #41545d; --border-soft: #31444e; --border-strong: #71828a;
+  --text: #eefaff; --text-2: #b8d8e0; --muted: #82a8b0;
+  --accent: #4dd0e1; --ribbon: #ff8a3d; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(255, 138, 61, 0.14);
+  --accent-dim: rgba(77, 208, 225, 0.14);
+  --ok: #7bd88f; --ok-dim: rgba(123, 216, 143, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff6b81; --bad-dim: rgba(255, 107, 129, 0.14);
+  --header-blur: rgba(11, 31, 42, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(238, 250, 255, 0.03);
+}
+
+/* -- Avatar: TLA Light (shows) -- */
+:root[data-theme="avatar-light"] {
+  --bg: #0b4f5a; --surface: #12606c; --raised: #1a717e; --hover: #2f7f8b;
+  --inset: #083941;
+  --border: #417982; --border-soft: #316c76; --border-strong: #719ea5;
+  --text: #eefcff; --text-2: #e0f4f8; --muted: #8ac0c9;
+  --accent: #7ff0ff; --ribbon: #ff9a5a; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(255, 154, 90, 0.14);
+  --accent-dim: rgba(127, 240, 255, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff9aa5; --bad-dim: rgba(255, 154, 165, 0.14);
+  --header-blur: rgba(11, 79, 90, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(238, 252, 255, 0.03);
+}
+
+/* -- Dune Dark (books) -- */
+:root[data-theme="dune-dark"] {
+  --bg: #1a1206; --surface: #241a0a; --raised: #2e220e; --hover: #423622;
+  --inset: #130d04;
+  --border: #4f4738; --border-soft: #3f3729; --border-strong: #7e7665;
+  --text: #f8eed8; --text-2: #d8c49a; --muted: #a88f66;
+  --accent: #e08a2e; --ribbon: #4f9dff; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(79, 157, 255, 0.14);
+  --accent-dim: rgba(224, 138, 46, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff8a95; --bad-dim: rgba(255, 138, 149, 0.14);
+  --header-blur: rgba(26, 18, 6, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(248, 238, 216, 0.03);
+}
+
+/* -- Dune Light (books) -- */
+:root[data-theme="dune-light"] {
+  --bg: #5b3c1a; --surface: #6d4922; --raised: #7e562a; --hover: #936534;
+  --inset: #422c14;
+  --border: #96714a; --border-soft: #805f3c; --border-strong: #ac865d;
+  --text: #fafafa; --text-2: #e6e1db; --muted: #cdbdad;
+  --accent: #eeb577; --ribbon: #63a0ee; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(99, 160, 238, 0.14);
+  --accent-dim: rgba(238, 181, 119, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(255, 179, 187, 0.14);
+  --header-blur: rgba(91, 60, 26, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(250, 250, 250, 0.03);
+}
+
+/* -- Neuromancer Dark (books) -- */
+:root[data-theme="neuromancer-dark"] {
+  --bg: #081418; --surface: #0d1d22; --raised: #12262c; --hover: #273b41;
+  --inset: #060e11;
+  --border: #3e4b4f; --border-soft: #2e3a3e; --border-strong: #6e7c80;
+  --text: #e8fbff; --text-2: #a8d8e0; --muted: #6f9aa0;
+  --accent: #00e5ff; --ribbon: #ff2d95; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(255, 45, 149, 0.14);
+  --accent-dim: rgba(0, 229, 255, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff8a95; --bad-dim: rgba(255, 138, 149, 0.14);
+  --header-blur: rgba(8, 20, 24, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(232, 251, 255, 0.03);
+}
+
+/* -- Neuromancer Light (books) -- */
+:root[data-theme="neuromancer-light"] {
+  --bg: #1a545b; --surface: #22656d; --raised: #2a767e; --hover: #348993;
+  --inset: #143e42;
+  --border: #4a8f96; --border-soft: #3c7980; --border-strong: #5da4ac;
+  --text: #fafafa; --text-2: #edf2f3; --muted: #adc9cd;
+  --accent: #77e2ee; --ribbon: #ee63a8; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(238, 99, 168, 0.14);
+  --accent-dim: rgba(119, 226, 238, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(255, 179, 187, 0.14);
+  --header-blur: rgba(26, 84, 91, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(250, 250, 250, 0.03);
+}
+
+/* -- Foundation Dark (books) -- */
+:root[data-theme="foundation-dark"] {
+  --bg: #101728; --surface: #162036; --raised: #1c2a45; --hover: #313e58;
+  --inset: #0c111d;
+  --border: #454c5c; --border-soft: #353c4c; --border-strong: #747a8a;
+  --text: #eef2ff; --text-2: #b8c4e0; --muted: #8292b5;
+  --accent: #d4af37; --ribbon: #5b8dff; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(91, 141, 255, 0.14);
+  --accent-dim: rgba(212, 175, 55, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff8a95; --bad-dim: rgba(255, 138, 149, 0.14);
+  --header-blur: rgba(16, 23, 40, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(238, 242, 255, 0.03);
+}
+
+/* -- Foundation Light (books) -- */
+:root[data-theme="foundation-light"] {
+  --bg: #1a2e5b; --surface: #22396d; --raised: #2a447e; --hover: #345193;
+  --inset: #142242;
+  --border: #4a6196; --border-soft: #3c5180; --border-strong: #5d75ac;
+  --text: #fafafa; --text-2: #dbdee6; --muted: #adb6cd;
+  --accent: #779bee; --ribbon: #6b93ef; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(107, 147, 239, 0.14);
+  --accent-dim: rgba(119, 155, 238, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(255, 179, 187, 0.14);
+  --header-blur: rgba(26, 46, 91, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(250, 250, 250, 0.03);
+}
+
+/* -- The Martian Dark (books) -- */
+:root[data-theme="martian-dark"] {
+  --bg: #1a0e0a; --surface: #24140e; --raised: #2e1a12; --hover: #432f27;
+  --inset: #130a07;
+  --border: #51443f; --border-soft: #40342f; --border-strong: #82746e;
+  --text: #fff0e8; --text-2: #e0b8a8; --muted: #b08a7a;
+  --accent: #ff6b3d; --ribbon: #9aa8b8; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(154, 168, 184, 0.14);
+  --accent-dim: rgba(255, 107, 61, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff8a95; --bad-dim: rgba(255, 138, 149, 0.14);
+  --header-blur: rgba(26, 14, 10, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(255, 240, 232, 0.03);
+}
+
+/* -- The Martian Light (books) -- */
+:root[data-theme="martian-light"] {
+  --bg: #5b2a1a; --surface: #6d3422; --raised: #7e3e2a; --hover: #934a34;
+  --inset: #421f14;
+  --border: #965c4a; --border-soft: #804c3c; --border-strong: #ac705d;
+  --text: #fafafa; --text-2: #e6dedb; --muted: #cdb4ad;
+  --accent: #ee9377; --ribbon: #64a4ee; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(100, 164, 238, 0.14);
+  --accent-dim: rgba(238, 147, 119, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(255, 179, 187, 0.14);
+  --header-blur: rgba(91, 42, 26, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(250, 250, 250, 0.03);
+}
+
+/* -- The Lord of the Rings Dark (books) -- */
+:root[data-theme="lotr-dark"] {
+  --bg: #121a10; --surface: #1a2416; --raised: #22301c; --hover: #374430;
+  --inset: #0d130c;
+  --border: #484f44; --border-soft: #383f34; --border-strong: #787e72;
+  --text: #f4f8e8; --text-2: #c8d8b0; --muted: #92a878;
+  --accent: #d4af37; --ribbon: #7ec850; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(126, 200, 80, 0.14);
+  --accent-dim: rgba(212, 175, 55, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff8a95; --bad-dim: rgba(255, 138, 149, 0.14);
+  --header-blur: rgba(18, 26, 16, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(244, 248, 232, 0.03);
+}
+
+/* -- The Lord of the Rings Light (books) -- */
+:root[data-theme="lotr-light"] {
+  --bg: #5b4c1a; --surface: #6d5b22; --raised: #7e6a2a; --hover: #937d34;
+  --inset: #423714;
+  --border: #96844a; --border-soft: #80703c; --border-strong: #ac995d;
+  --text: #fafafa; --text-2: #f3f1ed; --muted: #cdc5ad;
+  --accent: #eed277; --ribbon: #98ee63; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(152, 238, 99, 0.14);
+  --accent-dim: rgba(238, 210, 119, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(255, 179, 187, 0.14);
+  --header-blur: rgba(91, 76, 26, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(250, 250, 250, 0.03);
+}
+
+/* -- Harry Potter Dark (books) -- */
+:root[data-theme="harrypotter-dark"] {
+  --bg: #1a0e12; --surface: #24141a; --raised: #2e1a22; --hover: #432f37;
+  --inset: #130a0d;
+  --border: #514448; --border-soft: #403438; --border-strong: #827478;
+  --text: #fff0f4; --text-2: #e0b8c4; --muted: #b08a96;
+  --accent: #d4af37; --ribbon: #a32638; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(163, 38, 56, 0.14);
+  --accent-dim: rgba(212, 175, 55, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff8a95; --bad-dim: rgba(255, 138, 149, 0.14);
+  --header-blur: rgba(26, 14, 18, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(255, 240, 244, 0.03);
+}
+
+/* -- Harry Potter Light (books) -- */
+:root[data-theme="harrypotter-light"] {
+  --bg: #5b1a24; --surface: #6d222d; --raised: #7e2a36; --hover: #933441;
+  --inset: #42141b;
+  --border: #964a55; --border-soft: #803c46; --border-strong: #ac5d69;
+  --text: #fafafa; --text-2: #e6dbdc; --muted: #cdadb1;
+  --accent: #ee7788; --ribbon: #ee6377; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(238, 99, 119, 0.14);
+  --accent-dim: rgba(238, 119, 136, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(255, 179, 187, 0.14);
+  --header-blur: rgba(91, 26, 36, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(250, 250, 250, 0.03);
+}
+
+/* -- The Name of the Wind Dark (books) -- */
+:root[data-theme="nameofthewind-dark"] {
+  --bg: #1a1208; --surface: #241a0e; --raised: #2e2214; --hover: #433728;
+  --inset: #130d06;
+  --border: #51483c; --border-soft: #40382c; --border-strong: #82786a;
+  --text: #fff4e0; --text-2: #e0c8a0; --muted: #b09a78;
+  --accent: #d99a4e; --ribbon: #6aa9ff; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(106, 169, 255, 0.14);
+  --accent-dim: rgba(217, 154, 78, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff8a95; --bad-dim: rgba(255, 138, 149, 0.14);
+  --header-blur: rgba(26, 18, 8, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(255, 244, 224, 0.03);
+}
+
+/* -- The Name of the Wind Light (books) -- */
+:root[data-theme="nameofthewind-light"] {
+  --bg: #5b3e1a; --surface: #6d4b22; --raised: #7e582a; --hover: #936834;
+  --inset: #422d14;
+  --border: #96744a; --border-soft: #80623c; --border-strong: #ac885d;
+  --text: #fafafa; --text-2: #e6e1db; --muted: #cdbead;
+  --accent: #eeb877; --ribbon: #79abf0; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(121, 171, 240, 0.14);
+  --accent-dim: rgba(238, 184, 119, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(255, 179, 187, 0.14);
+  --header-blur: rgba(91, 62, 26, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(250, 250, 250, 0.03);
+}
+
+/* -- Mistborn Dark (books) -- */
+:root[data-theme="mistborn-dark"] {
+  --bg: #15171c; --surface: #1d2028; --raised: #252a34; --hover: #393e48;
+  --inset: #0f1114;
+  --border: #494c51; --border-soft: #393c41; --border-strong: #777a80;
+  --text: #eef2f8; --text-2: #b8c0d0; --muted: #8892a5;
+  --accent: #6fa8ff; --ribbon: #c97c3d; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(201, 124, 61, 0.14);
+  --accent-dim: rgba(111, 168, 255, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff8a95; --bad-dim: rgba(255, 138, 149, 0.14);
+  --header-blur: rgba(21, 23, 28, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(238, 242, 248, 0.03);
+}
+
+/* -- Mistborn Light (books) -- */
+:root[data-theme="mistborn-light"] {
+  --bg: #1a345b; --surface: #22406d; --raised: #2a4b7e; --hover: #345a93;
+  --inset: #142742;
+  --border: #4a6896; --border-soft: #3c5780; --border-strong: #5d7cac;
+  --text: #fafafa; --text-2: #dbdfe6; --muted: #adb9cd;
+  --accent: #7fabef; --ribbon: #eea163; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(238, 161, 99, 0.14);
+  --accent-dim: rgba(127, 171, 239, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(255, 179, 187, 0.14);
+  --header-blur: rgba(26, 52, 91, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(250, 250, 250, 0.03);
+}
+
+/* -- The Witcher Dark (books) -- */
+:root[data-theme="witcher-dark"] {
+  --bg: #14140f; --surface: #1d1d16; --raised: #26261d; --hover: #3b3a31;
+  --inset: #0e0e0b;
+  --border: #4a4942; --border-soft: #3a3933; --border-strong: #7a786f;
+  --text: #f4f0e4; --text-2: #c8c0a8; --muted: #948c74;
+  --accent: #d4af37; --ribbon: #b22222; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(178, 34, 34, 0.14);
+  --accent-dim: rgba(212, 175, 55, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff8a95; --bad-dim: rgba(255, 138, 149, 0.14);
+  --header-blur: rgba(20, 20, 15, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(244, 240, 228, 0.03);
+}
+
+/* -- The Witcher Light (books) -- */
+:root[data-theme="witcher-light"] {
+  --bg: #5b1a1a; --surface: #6d2222; --raised: #7e2a2a; --hover: #933434;
+  --inset: #421414;
+  --border: #964a4a; --border-soft: #803c3c; --border-strong: #ac5d5d;
+  --text: #fafafa; --text-2: #e6dbdb; --muted: #cdadad;
+  --accent: #ee7777; --ribbon: #ee6363; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(238, 99, 99, 0.14);
+  --accent-dim: rgba(238, 119, 119, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(255, 179, 187, 0.14);
+  --header-blur: rgba(91, 26, 26, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(250, 250, 250, 0.03);
+}
+
+/* -- Warhammer 40,000 Dark (books) -- */
+:root[data-theme="warhammer40k-dark"] {
+  --bg: #120c0c; --surface: #1a1111; --raised: #231717; --hover: #382c2c;
+  --inset: #0d0909;
+  --border: #484141; --border-soft: #383131; --border-strong: #787070;
+  --text: #f5eaea; --text-2: #d0b0b0; --muted: #a08080;
+  --accent: #d4af37; --ribbon: #b22222; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(178, 34, 34, 0.14);
+  --accent-dim: rgba(212, 175, 55, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff8a95; --bad-dim: rgba(255, 138, 149, 0.14);
+  --header-blur: rgba(18, 12, 12, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(245, 234, 234, 0.03);
+}
+
+/* -- Warhammer 40,000 Light (books) -- */
+:root[data-theme="warhammer40k-light"] {
+  --bg: #5b1a1a; --surface: #6d2222; --raised: #7e2a2a; --hover: #933434;
+  --inset: #421414;
+  --border: #964a4a; --border-soft: #803c3c; --border-strong: #ac5d5d;
+  --text: #fafafa; --text-2: #e6dbdb; --muted: #cdadad;
+  --accent: #ee7777; --ribbon: #ee6363; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(238, 99, 99, 0.14);
+  --accent-dim: rgba(238, 119, 119, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(255, 179, 187, 0.14);
+  --header-blur: rgba(91, 26, 26, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(250, 250, 250, 0.03);
+}
+
+/* -- The First Law Dark (books) -- */
+:root[data-theme="firstlaw-dark"] {
+  --bg: #141416; --surface: #1c1c20; --raised: #25252a; --hover: #39393e;
+  --inset: #0e0e10;
+  --border: #49494b; --border-soft: #39393b; --border-strong: #78787a;
+  --text: #f0f0f2; --text-2: #c0c0c8; --muted: #8a8a95;
+  --accent: #b08d57; --ribbon: #8b1a1a; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(139, 26, 26, 0.14);
+  --accent-dim: rgba(176, 141, 87, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff8a95; --bad-dim: rgba(255, 138, 149, 0.14);
+  --header-blur: rgba(20, 20, 22, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(240, 240, 242, 0.03);
+}
+
+/* -- The First Law Light (books) -- */
+:root[data-theme="firstlaw-light"] {
+  --bg: #5b421a; --surface: #6d4f22; --raised: #7e5d2a; --hover: #936e34;
+  --inset: #423014;
+  --border: #96784a; --border-soft: #80663c; --border-strong: #ac8d5d;
+  --text: #fafafa; --text-2: #e6e2db; --muted: #cdc0ad;
+  --accent: #eebf77; --ribbon: #ee6363; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(238, 99, 99, 0.14);
+  --accent-dim: rgba(238, 191, 119, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(255, 179, 187, 0.14);
+  --header-blur: rgba(91, 66, 26, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(250, 250, 250, 0.03);
+}
+
+/* -- A Song of Ice and Fire Dark (books) -- */
+:root[data-theme="asoiaf-dark"] {
+  --bg: #0e1520; --surface: #141d2c; --raised: #1b2638; --hover: #303b4c;
+  --inset: #0a0f17;
+  --border: #444b56; --border-soft: #343b46; --border-strong: #747a85;
+  --text: #eef4ff; --text-2: #b8c8e0; --muted: #7f93ad;
+  --accent: #6fa8ff; --ribbon: #d94a3d; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(217, 74, 61, 0.14);
+  --accent-dim: rgba(111, 168, 255, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff8a95; --bad-dim: rgba(255, 138, 149, 0.14);
+  --header-blur: rgba(14, 21, 32, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(238, 244, 255, 0.03);
+}
+
+/* -- A Song of Ice and Fire Light (books) -- */
+:root[data-theme="asoiaf-light"] {
+  --bg: #1a345b; --surface: #22406d; --raised: #2a4b7e; --hover: #345a93;
+  --inset: #142742;
+  --border: #4a6896; --border-soft: #3c5780; --border-strong: #5d7cac;
+  --text: #fafafa; --text-2: #dbdfe6; --muted: #adb9cd;
+  --accent: #7fabef; --ribbon: #ee6f63; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(238, 111, 99, 0.14);
+  --accent-dim: rgba(127, 171, 239, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(255, 179, 187, 0.14);
+  --header-blur: rgba(26, 52, 91, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(250, 250, 250, 0.03);
+}
+
+/* -- The Hunger Games Dark (books) -- */
+:root[data-theme="hungergames-dark"] {
+  --bg: #16130e; --surface: #1f1a13; --raised: #28221a; --hover: #3d372f;
+  --inset: #100e0a;
+  --border: #4d4942; --border-soft: #3c3932; --border-strong: #7d7970;
+  --text: #faf4e8; --text-2: #d8c8a8; --muted: #a89878;
+  --accent: #ff8c1a; --ribbon: #c0c0c0; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(192, 192, 192, 0.14);
+  --accent-dim: rgba(255, 140, 26, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff8a95; --bad-dim: rgba(255, 138, 149, 0.14);
+  --header-blur: rgba(22, 19, 14, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(250, 244, 232, 0.03);
+}
+
+/* -- The Hunger Games Light (books) -- */
+:root[data-theme="hungergames-light"] {
+  --bg: #5b3b1a; --surface: #6d4722; --raised: #7e542a; --hover: #936334;
+  --inset: #422b14;
+  --border: #96704a; --border-soft: #805e3c; --border-strong: #ac845d;
+  --text: #fafafa; --text-2: #e6e0db; --muted: #cdbdad;
+  --accent: #eeb277; --ribbon: #f28e8e; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(242, 142, 142, 0.14);
+  --accent-dim: rgba(238, 178, 119, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(255, 179, 187, 0.14);
+  --header-blur: rgba(91, 59, 26, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(250, 250, 250, 0.03);
+}
+
+/* -- His Dark Materials Dark (books) -- */
+:root[data-theme="darkmaterials-dark"] {
+  --bg: #101420; --surface: #171c2c; --raised: #1e2538; --hover: #333a4c;
+  --inset: #0c0e17;
+  --border: #464a56; --border-soft: #363a46; --border-strong: #767a85;
+  --text: #f0f4ff; --text-2: #c0c8e0; --muted: #8892b0;
+  --accent: #d4af37; --ribbon: #5b8dff; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(91, 141, 255, 0.14);
+  --accent-dim: rgba(212, 175, 55, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff8a95; --bad-dim: rgba(255, 138, 149, 0.14);
+  --header-blur: rgba(16, 20, 32, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(240, 244, 255, 0.03);
+}
+
+/* -- His Dark Materials Light (books) -- */
+:root[data-theme="darkmaterials-light"] {
+  --bg: #1a2e5b; --surface: #22396d; --raised: #2a447e; --hover: #345193;
+  --inset: #142242;
+  --border: #4a6196; --border-soft: #3c5180; --border-strong: #5d75ac;
+  --text: #fafafa; --text-2: #dbdee6; --muted: #adb6cd;
+  --accent: #779bee; --ribbon: #6b93ef; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(107, 147, 239, 0.14);
+  --accent-dim: rgba(119, 155, 238, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(255, 179, 187, 0.14);
+  --header-blur: rgba(26, 46, 91, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(250, 250, 250, 0.03);
+}
+
+/* -- Discworld Dark (books) -- */
+:root[data-theme="discworld-dark"] {
+  --bg: #1b1026; --surface: #241633; --raised: #2e1d41; --hover: #423254;
+  --inset: #130c1b;
+  --border: #50455a; --border-soft: #40354a; --border-strong: #7f7488;
+  --text: #f8eeff; --text-2: #d8c0e8; --muted: #a888b8;
+  --accent: #d4af37; --ribbon: #8b5cf6; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(139, 92, 246, 0.14);
+  --accent-dim: rgba(212, 175, 55, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ff8a95; --bad-dim: rgba(255, 138, 149, 0.14);
+  --header-blur: rgba(27, 16, 38, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(248, 238, 255, 0.03);
+}
+
+/* -- Discworld Light (books) -- */
+:root[data-theme="discworld-light"] {
+  --bg: #2e1a5b; --surface: #39226d; --raised: #442a7e; --hover: #513493;
+  --inset: #221442;
+  --border: #614a96; --border-soft: #513c80; --border-strong: #755dac;
+  --text: #fafafa; --text-2: #dedbe6; --muted: #b7adcd;
+  --accent: #9b77ee; --ribbon: #8e64ee; --ribbon-glow: 1; --ribbon-sat: 1;
+  --ribbon-dim: rgba(142, 100, 238, 0.14);
+  --accent-dim: rgba(155, 119, 238, 0.14);
+  --ok: #8be8aa; --ok-dim: rgba(139, 232, 170, 0.13);
+  --warn: #ffd166; --warn-dim: rgba(255, 209, 102, 0.13);
+  --bad: #ffb3bb; --bad-dim: rgba(255, 179, 187, 0.14);
+  --header-blur: rgba(46, 26, 91, 0.85);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --row-hover: rgba(250, 250, 250, 0.03);
+}
