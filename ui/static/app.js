@@ -9207,37 +9207,79 @@ function buildCircuitGraph(w, h) {
   return { edges, adj, nodes };
 }
 
-function _pickLight(graph, downward) {
+function _pickLight(graph, avoid) {
   if (!graph || !graph.edges.length) return null;
-  const e = graph.edges[Math.floor(Math.random() * graph.edges.length)];
-  const flip = downward && e.a[1] > e.b[1];
-  return {
-    edge: e, fromKey: flip ? e.kb : e.ka, toKey: flip ? e.ka : e.kb,
-    pos: 0, speed: 15 + Math.random() * 30, wait: Math.random() * 2,
-    trail: [],
-  };
+  let fallback = null, bestD = -1;
+  for (let tries = 0; tries < 32; tries++) {
+    const e = graph.edges[Math.floor(Math.random() * graph.edges.length)];
+    const flip = Math.random() < 0.5;
+    const fromKey = flip ? e.kb : e.ka;
+    const from = e.ka === fromKey ? e.a : e.b;
+    const cand = {
+      edge: e, fromKey, toKey: flip ? e.ka : e.kb,
+      pos: 0, speed: 15 + Math.random() * 30, wait: Math.random() * 2,
+      trail: [], state: "moving", fade: 1,
+    };
+    if (!avoid) return cand;
+    const d = Math.hypot(from[0] - avoid.x, from[1] - avoid.y);
+    if (d >= (avoid.min || 0)) return cand;
+    if (d > bestD) { bestD = d; fallback = cand; }
+  }
+  return fallback;
 }
 
 function _advanceLight(light, graph, h, dt) {
   if (!light) return;
+  if (light.state === "waiting") {
+    light.wait -= dt;
+    if (light.wait <= 0) {
+      const fresh = _pickLight(graph, light.avoid);
+      if (fresh) {
+        Object.assign(light, fresh);
+        light.wait = 0;
+        light.fade = 0;
+        light.trail = [];
+      }
+    }
+    return;
+  }
   if (light.wait > 0) { light.wait -= dt; return; }
   light.pos += light.speed * dt;
-  for (let guard = 0; guard < 24 && light.pos >= light.edge.len; guard++) {
+  light.fade = Math.min(1, (light.fade ?? 1) + dt / 0.35);
+  for (let guard = 0; guard < 24; guard++) {
     const e = light.edge, vertex = light.toKey;
     const vy = e.ka === vertex ? e.a[1] : e.b[1];
-    const cand = (graph.adj.get(vertex) || []).filter(i => graph.edges[i] !== e);
-    const down = cand.filter(i => {
-      const ne = graph.edges[i];
-      const oy = ne.ka === vertex ? ne.b[1] : ne.a[1];
-      return oy >= vy - 1;
-    });
-    const pool = down.length ? down : cand;
-    if (!pool.length || vy > h + 20) {
-      const fresh = _pickLight(graph, true);
-      if (fresh) Object.assign(light, fresh);
+    const pool = (graph.adj.get(vertex) || [])
+      .filter(i => graph.edges[i] !== e);
+    const dead = !pool.length;
+    const remaining = e.len - light.pos;
+    if (dead) {
+      if (remaining > 0) {
+        // Fade exactly over the last stretch so the light is already gone
+        // when it reaches the dead end — no visible pop at the endpoint.
+        const fadeDist = Math.max(1, light.speed * 0.55);
+        light.fade = Math.min(light.fade, remaining / fadeDist);
+      } else {
+        light.pos = e.len;
+        light.fade = 0;
+        light.state = "waiting";
+        light.wait = 0.25 + Math.random() * 0.75;
+        light.trail = [];
+        const end = e.ka === light.toKey ? e.a : e.b;
+        light.avoid = {
+          x: end[0], y: end[1],
+          min: Math.max(140, Math.min(280, h * 0.35)),
+        };
+      }
       return;
     }
+    if (remaining > 1e-6) return;
     const ne = graph.edges[pool[Math.floor(Math.random() * pool.length)]];
+    const vxp = e.ka === vertex ? e.a[0] : e.b[0];
+    if (Array.isArray(light.trail)) {
+      light.trail.push([vxp, vy]);
+      if (light.trail.length > 140) light.trail.shift();
+    }
     light.pos -= e.len;
     light.edge = ne;
     light.fromKey = vertex;
@@ -9464,7 +9506,7 @@ function startParticleBackdrop(mode) {
       }
     } else if (mode === "voronoi" || mode === "circuit") {
       graph = mode === "voronoi" ? buildVoronoiGraph(w, h) : buildCircuitGraph(w, h);
-      lights = Array.from({ length: mode === "circuit" ? 12 : 10 },
+      lights = Array.from({ length: mode === "circuit" ? 28 : 24 },
         () => _pickLight(graph)).filter(Boolean);
     } else if (mode === "hexmesh") {
       const R = Math.max(20, Math.min(34, Math.round(Math.min(w, h) / 28)));
@@ -9544,25 +9586,33 @@ function startParticleBackdrop(mode) {
         ctx.stroke();
         for (const light of lights) {
           _advanceLight(light, graph, h, dt);
-          if (!light) continue;
+          if (!light || light.state === "waiting") continue;
+          const fade = light.fade ?? 1;
           const e = light.edge;
           const f = Math.min(1, light.pos / (e.len || 1));
-          const hx = e.a[0] + (e.b[0] - e.a[0]) * f;
-          const hy = e.a[1] + (e.b[1] - e.a[1]) * f;
+          // pos is measured from fromKey, not always from edge.a. Ignoring
+          // that made flipped edges run backwards and blink at junctions.
+          const from = e.ka === light.fromKey ? e.a : e.b;
+          const to = e.ka === light.fromKey ? e.b : e.a;
+          const hx = from[0] + (to[0] - from[0]) * f;
+          const hy = from[1] + (to[1] - from[1]) * f;
           light.trail.push([hx, hy]);
           if (light.trail.length > 140) light.trail.shift();
           for (let i = 1; i < light.trail.length; i++) {
+            const a = light.trail[i - 1], b = light.trail[i];
+            // Never bridge a respawn or a multi-edge catch-up jump.
+            if (Math.hypot(b[0] - a[0], b[1] - a[1]) > 36) continue;
             const g = i / light.trail.length;
             ctx.strokeStyle = rgba(colorB,
-              Math.min(1, g * g * 0.55 * alphaMult * glowBoost));
+              Math.min(1, g * g * 0.55 * fade * alphaMult * glowBoost));
             ctx.lineWidth = (0.6 + g * 1.4) * glowScale;
             ctx.beginPath();
-            ctx.moveTo(light.trail[i - 1][0], light.trail[i - 1][1]);
-            ctx.lineTo(light.trail[i][0], light.trail[i][1]);
+            ctx.moveTo(a[0], a[1]);
+            ctx.lineTo(b[0], b[1]);
             ctx.stroke();
           }
           ctx.fillStyle = rgba(colorB,
-            Math.min(1, 0.9 * alphaMult * glowBoost));
+            Math.min(1, 0.9 * fade * alphaMult * glowBoost));
           ctx.beginPath();
           ctx.arc(hx, hy, 1.4 * glowScale, 0, Math.PI * 2);
           ctx.fill();
