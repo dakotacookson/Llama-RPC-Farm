@@ -624,11 +624,7 @@ document.querySelectorAll("#user-subtabs [data-utab]").forEach(b => {
   b.addEventListener("click", () => userSubTab(b.dataset.utab));
 });
 
-on("#user-logout", "click", async () => {
-  try { await api("POST", "/api/auth/logout", {}); } catch (_) {}
-  setFarmSession("");
-  window.location.href = "/";
-});
+on("#user-logout", "click", doLogout);
 
 /* ---------------- access (per-IP model visibility) ----------------
    My-key card: the admin session's raw access key + copy button — the
@@ -5330,13 +5326,26 @@ function renderLoginChip(me) {
   const chip = $("#login-chip");
   if (!chip) return;
   if (me && me.name) {
-    // identity display only — Log out moved to the User tab (System)
-    chip.innerHTML = `<i class="fa-solid fa-user-shield"></i> ${escHtml(me.name)}${me.admin ? " · admin" : ""}
-      <span class="hint">log out under the User tab</span>`;
+    chip.innerHTML = `<div class="login-chip-row">
+      <i class="fa-solid fa-user-shield"></i>
+      <span class="login-chip-name">${escHtml(me.name)}${me.admin ? " · admin" : ""}</span>
+      <button type="button" class="login-chip-logout" id="sidebar-logout" title="Logout" aria-label="Logout"><i class="fa-solid fa-right-from-bracket"></i><span>Logout</span></button>
+    </div>`;
     chip.style.display = "flex";
+    $("#sidebar-logout")?.addEventListener("click", doLogout);
   } else {
     chip.style.display = "none";
   }
+}
+
+async function doLogout() {
+  try { await api("POST", "/api/auth/logout", {}); } catch (_) {}
+  for (const k of ["ui-theme-family", "ui-theme-mode", "ui-ribbons-mode",
+                   "ui-ribbons", "ui-theme-random", "theme-genre"]) {
+    localStorage.removeItem(k);
+  }
+  setFarmSession("");
+  window.location.href = "/";
 }
 
 async function doLogin() {
@@ -6838,7 +6847,33 @@ function saveThemeToBackend(family, mode) {
     model_dir: $("#set-model-dir")?.value.trim() || "store://llm-models",
     llama_bin: $("#set-llama-bin")?.value.trim() || "~/llama.cpp/build/bin",
     theme_family: family, theme_mode: mode,
+    ribbon_mode: currentRibbonMode(),
+    ribbon_random: themeRandomOn(),
   }).catch(err => console.warn("[settings] theme save failed:", err.message));
+}
+
+function applyServerUiSettings(s) {
+  if (!s) return;
+  const family = s.theme_family || "nord";
+  const mode = s.theme_mode === "light" ? "light" : "dark";
+  if (family !== currentTheme() || mode !== currentMode()) {
+    localStorage.setItem("ui-theme-family", family);
+    localStorage.setItem("ui-theme-mode", mode);
+    applyTheme(family, mode, false);
+  }
+  if (typeof s.ribbon_random === "boolean") {
+    localStorage.setItem("ui-theme-random", s.ribbon_random ? "1" : "0");
+    paintRandomChip();
+  }
+  if (s.ribbon_mode && !themeRandomOn()) {
+    const rb = RIBBON_MODES.some(m => m.id === s.ribbon_mode)
+      ? s.ribbon_mode : "ribbons";
+    localStorage.setItem("ui-ribbons-mode", rb);
+    localStorage.setItem("ui-ribbons", rb === "none" ? "0" : "1");
+    applyRibbons();
+  } else if (themeRandomOn()) {
+    applyRibbons();
+  }
 }
 
 function applyTheme(family, mode, persist = true) {
@@ -6956,10 +6991,10 @@ async function loadCustomThemes() {
   // now, or fall back only if it was actually deleted.
   const fam = currentTheme();
   if (fam.startsWith("custom:")) {
-    if (customThemes[fam.slice(7)]) applyTheme(fam);
+    if (customThemes[fam.slice(7)]) applyTheme(fam, currentMode(), false);
     else {
       localStorage.setItem("ui-theme-family", "nord");
-      applyTheme("nord");
+      applyTheme("nord", currentMode(), false);
     }
   }
 }
@@ -7210,16 +7245,7 @@ function renderThemeGrid() {
     el.onclick = () => {
       if (themeDraft) return;
       localStorage.setItem("ui-theme-family", t.id);
-      // boot theme: localStorage for instant paint, then backend overrides
-// if it differs (theme was saved from another browser)
-applyTheme(t.id);
-api("GET", "/api/settings").then(s => {
-  if (!localStorage.getItem("ui-theme-family") && s.theme_family) {
-    localStorage.setItem("ui-theme-family", s.theme_family);
-    localStorage.setItem("ui-theme-mode", "dark");
-    applyTheme(s.theme_family, s.theme_mode);
-  }
-}).catch(() => {});
+      applyTheme(t.id);
       saveThemeToBackend(t.id, currentMode());
     };
     grid.appendChild(el);
@@ -7267,17 +7293,12 @@ api("GET", "/api/settings").then(s => {
 }
 
 // boot theme: localStorage for instant paint, then backend overrides
-// if it differs (theme was saved from another browser).
-applyTheme(currentTheme());
+// if it differs (theme was saved from another browser). Never POST during
+// boot: RIBBON_MODES is declared below and the backend may not be ready.
+applyTheme(currentTheme(), currentMode(), false);
 paintRandomChip();
 loadCustomThemes();
-api("GET", "/api/settings").then(s => {
-  if (!localStorage.getItem("ui-theme-family") && s.theme_family) {
-    localStorage.setItem("ui-theme-family", s.theme_family);
-    localStorage.setItem("ui-theme-mode", "dark");
-    applyTheme(s.theme_family, s.theme_mode);
-  }
-}).catch(() => {});
+api("GET", "/api/settings").then(applyServerUiSettings).catch(() => {});
 on("#theme-builder-cancel", "click", cancelThemeBuilder);
 on("#theme-builder-save", "click", saveThemeBuilder);
 on("#theme-builder-delete", "click", deleteThemeBuilder);
@@ -7309,11 +7330,7 @@ async function loadSettings() {
     }
     appSettings = s;
     applyEngineHints(s);
-    if (s.theme_family && !localStorage.getItem("ui-theme-family")) {
-      localStorage.setItem("ui-theme-family", s.theme_family);
-      localStorage.setItem("ui-theme-mode", "dark");
-      applyTheme(s.theme_family, s.theme_mode);
-    }
+    applyServerUiSettings(s);
   } catch (err) { /* defaults fine */ }
 }
 
@@ -7327,6 +7344,8 @@ on("#set-save", "click", async (e) => {
       llama_bin: $("#set-llama-bin").value.trim(),
       theme_family: currentTheme(),
       theme_mode: currentMode(),
+      ribbon_mode: currentRibbonMode(),
+      ribbon_random: themeRandomOn(),
     };
     // only send the token when the user typed one — empty keeps the saved one
     const tok = $("#set-hf-token")?.value.trim();
@@ -10198,6 +10217,7 @@ on("#set-ribbons-mode", "change", () => {
   // keep the legacy key in sync for older builds/tabs
   localStorage.setItem("ui-ribbons", mode === "none" ? "0" : "1");
   applyRibbons();
+  saveThemeToBackend(currentTheme(), currentMode());
 });
 document.querySelectorAll("#theme-mode-seg button").forEach(b => {
   b.addEventListener("click", () => {
@@ -10219,6 +10239,7 @@ if (themeRandomBtn) {
       localStorage.setItem("ui-ribbons", "1");
       applyRibbons();
     }
+    saveThemeToBackend(currentTheme(), currentMode());
   });
 }
 const themeGenreSel = $("#theme-genre");

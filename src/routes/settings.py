@@ -54,7 +54,8 @@ async def get_settings():
         _key_ui = {}
     if _key_ui:
         defaults.update({k: v for k, v in _key_ui.items()
-                         if k in ("theme_family", "theme_mode")})
+                         if k in ("theme_family", "theme_mode",
+                                  "ribbon_mode", "ribbon_random")})
     # never leak the raw token to the browser — expose only set-state.
     # Source of truth is the encrypted vault (.env); legacy YAML read for compat.
     token = str(defaults.pop("hf_token", "") or "")
@@ -83,6 +84,8 @@ class AppSettingsIn(pydantic.BaseModel):
     llama_bin: str = "~/llama.cpp/build/bin"
     theme_family: str = "nord"
     theme_mode: str = "dark"
+    ribbon_mode: str | None = None
+    ribbon_random: bool | None = None
     hf_token: str | None = None  # only a non-empty value updates the stored token
     clear_hf_token: bool = False
     engine: str | None = None  # llama_cpp — None leaves the stored value
@@ -190,13 +193,14 @@ async def save_settings(s: AppSettingsIn, r: Request):
     tok = (update.pop("hf_token", None) or "").strip()
     clear_tok = update.pop("clear_hf_token", False)
     engine = update.pop("engine", None)
-    # per-key UI state: scoped identities write theme_family/theme_mode
-    # into THEIR access_keys ui: block instead of the shared file —
-    # farm-wide state untouched.
+    # per-key UI state: scoped identities write theme and background
+    # choices into THEIR access_keys ui: block instead of the shared
+    # file — farm-wide state untouched.
+    _ui_fields = ("theme_family", "theme_mode", "ribbon_mode", "ribbon_random")
     if not _control_identity and _key_name_for_ui and \
-            (update.get("theme_family") or update.get("theme_mode")):
-        _want = {k: update[k] for k in ("theme_family", "theme_mode")
-                 if update.get(k)}
+            any(update.get(k) is not None for k in _ui_fields):
+        _want = {k: update[k] for k in _ui_fields
+                 if update.get(k) is not None}
         _keys = current.get(access.KEYS_SETTINGS_KEY)
         if not isinstance(_keys, dict):
             _keys = {}
@@ -207,8 +211,12 @@ async def save_settings(s: AppSettingsIn, r: Request):
                 _e["ui"] = ui
                 break
         current[access.KEYS_SETTINGS_KEY] = _keys
-        update.pop("theme_family", None)
-        update.pop("theme_mode", None)
+        for _k in _ui_fields:
+            update.pop(_k, None)
+    # optional fields: absent means "leave the stored value alone"
+    for _k in ("ribbon_mode", "ribbon_random"):
+        if update.get(_k) is None:
+            update.pop(_k, None)
     current.update(update)
     if engine is not None:
         # enum check with the valid values in the message (never a silent
