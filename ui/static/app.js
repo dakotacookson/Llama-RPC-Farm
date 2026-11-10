@@ -6637,31 +6637,89 @@ on("#chat-input", "keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 
 /* ---------------- settings ---------------- */
 /* theme registry: each pair = [darkSuffix, lightSuffix, displayName, swatchColors] */
 const THEMES = [
-  { id: "nord", name: "Nord", dark: "nord-dark", light: "nord-light",
+  { id: "obsidian", name: "Obsidian", dark: "obsidian-dark", light: "obsidian-light",
+    swatch: ["#0a0b0e", "#b7a4ff", "#a855f7"] },
+  { id: "labradorite", name: "Labradorite", dark: "labradorite-dark", light: "labradorite-light",
+    swatch: ["#0b1114", "#4fd1c5", "#ffc857"] },
+  { id: "steel", name: "Hematite", dark: "steel-dark", light: "steel-light",
+    swatch: ["#1b1d20", "#c7cfda", "#ff9a3c"] },
+  { id: "smokyquartz", name: "Smoky Quartz", dark: "smokyquartz-dark", light: "smokyquartz-light",
+    swatch: ["#1b1815", "#c9a27e", "#a9c6d8"] },
+  { id: "moonstone", name: "Moonstone", dark: "moonstone-dark", light: "moonstone-light",
+    swatch: ["#141923", "#d6e2ff", "#c9b6ff"] },
+
+  { id: "pearl", name: "Pearl", dark: "pearl-dark", light: "pearl-light",
+    swatch: ["#2a2630", "#f2d6e6", "#bcd8e6"] },
+  { id: "nord", name: "Blue Agate", dark: "nord-dark", light: "nord-light",
     swatch: ["#2e3440", "#88c0d0", "#a3be8c"] },
-  { id: "tropical", name: "Tropical", dark: "tropical-dark", light: "tropical-light",
+  { id: "sodalite", name: "Sodalite", dark: "sodalite-dark", light: "sodalite-light",
+    swatch: ["#0a1430", "#5b8cff", "#d6d9e8"] },
+  { id: "sapphire", name: "Sapphire", dark: "sapphire-dark", light: "sapphire-light",
+    swatch: ["#081a3d", "#3d8bff", "#ffc857"] },
+  { id: "arctic", name: "Aquamarine", dark: "arctic-dark", light: "arctic-light",
+    swatch: ["#20344d", "#6fd3ff", "#d8ecff"] },
+  { id: "larimar", name: "Larimar", dark: "larimar-dark", light: "larimar-light",
+    swatch: ["#041a2b", "#5fe0d0", "#ffc857"] },
+  { id: "tropical", name: "Turquoise", dark: "tropical-dark", light: "tropical-light",
     swatch: ["#04262c", "#2ee6c8", "#ff8a5c"] },
-  { id: "cyberpunk", name: "Cyberpunk", dark: "cyberpunk-dark", light: "cyberpunk-light",
-    swatch: ["#0d0714", "#f9f002", "#00f0ff"] },
-  { id: "fiery", name: "Fiery", dark: "fiery-dark", light: "fiery-light",
-    swatch: ["#38100c", "#ff8a2a", "#ffd23d"] },
+  { id: "everforest", name: "Moss Agate", dark: "everforest-dark", light: "everforest-light",
+    swatch: ["#2a2f38", "#a7c080", "#dbbc7f"] },
   { id: "emerald", name: "Emerald", dark: "emerald-dark", light: "emerald-light",
     swatch: ["#0d3527", "#2fe89a", "#ffd166"] },
-  { id: "mynecraft", name: "Mynecraft", dark: "mynecraft-dark", light: "mynecraft-light",
-    swatch: ["#2a1c0e", "#6abe30", "#4de3d1"] },
-  { id: "steel", name: "Steel", dark: "steel-dark", light: "steel-light",
-    swatch: ["#1b1d20", "#c7cfda", "#ff9a3c"] },  { id: "sakura", name: "Sakura", dark: "sakura-dark", light: "sakura-light",
-    swatch: ["#2b1622", "#ff8ac2", "#ff9ecf"] },  { id: "arctic", name: "Arctic", dark: "arctic-dark", light: "arctic-light",
-    swatch: ["#20344d", "#6fd3ff", "#d8ecff"] },
-  { id: "lavender", name: "Lavender", dark: "lavender-dark", light: "lavender-light",
+  { id: "peridot", name: "Peridot", dark: "peridot-dark", light: "peridot-light",
+    swatch: ["#1a2208", "#b6e33e", "#ff9b54"] },
+  { id: "bloodstone", name: "Bloodstone", dark: "bloodstone-dark", light: "bloodstone-light",
+    swatch: ["#0c1a12", "#e0455a", "#58d6a6"] },
+  { id: "tourmaline", name: "Tourmaline", dark: "tourmaline-dark", light: "tourmaline-light",
+    swatch: ["#0e2018", "#ff4f9a", "#4fe0a0"] },
+  { id: "tanzanite", name: "Tanzanite", dark: "tanzanite-dark", light: "tanzanite-light",
+    swatch: ["#140f2e", "#8f7bff", "#c9d2e6"] },
+  { id: "lavender", name: "Amethyst", dark: "lavender-dark", light: "lavender-light",
     swatch: ["#2f2a50", "#c4b5fd", "#f4b5fd"] },
-  { id: "everforest", name: "Everforest", dark: "everforest-dark", light: "everforest-light",
-    swatch: ["#2a2f38", "#a7c080", "#dbbc7f"] },
-  { id: "wicked", name: "Wicked", dark: "wicked-dark", light: "wicked-light",
-    swatch: ["#1a0f2e", "#a86bff", "#7ce38b"] },];
+  { id: "cyberpunk", name: "Fluorite", dark: "cyberpunk-dark", light: "cyberpunk-light",
+    swatch: ["#0d0714", "#f9f002", "#00f0ff"] },
+  { id: "rhodonite", name: "Rhodonite", dark: "rhodonite-dark", light: "rhodonite-light",
+    swatch: ["#2a0c18", "#e84a86", "#d6b26a"] },
+  { id: "sakura", name: "Rose Quartz", dark: "sakura-dark", light: "sakura-light",
+    swatch: ["#2b1622", "#ff8ac2", "#ff9ecf"] },
+  { id: "garnet", name: "Garnet", dark: "garnet-dark", light: "garnet-light",
+    swatch: ["#2a0a0a", "#c1272d", "#e0a458"] },
+  { id: "ruby", name: "Ruby", dark: "ruby-dark", light: "ruby-light",
+    swatch: ["#41100d", "#ef2a33", "#ffc857"] },
+  { id: "fireopal", name: "Fire Opal", dark: "fireopal-dark", light: "fireopal-light",
+    swatch: ["#2a0d06", "#ff6b2c", "#43e0d0"] },
+  { id: "tigerseye", name: "Tiger's Eye", dark: "tigerseye-dark", light: "tigerseye-light",
+    swatch: ["#20130a", "#e08a2e", "#ffd98a"] },
+  { id: "topaz", name: "Topaz", dark: "topaz-dark", light: "topaz-light",
+    swatch: ["#2b1a06", "#ffb627", "#4fd8c8"] },
+  { id: "netflix", name: "Netflix", genre: "famous", dark: "netflix-dark", light: "netflix-light",
+    swatch: ["#141414", "#e50914", "#b20710"] },
+  { id: "youtube", name: "YouTube", genre: "famous", dark: "youtube-dark", light: "youtube-light",
+    swatch: ["#0f0f0f", "#ff0000", "#ff0000"] },
+  { id: "facebook", name: "Facebook", genre: "famous", dark: "facebook-dark", light: "facebook-light",
+    swatch: ["#18191a", "#1877f2", "#1877f2"] },
+  { id: "twitter", name: "Twitter", genre: "famous", dark: "twitter-dark", light: "twitter-light",
+    swatch: ["#000000", "#1d9bf0", "#1d9bf0"] },
+  { id: "pornhub", name: "The Hub", genre: "famous", dark: "pornhub-dark", light: "pornhub-light",
+    swatch: ["#1b1b1b", "#ffa31a", "#ffa31a"] },
+  { id: "spotify", name: "Spotify", genre: "famous", dark: "spotify-dark", light: "spotify-light",
+    swatch: ["#121212", "#1db954", "#1ed760"] },
+  { id: "discord", name: "Discord", genre: "famous", dark: "discord-dark", light: "discord-light",
+    swatch: ["#1e1f22", "#5865f2", "#5865f2"] },
+  { id: "reddit", name: "Reddit", genre: "famous", dark: "reddit-dark", light: "reddit-light",
+    swatch: ["#0b1416", "#ff4500", "#ff8717"] },
+  { id: "twitch", name: "Twitch", genre: "famous", dark: "twitch-dark", light: "twitch-light",
+    swatch: ["#0e0e10", "#9146ff", "#bf94ff"] },
+  { id: "instagram", name: "Instagram", genre: "famous", dark: "instagram-dark", light: "instagram-light",
+    swatch: ["#000000", "#e1306c", "#ff9f43"] },
+];
 
 function currentTheme() {
   return localStorage.getItem("ui-theme-family") || "nord";
+}
+const THEME_GENRE_DEFAULT = "geology";
+function currentThemeGenre() {
+  return localStorage.getItem("theme-genre") || THEME_GENRE_DEFAULT;
 }
 function currentMode() {
   const m = localStorage.getItem("ui-theme-mode");
@@ -6678,22 +6736,29 @@ function saveThemeToBackend(family, mode) {
 
 function applyTheme(family, mode) {
   family = family || currentTheme();
+  if (["mynecraft", "mocha", "cobalt"].includes(family)) family = "obsidian";
+  if (family === "fiery") family = "ruby";  // retired theme → replacement
+  if (family === "wicked") family = "topaz";  // retired theme → replacement
   mode = mode || currentMode();
   if (mode !== "light") mode = "dark";
   if (family.startsWith("custom:")) {
     // user-made themes are absolute palettes: the mode toggle never touches them
     const c = customThemes[family.slice(7)];
-    if (c) {
-      // custom themes ride on the base tokens + inline overrides
-      document.documentElement.dataset.theme = "custom";
-      for (const [k, v] of Object.entries(c.tokens)) document.documentElement.style.setProperty(k, v);
-      localStorage.setItem("ui-theme-family", family);
-      paintModeChips(family);
-      renderThemeGrid();
-      saveThemeToBackend(family, mode);
+    if (!c) {
+      // Custom list may not have loaded yet on boot. Never overwrite the
+      // saved choice here — loadCustomThemes() applies it (or falls back
+      // only if the theme really was deleted).
       return;
     }
-    family = "nord";   // custom id gone (deleted) — fall back
+    // custom themes ride on the base tokens + inline overrides
+    document.documentElement.dataset.theme = "custom";
+    const all = { ...c.tokens, ...derivedTokens(c.tokens) };
+    for (const [k, v] of Object.entries(all)) document.documentElement.style.setProperty(k, v);
+    localStorage.setItem("ui-theme-family", family);
+    paintModeChips(family);
+    renderThemeGrid();
+    saveThemeToBackend(family, mode);
+    return;
   }
   const fam = THEMES.find(t => t.id === family) || THEMES[0];
   clearInlineTheme();
@@ -6718,9 +6783,36 @@ function paintModeChips(family) {
   seg.title = isCustom ? "Custom themes are absolute — the toggle doesn't apply" : "";
 }
 
+function hexToRgba(hex, alpha) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+  if (!m) return `rgba(0,0,0,${alpha})`;
+  const n = parseInt(m[1], 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+}
+
+/* Derived palette tokens are not user-edited in the builder but must follow
+   the custom colors. Otherwise switching to a custom theme leaves these on
+   the base theme (the "looks like nord" bug). */
+const THEME_DERIVED = ["--accent-dim", "--ribbon-dim", "--ok-dim",
+  "--warn-dim", "--bad-dim", "--header-blur", "--row-hover", "--bar-track"];
+
+function derivedTokens(tokens) {
+  return {
+    "--accent-dim": hexToRgba(tokens["--accent"], 0.14),
+    "--ribbon-dim": hexToRgba(tokens["--ribbon"], 0.14),
+    "--ok-dim": hexToRgba(tokens["--ok"], 0.14),
+    "--warn-dim": hexToRgba(tokens["--warn"], 0.14),
+    "--bad-dim": hexToRgba(tokens["--bad"], 0.14),
+    "--header-blur": hexToRgba(tokens["--bg"], 0.85),
+    "--row-hover": hexToRgba(tokens["--text"], 0.03),
+    "--bar-track": hexToRgba(tokens["--bg"], 0.4),
+  };
+}
+
 function clearInlineTheme() {
   for (const t of THEME_TOKENS) document.documentElement.style.removeProperty(t.var);
   for (const f of THEME_FX) document.documentElement.style.removeProperty(f.var);
+  for (const d of THEME_DERIVED) document.documentElement.style.removeProperty(d);
 }
 
 /* ---- custom theme builder ---- */
@@ -6753,14 +6845,23 @@ async function loadCustomThemes() {
     customThemes = (r && r.themes) || {};
   } catch (_) { customThemes = {}; }
   renderThemeGrid();
-  // a stored custom theme can't paint until the list arrives — apply now
-  if (currentTheme().startsWith("custom:")) applyTheme(currentTheme());
+  // A stored custom theme can't paint until this list arrives. Apply it
+  // now, or fall back only if it was actually deleted.
+  const fam = currentTheme();
+  if (fam.startsWith("custom:")) {
+    if (customThemes[fam.slice(7)]) applyTheme(fam);
+    else {
+      localStorage.setItem("ui-theme-family", "nord");
+      applyTheme("nord");
+    }
+  }
 }
 
 // numeric (non-color) theme settings — ribbon FX, tuned with sliders
 const THEME_FX = [
   { var: "--ribbon-glow", label: "glow", min: 0, max: 2 },
   { var: "--ribbon-sat", label: "vivid", min: 0, max: 2.5 },
+  { var: "--ribbon-alpha", label: "opacity", min: 0.2, max: 2.5 },
 ];
 function cssToHex(v, fallback) {
   // getComputedStyle returns rgb()/rgba(), color inputs need #rrggbb
@@ -6825,17 +6926,36 @@ function paintDraftInputs() {
 }
 
 function previewDraft() {
-  // paint the whole draft live (used after template seeding)
+  // Paint the WHOLE draft (not just the one edited token): switching to
+  // data-theme=custom otherwise drops every token the draft did not set,
+  // which made the page snap back to nord on the first edit.
   document.documentElement.dataset.theme = "custom";
-  for (const [k, v] of Object.entries(themeDraft.tokens)) document.documentElement.style.setProperty(k, v);
+  const all = { ...themeDraft.tokens, ...derivedTokens(themeDraft.tokens) };
+  for (const [k, v] of Object.entries(all)) document.documentElement.style.setProperty(k, v);
+}
+
+function paintDraftFx() {
+  const els = {
+    "--ribbon-glow": ["#theme-fx-glow", "#theme-fx-glow-v"],
+    "--ribbon-sat": ["#theme-fx-sat", "#theme-fx-sat-v"],
+    "--ribbon-alpha": ["#theme-fx-alpha", "#theme-fx-alpha-v"],
+  };
+  for (const f of THEME_FX) {
+    const s = $(els[f.var][0]), lab = $(els[f.var][1]);
+    const v = parseFloat(themeDraft.tokens[f.var]);
+    const num = Number.isFinite(v) ? v : 1;
+    if (s) s.value = num;
+    if (lab) lab.textContent = Math.round(num * 100) + "%";
+  }
 }
 
 function openThemeBuilder(editId) {
   const existing = editId ? customThemes[editId] : null;
+  const base = computedTokens();   // whatever is on screen right now
   themeDraft = {
     id: editId || null,
     name: existing ? existing.name : "My theme",
-    tokens: existing ? { ...existing.tokens } : computedTokens(),
+    tokens: existing ? { ...base, ...existing.tokens } : base,
   };
   $("#theme-builder-name").value = themeDraft.name;
   const box = $("#theme-builder-rows");
@@ -6855,9 +6975,8 @@ function openThemeBuilder(editId) {
     themeDraft.tokens[v] = inp.value;
     const hex = box.querySelector(`[data-hex="${v}"]`);
     if (hex) hex.textContent = inp.value;
-    // LIVE preview: paint immediately so the wheel shows the real result
-    document.documentElement.dataset.theme = "custom";
-    document.documentElement.style.setProperty(v, inp.value);
+    // LIVE preview: paint the whole draft so nothing falls back to base
+    previewDraft();
   };
   $("#theme-builder-name").oninput = (e) => { if (themeDraft) themeDraft.name = e.target.value; };
   // template picker: current look + every built-in + saved customs
@@ -6878,17 +6997,9 @@ function openThemeBuilder(editId) {
   const fxEls = {
     "--ribbon-glow": ["#theme-fx-glow", "#theme-fx-glow-v"],
     "--ribbon-sat": ["#theme-fx-sat", "#theme-fx-sat-v"],
+    "--ribbon-alpha": ["#theme-fx-alpha", "#theme-fx-alpha-v"],
   };
-  const paintFx = () => {
-    for (const f of THEME_FX) {
-      const s = $(fxEls[f.var][0]), lab = $(fxEls[f.var][1]);
-      const v = parseFloat(themeDraft.tokens[f.var]);
-      const num = Number.isFinite(v) ? v : 1;
-      if (s) s.value = num;
-      if (lab) lab.textContent = Math.round(num * 100) + "%";
-    }
-  };
-  paintFx();
+  paintDraftFx();
   for (const f of THEME_FX) {
     const s = $(fxEls[f.var][0]);
     if (s) s.oninput = () => {
@@ -6896,12 +7007,11 @@ function openThemeBuilder(editId) {
       themeDraft.tokens[f.var] = String(s.value);
       const lab = $(fxEls[f.var][1]);
       if (lab) lab.textContent = Math.round(parseFloat(s.value) * 100) + "%";
-      document.documentElement.dataset.theme = "custom";
-      document.documentElement.style.setProperty(f.var, s.value);
+      previewDraft();
     };
   }
   const _origSeedChange = seed.onchange;
-  seed.onchange = async () => { await _origSeedChange(); paintFx(); };
+  seed.onchange = async () => { await _origSeedChange(); paintDraftFx(); };
   $("#theme-builder-delete").hidden = !existing;
   const wrap = $("#theme-builder-wrap");
   const title = $("#theme-builder-title");
@@ -6913,6 +7023,12 @@ function themeBuilderShow(show) {
   const wrap = $("#theme-builder-wrap");
   if (!wrap) return;
   wrap.open = !!show;
+  // While a draft is open, the external picker is locked: changing the
+  // active theme would fight the live preview. Save/cancel unlocks it.
+  for (const sel of ["#theme-grid", "#theme-mode-seg", "#theme-genre"]) {
+    const el = $(sel);
+    if (el) el.classList.toggle("theme-locked", !!show);
+  }
   if (show) wrap.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
@@ -6973,8 +7089,10 @@ function renderThemeGrid() {
   const grid = $("#theme-grid");
   if (!grid) return;
   const fam = currentTheme();
+  const genre = currentThemeGenre();
   grid.innerHTML = "";
   for (const t of THEMES) {
+    if ((t.genre || THEME_GENRE_DEFAULT) !== genre) continue;
     const el = document.createElement("button");
     el.type = "button";
     el.className = "theme-swatch" + (t.id === fam ? " active" : "");
@@ -6982,6 +7100,7 @@ function renderThemeGrid() {
       `<span style="background:${c}"></span>`).join("")}</span>
       <span class="theme-name">${escHtml(t.name)}</span>`;
     el.onclick = () => {
+      if (themeDraft) return;
       localStorage.setItem("ui-theme-family", t.id);
       // boot theme: localStorage for instant paint, then backend overrides
 // if it differs (theme was saved from another browser)
@@ -7010,17 +7129,20 @@ api("GET", "/api/settings").then(s => {
       </span>`;
     el.querySelector('[data-act="apply"]').onclick = (e) => {
       e.stopPropagation();
+      if (themeDraft) return;
       localStorage.setItem("ui-theme-family", key);
       applyTheme(key);
     };
     // clicking anywhere on the card (not just ✓) applies the theme
     el.style.cursor = "pointer";
     el.onclick = () => {
+      if (themeDraft) return;
       localStorage.setItem("ui-theme-family", key);
       applyTheme(key);
     };
     el.querySelector('[data-act="edit"]').onclick = (e) => {
       e.stopPropagation();
+      if (themeDraft) return;
       openThemeBuilder(id);
     };
     grid.appendChild(el);
@@ -7032,7 +7154,7 @@ api("GET", "/api/settings").then(s => {
   add.title = "Build a custom theme";
   add.innerHTML = `<span class="theme-add-plus"><i class="fa-solid fa-plus"></i></span>
     <span class="theme-name">Custom…</span>`;
-  add.onclick = () => openThemeBuilder(null);
+  add.onclick = () => { if (!themeDraft) openThemeBuilder(null); };
   grid.appendChild(add);
 }
 
@@ -7050,6 +7172,17 @@ api("GET", "/api/settings").then(s => {
 on("#theme-builder-cancel", "click", cancelThemeBuilder);
 on("#theme-builder-save", "click", saveThemeBuilder);
 on("#theme-builder-delete", "click", deleteThemeBuilder);
+// The <summary> is another entry point to the builder. Treat it exactly
+// like the "+" tile: opening it creates a draft and locks theme selection.
+$("#theme-builder-wrap > summary")?.addEventListener("click", (e) => {
+  const wrap = $("#theme-builder-wrap");
+  if (wrap?.open) return;          // native close; toggle handler cancels draft
+  e.preventDefault();
+  if (!themeDraft) openThemeBuilder(null);
+});
+$("#theme-builder-wrap")?.addEventListener("toggle", (e) => {
+  if (!e.currentTarget.open && themeDraft) cancelThemeBuilder();
+});
 // (light-mode checkbox was replaced by the segmented #theme-mode-seg control)
 
 async function loadSettings() {
@@ -8619,14 +8752,18 @@ let bgWavesRAF = 0;
 function startWaveRenderer(canvasId, alphaScale, requireVisualizerTab) {
   const cv = document.getElementById(canvasId);
   if (!cv || cv._wavesStarted) return cv ? null : null;
-  const ctx = cv.getContext("2d");
+  const ctx = cv.getContext("2d", { alpha: true, desynchronized: true });
   if (!ctx) return null;
   cv._wavesStarted = true;
   let W = 0, H = 0;
+  let ratio = 1;
   const resize = () => {
     const r = cv.getBoundingClientRect();
-    W = cv.width = Math.max(1, Math.round(r.width * devicePixelRatio));
-    H = cv.height = Math.max(1, Math.round(r.height * devicePixelRatio));
+    // Cap the backing-store scale: 2x/3x displays otherwise pay 4-9x the
+    // fill cost for a backdrop that is intentionally soft.
+    ratio = Math.min(window.devicePixelRatio || 1, 1.5);
+    W = cv.width = Math.max(1, Math.round(r.width * ratio));
+    H = cv.height = Math.max(1, Math.round(r.height * ratio));
   };
   resize();
   window.addEventListener("resize", resize);
@@ -8651,42 +8788,10 @@ function startWaveRenderer(canvasId, alphaScale, requireVisualizerTab) {
     return {
       glow: num(rs.getPropertyValue("--ribbon-glow"), 1),
       sat: num(rs.getPropertyValue("--ribbon-sat"), 1),
+      alpha: num(rs.getPropertyValue("--ribbon-alpha"), 1),
     };
   };
   let ribbonFx = readFx();
-  const vivid = (hex, sat) => {
-    const m = /^#([0-9a-fA-F]{6})$/.exec((hex || "").trim());
-    if (!m || sat === 1) return hex;
-    let r = parseInt(m[1].substr(0, 2), 16) / 255,
-        g = parseInt(m[1].substr(2, 2), 16) / 255,
-        b = parseInt(m[1].substr(4, 2), 16) / 255;
-    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
-    let h = 0, s = 0; const l = (mx + mn) / 2;
-    if (mx !== mn) {
-      const d = mx - mn;
-      s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
-      if (mx === r) h = (g - b) / d + (g < b ? 6 : 0);
-      else if (mx === g) h = (b - r) / d + 2;
-      else h = (r - g) / d + 4;
-      h /= 6;
-    }
-    s = Math.min(1, s * sat);
-    const hue2rgb = (p, q, t) => {
-      if (t < 0) t += 1; if (t > 1) t -= 1;
-      if (t < 1/6) return p + (q - p) * 6 * t;
-      if (t < 1/2) return q;
-      if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
-      return p;
-    };
-    let rr, gg, bb;
-    if (s === 0) { rr = gg = bb = l; }
-    else {
-      const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-      const p = 2 * l - q;
-      rr = hue2rgb(p, q, h + 1/3); gg = hue2rgb(p, q, h); bb = hue2rgb(p, q, h - 1/3);
-    }
-    return `rgb(${Math.round(rr*255)},${Math.round(gg*255)},${Math.round(bb*255)})`;
-  };
   const start = performance.now();
   // 4 ribbon layers, each an independent phase/speed/opacity — organic
   // overlap like the XMB background
@@ -8712,7 +8817,8 @@ function startWaveRenderer(canvasId, alphaScale, requireVisualizerTab) {
     else if (++waveFrame % 15 === 0) {
       const rb = readRibbon(); if (rb !== accent) accent = rb;
       const fx = readFx();
-      if (fx.glow !== ribbonFx.glow || fx.sat !== ribbonFx.sat) ribbonFx = fx;
+      if (fx.glow !== ribbonFx.glow || fx.sat !== ribbonFx.sat ||
+          fx.alpha !== ribbonFx.alpha) ribbonFx = fx;
     }
     // self-heal size: the tab starts hidden, so the first measure was 0x0
     const r = cv.getBoundingClientRect();
@@ -8720,20 +8826,22 @@ function startWaveRenderer(canvasId, alphaScale, requireVisualizerTab) {
     ctx.clearRect(0, 0, W, H);
     const time = t - start;
     ctx.save();
-    ctx.scale(devicePixelRatio, devicePixelRatio);
-    const w = W / devicePixelRatio, h = H / devicePixelRatio;
+    ctx.scale(ratio, ratio);
+    const w = W / ratio, h = H / ratio;
+    // Bound path segments so a wide window does not multiply the CPU cost.
+    const step = Math.max(12, Math.ceil(w / 220));
     for (const b of bands) {
       const path = () => {
         ctx.beginPath();
         const yBase = h * b.yOff;
-        for (let x = -20; x <= w + 20; x += 12) {
+        for (let x = -20; x <= w + 20; x += step) {
           const y = yBase
             + Math.sin(x * 0.006 + time * b.speed * 2 + b.phase) * b.amp
             + Math.sin(x * 0.0021 - time * b.speed * 1.4 + b.phase * 2) * b.amp * 0.45;
           if (x <= 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
         }
       };
-      const ribbonColor = vivid(accent, ribbonFx.sat);
+      const ribbonColor = vividColor(accent, ribbonFx.sat);
       // FX (halo + breathing) ONLY when the theme actually tunes glow/sat —
       // defaults render exactly like the original plain ribbons
       const fxOn = (ribbonFx.glow !== 1 || ribbonFx.sat !== 1);
@@ -8743,9 +8851,13 @@ function startWaveRenderer(canvasId, alphaScale, requireVisualizerTab) {
         ? 1 : (0.7 + 0.3 * Math.sin(time * (2 * Math.PI / 2400) + b.phase));
       // glow 0 = halo off but core stays full plain brightness
       const glowBoost = ribbonFx.glow === 0 ? 1 : (0.75 + 0.25 * ribbonFx.glow);
-      const baseAlpha = fxOn
-        ? Math.min(1, b.alpha * alphaScale * glowBoost * breathe)
-        : b.alpha * alphaScale;
+      // Opacity control: 1 = original ribbon, >1 ramps aggressively so
+      // the high end actually becomes opaque instead of barely shifting.
+      const alphaMult = ribbonFx.alpha <= 1
+        ? ribbonFx.alpha : 1 + (ribbonFx.alpha - 1) * 10;
+      const baseAlpha = Math.min(
+        1, b.alpha * alphaScale * alphaMult *
+        (fxOn ? glowBoost * breathe : 1));
       // pass 1 — glow fade: nested soft shells (wide→narrow, faint→less
       // faint) so the halo FADES out instead of ending in a hard edge.
       // No shadowBlur (it tanks the frame rate); layered round strokes
@@ -8773,36 +8885,441 @@ function startWaveRenderer(canvasId, alphaScale, requireVisualizerTab) {
     }
     ctx.restore();
   };
-  // 60fps: matches the comet RAF and keeps the breathing perfectly smooth
-  return setInterval(() => tick(performance.now()), 16);
+  // requestAnimationFrame instead of setInterval: no queued callbacks and
+  // the browser can naturally slow us down on a loaded machine. Ambient
+  // background ribbons run at 30fps; the visualizer stays at 60fps.
+  const minInterval = requireVisualizerTab ? 1000 / 60 : 1000 / 30;
+  let last = 0;
+  let raf = 0;
+  const frame = (t) => {
+    if (!cv._wavesStarted) { raf = 0; return; }
+    raf = requestAnimationFrame(frame);
+    if (t - last < minInterval) return;
+    last = t;
+    tick(t);
+  };
+  cv._wavesStop = () => {
+    cv._wavesStarted = false;
+    cancelAnimationFrame(raf);
+    raf = 0;
+  };
+  raf = requestAnimationFrame(frame);
+  return raf;
 }
 function startFlowWaves() {
   if (!flowWavesRAF) flowWavesRAF = startWaveRenderer("flow-waves", 1, true);
 }
-function startAmbientWaves() {
-  // global backdrop: subtler than the visualizer's so text stays readable
-  if (!bgWavesRAF) bgWavesRAF = startWaveRenderer("bg-waves", 0.55, false);
-}
 /* master ribbons toggle — independent of theme: kills the paint loops
    entirely when off (not just hidden) */
-function ribbonsOn() {
-  return localStorage.getItem("ui-ribbons") !== "0";
+// Extend this list when adding new backdrop styles.
+const RIBBON_MODES = [
+  { id: "ribbons", name: "Ribbons" },
+  { id: "starfield", name: "Starfield" },
+  { id: "network", name: "Point Map" },
+  { id: "topography", name: "Topography" },
+  { id: "dotmatrix", name: "Dot Matrix" },
+  { id: "hexmesh", name: "Hex Mesh" },
+  { id: "none", name: "None" },
+];
+function currentRibbonMode() {
+  let mode = localStorage.getItem("ui-ribbons-mode");
+  if (!mode) mode = localStorage.getItem("ui-ribbons") === "0" ? "none" : "ribbons";
+  return RIBBON_MODES.some(m => m.id === mode) ? mode : "ribbons";
 }
-function applyRibbons() {
-  const on = ribbonsOn();
-  const chip = $("#set-ribbons-chip");
-  if (chip) chip.setAttribute("aria-pressed", String(on));
+function paintRibbonMode() {
+  const sel = $("#set-ribbons-mode");
+  if (!sel) return;
+  if (!sel.options.length) {
+    sel.innerHTML = RIBBON_MODES.map(m =>
+      `<option value="${m.id}">${escHtml(m.name)}</option>`).join("");
+  }
+  sel.value = currentRibbonMode();
   const cb = $("#set-ribbons");
-  if (cb) cb.checked = on;
+  if (cb) cb.checked = currentRibbonMode() !== "none";
+}
+function stopBackground() {
+  cancelAnimationFrame(bgWavesRAF);
+  bgWavesRAF = 0;
   const cv = document.getElementById("bg-waves");
-  if (!on) {
-    clearInterval(bgWavesRAF);
-    bgWavesRAF = 0;
-    if (cv) { cv._wavesStarted = false; cv.style.display = "none"; }
+  if (!cv) return;
+  cv._wavesStarted = false;
+  if (cv._wavesStop) cv._wavesStop();
+}
+
+function vividColor(hex, sat) {
+  const m = /^#([0-9a-fA-F]{6})$/.exec((hex || "").trim());
+  if (!m || sat === 1) return hex;
+  let r = parseInt(m[1].substr(0, 2), 16) / 255,
+      g = parseInt(m[1].substr(2, 2), 16) / 255,
+      b = parseInt(m[1].substr(4, 2), 16) / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+  let h = 0, s = 0; const l = (mx + mn) / 2;
+  if (mx !== mn) {
+    const d = mx - mn;
+    s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+    if (mx === r) h = (g - b) / d + (g < b ? 6 : 0);
+    else if (mx === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h /= 6;
+  }
+  s = Math.min(1, s * sat);
+  const hue2rgb = (p, q, t) => {
+    if (t < 0) t += 1; if (t > 1) t -= 1;
+    if (t < 1/6) return p + (q - p) * 6 * t;
+    if (t < 1/2) return q;
+    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+    return p;
+}
+  let rr, gg, bb;
+  if (s === 0) { rr = gg = bb = l; }
+  else {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    rr = hue2rgb(p, q, h + 1/3); gg = hue2rgb(p, q, h); bb = hue2rgb(p, q, h - 1/3);
+  }
+  return `rgb(${Math.round(rr*255)},${Math.round(gg*255)},${Math.round(bb*255)})`;
+}
+
+function startParticleBackdrop(mode) {
+  const cv = document.getElementById("bg-waves");
+  if (!cv) return 0;
+  const ctx = cv.getContext("2d", { alpha: true, desynchronized: true });
+  if (!ctx) return 0;
+  cv._wavesStarted = true;
+  const root = document.documentElement;
+  let W = 0, H = 0, ratio = 1, raf = 0, last = 0;
+  let colorA = "#7aa2ff", colorB = "#7aa2ff", lastTheme = null, frameNo = 0;
+  let fx = { glow: 1, sat: 1, alpha: 1 };
+  let parts = [];
+  let hexes = [];
+  let falls = [];
+  const num = (v, d) => {
+    const f = parseFloat(v);
+    return Number.isFinite(f) ? Math.min(2.5, Math.max(0, f)) : d;
+  };
+  const readLook = () => {
+    const cs = getComputedStyle(root);
+    fx = {
+      glow: num(cs.getPropertyValue("--ribbon-glow"), 1),
+      sat: num(cs.getPropertyValue("--ribbon-sat"), 1),
+      alpha: num(cs.getPropertyValue("--ribbon-alpha"), 1),
+    };
+    colorA = vividColor(cs.getPropertyValue("--ribbon").trim() || "#7aa2ff", fx.sat);
+    colorB = vividColor(cs.getPropertyValue("--accent").trim() || colorA, fx.sat);
+  };
+  readLook();
+  const rgba = (color, a) => {
+    const m = /^\s*#([0-9a-fA-F]{6})\s*$/.exec(color || "");
+    if (m) {
+      const n = parseInt(m[1], 16);
+      return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+    }
+    const r = /^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/.exec(color || "");
+    if (r) return `rgba(${r[1]},${r[2]},${r[3]},${a})`;
+    return `rgba(122,162,255,${a})`;
+  };
+  const resize = () => {
+    const r = cv.getBoundingClientRect();
+    ratio = Math.min(window.devicePixelRatio || 1, 1.25);
+    W = cv.width = Math.max(1, Math.round(r.width * ratio));
+    H = cv.height = Math.max(1, Math.round(r.height * ratio));
+    const w = W / ratio, h = H / ratio;
+    if (mode === "starfield") {
+      const n = Math.max(60, Math.min(220, Math.round(w * h / 14000)));
+      parts = Array.from({ length: n }, () => {
+        const ang = Math.random() * Math.PI * 2;
+        const sp = 0.06 + Math.random() * 0.16;
+        return {
+          x: Math.random() * w, y: Math.random() * h,
+          r: 0.5 + Math.random() * 1.2,
+          vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+          tw: 0.5 + Math.random() * 2, ph: Math.random() * Math.PI * 2,
+        };
+      });
+    } else if (mode === "network") {
+      // floating vector points; each connects to its 5 nearest neighbours
+      const n = Math.max(30, Math.min(64, Math.round(w * h / 28000)));
+      parts = Array.from({ length: n }, () => ({
+        x: Math.random() * w, y: Math.random() * h,
+        r: 1.2 + Math.random() * 1.4,
+        vx: (Math.random() - 0.5) * 0.10,
+        vy: (Math.random() - 0.5) * 0.10,
+        ph: Math.random() * Math.PI * 2,
+      }));
+    } else if (mode === "dotmatrix") {
+      const step = Math.max(18, Math.min(30, Math.round(Math.min(w, h) / 38)));
+      parts = [];
+      for (let y = step / 2; y < h; y += step) {
+        for (let x = step / 2; x < w; x += step) {
+          parts.push({
+            x, y, base: 1.1 + Math.random() * 0.8,
+            ph: Math.random() * Math.PI * 2,
+            sp: 0.22 + Math.random() * 0.55,
+            thr: 0.48 + Math.random() * 0.32,
+          });
+        }
+      }
+      falls = [];
+      for (let x = step / 2; x < w; x += step) {
+        falls.push({
+          x, y: Math.random() * h,
+          speed: 0.7 + Math.random() * 1.1,
+          wait: Math.floor(Math.random() * 120),
+          len: 4 + Math.floor(Math.random() * 5),
+        });
+      }
+    } else if (mode === "hexmesh") {
+      const R = Math.max(20, Math.min(34, Math.round(Math.min(w, h) / 28)));
+      const dx = Math.sqrt(3) * R, dy = 1.5 * R;
+      hexes = [];
+      for (let row = 0, y = -R; y < h + R; row++, y += dy) {
+        const off = (row % 2) ? dx / 2 : 0;
+        for (let x = -dx; x < w + dx; x += dx) {
+          const cx = x + off;
+          const pts = [];
+          for (let k = 0; k < 6; k++) {
+            const ang = Math.PI / 180 * (60 * k - 30);
+            pts.push([cx + R * Math.cos(ang), y + R * Math.sin(ang)]);
+          }
+          hexes.push({
+            cx, cy: y, pts,
+            ph: Math.random() * Math.PI * 2,
+            // very slow breathing: ~80-200s per cycle
+            sp: 0.03 + Math.random() * 0.05,
+            thr: 0.45 + Math.random() * 0.30,
+            level: 0, target: 0, until: 0,
+          });
+        }
+      }
+    }
+  };
+  resize();
+  window.addEventListener("resize", resize);
+  const draw = (t) => {
+    if (root.getAttribute("data-theme") !== lastTheme || ++frameNo % 15 === 0) {
+      lastTheme = root.getAttribute("data-theme");
+      readLook();
+    }
+    const alphaMult = fx.alpha <= 1 ? fx.alpha : 1 + (fx.alpha - 1) * 10;
+    const glowBoost = fx.glow === 0 ? 1 : 0.75 + 0.25 * fx.glow;
+    const w = W / ratio, h = H / ratio;
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    ctx.scale(ratio, ratio);
+    if (mode === "dotmatrix") {
+      const tt = t / 1000;
+      const glowSz = fx.glow > 1 ? 1 + (fx.glow - 1) * 0.3 : 1;
+      // quiet base dots
+      ctx.fillStyle = rgba(colorA, 1);
+      ctx.globalAlpha = Math.min(1, 0.09 * alphaMult * glowBoost);
+      for (const p of parts) {
+        const sz = p.base * glowSz;
+        ctx.fillRect(p.x - sz / 2, p.y - sz / 2, sz, sz);
+      }
+      // random subset grows and glows asynchronously
+      ctx.fillStyle = rgba(colorB, 1);
+      for (const p of parts) {
+        const s = Math.sin(tt * p.sp + p.ph);
+        if (s <= p.thr) continue;
+        const inten = (s - p.thr) / (1 - p.thr);
+        const sz = p.base * glowSz * (1 + inten * 2.4);
+        ctx.globalAlpha = Math.min(1,
+          (0.10 + inten * 0.55) * alphaMult * glowBoost);
+        ctx.fillRect(p.x - sz / 2, p.y - sz / 2, sz, sz);
+      }
+      // occasional Matrix-style falling columns
+      ctx.fillStyle = rgba(colorB, 1);
+      const step = Math.max(18, Math.min(30, Math.round(Math.min(w, h) / 38)));
+      for (const f of falls) {
+        if (f.wait > 0) { f.wait--; continue; }
+        f.y += f.speed;
+        const head = Math.round(f.y / step) * step;
+        for (let k = 0; k < f.len; k++) {
+          const yy = head - k * step;
+          if (yy < 0 || yy > h) continue;
+          const a = (1 - k / (f.len + 1)) * 0.55;
+          ctx.globalAlpha = Math.min(1, a * alphaMult * glowBoost);
+          const sz = (k === 0 ? 2.8 : 1.8) * glowSz;
+          ctx.fillRect(f.x - sz / 2, yy - sz / 2, sz, sz);
+        }
+        if (f.y > h + f.len * step) {
+          f.y = -step * 2;
+          f.speed = 0.7 + Math.random() * 1.1;
+          f.wait = Math.floor(Math.random() * 150);
+          f.len = 4 + Math.floor(Math.random() * 5);
+        }
+      }
+      ctx.globalAlpha = 1;
+    } else if (mode === "hexmesh") {
+      const tt = t / 1000;
+      // outlines
+      ctx.beginPath();
+      for (const hx of hexes) {
+        for (let k = 0; k < 6; k++) {
+          const [vx, vy] = hx.pts[k];
+          if (k === 0) ctx.moveTo(vx, vy); else ctx.lineTo(vx, vy);
+        }
+        ctx.closePath();
+      }
+      ctx.strokeStyle = rgba(colorA,
+        Math.min(1, 0.10 * alphaMult * glowBoost));
+      ctx.lineWidth = 0.8 * (fx.glow > 1 ? 1 + (fx.glow - 1) * 0.35 : 1);
+      ctx.stroke();
+      // Stable set of up to 25, with long dwell times; each hex fades its
+      // opacity in/out smoothly over seconds instead of popping or blinking.
+      const active = [];
+      for (const hx of hexes) {
+        const s = Math.sin(tt * hx.sp + hx.ph);
+        const inten = (s - hx.thr) / (1 - hx.thr);
+        if (inten > 0) active.push([inten, hx]);
+      }
+      active.sort((a, b) => b[0] - a[0]);
+      let chosenCount = 0;
+      for (const hx of hexes) {
+        if (hx.target === 1) {
+          if (t >= hx.until) hx.target = 0;
+          else chosenCount++;
+        }
+      }
+      for (const [, hx] of active) {
+        if (chosenCount >= 25) break;
+        if (hx.target === 1 || hx.level > 0.01) continue;
+        hx.target = 1;
+        hx.until = t + 8000 + Math.random() * 9000;
+        chosenCount++;
+      }
+      const dt = Math.min(120, t - (draw._prev || t));
+      draw._prev = t;
+      const ease = 1 - Math.exp(-dt / 9000);
+      ctx.fillStyle = rgba(colorB, 1);
+      for (const hx of hexes) {
+        hx.level += (hx.target - hx.level) * ease;
+        if (hx.level <= 0.005) continue;
+        // smoothstep at both ends so fade-in/out never has a visible start
+        const e = hx.level * hx.level * (3 - 2 * hx.level);
+        ctx.globalAlpha = Math.min(1, e * 0.55 * alphaMult * glowBoost);
+        ctx.beginPath();
+        for (let k = 0; k < 6; k++) {
+          const [vx, vy] = hx.pts[k];
+          if (k === 0) ctx.moveTo(vx, vy); else ctx.lineTo(vx, vy);
+        }
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    } else if (mode === "topography") {
+      // Nested slowly-warping contour rings: cheap to draw, reads like a
+      // topographic map, and stays subtle behind content.
+      const tt = t / 1000;
+      const rings = Math.max(10, Math.min(18, Math.round(h / 55)));
+      const cx = w * 0.34, cy = h * 0.52;
+      ctx.lineWidth = 0.8 * (fx.glow > 1 ? 1 + (fx.glow - 1) * 0.35 : 1);
+      for (let k = 0; k < rings; k++) {
+        const baseR = 34 + k * (Math.min(w, h) * 0.045);
+        const wob = 10 + (k % 3) * 4;
+        ctx.beginPath();
+        for (let a = 0; a <= Math.PI * 2 + 0.06; a += 0.06) {
+          const r = baseR
+            + Math.sin(a * 3 + tt * 0.18 + k * 0.55) * wob
+            + Math.sin(a * 5 - tt * 0.13 + k * 0.9) * (wob * 0.55);
+          const x = cx + Math.cos(a) * r * 1.7;
+          const y = cy + Math.sin(a) * r;
+          if (a === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = rgba(k % 4 === 0 ? colorB : colorA,
+          Math.min(1, (0.10 + (k % 3) * 0.025) * alphaMult * glowBoost));
+        ctx.stroke();
+      }
+    } else if (mode === "network") {
+      const tt = t / 1000;
+      for (const p of parts) {
+        p.x += p.vx + Math.sin(tt * 0.5 + p.ph) * 0.008;
+        p.y += p.vy + Math.cos(tt * 0.45 + p.ph) * 0.008;
+        if (p.x < 0) { p.x = 0; p.vx = Math.abs(p.vx); }
+        if (p.x > w) { p.x = w; p.vx = -Math.abs(p.vx); }
+        if (p.y < 0) { p.y = 0; p.vy = Math.abs(p.vy); }
+        if (p.y > h) { p.y = h; p.vy = -Math.abs(p.vy); }
+      }
+      const maxD = Math.max(120, Math.min(w, h) * 0.26);
+      ctx.lineWidth = 1;
+      for (let i = 0; i < parts.length; i++) {
+        const a = parts[i], near = [];
+        for (let j = i + 1; j < parts.length; j++) {
+          const b = parts[j];
+          const d = Math.hypot(a.x - b.x, a.y - b.y);
+          if (d < maxD) near.push([d, b]);
+        }
+        near.sort((x, y) => x[0] - y[0]);
+        for (const [d, b] of near.slice(0, 5)) {
+          ctx.strokeStyle = rgba(colorB,
+            Math.min(1, (1 - d / maxD) * 0.24 * alphaMult * glowBoost));
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+        }
+      }
+      for (const p of parts) {
+        ctx.fillStyle = rgba(colorA, Math.min(1, 0.78 * alphaMult * glowBoost));
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = rgba(colorB, Math.min(1, 0.50 * alphaMult * glowBoost));
+        ctx.lineWidth = 0.8 * (fx.glow > 1 ? 1 + (fx.glow - 1) * 0.35 : 1);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r + 2.4, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    } else {
+      const tt = t / 1000;
+      for (const p of parts) {
+        p.x += p.vx + Math.sin(tt * 0.7 + p.ph) * 0.015;
+        p.y += p.vy + Math.cos(tt * 0.6 + p.ph) * 0.015;
+        if (p.x < -4) p.x = w + 4; if (p.x > w + 4) p.x = -4;
+        if (p.y < -4) p.y = h + 4; if (p.y > h + 4) p.y = -4;
+        const a = 0.25 + 0.45 * (0.5 + 0.5 * Math.sin(tt * p.tw + p.ph));
+        ctx.fillStyle = rgba(colorA, Math.min(1, a * alphaMult * glowBoost));
+        ctx.beginPath();
+        ctx.arc(p.x, p.y,
+          p.r * (fx.glow > 1 ? 1 + (fx.glow - 1) * 0.2 : 1),
+          0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  };
+  const minInterval = 1000 / 30;
+  const frame = (t) => {
+    if (!cv._wavesStarted) { raf = 0; return; }
+    raf = requestAnimationFrame(frame);
+    if (t - last < minInterval) return;
+    last = t;
+    draw(t);
+  };
+  cv._wavesStop = () => {
+    cv._wavesStarted = false;
+    cancelAnimationFrame(raf);
+    raf = 0;
+    window.removeEventListener("resize", resize);
+  };
+  raf = requestAnimationFrame(frame);
+  return raf;
+}
+
+function applyRibbons() {
+  paintRibbonMode();
+  const mode = currentRibbonMode();
+  const cv = document.getElementById("bg-waves");
+  stopBackground();
+  if (!cv) return;
+  if (mode === "none") { cv.style.display = "none"; return; }
+  cv.style.display = "";
+  if (mode === "starfield" || mode === "network" || mode === "topography" ||
+      mode === "dotmatrix" || mode === "hexmesh") {
+    bgWavesRAF = startParticleBackdrop(mode);
     return;
   }
-  if (cv) cv.style.display = "";
-  startAmbientWaves();
+  bgWavesRAF = startWaveRenderer("bg-waves", 0.55, false);
 }
 
 /* Morph the live SVG toward the freshly rendered string instead of
@@ -9201,13 +9718,29 @@ document.addEventListener("click", (e) => {
 startAutoRefresh();
 initFaultWatch();  // global persistent load-failure notices (top right)
 applyRibbons();   // global ribbon backdrop behind every page (toggleable)
-on("#set-ribbons-chip", "click", () => {
-  localStorage.setItem("ui-ribbons", ribbonsOn() ? "0" : "1");
+on("#set-ribbons-mode", "change", () => {
+  const sel = $("#set-ribbons-mode");
+  const mode = RIBBON_MODES.some(m => m.id === sel.value) ? sel.value : "ribbons";
+  localStorage.setItem("ui-ribbons-mode", mode);
+  // keep the legacy key in sync for older builds/tabs
+  localStorage.setItem("ui-ribbons", mode === "none" ? "0" : "1");
   applyRibbons();
 });
 document.querySelectorAll("#theme-mode-seg button").forEach(b => {
-  b.addEventListener("click", () => applyTheme(currentTheme(), b.dataset.mode));
+  b.addEventListener("click", () => {
+    if (themeDraft) return;
+    applyTheme(currentTheme(), b.dataset.mode);
+  });
 });
+const themeGenreSel = $("#theme-genre");
+if (themeGenreSel) {
+  themeGenreSel.value = currentThemeGenre();
+  themeGenreSel.addEventListener("change", () => {
+    if (themeDraft) return;
+    localStorage.setItem("theme-genre", themeGenreSel.value);
+    renderThemeGrid();
+  });
+}
 /* ---------------- live logs (Fleet > Logs) ----------------
    Real-time raw tail of llama-swap's proxy + upstream feeds over
    /ws/logs/stream. Lines arrive as {src, line} JSON; kept in a bounded
