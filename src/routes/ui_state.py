@@ -25,7 +25,7 @@ CUSTOM_THEME_TOKENS = (
     "--accent", "--ribbon", "--ok", "--warn", "--bad",
 )
 # numeric (non-color) theme settings: ribbon FX multipliers
-CUSTOM_THEME_NUMERIC = ("--ribbon-glow", "--ribbon-sat")
+CUSTOM_THEME_NUMERIC = ("--ribbon-glow", "--ribbon-sat", "--ribbon-alpha")
 
 
 def _load_custom_themes():

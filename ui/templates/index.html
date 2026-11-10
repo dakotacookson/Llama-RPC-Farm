@@ -1140,10 +1140,17 @@ technical | bugs, errors, login problems</textarea></label>
             <button type="button" data-mode="dark"><i class="fa-solid fa-moon"></i><span>Dark</span></button>
             <button type="button" data-mode="light"><i class="fa-solid fa-sun"></i><span>Light</span></button>
           </div>
-          <button type="button" id="set-ribbons-chip" class="chip-switch" aria-pressed="true" title="Toggle animated background ribbons">
-            <span class="chip-knob"><i class="fa-solid fa-water"></i></span>
-            <span class="chip-label">Ribbons</span>
-          </button>
+          <label class="theme-genre-pick">
+            <i class="fa-solid fa-water"></i><span>Background</span>
+            <select id="set-ribbons-mode" aria-label="Background style"></select>
+          </label>
+          <label class="theme-genre-pick">
+            <i class="fa-solid fa-gem"></i><span>Genre</span>
+            <select id="theme-genre" aria-label="Theme genre">
+              <option value="geology">Geology</option>
+              <option value="famous">Famous</option>
+            </select>
+          </label>
         </div>
         <div id="theme-grid" class="theme-grid"></div>
         <details id="theme-builder-wrap" class="collapsible-panel">
@@ -1157,6 +1164,8 @@ technical | bugs, errors, login problems</textarea></label>
                 <input type="range" id="theme-fx-glow" min="0" max="2" step="0.05" value="1"></label>
               <label>Ribbon vivid <span class="theme-fx-val" id="theme-fx-sat-v">100%</span>
                 <input type="range" id="theme-fx-sat" min="0" max="2.5" step="0.05" value="1"></label>
+              <label>Ribbon opacity <span class="theme-fx-val" id="theme-fx-alpha-v">100%</span>
+                <input type="range" id="theme-fx-alpha" min="0.2" max="2.5" step="0.05" value="1"></label>
             </div>
             <div id="theme-builder-rows" class="theme-builder-grid"></div>
             <div class="row" style="margin-top:12px; justify-content:flex-end">
