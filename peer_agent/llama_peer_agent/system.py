@@ -112,6 +112,17 @@ def _linux(config: AgentConfig):
         'if [ -n "$s" ] && [ "$s" != "-1" ] && [ "$s" -gt 0 ]; then '
         'if [ "$s" -ge 1000 ]; then echo "$((s/1000)) Gb/s"; '
         'else echo "${s} Mb/s"; fi; break; fi; done); '
+        "if [ -z \"$S\" ]; then "
+        "IF=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i==\"dev\"){print $(i+1); exit}}'); "
+        "[ -n \"$IF\" ] || IF=$(ls /sys/class/net | grep -v '^lo' | head -1); "
+        "S=$(cat /sys/class/net/$IF/speed 2>/dev/null); "
+        "if [ -z \"$S\" ] || [ \"$S\" = \"-1\" ]; then "
+        "S=$(ethtool \"$IF\" 2>/dev/null | awk -F': ' '/Speed:/{print $2; exit}'); fi; "
+        "if [ -z \"$S\" ] && command -v iw >/dev/null 2>&1; then "
+        "S=$(iw dev \"$IF\" link 2>/dev/null | awk -F': ' '/tx bitrate/{print $2; exit}'); fi; "
+        "if [ -n \"$S\" ] && ! echo \"$S\" | grep -q '[A-Za-z]'; then "
+        "if [ \"$S\" -ge 1000 ] 2>/dev/null; then S=\"$((S/1000)) Gb/s\"; "
+        "else S=\"${S} Mb/s\"; fi; fi; fi; "
         "D=$(df -k / | tail -n1 | awk '{print $4}'); "
         "DT=$(df -k / | tail -n1 | awk '{print $2}'); "
         "V=$(systemd-detect-virt 2>/dev/null || echo bare); "
