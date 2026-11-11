@@ -3721,9 +3721,9 @@ function modelFormLoad(m, isEdit) {
   // runtime: custom (external server) — kind/bat/port round-trip so a
   // custom model is a fully editable saved config, not a hand-only file
   const mc = m.custom || {};
-  $("#mo-custom-kind").value = mc.kind || "winbox-bat";
-  $("#mo-custom-bat").value = mc.bat || "";
-  $("#mo-custom-stop-bat").value = mc.stop_bat || "";
+  $("#mo-custom-kind").value = mc.kind || "script";
+  $("#mo-custom-bat").value = mc.start_script || mc.bat || "";
+  $("#mo-custom-stop-bat").value = mc.stop_script || mc.stop_bat || "";
   $("#mo-custom-port").value = mc.port ?? "";
   $("#mo-custom-proxy").value = mc.proxy || "";
   $("#mo-custom-ep").value = mc.checkEndpoint || "";
@@ -4609,7 +4609,7 @@ async function saveModelForm(btn, skipArm = false) {
   // runtime: custom serves no GGUF — the bat path is the required
   // artifact, not the model path
   if (rt === "custom") {
-    if (!$("#mo-custom-bat").value.trim()) { toast("Start bat on box is required for custom models", "bad"); btn.disabled = false; btn.textContent = origLabel; return null; }
+    if (!$("#mo-custom-bat").value.trim()) { toast("Start script on box is required for custom models", "bad"); btn.disabled = false; btn.textContent = origLabel; return null; }
   } else if (!$("#mo-path").value.trim()) { toast("Model path is required", "bad"); btn.disabled = false; btn.textContent = origLabel; return null; }
   const grp = $("#mo-group")?.value?.trim() || "";
   const variants = collectVariants();
@@ -4647,7 +4647,7 @@ async function saveModelForm(btn, skipArm = false) {
   // plan time); any other runtime drops a stale section instead of
   // filing a model that is both GGUF and custom
   if (rt === "custom") {
-    const kind = $("#mo-custom-kind").value || "winbox-bat";
+    const kind = $("#mo-custom-kind").value || "script";
     if (kind === "raw") {
       // user-supplied swap entry: strict client-side shape check (the
       // backend re-validates with the same schema — 400 on violations)
@@ -4683,11 +4683,11 @@ async function saveModelForm(btn, skipArm = false) {
       const pNum = parseInt(pRaw, 10);
       data.custom = {
         kind,
-        bat: $("#mo-custom-bat").value.trim(),
+        start_script: $("#mo-custom-bat").value.trim(),
         port: Number.isFinite(pNum) ? pNum : 8080,
       };
-      const stopBat = $("#mo-custom-stop-bat").value.trim();
-      if (stopBat) data.custom.stop_bat = stopBat;
+      const stopScript = $("#mo-custom-stop-bat").value.trim();
+      if (stopScript) data.custom.stop_script = stopScript;
     }
     // vision flag applies to both custom kinds (listed for vision tests)
     if ($("#mo-custom-vision")?.checked) data.custom.vision = true;
@@ -4734,9 +4734,9 @@ function syncCustomRow() {
   const row = $("#mo-custom-row");
   if (row) row.hidden = !isCustom;
   // per-kind inputs: winbox-bat takes bat/port, raw takes the entry
-  const kind = ($("#mo-custom-kind") || {}).value || "winbox-bat";
+  const kind = ($("#mo-custom-kind") || {}).value || "script";
   const bat = $("#mo-custom-bat-fields");
-  if (bat) bat.style.display = (isCustom && kind === "winbox-bat") ? "contents" : "none";
+  if (bat) bat.style.display = (isCustom && (kind === "script" || kind === "winbox-bat")) ? "contents" : "none";
   const raw = $("#mo-custom-raw");
   if (raw) raw.hidden = !(isCustom && kind === "raw");
 }
