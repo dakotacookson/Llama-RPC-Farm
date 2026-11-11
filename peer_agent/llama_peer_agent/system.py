@@ -118,6 +118,7 @@ def _linux(config: AgentConfig):
         "S=$(cat /sys/class/net/$IF/speed 2>/dev/null); "
         "if [ -z \"$S\" ] || [ \"$S\" = \"-1\" ]; then "
         "S=$(ethtool \"$IF\" 2>/dev/null | awk -F': ' '/Speed:/{print $2; exit}'); fi; "
+        "case \"$S\" in *[Uu]nknown*) S=\"\" ;; esac; "
         "if [ -z \"$S\" ] && command -v iw >/dev/null 2>&1; then "
         "S=$(iw dev \"$IF\" link 2>/dev/null | awk -F': ' '/tx bitrate/{print $2; exit}'); fi; "
         "if [ -n \"$S\" ] && ! echo \"$S\" | grep -q '[A-Za-z]'; then "
