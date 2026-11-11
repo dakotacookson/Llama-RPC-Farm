@@ -42,9 +42,20 @@ echo ==^> Installing requirements
 "%VENV_PY%" -m pip install --upgrade pip -q
 "%VENV_PY%" -m pip install -r "%REQ%"
 
+rem Put farmctl on the user PATH. WindowsApps is already on the user PATH
+rem by default and is user-writable; best-effort so a policy-locked folder
+rem never fails the install.
+set "BIN_DIR=%LOCALAPPDATA%\Microsoft\WindowsApps"
+if not exist "%BIN_DIR%" mkdir "%BIN_DIR%" >nul 2>&1
+(
+  echo @echo off
+  echo "%VENV_PY%" "%SCRIPT_DIR%src\farmctl.py" %%*
+) > "%BIN_DIR%\farmctl.cmd" 2>nul
+
 echo ==^> Done.
 echo.
 echo Next steps:
 echo   %SCRIPT_DIR%run.bat        # start the web UI
+echo   farmctl status             # headless CLI over the same API
 echo   http://127.0.0.1:8199
 endlocal
