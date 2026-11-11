@@ -3723,6 +3723,7 @@ function modelFormLoad(m, isEdit) {
   const mc = m.custom || {};
   $("#mo-custom-kind").value = mc.kind || "winbox-bat";
   $("#mo-custom-bat").value = mc.bat || "";
+  $("#mo-custom-stop-bat").value = mc.stop_bat || "";
   $("#mo-custom-port").value = mc.port ?? "";
   $("#mo-custom-proxy").value = mc.proxy || "";
   $("#mo-custom-ep").value = mc.checkEndpoint || "";
@@ -4608,7 +4609,7 @@ async function saveModelForm(btn, skipArm = false) {
   // runtime: custom serves no GGUF — the bat path is the required
   // artifact, not the model path
   if (rt === "custom") {
-    if (!$("#mo-custom-bat").value.trim()) { toast("Bat path on box is required for custom models", "bad"); btn.disabled = false; btn.textContent = origLabel; return null; }
+    if (!$("#mo-custom-bat").value.trim()) { toast("Start bat on box is required for custom models", "bad"); btn.disabled = false; btn.textContent = origLabel; return null; }
   } else if (!$("#mo-path").value.trim()) { toast("Model path is required", "bad"); btn.disabled = false; btn.textContent = origLabel; return null; }
   const grp = $("#mo-group")?.value?.trim() || "";
   const variants = collectVariants();
@@ -4685,6 +4686,8 @@ async function saveModelForm(btn, skipArm = false) {
         bat: $("#mo-custom-bat").value.trim(),
         port: Number.isFinite(pNum) ? pNum : 8080,
       };
+      const stopBat = $("#mo-custom-stop-bat").value.trim();
+      if (stopBat) data.custom.stop_bat = stopBat;
     }
     // vision flag applies to both custom kinds (listed for vision tests)
     if ($("#mo-custom-vision")?.checked) data.custom.vision = true;

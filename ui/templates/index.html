@@ -554,7 +554,8 @@
             </select>
           </label>
           <span id="mo-custom-bat-fields" style="display:contents">
-            <label title="Full path of the start script on the target box">Bat path on box <input id="mo-custom-bat" placeholder="D:\Strata\run-iq3_s.bat" style="min-width:260px"></label>
+            <label title="Full path of the start script on the target box">Start bat on box <input id="mo-custom-bat" placeholder="D:\Strata\run-iq3_s.bat" style="min-width:260px"></label>
+            <label title="Optional STOP batch file on the target box. Leave blank to derive STOP-<core>.bat next to the start bat.">Stop bat on box <input id="mo-custom-stop-bat" placeholder="D:\Strata\STOP-iq3_s.bat (optional)" style="min-width:280px"></label>
             <label title="TCP port the external server listens on (proxied by llama-swap)">Port <input id="mo-custom-port" type="number" min="1" max="65535" placeholder="8080" style="width:100px"></label>
           </span>
           <label title="External server takes image input (listed for vision tests)"><input id="mo-custom-vision" type="checkbox"> Vision</label>
