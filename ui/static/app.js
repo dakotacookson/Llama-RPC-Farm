@@ -7469,10 +7469,14 @@ async function hydrateAppVersion(pill) {
   if (!pill) return;
   try {
     const d = await api("GET", "/api/app-version");
-    const label = `app ${d.current || "?"}${!d.on_latest && d.latest && d.latest !== d.current ? ` → ${d.latest}` : ""}`;
+    // A clean source checkout can still carry a stale stamped VERSION from
+    // its last local build. The commit is current, but the displayed version
+    // is not — let the user resync it from the release wheel.
+    const needsVersionSync = !!(d.latest && d.current !== d.latest);
+    const label = `app ${d.current || "?"}${needsVersionSync ? ` → ${d.latest}` : ""}`;
     const updatable = d.source
-      ? (!!(d.latest && !d.on_latest) && !d.dirty)
-      : !!(d.latest && !d.on_latest);
+      ? (!!(d.latest && (!d.on_latest || needsVersionSync)) && !d.dirty)
+      : !!(d.latest && (!d.on_latest || needsVersionSync));
     pill.textContent = label;
     pill.dataset.label = label;
     pill.dataset.source = d.source ? "1" : "";
@@ -7481,7 +7485,7 @@ async function hydrateAppVersion(pill) {
     pill.style.opacity = updatable ? "1" : "0.75";
     pill.title = d.source
       ? (d.dirty ? "source tree has local changes — commit or stash before updating"
-                 : updatable ? `Download release ${d.latest} source and restart`
+                 : updatable ? `Sync this checkout to release ${d.latest} and restart`
                              : "source checkout is current")
       : (updatable ? `Update to ${d.latest} and restart`
                    : "farm app is current");
