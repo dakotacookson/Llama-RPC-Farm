@@ -117,6 +117,10 @@ jobs:
           python -m pytest tests -q
       - name: Build bundled agent wheel
         run: python -m pip wheel --no-deps -w agent-wheel ./peer_agent
+      - name: Build universal app source wheel
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: python scripts/build_app_wheel.py --version "$VERSION" --out dist
       - name: Build standalone app
         run: pyinstaller --noconfirm --clean packaging/app.spec
       - name: Build standalone agent
@@ -242,6 +246,7 @@ jobs:
             *.sha256
             dist/llama-peer-agent-linux-x86_64
             dist/llama-rpc-farm-linux-x86_64
+            dist/llama_rpc_farm-*.whl
             agent-wheel/*.whl
 
   macos:
@@ -606,6 +611,7 @@ jobs:
           - **Linux:** `llama-rpc-farm_{version}_amd64.deb`
           - **macOS (Apple Silicon):** `llama-rpc-farm_{version}_macos-arm64.pkg`
           - **Windows:** `llama-rpc-farm_{version}_windows-x64-setup.exe`
+          - **Source installs (any OS):** `llama_rpc_farm-{version}-py3-none-any.whl`
 
           ### Peer agent — `llama-peer-agent`
 

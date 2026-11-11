@@ -50,9 +50,11 @@ Each build job produces both the app and the peer agent:
 | macOS | `.pkg` | `.pkg` + `llama-peer-agent-macos-arm64` |
 | Windows | `setup.exe` | `setup.exe` + `llama-peer-agent-windows-x64.exe` |
 
-The Linux job also publishes the universal pip wheel
-`llama_rpc_farm_agent-<version>-py3-none-any.whl`. Each platform also emits
-a SHA-256 checksum file.
+The Linux job also publishes the universal agent wheel
+`llama_rpc_farm_agent-<version>-py3-none-any.whl` and the app source wheel
+`llama_rpc_farm-<version>-py3-none-any.whl`. The app wheel lets source
+installs update in place even when they are not git checkouts. Each
+platform also emits a SHA-256 checksum file.
 
 ## Publishing
 
@@ -72,6 +74,14 @@ The publish job runs once, after all builds pass:
 Because the publish step is gated on `needs: [linux, macos, windows]` and
 the workflow serializes on the `rolling-main` concurrency group, a failed
 build leaves the previous release untouched — no partial releases.
+
+## App source updates
+
+Source installs download the app source wheel from the newest release and
+copy its tracked tree (`src`, `ui`, `peer_agent`, `scripts`, `packaging`,
+and the top-level launcher files) over the install. Git checkouts keep the
+dirty-tree and newer-than-release guards. Releases without the wheel asset
+fall back to GitHub's immutable source archive.
 
 ## Agent updates
 
@@ -165,6 +175,7 @@ certificate options (including free SignPath signing for open source).
 
 ```bash
 python -m pip wheel --no-deps -w agent-wheel ./peer_agent
+python scripts/build_app_wheel.py --out dist
 pyinstaller --noconfirm --clean packaging/app.spec
 LLAMA_FARM_DATA_DIR=/tmp/llama-farm-data LLAMA_FARM_PORT=8187 ./dist/llama-rpc-farm
 ```
