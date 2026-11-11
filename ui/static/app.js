@@ -1017,54 +1017,74 @@ function statCardHTML(m) {
   const ramPct = m.ram_total_gb ? Math.round(m.ram_used_gb / m.ram_total_gb * 100) : 0;
   const vramPct = totalVram ? Math.round(usedVram / totalVram * 100) : 0;
   const osLabel = (m.os || "linux").charAt(0).toUpperCase() + (m.os || "linux").slice(1);
-  const cardSub = `${m.ip} — RPC <span class="${m.rpc_running ? "status-ok" : "status-warn"}">${m.rpc_running ? "up" : "down"}</span>${m.rdma ? ' — <span class="badge-rdma" style="padding:1px 6px;border-radius:6px">RDMA</span>' : " — TCP"}${m.load ? ` — load ${m.load}` : ""}`;
+  const gpuRows = gpus.map((g) => {
+    const gpuPct = g.mem_total_gb
+      ? Math.max(0, Math.min(100, Math.round(g.mem_used_gb / g.mem_total_gb * 100)))
+      : 0;
+    const tempClass = g.temp >= 80 ? "hot" : g.temp >= 70 ? "warm" : "";
+    const utilClass = g.util >= 90 ? "hot" : g.util >= 70 ? "warm" : "";
+    return `
+      <tr>
+        <td class="gpu-idx">${g.index}</td>
+        <td class="gpu-name" title="${escHtml(g.name)}">${escHtml(shortGpuName(g.name))}</td>
+        <td class="gpu-util ${utilClass}">${g.util}%</td>
+        <td class="gpu-vram"><span class="gpu-vram-cell" style="--vram-pct:${gpuPct}%;--vram-color:${valColor(gpuPct)}">${g.mem_used_gb}/${g.mem_total_gb}GB</span></td>
+        <td class="gpu-temp ${tempClass}">${g.temp}°C</td>
+      </tr>`;
+  }).join("");
   return `
     <div class="machine-status-card ${online ? "online" : "offline"}" data-machine="${escHtml(m.name)}" title="Click for details">
       <div class="card-header">
-        <span class="card-label">
-          <span class="status-dot ${online ? "on" : "off"}"></span>
-          <i class="fa-solid fa-server card-label-icon"></i>
-          <span class="card-name">${m.name}</span>
-          ${m.is_master ? '<span class="badge badge-master">master</span>' : ""}
+        <span class="card-label machine-identity">
+          <span class="machine-glyph"><i class="fa-solid fa-server"></i></span>
+          <span class="machine-ident">
+            <span class="machine-name-row">
+              <span class="card-name">${escHtml(m.name)}</span>
+              ${m.is_master ? '<span class="badge badge-master">master</span>' : ""}
+            </span>
+            <span class="machine-state-row">
+              <span class="status-dot ${online ? "on" : "off"}"></span>
+              <span class="machine-state-text">${online ? "online" : "offline"}</span>
+              <span class="machine-sep">·</span>
+              <span class="machine-os">${osIcon(m.os)} ${escHtml(osLabel)}</span>
+            </span>
+          </span>
         </span>
         <div class="card-actions">
-          <span class="os-badge">${osLabel}</span>
           ${connectionBadge(m)}
         </div>
       </div>
-      <div class="card-sub">${cardSub}</div>
+      <div class="machine-meta">
+        <span class="machine-chip machine-chip-ip" title="IP address"><i class="fa-solid fa-network-wired"></i>${escHtml(m.ip)}</span>
+        <span class="machine-chip ${m.rpc_running ? "is-ok" : "is-warn"}"><i class="fa-solid fa-tower-broadcast"></i>RPC ${m.rpc_running ? "up" : "down"}</span>
+        <span class="machine-chip"><i class="fa-solid ${m.rdma ? "fa-bolt" : "fa-plug"}"></i>${m.rdma ? "RDMA" : "TCP"}</span>
+        ${m.load ? `<span class="machine-chip"><i class="fa-solid fa-wave-square"></i>load ${escHtml(String(m.load))}</span>` : ""}
+      </div>
       <div class="gpu-area">
         ${gpus.length ? `
         <table class="gpu-table">
           <thead><tr><th class="gpu-idx">Idx</th><th>GPU</th><th>Util</th><th>VRAM</th><th>Temp</th></tr></thead>
-          <tbody>
-            ${gpus.map(g => `
-              <tr>
-                <td class="gpu-idx">${g.index}</td>
-                <td class="gpu-name" title="${escHtml(g.name)}">${escHtml(shortGpuName(g.name))}</td>
-                <td class="gpu-util">${g.util}%</td>
-                <td class="gpu-vram">${g.mem_used_gb}/${g.mem_total_gb}GB</td>
-                <td class="gpu-temp ${g.temp >= 75 ? "hot" : ""}">${g.temp}°C</td>
-              </tr>`).join("")}
-          </tbody>
-        </table>` : `<div class="no-gpus">no GPUs</div>`}
+          <tbody>${gpuRows}</tbody>
+        </table>` : `<div class="no-gpus"><i class="fa-solid fa-circle-info"></i> no GPUs</div>`}
       </div>
       <div class="card-metrics">
         <div class="card-metric">
           <div class="card-metric-label"><i class="fa-solid fa-gauge-high"></i> CPU</div>
           <div class="card-metric-value" style="color:${valColor(m.cpu_pct)}">${Math.round(m.cpu_pct || 0)}%</div>
           <div class="metric-bar"><div class="metric-fill" style="width:${m.cpu_pct || 0}%; background:${valColor(m.cpu_pct)}"></div></div>
-          ${m.cores ? `<div class="card-metric-label">${((m.cpu_pct || 0) / 100 * m.cores).toFixed(1)} / ${m.cores} cores</div>` : ""}
+          ${m.cores ? `<div class="card-metric-sub">${((m.cpu_pct || 0) / 100 * m.cores).toFixed(1)} / ${m.cores} cores</div>` : ""}
         </div>
         <div class="card-metric">
           <div class="card-metric-label"><i class="fa-solid fa-memory"></i> RAM</div>
           <div class="card-metric-value" style="color:${valColor(ramPct)}">${m.ram_used_gb}/${m.ram_total_gb}GB</div>
           <div class="metric-bar"><div class="metric-fill" style="width:${ramPct}%; background:${valColor(ramPct)}"></div></div>
+          <div class="card-metric-sub">${ramPct}% used</div>
         </div>
         <div class="card-metric">
           <div class="card-metric-label"><i class="fa-solid fa-microchip"></i> VRAM</div>
           <div class="card-metric-value" style="color:${valColor(vramPct)}">${usedVram.toFixed(1)}/${totalVram.toFixed(1)}GB</div>
           <div class="metric-bar"><div class="metric-fill" style="width:${vramPct}%; background:${valColor(vramPct)}"></div></div>
+          <div class="card-metric-sub">${vramPct}% used</div>
         </div>
       </div>
     </div>`;
@@ -1219,6 +1239,7 @@ setInterval(refreshLiveMachineState, 5000);
 // then swap in fresh data when the fetch lands (same pattern the
 // overview cards use — no dead spinner on a repeat visit)
 const _detailCache = {};
+let _mdActiveTab = "resources";
 function _detailCacheGet(name) {
   if (_detailCache[name]) return _detailCache[name];
   try {
@@ -1232,7 +1253,89 @@ function _detailCachePut(name, d) {
   try { localStorage.setItem("machine-detail-" + name, JSON.stringify(d)); }
   catch (_) { /* storage full/private mode: memory cache still works */ }
 }
+
+function _mdBlank(v) {
+  if (v === undefined || v === null) return true;
+  if (typeof v === "string") return v.trim() === "";
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v === "object") return Object.keys(v).length === 0;
+  return false;
+}
+
+function _diskBytes(v, osType) {
+  const s = String(v == null ? "" : v).trim();
+  if (!s) return null;
+  const m = s.match(/^([\d.]+)\s*(B|KB|MB|GB|TB|K|M|G|T)?$/i);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n)) return null;
+  const unit = (m[2] || "").toUpperCase();
+  if (unit) {
+    const mult = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3,
+      TB: 1024 ** 4, K: 1024, M: 1024 ** 2, G: 1024 ** 3,
+      T: 1024 ** 4 }[unit] || 1;
+    return n * mult;
+  }
+  // Unitless values from the agent: Linux/macOS use df -k (KiB),
+  // Windows Get-PSDrive reports bytes.
+  return (osType === "windows" ? n : n * 1024);
+}
+function _fmtDiskBytes(bytes) {
+  if (bytes == null || !Number.isFinite(bytes)) return "";
+  const gb = bytes / 1024 ** 3;
+  if (gb >= 1024) return `${(gb / 1024).toFixed(1)} TB`;
+  if (gb >= 10) return `${gb.toFixed(0)} GB`;
+  return `${gb.toFixed(1)} GB`;
+}
+function _fmtDiskValue(v, osType) {
+  const s = String(v == null ? "" : v).trim();
+  if (!s) return "";
+  if (/[A-Za-z]/.test(s)) return s;
+  const bytes = _diskBytes(s, osType);
+  return bytes == null ? s : _fmtDiskBytes(bytes);
+}
+
+/* Detail polls are partial by design: different collectors can omit MAC,
+   uplink speed, or an IP on one pass. Keep the last known identity and
+   network values, but never resurrect hardware that can legitimately
+   disappear (GPUs, RAM, CPU). */
+function _mergeMachineDetail(prev, fresh) {
+  if (!prev || typeof prev !== "object") return fresh;
+  const out = { ...fresh };
+  for (const key of ["name", "ip", "os", "role", "kernel", "uptime",
+    "cpu_model", "llama_version", "llama_bin", "mac", "agent_port",
+    "is_master", "is_local"]) {
+    if (_mdBlank(out[key]) && !_mdBlank(prev[key])) out[key] = prev[key];
+  }
+  out.net = { ...(prev.net || {}), ...(fresh.net || {}) };
+  for (const key of Object.keys(out.net)) {
+    if (_mdBlank(out.net[key]) && !_mdBlank((prev.net || {})[key]))
+      out.net[key] = prev.net[key];
+  }
+  if (_mdBlank(out.net.ip) && !_mdBlank(out.ip)) out.net.ip = out.ip;
+  if (_mdBlank(out.net.mac) && !_mdBlank(out.mac)) out.net.mac = out.mac;
+  if (_mdBlank(out.disk) && !_mdBlank(prev.disk)) {
+    out.disk = prev.disk;
+  } else if (out.disk && prev.disk) {
+    out.disk = { ...prev.disk, ...out.disk };
+    for (const key of ["free", "total", "mount"]) {
+      if (_mdBlank(out.disk[key]) && !_mdBlank(prev.disk[key]))
+        out.disk[key] = prev.disk[key];
+    }
+  }
+  if (out.rdma && prev.rdma) {
+    out.rdma = { ...prev.rdma, ...out.rdma };
+    for (const key of ["enabled", "transport", "ip", "dev", "gid"]) {
+      if (_mdBlank(out.rdma[key]) && !_mdBlank(prev.rdma[key]))
+        out.rdma[key] = prev.rdma[key];
+    }
+  }
+  // Stats are live hardware, not identity: take the fresh snapshot as-is.
+  out.stats = { ...(fresh.stats || {}) };
+  return out;
+}
 function openMachineDetail(name) {
+  _mdActiveTab = "resources";
   const modal = $("#machine-detail-modal");
   if (!modal) return;
   const body = $("#machine-detail-body");
@@ -1246,9 +1349,10 @@ function openMachineDetail(name) {
   modal.classList.remove("hidden");
   modal.setAttribute("aria-hidden", "false");
   api("GET", `/api/machines/${encodeURIComponent(name)}/detail`).then(d => {
-    _detailCachePut(name, d);
+    const merged = _mergeMachineDetail(cached, d);
+    _detailCachePut(name, merged);
     if ($("#machine-detail-modal")?.classList.contains("hidden")) return; // closed meanwhile
-    renderMachineDetail(body, d);
+    renderMachineDetail(body, merged);
   }).catch(e => {
     if (!body.classList.contains("detail-refreshing"))
       body.innerHTML = `<p class="status-bad">${escHtml(e.message)}</p>`;
@@ -1270,122 +1374,160 @@ function renderMachineDetail(body, d) {
   const ramPct = s.ram_total_gb ? Math.round(s.ram_used_gb / s.ram_total_gb * 100) : 0;
   const vramPct = totalVram ? Math.round(usedVram / totalVram * 100) : 0;
   const osLabel = (d.os || "linux").charAt(0).toUpperCase() + (d.os || "linux").slice(1);
-  const kv = (k, v) => `<div class="md-row"><span class="md-key">${k}</span><span class="md-val">${v || "—"}</span></div>`;
-  const gpuRows = gpus.length ? gpus.map(g => `
-    <tr>
-      <td>${g.index}</td>
-      <td class="gpu-name">${g.name}</td>
-      <td class="gpu-util">${g.util}%
-        <div class="mini-bar"><div class="mini-fill" style="width:${Math.min(g.util,100)}%; background:${valColor(g.util)}"></div></div>
-      </td>
-      <td class="gpu-vram">${g.mem_used_gb}/${g.mem_total_gb}GB
-        <div class="mini-bar"><div class="mini-fill" style="width:${Math.min(g.mem_pct || (g.mem_total_gb ? g.mem_used_gb / g.mem_total_gb * 100 : 0),100)}%; background:${valColor(g.mem_pct || (g.mem_total_gb ? g.mem_used_gb / g.mem_total_gb * 100 : 0))}"></div></div>
-      </td>
-      <td class="gpu-temp ${g.temp >= 75 ? "hot" : ""}">${g.temp}°C</td>
-    </tr>`).join("") : `<tr><td colspan="5" class="hint">no GPUs</td></tr>`;
+  const pctClass = (p) => p >= 90 ? "is-bad" : p >= 70 ? "is-warn" : "is-ok";
+  const kv = (k, v, cls = "") => `<div class="md-row"><span class="md-key">${k}</span><span class="md-val ${cls}">${v === null || v === undefined || v === "" ? "—" : escHtml(String(v))}</span></div>`;
+  const kpi = (label, value, cls = "", style = "") => `<div class="md-kpi"><span class="md-kpi-label">${label}</span><span class="md-kpi-value ${cls}"${style ? ` style="${style}"` : ""}>${escHtml(String(value))}</span></div>`;
+  const freeRam = Math.max(0, (Number(s.ram_total_gb) || 0) - (Number(s.ram_used_gb) || 0));
+  const gpuLines = gpus.length ? gpus.map(g => {
+    const tempClass = g.temp >= 80 ? "hot" : g.temp >= 70 ? "warm" : "";
+    const utilClass = g.util >= 90 ? "hot" : g.util >= 70 ? "warm" : "";
+    return `
+      <div class="md-gpu-line">
+        <span class="md-gpu-idx">${g.index}</span>
+        <span class="md-gpu-name" title="${escHtml(g.name)}">${escHtml(shortGpuName(g.name))}</span>
+        <span class="md-gpu-stat ${utilClass}">${g.util}%</span>
+        <span class="md-gpu-stat">${g.mem_used_gb}/${g.mem_total_gb}GB</span>
+        <span class="md-gpu-stat ${tempClass}">${g.temp}°C</span>
+      </div>`;
+  }).join("") : `<div class="md-gpu-empty">no GPUs</div>`;
   const net = d.net || {};
   const disk = d.disk || {};
-  // disk usage % from free/total strings ("86 GB", "1.2 TB")
-  let diskPct = null;
-  if (disk.free && disk.total) {
-    const toGB = (s) => { const m = String(s).match(/([\d.]+)\s*(GB|TB)/i); if (!m) return null; const v = parseFloat(m[1]); return m[2].toUpperCase() === "TB" ? v * 1024 : v; };
-    const freeGB = toGB(disk.free), totalGB = toGB(disk.total);
-    if (freeGB != null && totalGB > 0) diskPct = Math.round((1 - freeGB / totalGB) * 100);
-  }
-  const mdHeroSub = `${escHtml(d.ip)} · RPC <span class="${s.rpc_running ? "status-ok" : "status-warn"}">${s.rpc_running ? "up" : "down"}</span> · role: ${escHtml(d.role)}`;
+  const diskFreeBytes = _diskBytes(disk.free, d.os);
+  const diskTotalBytes = _diskBytes(disk.total, d.os);
+  const diskFreeLabel = _fmtDiskValue(disk.free, d.os);
+  const diskTotalLabel = _fmtDiskValue(disk.total, d.os);
+  const diskPct = (diskFreeBytes != null && diskTotalBytes > 0)
+    ? Math.round((1 - diskFreeBytes / diskTotalBytes) * 100)
+    : null;
+  const conn = (() => {
+    const caps = connCaps(d);
+    const extra = (caps.mode === "agent" || caps.mode === "both")
+      ? ` · agent :${d.agent_port || 8198}` : "";
+    return connectionLabel(d) + extra;
+  })();
+  const rdma = d.rdma || {};
+  const rdmaEnabled = !!rdma.enabled;
+  const activeTab = _mdActiveTab || "resources";
   body.innerHTML = `
     <div class="md-hero">
-      <div class="md-hero-title">
-        <span class="status-dot ${online ? "on" : "off"}"></span>
-        <strong>${escHtml(d.name)}</strong>
-        ${d.is_master ? '<span class="badge badge-master">master</span>' : ""}
-        ${d.is_local ? '<span class="badge badge-local">this machine</span>' : ""}
-        <span class="os-badge">${osLabel}</span>
+      <div class="md-hero-main">
+        <span class="md-hero-glyph"><i class="fa-solid fa-server"></i></span>
+        <div class="md-hero-id">
+          <div class="md-hero-title">
+            <strong>${escHtml(d.name)}</strong>
+            ${d.is_master ? '<span class="badge badge-master">master</span>' : ""}
+            ${d.is_local ? '<span class="badge badge-local">this machine</span>' : ""}
+            <span class="md-status-pill ${online ? "is-on" : "is-off"}"><span class="status-dot ${online ? "on" : "off"}"></span>${online ? "online" : "offline"}</span>
+          </div>
+          <div class="md-hero-sub">${escHtml(osLabel)} · ${escHtml(d.role || "peer")} · ${escHtml(d.ip || "—")}</div>
+        </div>
+      <div class="md-tabs" role="tablist" aria-label="Machine detail sections">
+        <button type="button" class="md-tab ${activeTab === "resources" ? "active" : ""}" data-md-tab="resources" role="tab" aria-selected="${activeTab === "resources"}" id="md-tab-resources" aria-controls="md-panel-resources">
+          <i class="fa-solid fa-layer-group"></i> Resources
+        </button>
+        <button type="button" class="md-tab ${activeTab === "system" ? "active" : ""}" data-md-tab="system" role="tab" aria-selected="${activeTab === "system"}" id="md-tab-system" aria-controls="md-panel-system">
+          <i class="fa-solid fa-server"></i> System info
+        </button>
       </div>
-      <div class="md-hero-sub">${mdHeroSub}</div>
+      </div>
+      <div class="md-hero-chips">
+        <span class="md-chip"><i class="fa-solid fa-network-wired"></i>${escHtml(d.ip || "—")}</span>
+        <span class="md-chip ${s.rpc_running ? "is-ok" : "is-warn"}"><i class="fa-solid fa-tower-broadcast"></i>RPC ${s.rpc_running ? "up" : "down"}</span>
+        <span class="md-chip"><i class="fa-solid fa-user-tag"></i>role: ${escHtml(d.role || "—")}</span>
+        <span class="md-chip"><i class="fa-solid fa-plug"></i>${escHtml(conn)}</span>
+      </div>
     </div>
-    <div class="md-grid">
-      <div class="md-card">
-        <h4><i class="fa-solid fa-microchip"></i> System</h4>
+    <div class="md-tab-panel" id="md-panel-resources" data-md-panel="resources" role="tabpanel" aria-labelledby="md-tab-resources" ${activeTab === "resources" ? "" : "hidden"}>
+      <div class="md-card md-card-wide md-resources">
+        <h4><i class="fa-solid fa-layer-group"></i> Resources <span class="md-card-hint">live utilisation</span></h4>
+        <div class="md-resource-grid">
+          <section class="md-resource md-resource-cpu">
+            <div class="md-resource-head">
+              <span class="md-resource-title"><i class="fa-solid fa-gauge-high"></i> CPU</span>
+              <span class="md-pct-pill ${pctClass(s.cpu_pct)}">${Math.round(s.cpu_pct || 0)}%</span>
+            </div>
+            <div class="md-resource-value">${Math.round(s.cpu_pct || 0)}%<small> · ${d.cores || s.cores || "—"} cores</small></div>
+            <div class="metric-bar"><div class="metric-fill" style="width:${Math.min(s.cpu_pct || 0, 100)}%; background:${valColor(s.cpu_pct)}"></div></div>
+            <div class="md-resource-meta">Load avg ${escHtml(String(s.load || "—"))}</div>
+            <div class="cpu-core-bars">
+              ${(d.cpu_cores || s.cpu_cores || []).map((c, i) => `
+                <div class="cpu-core" title="Core ${i}: ${c}%">
+                  <span class="cpu-core-label">${i}</span>
+                  <div class="cpu-core-bar"><div class="cpu-core-fill" style="width:${Math.min(c,100)}%; background:${valColor(c)}"></div></div>
+                </div>`).join("") || '<span class="hint">no per-core data</span>'}
+            </div>
+          </section>
+          <section class="md-resource md-resource-memory">
+            <div class="md-resource-head">
+              <span class="md-resource-title"><i class="fa-solid fa-memory"></i> Memory</span>
+              <span class="md-pct-pill ${pctClass(ramPct)}">${ramPct}%</span>
+            </div>
+            <div class="md-resource-value">${s.ram_used_gb}<small> / ${s.ram_total_gb} GB</small></div>
+            <div class="metric-bar"><div class="metric-fill" style="width:${ramPct}%; background:${valColor(ramPct)}"></div></div>
+            <div class="md-resource-meta">${freeRam.toFixed(1)} GB free</div>
+          </section>
+          <section class="md-resource md-resource-vram">
+            <div class="md-resource-head">
+              <span class="md-resource-title"><i class="fa-solid fa-microchip"></i> GPU VRAM</span>
+              <span class="md-pct-pill ${pctClass(vramPct)}">${vramPct}%</span>
+            </div>
+            <div class="md-resource-value">${usedVram.toFixed(1)}<small> / ${totalVram.toFixed(1)} GB</small></div>
+            <div class="metric-bar"><div class="metric-fill" style="width:${vramPct}%; background:${valColor(vramPct)}"></div></div>
+            <div class="md-resource-meta">${Math.max(0, totalVram - usedVram).toFixed(1)} GB free · ${gpus.length} GPU${gpus.length === 1 ? "" : "s"}</div>
+          </section>
+          <section class="md-resource md-resource-disk">
+            <div class="md-resource-head">
+              <span class="md-resource-title"><i class="fa-solid fa-hard-drive"></i> Disk</span>
+              ${diskPct != null ? `<span class="md-pct-pill ${pctClass(diskPct)}">${diskPct}%</span>` : ""}
+            </div>
+            <div class="md-resource-value">${diskFreeLabel ? escHtml(diskFreeLabel) : "—"}<small> free</small></div>
+            ${diskPct != null ? `<div class="metric-bar"><div class="metric-fill" style="width:${diskPct}%; background:${valColor(diskPct)}"></div></div>` : ""}
+            <div class="md-resource-meta">${diskTotalLabel ? `${escHtml(diskTotalLabel)} total` : "total unknown"}${disk.mount ? ` · ${escHtml(disk.mount)}` : ""}</div>
+          </section>
+        </div>
+        <div class="md-resource-lower">
+          <section class="md-subpanel md-gpu-panel">
+            <div class="md-subpanel-head">
+              <span class="md-subpanel-title"><i class="fa-solid fa-microchip"></i> GPUs</span>
+              <span class="md-subpanel-meta">${gpus.length} device${gpus.length === 1 ? "" : "s"} · ${usedVram.toFixed(1)} / ${totalVram.toFixed(1)} GB (${vramPct}%)</span>
+            </div>
+            <div class="md-gpu-list">${gpuLines}</div>
+          </section>
+          <section class="md-subpanel md-network-panel">
+            <div class="md-subpanel-head">
+              <span class="md-subpanel-title"><i class="fa-solid fa-network-wired"></i> Network</span>
+              <span class="md-transport-badge ${rdmaEnabled ? "is-rdma" : ""}">${rdmaEnabled ? "RDMA" : "TCP"}</span>
+            </div>
+            <div class="md-net-grid">
+              <div class="md-net-item"><span class="md-net-label">IP address</span><span class="md-net-value">${escHtml(net.ip || d.ip || "—")}</span></div>
+              <div class="md-net-item"><span class="md-net-label">MAC address</span><span class="md-net-value md-val-mono">${escHtml(d.mac || net.mac || "—")}</span></div>
+              <div class="md-net-item"><span class="md-net-label">Uplink speed</span><span class="md-net-value">${escHtml(net.speed || "—")}</span></div>
+              <div class="md-net-item md-net-item-wide"><span class="md-net-label">Mode</span><span class="md-net-value">${escHtml(rdmaEnabled ? (rdma.transport || "RDMA") : "TCP only (GGML_RPC_NO_RDMA)")}</span></div>
+              ${rdmaEnabled && rdma.ip ? `<div class="md-net-item"><span class="md-net-label">RoCE IP</span><span class="md-net-value">${escHtml(rdma.ip)}</span></div>` : ""}
+              ${rdmaEnabled && rdma.dev ? `<div class="md-net-item"><span class="md-net-label">Device</span><span class="md-net-value md-val-mono">${escHtml(rdma.dev)}</span></div>` : ""}
+              ${rdmaEnabled && rdma.gid ? `<div class="md-net-item"><span class="md-net-label">GID index</span><span class="md-net-value">${escHtml(rdma.gid)}</span></div>` : ""}
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+    <div class="md-tab-panel" id="md-panel-system" data-md-panel="system" role="tabpanel" aria-labelledby="md-tab-system" ${activeTab === "system" ? "" : "hidden"}>
+      <div class="md-card md-card-system">
+        <h4><i class="fa-solid fa-server"></i> System <span class="md-card-hint">host &amp; runtime</span></h4>
         ${kv("OS", osLabel)}
-        ${kv("Kernel", d.kernel)}
+        ${kv("Kernel", d.kernel, "md-val-mono")}
         ${kv("CPU", d.cpu_model)}
         ${kv("Cores", s.cores)}
         ${kv("Uptime", d.uptime)}
-        ${kv("Connection", (() => {
-          const caps = connCaps(d);
-          const extra = (caps.mode === "agent" || caps.mode === "both")
-            ? ` · agent :${d.agent_port || 8198}` : "";
-          return connectionLabel(d) + extra;
-        })())}
-        ${kv("llama.cpp", d.llama_version)}
-        ${kv("llama bin", d.llama_bin)}
-        <div class="md-row"><span class="md-key">update</span>
+        ${kv("Connection", conn)}
+        ${kv("llama.cpp", d.llama_version, "md-val-mono")}
+        ${kv("llama bin", d.llama_bin, "md-val-mono")}
+        <div class="md-row md-row-action"><span class="md-key">update</span>
           <span class="md-val">
             <button class="small" id="md-update-llamacpp" data-mid="${escHtml(d.name)}">Update llama.cpp</button>
             <span class="hint" id="md-update-latest"></span>
           </span>
         </div>
-      </div>
-      <div class="md-card">
-        <h4><i class="fa-solid fa-microchip"></i> CPU</h4>
-        ${kv("Load", `${s.cpu_pct}%`)}
-        ${kv("Cores", d.cores || s.cores)}
-        ${kv("Load avg", s.load)}
-        <div class="cpu-core-bars">
-          ${(d.cpu_cores || s.cpu_cores || []).map((c, i) => `
-            <div class="cpu-core" title="Core ${i}: ${c}%">
-              <span class="cpu-core-label">${i}</span>
-              <div class="cpu-core-bar"><div class="cpu-core-fill" style="width:${Math.min(c,100)}%; background:${valColor(c)}"></div></div>
-            </div>`).join("") || '<span class="hint">no per-core data</span>'}
-        </div>
-      </div>
-      <div class="md-card">
-        <h4><i class="fa-solid fa-memory"></i> Memory</h4>
-        ${kv("RAM", `${s.ram_used_gb}/${s.ram_total_gb} GB (${ramPct}%)`)}
-        <div class="metric-bar"><div class="metric-fill" style="width:${ramPct}%; background:${valColor(ramPct)}"></div></div>
-      </div>
-      <div class="md-card">
-        <h4><i class="fa-solid fa-network-wired"></i> Network</h4>
-        ${kv("IP address", net.ip)}
-        ${kv("MAC address", d.mac)}
-        ${kv("Uplink speed", net.speed)}
-      </div>
-      <div class="md-card">
-        <h4><i class="fa-solid fa-bolt"></i> RDMA Transport</h4>
-        ${(() => {
-          const r = d.rdma || {};
-          const enabled = r.enabled;
-          const badge = enabled
-            ? '<span class="badge badge-rdma">RDMA</span>'
-            : '<span class="badge">TCP</span>';
-          let details = "";
-          if (enabled) {
-            details = kv("Mode", r.transport);
-            if (r.ip) details += kv("RoCE IP", r.ip);
-            if (r.dev) details += kv("Device", r.dev);
-            if (r.gid) details += kv("GID index", r.gid);
-          } else {
-            details = kv("Mode", "TCP only (GGML_RPC_NO_RDMA)");
-          }
-          return badge + details;
-        })()}
-      </div>
-      <div class="md-card">
-        <h4><i class="fa-solid fa-hard-drive"></i> Disk</h4>
-        ${kv("Free space", disk.free)}
-        ${kv("Total", disk.total)}
-        ${kv("Mount", disk.mount)}
-        ${diskPct != null ? `<div class="metric-bar"><div class="metric-fill" style="width:${diskPct}%; background:${valColor(diskPct)}"></div></div>` : ""}
-      </div>
-      <div class="md-card md-card-wide">
-        <h4><i class="fa-solid fa-microchip"></i> GPUs</h4>
-        ${kv("VRAM total", `${usedVram.toFixed(1)}/${totalVram.toFixed(1)} GB (${vramPct}%)`)}
-        <div class="metric-bar"><div class="metric-fill" style="width:${vramPct}%; background:${valColor(vramPct)}"></div></div>
-        <table class="gpu-table">
-          <thead><tr><th>Idx</th><th>GPU</th><th>Util</th><th>VRAM</th><th>Temp</th></tr></thead>
-          <tbody>${gpuRows}</tbody>
-        </table>
       </div>
     </div>`;
   mdUpdateBadge(d);   // version badge needs the latest tag — async fill
@@ -1480,6 +1622,19 @@ on("#machine-detail-body", "click", async (e) => {
     if (hint) hint.innerHTML = `<span class="status-bad">${escHtml(err.message)}</span>`;
     toast(err.message, "bad");
   }
+});
+on("#machine-detail-body", "click", (e) => {
+  const tab = e.target.closest("[data-md-tab]");
+  if (!tab) return;
+  _mdActiveTab = tab.dataset.mdTab || "resources";
+  document.querySelectorAll("#machine-detail-body [data-md-tab]").forEach((b) => {
+    const on = b === tab;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", String(on));
+  });
+  document.querySelectorAll("#machine-detail-body [data-md-panel]").forEach((panel) => {
+    panel.hidden = panel.dataset.mdPanel !== _mdActiveTab;
+  });
 });
 on("#machine-detail-backdrop", "click", closeMachineDetail);
 on("#machine-detail-close", "click", closeMachineDetail);
@@ -1588,6 +1743,13 @@ function _paintStats(r, groups) {
   grid.appendChild(renderGroupedStats(r.data, groups || []));
 }
 
+function _paintMetricCard(cardId, pct, state) {
+  const card = $(`#${cardId}`);
+  if (!card) return;
+  card.dataset.state = state;
+  card.style.setProperty("--pct", String(Math.max(0, Math.min(100, Number(pct) || 0))));
+}
+
 function _paintTotals(totals) {
   if (!totals) return;
   for (const k of ["vram", "ram"]) {
@@ -1599,6 +1761,12 @@ function _paintTotals(totals) {
     const bar = $(`#ov-${k}-bar`);
     const newWidth = `${Math.min(t.pct, 100)}%`;
     const newColor = barColor(t.pct);
+    _paintMetricCard(`ov-card-${k}`, t.pct, newColor);
+    const meta = $(`#ov-${k}-meta`);
+    if (meta) {
+      const free = Math.max(0, Number(t.total) - Number(t.used));
+      meta.textContent = Number.isFinite(free) ? `${free.toFixed(1)} GB free` : "pooled";
+    }
     // update color class without touching 'bar' base class
     bar.classList.remove('green', 'yellow', 'red');
     bar.classList.add(newColor);
@@ -1607,6 +1775,12 @@ function _paintTotals(totals) {
   }
   $("#ov-cpu-pct").textContent = `${totals.cpu.pct}%`;
   $("#ov-cpu-sub").textContent = `${totals.cpu.busy} / ${totals.cpu.total} cores`;
+  _paintMetricCard("ov-card-cpu", totals.cpu.pct, barColor(totals.cpu.pct));
+  const cpuMeta = $("#ov-cpu-meta");
+  if (cpuMeta) {
+    const idle = Math.max(0, Number(totals.cpu.total) - Number(totals.cpu.busy));
+    cpuMeta.textContent = Number.isFinite(idle) ? `${idle.toFixed(1)} idle` : "cluster load";
+  }
   const cpuBar = $("#ov-cpu-bar");
   const cpuWidth = `${Math.min(totals.cpu.pct, 100)}%`;
   const cpuColor = barColor(totals.cpu.pct);

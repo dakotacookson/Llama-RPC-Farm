@@ -98,46 +98,76 @@
     <!-- Dashboard -->
     <section id="tab-dashboard" class="tab active">
       <div class="overview">
-        <h2 class="overview-title">Cluster Overview</h2>
+        <div class="overview-head">
+          <h2 class="overview-title">Cluster Overview</h2>
+          <span class="overview-live"><i></i> live capacity</span>
+        </div>
         <div id="ov-loaded-model" class="loaded-model-banner">no model loaded</div>
         <div class="overview-row">
-          <div class="metric">
-            <span class="metric-label">VRAM</span>
-            <div class="metric-body">
-              <i class="fa-solid fa-microchip metric-icon"></i>
-              <div class="metric-values">
-                <span class="metric-value" id="ov-vram-used">--</span>
-                <span class="metric-slash">/</span>
-                <span class="metric-value" id="ov-vram-total">-- GB</span>
+          <article class="metric metric-card" id="ov-card-vram" data-state="green">
+            <div class="metric-head">
+              <div class="metric-heading">
+                <span class="metric-icon-tile"><i class="fa-solid fa-microchip"></i></span>
+                <span class="metric-label">VRAM</span>
+              </div>
+              <div class="metric-ring" aria-hidden="true">
                 <span class="metric-percent" id="ov-vram-pct">--%</span>
               </div>
             </div>
-            <div class="bar-wrap"><div class="bar" id="ov-vram-bar"></div></div>
-          </div>
-          <div class="metric">
-            <span class="metric-label">RAM</span>
             <div class="metric-body">
-              <i class="fa-solid fa-memory metric-icon"></i>
               <div class="metric-values">
-                <span class="metric-value" id="ov-ram-used">--</span>
+                <span class="metric-value" id="ov-vram-used">--</span>
                 <span class="metric-slash">/</span>
-                <span class="metric-value" id="ov-ram-total">-- GB</span>
+                <span class="metric-total" id="ov-vram-total">-- GB</span>
+              </div>
+            </div>
+            <div class="metric-bar-row">
+              <div class="bar-wrap"><div class="bar green" id="ov-vram-bar"></div></div>
+              <span class="metric-meta" id="ov-vram-meta">pooled</span>
+            </div>
+          </article>
+          <article class="metric metric-card" id="ov-card-ram" data-state="green">
+            <div class="metric-head">
+              <div class="metric-heading">
+                <span class="metric-icon-tile"><i class="fa-solid fa-memory"></i></span>
+                <span class="metric-label">RAM</span>
+              </div>
+              <div class="metric-ring" aria-hidden="true">
                 <span class="metric-percent" id="ov-ram-pct">--%</span>
               </div>
             </div>
-            <div class="bar-wrap"><div class="bar" id="ov-ram-bar"></div></div>
-          </div>
-          <div class="metric">
-            <span class="metric-label">CPU</span>
             <div class="metric-body">
-              <i class="fa-solid fa-gauge-high metric-icon"></i>
               <div class="metric-values">
-                <span class="metric-value" id="ov-cpu-pct">--%</span>
-                <span class="metric-sub" id="ov-cpu-sub">-- / -- cores</span>
+                <span class="metric-value" id="ov-ram-used">--</span>
+                <span class="metric-slash">/</span>
+                <span class="metric-total" id="ov-ram-total">-- GB</span>
               </div>
             </div>
-            <div class="bar-wrap"><div class="bar" id="ov-cpu-bar"></div></div>
-          </div>
+            <div class="metric-bar-row">
+              <div class="bar-wrap"><div class="bar green" id="ov-ram-bar"></div></div>
+              <span class="metric-meta" id="ov-ram-meta">pooled</span>
+            </div>
+          </article>
+          <article class="metric metric-card" id="ov-card-cpu" data-state="green">
+            <div class="metric-head">
+              <div class="metric-heading">
+                <span class="metric-icon-tile"><i class="fa-solid fa-gauge-high"></i></span>
+                <span class="metric-label">CPU</span>
+              </div>
+              <div class="metric-ring" aria-hidden="true">
+                <span class="metric-percent" id="ov-cpu-pct">--%</span>
+              </div>
+            </div>
+            <div class="metric-body">
+              <div class="metric-values">
+                <span class="metric-value metric-value-sm" id="ov-cpu-sub">-- / -- cores</span>
+              </div>
+            </div>
+            <div class="metric-bar-row">
+              <div class="bar-wrap"><div class="bar green" id="ov-cpu-bar"></div></div>
+              <span class="metric-meta" id="ov-cpu-meta">cluster load</span>
+            </div>
+          </article>
         </div>
       </div>
 
@@ -1448,9 +1478,15 @@ technical | bugs, errors, login problems</textarea></label>
   <div id="machine-detail-modal" class="modal hidden" aria-hidden="true">
     <div class="modal-backdrop" id="machine-detail-backdrop"></div>
     <div class="modal-dialog modal-dialog-wide" role="dialog" aria-modal="true" aria-labelledby="machine-detail-title">
-      <div class="modal-header">
-        <h3 id="machine-detail-title"><i class="fa-solid fa-server"></i> Machine detail</h3>
-        <button class="small" id="machine-detail-close" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+      <div class="modal-header md-modal-header">
+        <div class="md-modal-title">
+          <span class="md-modal-glyph"><i class="fa-solid fa-server"></i></span>
+          <div class="md-modal-heading">
+            <h3 id="machine-detail-title">Machine detail</h3>
+            <span class="md-modal-sub">Live hardware, transport and runtime telemetry</span>
+          </div>
+        </div>
+        <button class="small md-modal-close" id="machine-detail-close" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
       </div>
       <div class="modal-body" id="machine-detail-body">
         <div class="loading-spinner"><i class="fa-solid fa-spinner fa-spin"></i><span>Loading machine details…</span></div>
