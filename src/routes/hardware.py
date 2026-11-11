@@ -159,6 +159,19 @@ async def stop_all_rpc():
     names = [m["name"] for m in cfg.machines.all()]
     with ThreadPoolExecutor(max_workers=len(names) or 1) as pool:
         results = list(pool.map(rpc_manager.stop_rpc, names))
+    try:
+        custom = await run_in_threadpool(swap_manager.stop_custom_runtimes)
+    except Exception as e:
+        custom = [{"machine": "custom", "killed": False, "error": str(e)}]
+    for r in custom:
+        results.append({
+            "machine": r.get("machine") or r.get("model_id") or "custom",
+            "port": r.get("port"),
+            "killed": bool(r.get("killed")),
+            "custom": True,
+            "model_id": r.get("model_id"),
+            **({"error": r.get("error")} if r.get("error") else {}),
+        })
     return results
 
 

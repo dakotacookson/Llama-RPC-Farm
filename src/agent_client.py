@@ -312,16 +312,30 @@ def install_verify(machine, path, args=None, timeout=130.0) -> dict:
 
 
 def custom_start(machine, bat, port, log=None, workdir=None,
+                 stop_bat=None, stop_match=None, stop_names=None,
                  timeout=60.0) -> dict:
-    return _request(machine, "POST", "/custom/start", {
-        "bat": bat, "port": int(port), "log": log, "workdir": workdir,
-    }, timeout=timeout)
+    body = {"bat": bat, "port": int(port), "log": log, "workdir": workdir}
+    if stop_bat:
+        body["stop_bat"] = str(stop_bat)
+    if stop_match:
+        body["stop_match"] = [str(x) for x in stop_match]
+    if stop_names:
+        body["stop_names"] = [str(x) for x in stop_names]
+    return _request(machine, "POST", "/custom/start", body,
+                    timeout=timeout)
 
 
-def custom_stop(machine, port, state_key=None, timeout=60.0) -> dict:
-    return _request(machine, "POST", "/custom/stop", {
-        "port": int(port), "state_key": state_key,
-    }, timeout=timeout)
+def custom_stop(machine, port, state_key=None, stop_bat=None,
+                stop_match=None, stop_names=None, timeout=60.0) -> dict:
+    body = {"port": int(port), "state_key": state_key}
+    if stop_bat:
+        body["stop_bat"] = str(stop_bat)
+    if stop_match:
+        body["stop_match"] = [str(x) for x in stop_match]
+    if stop_names:
+        body["stop_names"] = [str(x) for x in stop_names]
+    return _request(machine, "POST", "/custom/stop", body,
+                    timeout=timeout)
 
 
 def agent_update(machine, wheel_bytes, version="", timeout=200.0) -> dict:

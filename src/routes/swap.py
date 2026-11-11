@@ -456,12 +456,30 @@ async def swap_disable_get(model_id: str):
 @router.post("/api/swap/evict/{model_id}")
 async def swap_evict(model_id: str):
     """Unload a single model from swap (frees its VRAM/RAM). Proxies to
-    POST /api/models/unload/{model_id} on the swap host. No-op if swap down."""
-    return await _proxy_swap_unload(model_id)
+    POST /api/models/unload/{model_id} on the swap host. No-op if swap down.
+
+    Custom runtimes are stopped directly through their STOP-*.bat even when
+    llama-swap shows them as unloaded, so an orphaned external server can
+    always be evicted."""
+    model = cfg.get_model(model_id)
+    custom = None
+    if model and (model.get("runtime") or "") == "custom":
+        custom = await run_in_threadpool(swap_manager.stop_custom_model,
+                                        model_id)
+    try:
+        res = await _proxy_swap_unload(model_id)
+    except Exception as e:
+        if custom is None:
+            raise
+        res = {"ok": False, "error": str(e)}
+    if custom is not None:
+        res = {**res, "custom": custom}
+    return res
 
 
 @router.post("/api/swap/evict-all")
 async def swap_evict_all():
+    custom = await run_in_threadpool(swap_manager.stop_custom_runtimes)
     st = swap_manager.status()
     if not st.get("running"):
         raise HTTPException(status_code=503, detail="swap not running")
@@ -478,4 +496,7 @@ async def swap_evict_all():
             return {"ok": False, "status": e.code, "error": e.read().decode()[:500]}
         except Exception as e:
             return {"ok": False, "error": str(e)}
-    return await run_in_threadpool(do)
+    out = await run_in_threadpool(do)
+    if isinstance(out, dict):
+        out = {**out, "custom": custom}
+    return out
