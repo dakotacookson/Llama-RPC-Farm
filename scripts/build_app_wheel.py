@@ -18,6 +18,7 @@ PAYLOAD_DIRS = ("src", "ui", "peer_agent", "scripts", "packaging")
 PAYLOAD_FILES = (
     "VERSION", "requirements.txt", "install.sh", "install.bat",
     "run.sh", "run.bat", "restart.sh", "restart-llama-swap.sh",
+    "farmctl", "farmctl.bat",
 )
 SKIP_DIRS = {"__pycache__", ".pytest_cache", "build", "dist", ".git"}
 

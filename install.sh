@@ -93,8 +93,23 @@ else
   "$VENV_PY" -m pip install -r "$REQ"
 fi
 
+# Put farmctl on PATH for source installs. A wrapper (not a symlink) keeps
+# working even if the repo is moved after install.
+BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
+mkdir -p "$BIN_DIR"
+cat > "$BIN_DIR/farmctl" <<EOF
+#!/usr/bin/env bash
+exec "$VENV_PY" "$SCRIPT_DIR/src/farmctl.py" "\$@"
+EOF
+chmod +x "$BIN_DIR/farmctl"
+case ":$PATH:" in
+  *":$BIN_DIR:"*) ;;
+  *) log "NOTE: add $BIN_DIR to PATH to run 'farmctl' without ./" ;;
+esac
+
 log "Done."
 echo
 echo "Next steps:"
 echo "  $SCRIPT_DIR/run.sh          # start the web UI (background, survives logout)"
+echo "  farmctl status              # headless CLI over the same API"
 echo "  http://127.0.0.1:8199"
