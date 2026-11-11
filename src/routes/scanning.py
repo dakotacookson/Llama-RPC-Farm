@@ -230,6 +230,43 @@ def _measure_agent_speed(machine, mb=50):
         return None
 
 
+def _apply_speed_fallback(detail, name, machine, is_local):
+    """Fill an unknown link speed with measured agent throughput.
+
+    Remote agents can't always report a link rate (virtio/WiFi often say
+    "Unknown!"). Measure through that peer's own agent instead; local hosts
+    measure through the first remote peer. Results are cached for an hour.
+    """
+    net = detail.setdefault("net", {})
+    reported = str(net.get("speed") or "").strip()
+    low = reported.lower()
+    if reported and "unknown" not in low and "n/a" not in low:
+        return detail
+    if is_local:
+        target = next((m for m in cfg.machines.all()
+                       if not local_node.is_local(m)), None)
+    else:
+        target = machine
+    if target is None:
+        return detail
+    cache = _load_speed_cache()
+    ent = cache.get(name)
+    now = time.time()
+    mbps = None
+    if ent and now - ent.get("ts", 0) < _SPEED_CACHE_TTL:
+        mbps = ent.get("mbps")
+    else:
+        mbps = _measure_agent_speed(target)
+        if mbps:
+            cache[name] = {"mbps": mbps, "ts": now}
+            _save_speed_cache(cache)
+    if mbps:
+        net["speed"] = f"{mbps} Mb/s (agent)"
+    elif "unknown" in low:
+        net["speed"] = ""
+    return detail
+
+
 @router.get("/api/machines/{name}/detail")
 async def machine_detail(name: str):
     """Deep system info for one machine: OS/kernel, CPU model, disk, network,
@@ -300,7 +337,7 @@ async def machine_detail(name: str):
             detail["stats"] = stats_collector.machine_stats(machine)
         except Exception:
             detail["stats"] = None
-        return detail
+        return _apply_speed_fallback(detail, name, machine, is_local)
     agent_detail = None
     if not is_local and agent_client.should_use_agent(machine):
         try:
@@ -385,29 +422,7 @@ async def machine_detail(name: str):
             _parse_posix_blob(detail, blob)
 
     # ---- real throughput over the peer agent (cached 1h) ----
-    speed_agent = None
-    for peer in cfg.machines.all():
-        if peer.get("name") == name or local_node.is_local(peer):
-            continue
-        speed_agent = peer
-        break
-    reported = str(detail["net"].get("speed") or "").strip()
-    need_measure = (not reported or "n/a" in reported.lower()
-                    or "unknown" in reported.lower())
-    if need_measure and speed_agent is not None:
-        cache = _load_speed_cache()
-        ent = cache.get(name)
-        now = time.time()
-        if ent and now - ent.get("ts", 0) < _SPEED_CACHE_TTL:
-            detail["net"]["speed"] = ent.get("mbps")
-        else:
-            mbps = _measure_agent_speed(speed_agent)
-            if mbps:
-                detail["net"]["speed"] = mbps
-                cache[name] = {"mbps": mbps, "ts": now}
-                _save_speed_cache(cache)
-        if detail["net"]["speed"]:
-            detail["net"]["speed"] = f"{detail['net']['speed']} Mb/s (agent)"
+    detail = _apply_speed_fallback(detail, name, machine, is_local)
 
     # live stats ride along so the modal shows current numbers
     try:
