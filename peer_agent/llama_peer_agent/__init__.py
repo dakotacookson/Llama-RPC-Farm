@@ -1,6 +1,6 @@
 """Tiny optional peer agent for Llama RPC Farm."""
 
-__version__ = "2.0.2"
+__version__ = "2.0.18"
 PROTOCOL_VERSION = 1
 
 # Baked at build time by scripts/stamp_build_info.py. The master compares it

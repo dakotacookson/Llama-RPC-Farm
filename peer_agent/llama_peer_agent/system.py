@@ -4,9 +4,18 @@ import os
 import shutil
 import subprocess
 import sys
+import uuid
 
 from . import processes
 from .config import AgentConfig
+
+
+def _mac_address() -> str:
+    """Stable host MAC for enrollment/detail, matching /info's identity."""
+    node = uuid.getnode()
+    if (node >> 40) & 1:  # multicast bit set = uuid fallback, not a real NIC
+        return ""
+    return ":".join(f"{(node >> i) & 0xff:02x}" for i in range(40, -1, -8))
 
 
 def _run(cmd, timeout=30):
@@ -93,7 +102,9 @@ def _linux(config: AgentConfig):
         "kernel": p.get("K", ""), "cpu_model": p.get("C", ""),
         "uptime": p.get("U", ""), "net": {"ip": p.get("I", ""),
                                           "speed": p.get("S", "")},
-        "disk": {"free": p.get("D", ""), "total": p.get("DT", "")},
+        "disk": {"free": p.get("D", ""), "total": p.get("DT", ""),
+                 "mount": "/"},
+        "mac": _mac_address(),
         "llama_version": p.get("L", ""), "cores": os.cpu_count() or 0,
         "cpu_cores": cores,
         "virt": p.get("V", ""), "cpu_flags": p.get("CF", ""),
@@ -124,7 +135,9 @@ echo "L:$("BIN/llama-server" --version 2>&1 || "BIN/llama-cli" --version 2>&1)"
         "kernel": p.get("K", ""), "cpu_model": p.get("C", ""),
         "uptime": p.get("U", ""),
         "net": {"ip": p.get("I", ""), "speed": p.get("S", "")},
-        "disk": {"free": p.get("D", ""), "total": p.get("DT", "")},
+        "disk": {"free": p.get("D", ""), "total": p.get("DT", ""),
+                 "mount": "/"},
+        "mac": _mac_address(),
         "llama_version": p.get("L", ""), "driver_version": "",
         "virt": "bare", "cpu_flags": "", "pcie": "", "rebar": "",
         "cores": int(subprocess.run(
@@ -175,11 +188,22 @@ def _windows(config: AgentConfig):
             disk = json.loads(disk)
         except ValueError:
             disk = None
-    free = total = ""
+    free = used = total = ""
+    mount = ""
     if isinstance(disk, list) and disk:
-        free = str((disk[0] or {}).get("Free") or "")
+        item = disk[0] or {}
+        free = str(item.get("Free") or "")
+        used = str(item.get("Used") or "")
+        mount = str(item.get("Name") or "")
     elif isinstance(disk, dict):
         free = str(disk.get("Free") or "")
+        used = str(disk.get("Used") or "")
+        mount = str(disk.get("Name") or "")
+    try:
+        if free and used:
+            total = str(int(float(free)) + int(float(used)))
+    except (TypeError, ValueError):
+        total = ""
     cl = o.get("coreload")
     if isinstance(cl, str):
         try:
@@ -190,7 +214,8 @@ def _windows(config: AgentConfig):
         "kernel": o.get("kernel", ""), "cpu_model": o.get("cpu", ""),
         "uptime": o.get("uptime", ""),
         "net": {"ip": o.get("ip", ""), "speed": o.get("speed", "")},
-        "disk": {"free": free, "total": total},
+        "disk": {"free": free, "total": total, "mount": mount},
+        "mac": _mac_address(),
         "llama_version": o.get("llama", ""), "cores": o.get("cores", 0),
         "cpu_cores": cl or [], "virt": "windows", "cpu_flags": "",
         "driver_version": str(o.get("driver") or ""),
