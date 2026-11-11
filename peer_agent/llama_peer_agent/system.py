@@ -13,9 +13,56 @@ from .config import AgentConfig
 def _mac_address() -> str:
     """Stable host MAC for enrollment/detail, matching /info's identity."""
     node = uuid.getnode()
-    if (node >> 40) & 1:  # multicast bit set = uuid fallback, not a real NIC
+    if not ((node >> 40) & 1):  # multicast bit clear = real hardware MAC
+        return ":".join(f"{(node >> i) & 0xff:02x}" for i in range(40, -1, -8))
+    # uuid.getnode() can fall back to a random multicast address. On Linux
+    # read the first real NIC instead of reporting an empty MAC.
+    if sys.platform.startswith("linux"):
+        try:
+            for name in sorted(os.listdir("/sys/class/net")):
+                low = name.lower()
+                if low == "lo" or low.startswith(("veth", "br-", "docker", "virbr", "tailscale")):
+                    continue
+                try:
+                    addr = open(f"/sys/class/net/{name}/address",
+                                encoding="utf-8").read().strip()
+                except OSError:
+                    continue
+                if addr and addr != "00:00:00:00:00:00":
+                    return addr
+        except OSError:
+            pass
+    return ""
+
+
+def _fmt_bytes(n) -> str:
+    try:
+        gb = float(n) / 1024 ** 3
+    except (TypeError, ValueError):
         return ""
-    return ":".join(f"{(node >> i) & 0xff:02x}" for i in range(40, -1, -8))
+    if gb >= 1024:
+        return f"{gb / 1024:.1f} TB"
+    if gb >= 10:
+        return f"{gb:.0f} GB"
+    return f"{gb:.1f} GB"
+
+
+def _fill_disk_total(free, total, mount):
+    """Use the OS disk API when a shell probe omitted the total.
+
+    df/Get-PSDrive parsing differs across agents and virtualized filesystems;
+    shutil.disk_usage is the portable fallback and reports bytes.
+    """
+    free, total = str(free or ""), str(total or "")
+    if total:
+        return free, total
+    try:
+        used = shutil.disk_usage(mount or os.path.abspath(os.sep))
+    except OSError:
+        return free, total
+    if not free:
+        free = _fmt_bytes(used.free)
+    return free, _fmt_bytes(used.total)
 
 
 def _run(cmd, timeout=30):
@@ -87,6 +134,7 @@ def _linux(config: AgentConfig):
     if code != 0:
         return {}
     p = _parse_posix(out)
+    disk_free, disk_total = _fill_disk_total(p.get("D", ""), p.get("DT", ""), "/")
     cores = []
     try:
         for line in open("/proc/stat", encoding="utf-8"):
@@ -102,8 +150,7 @@ def _linux(config: AgentConfig):
         "kernel": p.get("K", ""), "cpu_model": p.get("C", ""),
         "uptime": p.get("U", ""), "net": {"ip": p.get("I", ""),
                                           "speed": p.get("S", "")},
-        "disk": {"free": p.get("D", ""), "total": p.get("DT", ""),
-                 "mount": "/"},
+        "disk": {"free": disk_free, "total": disk_total, "mount": "/"},
         "mac": _mac_address(),
         "llama_version": p.get("L", ""), "cores": os.cpu_count() or 0,
         "cpu_cores": cores,
@@ -131,12 +178,12 @@ echo "L:$("BIN/llama-server" --version 2>&1 || "BIN/llama-cli" --version 2>&1)"
     if code != 0:
         return {}
     p = _parse_posix(out)
+    disk_free, disk_total = _fill_disk_total(p.get("D", ""), p.get("DT", ""), "/")
     return {
         "kernel": p.get("K", ""), "cpu_model": p.get("C", ""),
         "uptime": p.get("U", ""),
         "net": {"ip": p.get("I", ""), "speed": p.get("S", "")},
-        "disk": {"free": p.get("D", ""), "total": p.get("DT", ""),
-                 "mount": "/"},
+        "disk": {"free": disk_free, "total": disk_total, "mount": "/"},
         "mac": _mac_address(),
         "llama_version": p.get("L", ""), "driver_version": "",
         "virt": "bare", "cpu_flags": "", "pcie": "", "rebar": "",
@@ -204,6 +251,8 @@ def _windows(config: AgentConfig):
             total = str(int(float(free)) + int(float(used)))
     except (TypeError, ValueError):
         total = ""
+    target = f"{mount}:\\" if len(mount) == 1 else os.path.abspath(os.sep)
+    free, total = _fill_disk_total(free, total, target)
     cl = o.get("coreload")
     if isinstance(cl, str):
         try:

@@ -290,6 +290,12 @@ async def machine_detail(name: str):
         detail.update(sd)
         detail.setdefault("net", {"ip": machine.get("ip", ""), "speed": ""})
         detail.setdefault("disk", {"free": "", "mount": ""})
+        # A partial agent payload must not erase identity already known by
+        # the master (agent MAC probing can legitimately come back empty).
+        if not detail.get("mac"):
+            detail["mac"] = machine.get("mac") or ""
+        if not (detail.get("net") or {}).get("ip"):
+            detail.setdefault("net", {})["ip"] = machine.get("ip", "")
         try:
             detail["stats"] = stats_collector.machine_stats(machine)
         except Exception:
