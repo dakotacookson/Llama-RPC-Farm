@@ -311,12 +311,15 @@ def install_verify(machine, path, args=None, timeout=130.0) -> dict:
     }, timeout=timeout)
 
 
-def custom_start(machine, bat, port, log=None, workdir=None,
+def custom_start(machine, bat=None, port=8080, log=None, workdir=None,
                  stop_bat=None, stop_match=None, stop_names=None,
-                 timeout=60.0) -> dict:
-    body = {"bat": bat, "port": int(port), "log": log, "workdir": workdir}
-    if stop_bat:
-        body["stop_bat"] = str(stop_bat)
+                 script=None, stop_script=None, timeout=60.0) -> dict:
+    start = script or bat
+    stop = stop_script or stop_bat
+    body = {"script": start, "port": int(port), "log": log,
+            "workdir": workdir}
+    if stop:
+        body["stop_script"] = str(stop)
     if stop_match:
         body["stop_match"] = [str(x) for x in stop_match]
     if stop_names:
@@ -326,10 +329,12 @@ def custom_start(machine, bat, port, log=None, workdir=None,
 
 
 def custom_stop(machine, port, state_key=None, stop_bat=None,
-                stop_match=None, stop_names=None, timeout=60.0) -> dict:
+                stop_match=None, stop_names=None, stop_script=None,
+                timeout=60.0) -> dict:
     body = {"port": int(port), "state_key": state_key}
-    if stop_bat:
-        body["stop_bat"] = str(stop_bat)
+    stop = stop_script or stop_bat
+    if stop:
+        body["stop_script"] = str(stop)
     if stop_match:
         body["stop_match"] = [str(x) for x in stop_match]
     if stop_names:

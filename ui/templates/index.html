@@ -549,13 +549,14 @@
         <div class="row" id="mo-custom-row" hidden>
           <label>Custom kind
             <select id="mo-custom-kind">
-              <option value="winbox-bat">winbox-bat (start a .bat through the agent, proxy to it)</option>
+              <option value="script">script (start/stop script, any OS)</option>
+              <option value="winbox-bat">winbox-bat (legacy Windows)</option>
               <option value="raw">raw (your own swap entry, passed through)</option>
             </select>
           </label>
           <span id="mo-custom-bat-fields" style="display:contents">
-            <label title="Full path of the start script on the target box">Start bat on box <input id="mo-custom-bat" placeholder="D:\Strata\run-iq3_s.bat" style="min-width:260px"></label>
-            <label title="Optional STOP batch file on the target box. Leave blank to derive STOP-<core>.bat next to the start bat.">Stop bat on box <input id="mo-custom-stop-bat" placeholder="D:\Strata\STOP-iq3_s.bat (optional)" style="min-width:280px"></label>
+            <label title="Full path of the start script on the target box">Start script on box <input id="mo-custom-bat" placeholder="/opt/sglang/start.sh or D:\Strata\run-iq3_s.bat" style="min-width:300px"></label>
+            <label title="Optional stop script on the target box. Leave blank to derive a sibling stop script (STOP-<core>.bat / stop-<core>.sh).">Stop script on box <input id="mo-custom-stop-bat" placeholder="/opt/sglang/stop.sh or D:\Strata\STOP-iq3_s.bat (optional)" style="min-width:320px"></label>
             <label title="TCP port the external server listens on (proxied by llama-swap)">Port <input id="mo-custom-port" type="number" min="1" max="65535" placeholder="8080" style="width:100px"></label>
           </span>
           <label title="External server takes image input (listed for vision tests)"><input id="mo-custom-vision" type="checkbox"> Vision</label>

@@ -8,6 +8,7 @@ the daemon is safe -- no VRAM is touched until traffic arrives.
 import json
 import ntpath
 import os
+import posixpath
 import re as _re
 import shutil
 import time
@@ -387,13 +388,16 @@ def _is_windows_box(machine_name):
 # unknown keys/types fail loudly at save AND plan time, so a bad custom
 # config skips with a warning instead of breaking the launch. Custom
 # entries are engine-agnostic and emitted in both engine plans.
-_CUSTOM_KINDS = ("winbox-bat", "raw")
+_CUSTOM_KINDS = ("script", "winbox-bat", "raw")
 _CUSTOM_SPEC_KEYS = {"kind", "bat", "port", "stop_match", "stop_names",
-                     "proxy", "checkEndpoint", "cmd", "cmdStop", "env",
+                     "start_script", "stop_script", "proxy",
+                     "checkEndpoint", "cmd", "cmdStop", "env",
                      "script", "vision"}
+_SCRIPT_KEYS = {"kind", "start_script", "stop_script", "bat", "stop_bat",
+                "port", "stop_match", "stop_names", "vision"}
 _CUSTOM_KIND_KEYS = {
-    "winbox-bat": {"kind", "bat", "port", "stop_match", "stop_names",
-                   "stop_bat", "vision"},
+    "script": _SCRIPT_KEYS,
+    "winbox-bat": _SCRIPT_KEYS,
     "raw": {"kind", "proxy", "checkEndpoint", "cmd", "cmdStop", "env",
             "script", "vision"},
 }
@@ -432,17 +436,33 @@ def validate_custom_spec(spec, where="custom"):
         raise ValueError(
             f"{where}: kind '{kind}' rejects key(s) {unknown} — allowed: "
             f"{sorted(_CUSTOM_KIND_KEYS[kind])}")
-    if kind == "winbox-bat":
-        _validate_winbox_bat(spec, where)
+    if kind in ("script", "winbox-bat"):
+        _validate_script_spec(spec, where)
     else:
         _validate_raw(spec, where)
 
 
-def _validate_winbox_bat(spec, where):
-    bat = (spec.get("bat") or "").strip()
-    if not bat:
+def _custom_scripts(spec):
+    """(start_script, stop_script) with legacy bat/stop_bat aliases."""
+    start = (spec.get("start_script") or spec.get("bat") or "").strip()
+    stop = (spec.get("stop_script") or spec.get("stop_bat") or "").strip()
+    return start, stop
+
+
+def _is_abs_script(path):
+    return bool(ntpath.isabs(path) or posixpath.isabs(path))
+
+
+def _validate_script_spec(spec, where):
+    start, stop = _custom_scripts(spec)
+    if not start:
         raise ValueError(
-            rf"{where}: custom.bat is required (e.g. 'D:\Strata\run-iq3_s.bat')")
+            f"{where}: custom.start_script is required "
+            r"(e.g. '/opt/sglang/start.sh' or 'D:\Strata\run-iq3_s.bat')")
+    if not _is_abs_script(start):
+        raise ValueError(f"{where}: custom.start_script must be an absolute path")
+    if stop and not _is_abs_script(stop):
+        raise ValueError(f"{where}: custom.stop_script must be an absolute path")
     try:
         port = int(spec.get("port") or 8080)
     except (TypeError, ValueError):
@@ -450,14 +470,7 @@ def _validate_winbox_bat(spec, where):
             f"{where}: custom.port '{spec.get('port')}' is not a number")
     if not 1 <= port <= 65535:
         raise ValueError(f"{where}: custom.port {port} out of range 1-65535")
-    stop_bat = (spec.get("stop_bat") or "").strip()
-    if stop_bat and (not ntpath.isabs(stop_bat)
-                     or not stop_bat.lower().endswith(".bat")):
-        raise ValueError(
-            rf"{where}: custom.stop_bat must be an absolute .bat path")
-    # alphabet gate for the PowerShell-embedded match lists (same shape as the
-    # plan-time predicate builder — validated here so saves fail fast)
-    _custom_stop_predicates(spec, bat)
+    _custom_stop_predicates(spec, start)
 
 
 def _validate_raw(spec, where):
@@ -510,24 +523,41 @@ def _validate_raw(spec, where):
             "custom.script is provided")
 
 
-def _derive_stop_bat(bat):
-    """Sibling STOP-<core>.bat: run-iq3_s.bat -> STOP-iq3_s.bat."""
-    bat = str(bat or "").strip()
-    if not bat:
+def _derive_stop_script(script):
+    """Sibling stop script hint for a start script.
+
+    Windows: D:\\Strata\\run-iq3_s.bat -> D:\\Strata\\STOP-iq3_s.bat
+    POSIX:   /opt/sglang/start.sh     -> /opt/sglang/stop.sh
+    The agent also tries lowercase/uppercase and .sh/.bat alternatives.
+    """
+    script = str(script or "").strip()
+    if not script:
         return ""
-    folder, name = ntpath.split(bat)
-    stem, ext = ntpath.splitext(name)
-    core = _re.sub(r"^(run|start)-", "", stem, flags=_re.IGNORECASE) or stem
-    return ntpath.join(folder, f"STOP-{core}{ext or '.bat'}")
+    is_win = bool(_re.match(r"^[A-Za-z]:[\\/]", script))
+    pm = ntpath if is_win else posixpath
+    folder, name = pm.split(script)
+    stem, ext = pm.splitext(name)
+    core = _re.sub(r"^(run|start|stop)-", "", stem, flags=_re.IGNORECASE) or stem
+    if core.lower() in ("run", "start"):
+        core = ""
+    prefix = "STOP" if is_win else "stop"
+    mid = f"-{core}" if core else ""
+    suffix = ext or (".bat" if is_win else ".sh")
+    return pm.join(folder, f"{prefix}{mid}{suffix}")
 
 
-def _custom_stop_lists(spec, bat):
+def _derive_stop_bat(bat):
+    """Backwards-compatible alias."""
+    return _derive_stop_script(bat)
+
+
+def _custom_stop_lists(spec, start):
     """Validated (stop_match substrings, stop_names patterns) for one stack."""
-    stem = _re.sub(r".*[\\/]", "", bat)
+    stem = _re.sub(r".*[\\/]", "", start)
     stem = _re.sub(r"\.[^.]*$", "", stem) or "custom"
     core = _re.sub(r"^(run|start)-", "", stem, flags=_re.IGNORECASE) or stem
     match_subs = list(spec.get("stop_match") or [core])
-    name_pats = list(spec.get("stop_names") or ["strata*"])
+    name_pats = list(spec.get("stop_names") or [f"{core}*"])
     for s in match_subs:
         if not isinstance(s, str) or not _re.fullmatch(
                 r"[A-Za-z0-9_.: \\-]+", s):
@@ -549,19 +579,21 @@ def _custom_stop_predicates(spec, bat):
     return " -or ".join(conds), match_subs[0]
 
 
-def _agent_custom_start_script(scripts_dir, machine, bat, port,
-                                stop_bat="", stop_match=None,
+def _agent_custom_start_script(scripts_dir, machine, script, port,
+                                stop_script="", stop_match=None,
                                 stop_names=None):
     import shlex
     var = _agent_token_var(machine.get("name"))
     base = _agent_base(machine)
     start_body = json.dumps({
-        "bat": bat, "port": int(port), "stop_bat": stop_bat,
+        "script": script, "bat": script, "port": int(port),
+        "stop_script": stop_script, "stop_bat": stop_script,
         "stop_match": list(stop_match or []),
         "stop_names": list(stop_names or []),
     }, separators=(",", ":"))
     stop_body = json.dumps({
-        "port": int(port), "stop_bat": stop_bat,
+        "port": int(port), "stop_script": stop_script,
+        "stop_bat": stop_script,
         "stop_match": list(stop_match or []),
         "stop_names": list(stop_names or []),
     }, separators=(",", ":"))
@@ -611,12 +643,13 @@ exit 1
 """
 
 
-def _agent_custom_stop_script(scripts_dir, machine, port, stop_bat="",
+def _agent_custom_stop_script(scripts_dir, machine, port, stop_script="",
                               stop_match=None, stop_names=None):
     var = _agent_token_var(machine.get("name"))
     base = _agent_base(machine)
     body = json.dumps({
-        "port": int(port), "stop_bat": stop_bat,
+        "port": int(port), "stop_script": stop_script,
+        "stop_bat": stop_script,
         "stop_match": list(stop_match or []),
         "stop_names": list(stop_names or []),
     }, separators=(",", ":"))
@@ -755,12 +788,13 @@ def _rpc_cmdstop(model_cfg, peers):
 
 
 def _custom_runtime_target(model):
-    """(machine, port, stop_bat, stop_match, stop_names) for a custom
-    winbox-bat model, or None when the deployment is not that shape."""
+    """(machine, port, stop_script, stop_match, stop_names) for a custom
+    script runtime, or None when the deployment is not that shape."""
     if (model.get("runtime") or "") != "custom":
         return None
     spec = model.get("custom") or {}
-    if (spec.get("kind") or "winbox-bat") != "winbox-bat":
+    kind = spec.get("kind") or "winbox-bat"
+    if kind not in ("script", "winbox-bat"):
         return None
     servers = model.get("servers") or []
     if len(servers) != 1:
@@ -769,16 +803,18 @@ def _custom_runtime_target(model):
         machine = cfg.machines.require(servers[0])
     except ValueError:
         return None
-    if (machine.get("os", "linux")) != "windows":
+    if kind == "winbox-bat" and (machine.get("os", "linux")) != "windows":
         return None
-    bat = (spec.get("bat") or "").strip()
+    start_script, stop_script = _custom_scripts(spec)
+    if not start_script:
+        return None
     try:
         port = int(spec.get("port") or 8080)
     except (TypeError, ValueError):
         return None
-    stop_bat = (spec.get("stop_bat") or "").strip() or _derive_stop_bat(bat)
-    match_subs, name_pats = _custom_stop_lists(spec, bat)
-    return machine, port, stop_bat, match_subs, name_pats
+    stop_script = stop_script or _derive_stop_script(start_script)
+    match_subs, name_pats = _custom_stop_lists(spec, start_script)
+    return machine, port, stop_script, match_subs, name_pats
 
 
 def stop_custom_model(model_id):
@@ -793,11 +829,11 @@ def stop_custom_model(model_id):
     target = _custom_runtime_target(model)
     if target is None:
         return {"model_id": model_id, "machine": "", "killed": False,
-                "error": "not a custom winbox-bat runtime"}
-    machine, port, stop_bat, match_subs, name_pats = target
+                "error": "not a custom script runtime"}
+    machine, port, stop_script, match_subs, name_pats = target
     try:
         res = agent_client.custom_stop(
-            machine, port, stop_bat=stop_bat,
+            machine, port, stop_script=stop_script,
             stop_match=match_subs, stop_names=name_pats)
         return {"model_id": model_id, "machine": machine.get("name"),
                 "port": port, **res}
@@ -1194,35 +1230,36 @@ def launch_plan(config_path=None, host_name=None):
         """
         spec = deploy_model.get("custom") or {}
         validate_custom_spec(spec, where=f"model '{mid_for_key}'")
-        if (spec.get("kind") or "winbox-bat") == "raw":
+        kind = spec.get("kind") or "winbox-bat"
+        if kind == "raw":
             _process_custom_raw(deploy_model, mid_for_key, spec, is_variant)
             return
-        bat = (spec.get("bat") or "").strip()
+        start_script, stop_script = _custom_scripts(spec)
         port = int(spec.get("port") or 8080)
         if len(peers) != 1:
             raise ValueError(
-                "custom winbox-bat is single-box only — "
+                "custom runtime is single-box only — "
                 f"servers={deploy_model.get('servers')}")
         peer = cfg.machines.require(peers[0])
-        if (peer.get("os", "linux")) != "windows":
+        if kind == "winbox-bat" and (peer.get("os", "linux")) != "windows":
             raise ValueError(
                 f"custom winbox-bat needs a windows box, '{peers[0]}' "
-                f"is {peer.get('os', 'linux')}")
+                f"is {peer.get('os', 'linux')} — use kind: script for "
+                "other platforms")
         remote_ip = (peer.get("ip") or "").strip()
         if not remote_ip:
             raise ValueError(f"machine '{peers[0]}' has no ip configured")
-        stop_bat = (spec.get("stop_bat") or "").strip() \
-            or _derive_stop_bat(bat)
-        match_subs, name_pats = _custom_stop_lists(spec, bat)
+        stop_script = stop_script or _derive_stop_script(start_script)
+        match_subs, name_pats = _custom_stop_lists(spec, start_script)
         key = _custom_key(deploy_model, mid_for_key, is_variant)
         if agent_client.should_use_agent(peer):
             start_name = f"start-{mid_for_key}.sh"
             stop_name = f"stop-{mid_for_key}.sh"
             scripts[start_name] = _agent_custom_start_script(
-                scripts_dir, peer, bat, port, stop_bat, match_subs,
-                name_pats)
+                scripts_dir, peer, start_script, port, stop_script,
+                match_subs, name_pats)
             scripts[stop_name] = _agent_custom_stop_script(
-                scripts_dir, peer, port, stop_bat, match_subs, name_pats)
+                scripts_dir, peer, port, stop_script, match_subs, name_pats)
             script_mids.add(mid_for_key)
             models[key] = {
                 "cmd": (

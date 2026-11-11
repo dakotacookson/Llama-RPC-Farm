@@ -271,18 +271,22 @@ class AgentHandler(BaseHTTPRequestHandler):
         if path == "/custom/start":
             try:
                 return 200, custom.start(
-                    config, body.get("bat"), body.get("port"),
-                    body.get("log"), body.get("workdir"),
-                    body.get("stop_bat"), body.get("stop_match"),
-                    body.get("stop_names"))
+                    config, body.get("script") or body.get("bat"),
+                    body.get("port"), body.get("log"), body.get("workdir"),
+                    stop_script=(body.get("stop_script")
+                                 or body.get("stop_bat")),
+                    stop_match=body.get("stop_match"),
+                    stop_names=body.get("stop_names"))
             except custom.AgentCustomError as e:
                 return 400, {"error": str(e)}
         if path == "/custom/stop":
             try:
                 return 200, custom.stop(
                     config, body.get("port"), body.get("state_key"),
-                    body.get("stop_bat"), body.get("stop_match"),
-                    body.get("stop_names"))
+                    stop_script=(body.get("stop_script")
+                                 or body.get("stop_bat")),
+                    stop_match=body.get("stop_match"),
+                    stop_names=body.get("stop_names"))
             except custom.AgentCustomError as e:
                 return 400, {"error": str(e)}
         if path == "/install/artifact":
