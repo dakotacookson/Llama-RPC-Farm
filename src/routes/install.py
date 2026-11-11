@@ -207,7 +207,9 @@ def _component_on_latest(current_commit, latest_commit, current_version,
 
 
 def _repo_root():
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # This module lives at <repo>/src/routes/install.py — three levels up.
+    return os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
 
 
 def _git_component_commit(paths):
@@ -309,17 +311,19 @@ def _app_binary_asset():
 
 
 def _app_release_info():
-    """Latest release farm-app binary (tag is the authoritative version)."""
+    """Latest release farm-app binary + universal source wheel."""
     asset = _app_binary_asset()
-    if not asset:
-        return {"asset": None, "url": None, "version": None}
     versions = _release_feed_versions()
     if not versions:
-        return {"asset": asset, "url": None, "version": None}
+        return {"asset": asset, "url": None, "wheel_url": None,
+                "version": None}
     version = versions[0]
+    base = (f"https://github.com/{_AGENT_REPO}/releases/download/"
+            f"release-{version}")
+    wheel = f"llama_rpc_farm-{version}-py3-none-any.whl"
     return {"asset": asset,
-            "url": (f"https://github.com/{_AGENT_REPO}/releases/download/"
-                    f"release-{version}/{asset}"),
+            "url": f"{base}/{asset}" if asset else None,
+            "wheel_url": f"{base}/{wheel}",
             "version": version, "commit": _manifest_commit("app_commit")}
 
 
@@ -335,7 +339,7 @@ def _app_version_payload():
         latest, latest_commit = None, None
     dirty = False
     if not packaged:
-        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        repo = _repo_root()
         try:
             d = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
                                capture_output=True, text=True, timeout=10)
@@ -366,59 +370,83 @@ def _restart_app_binary():
 
 def _update_app_binary():
     if not getattr(sys, "frozen", False):
-        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        if not os.path.isdir(os.path.join(repo, ".git")):
-            return {"ok": False, "source": True,
-                    "detail": "source install is not a git checkout — "
-                              "update with git or the release installer"}
+        repo = _repo_root()
+        git_repo = os.path.isdir(os.path.join(repo, ".git"))
         try:
-            dirty = subprocess.run(
-                ["git", "-C", repo, "status", "--porcelain"],
-                capture_output=True, text=True, timeout=60)
-            if (dirty.stdout or "").strip():
-                return {"ok": False, "source": True,
-                        "detail": "source tree has local changes — commit or "
-                                  "stash them before updating"}
             info = _app_release_info()
             version = info.get("version")
             if not version:
                 return {"ok": False, "source": True,
                         "detail": "could not determine the latest release"}
-            rel_sha = _release_commit(version)
-            if rel_sha:
-                head = subprocess.run(
-                    ["git", "-C", repo, "rev-parse", "HEAD"],
-                    capture_output=True, text=True).stdout.strip()
-                if rel_sha != head:
-                    chk = subprocess.run(
-                        ["git", "-C", repo, "merge-base", "--is-ancestor",
-                         rel_sha, "HEAD"], capture_output=True, text=True)
-                    if chk.returncode == 0:
-                        return {"ok": False, "source": True,
-                                "detail": f"source is newer than release "
-                                          f"{version}; wait for the next "
-                                          f"release"}
-            archive = (f"https://github.com/{_AGENT_REPO}/archive/refs/tags/"
-                       f"release-{version}.tar.gz")
+            if git_repo:
+                dirty = subprocess.run(
+                    ["git", "-C", repo, "status", "--porcelain"],
+                    capture_output=True, text=True, timeout=60)
+                if (dirty.stdout or "").strip():
+                    return {"ok": False, "source": True,
+                            "detail": "source tree has local changes — commit "
+                                      "or stash them before updating"}
+                rel_sha = _release_commit(version)
+                if rel_sha:
+                    head = subprocess.run(
+                        ["git", "-C", repo, "rev-parse", "HEAD"],
+                        capture_output=True, text=True).stdout.strip()
+                    if rel_sha != head:
+                        chk = subprocess.run(
+                            ["git", "-C", repo, "merge-base", "--is-ancestor",
+                             rel_sha, "HEAD"], capture_output=True, text=True)
+                        if chk.returncode == 0:
+                            return {"ok": False, "source": True,
+                                    "detail": f"source is newer than release "
+                                              f"{version}; wait for the next "
+                                              f"release"}
+            # Source installs (git or plain copied trees) update from the
+            # universal app wheel when the release publishes it, falling
+            # back to the immutable source archive for older releases.
             import tarfile
             import urllib.request
+            import zipfile
             with tempfile.TemporaryDirectory(prefix="farm-src-") as tmp:
-                tarpath = os.path.join(tmp, "src.tar.gz")
-                with urllib.request.urlopen(archive, timeout=180) as r, \
-                        open(tarpath, "wb") as out:
-                    shutil.copyfileobj(r, out)
-                with tarfile.open(tarpath, "r:gz") as tar:
-                    members = tar.getmembers()
-                    for mem in members:
-                        pth = os.path.normpath(mem.name)
-                        if pth.startswith("..") or os.path.isabs(pth):
-                            raise RuntimeError("unsafe archive path")
-                    tar.extractall(tmp)
-                roots = [os.path.join(tmp, d) for d in os.listdir(tmp)
-                         if os.path.isdir(os.path.join(tmp, d))]
-                if not roots:
-                    raise RuntimeError("release archive has no source dir")
-                src = roots[0]
+                src = None
+                wheel_url = info.get("wheel_url")
+                if wheel_url:
+                    try:
+                        wpath = os.path.join(tmp, "app.whl")
+                        with urllib.request.urlopen(wheel_url, timeout=180) as r, \
+                                open(wpath, "wb") as out:
+                            shutil.copyfileobj(r, out)
+                        wroot = os.path.join(tmp, "wheel")
+                        with zipfile.ZipFile(wpath) as zf:
+                            for name in zf.namelist():
+                                pth = os.path.normpath(name)
+                                if pth.startswith("..") or os.path.isabs(pth):
+                                    raise RuntimeError("unsafe wheel path")
+                            zf.extractall(wroot)
+                        if not (os.path.isfile(os.path.join(wroot, "src", "app.py"))
+                                and os.path.isdir(os.path.join(wroot, "ui"))):
+                            raise RuntimeError("wheel payload incomplete")
+                        src = wroot
+                    except Exception:
+                        src = None
+                if not src:
+                    archive = (f"https://github.com/{_AGENT_REPO}/archive/"
+                               f"refs/tags/release-{version}.tar.gz")
+                    tarpath = os.path.join(tmp, "src.tar.gz")
+                    with urllib.request.urlopen(archive, timeout=180) as r, \
+                            open(tarpath, "wb") as out:
+                        shutil.copyfileobj(r, out)
+                    with tarfile.open(tarpath, "r:gz") as tar:
+                        members = tar.getmembers()
+                        for mem in members:
+                            pth = os.path.normpath(mem.name)
+                            if pth.startswith("..") or os.path.isabs(pth):
+                                raise RuntimeError("unsafe archive path")
+                        tar.extractall(tmp)
+                    roots = [os.path.join(tmp, d) for d in os.listdir(tmp)
+                             if os.path.isdir(os.path.join(tmp, d))]
+                    if not roots:
+                        raise RuntimeError("release archive has no source dir")
+                    src = roots[0]
                 for name in ("src", "ui", "peer_agent", "scripts",
                              "packaging"):
                     sdir = os.path.join(src, name)
@@ -455,46 +483,6 @@ def _update_app_binary():
                 "restarting": True,
                 "detail": f"source updated to release {version}; restarting"}
     info = _app_release_info()
-    url = info.get("url")
-    version = info.get("version")
-    if not url:
-        return {"ok": False, "detail": "no published farm-app binary for "
-                                       "this platform"}
-    exe = os.path.abspath(sys.executable)
-    dest_dir = os.path.dirname(exe)
-    tmp = None
-    try:
-        import urllib.request
-        fd, tmp = tempfile.mkstemp(prefix=".farm-update-", dir=dest_dir)
-        os.close(fd)
-        with urllib.request.urlopen(url, timeout=180) as r, \
-                open(tmp, "wb") as out:
-            shutil.copyfileobj(r, out)
-        size = os.path.getsize(tmp)
-        if size < 1024 * 1024 or size > 500 * 1024 * 1024:
-            raise RuntimeError(f"unexpected app size: {size} bytes")
-        if os.name != "nt":
-            os.chmod(tmp, 0o755)
-            os.replace(tmp, exe)
-        else:
-            backup = exe + ".old"
-            try:
-                os.replace(exe, backup)
-            except OSError:
-                pass
-            os.replace(tmp, exe)
-    except Exception as e:
-        if tmp:
-            try:
-                os.unlink(tmp)
-            except Exception:
-                pass
-        return {"ok": False, "detail": f"app update failed: {e}"}
-    threading.Thread(target=_restart_app_binary, daemon=True).start()
-    return {"ok": True, "version": version, "asset": info.get("asset"),
-            "restarting": True}
-
-
 @router.get("/api/app-version")
 async def app_version_info():
     return await run_in_threadpool(_app_version_payload)
