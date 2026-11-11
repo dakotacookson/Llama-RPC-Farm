@@ -105,11 +105,18 @@ import sys
 sys.path.insert(0, "src")
 import config_loader as cfg
 import rpc_manager
+import swap_manager
 for m in cfg.machines.all():
     try:
         rpc_manager.stop_rpc(m["name"])
     except Exception as e:
         print(f"[restart] stop_rpc {m.get('name')}: {e}")
+try:
+    for r in swap_manager.stop_custom_runtimes():
+        print(f"[restart] custom {r.get('model_id')}: "
+              f"{'stopped' if r.get('killed') else r.get('error') or 'still running'}")
+except Exception as e:
+    print(f"[restart] custom runtimes: {e}")
 PYEOF
 }
 

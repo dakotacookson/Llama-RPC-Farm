@@ -6,7 +6,9 @@ llama-swap lazy-loads models (cmd runs on first request), so starting
 the daemon is safe -- no VRAM is touched until traffic arrives.
 """
 import json
+import ntpath
 import os
+import re as _re
 import shutil
 import time
 from datetime import datetime
@@ -391,7 +393,7 @@ _CUSTOM_SPEC_KEYS = {"kind", "bat", "port", "stop_match", "stop_names",
                      "script", "vision"}
 _CUSTOM_KIND_KEYS = {
     "winbox-bat": {"kind", "bat", "port", "stop_match", "stop_names",
-                   "vision"},
+                   "stop_bat", "vision"},
     "raw": {"kind", "proxy", "checkEndpoint", "cmd", "cmdStop", "env",
             "script", "vision"},
 }
@@ -448,6 +450,11 @@ def _validate_winbox_bat(spec, where):
             f"{where}: custom.port '{spec.get('port')}' is not a number")
     if not 1 <= port <= 65535:
         raise ValueError(f"{where}: custom.port {port} out of range 1-65535")
+    stop_bat = (spec.get("stop_bat") or "").strip()
+    if stop_bat and (not ntpath.isabs(stop_bat)
+                     or not stop_bat.lower().endswith(".bat")):
+        raise ValueError(
+            rf"{where}: custom.stop_bat must be an absolute .bat path")
     # alphabet gate for the PowerShell-embedded match lists (same shape as the
     # plan-time predicate builder — validated here so saves fail fast)
     _custom_stop_predicates(spec, bat)
@@ -503,23 +510,24 @@ def _validate_raw(spec, where):
             "custom.script is provided")
 
 
-def _custom_stop_predicates(spec, bat):
-    """PowerShell Where-Object kill predicates for a winbox-bat stack.
+def _derive_stop_bat(bat):
+    """Sibling STOP-<core>.bat: run-iq3_s.bat -> STOP-iq3_s.bat."""
+    bat = str(bat or "").strip()
+    if not bat:
+        return ""
+    folder, name = ntpath.split(bat)
+    stem, ext = ntpath.splitext(name)
+    core = _re.sub(r"^(run|start)-", "", stem, flags=_re.IGNORECASE) or stem
+    return ntpath.join(folder, f"STOP-{core}{ext or '.bat'}")
 
-    Defaults derive from the .bat filename: the wrapper cmd.exe carries
-    '<stem>.bat', and '<core>' (stem minus a leading run-/start-) matches
-    the server + engine command lines (observed live on winbox: cmd.exe
-    wrapper, python serve\\server.py --config strata-iq3_s.json,
-    strata*.exe). stop_match/stop_names overrides append verbatim (same
-    alphabet gate). Returns (condition_string, probe_substring)."""
-    import re as _re
+
+def _custom_stop_lists(spec, bat):
+    """Validated (stop_match substrings, stop_names patterns) for one stack."""
     stem = _re.sub(r".*[\\/]", "", bat)
     stem = _re.sub(r"\.[^.]*$", "", stem) or "custom"
     core = _re.sub(r"^(run|start)-", "", stem, flags=_re.IGNORECASE) or stem
     match_subs = list(spec.get("stop_match") or [core])
     name_pats = list(spec.get("stop_names") or ["strata*"])
-    # name patterns may carry -like wildcards (* ?); match substrings may
-    # not (they are wrapped in *...* here).
     for s in match_subs:
         if not isinstance(s, str) or not _re.fullmatch(
                 r"[A-Za-z0-9_.: \\-]+", s):
@@ -529,26 +537,50 @@ def _custom_stop_predicates(spec, bat):
         if not isinstance(p, str) or not _re.fullmatch(
                 r"[A-Za-z0-9_.: \\*?+\-]+", p):
             raise ValueError(f"custom.stop_names '{p}' has unsafe characters")
+    return match_subs, name_pats
+
+
+def _custom_stop_predicates(spec, bat):
+    """Legacy display predicate string for a winbox-bat stack."""
+    match_subs, name_pats = _custom_stop_lists(spec, bat)
     conds = [f"(' ' + $_.CommandLine + ' ') -like '*{s}*'"
              for s in match_subs]
     conds += [f"$_.Name -like '{p}'" for p in name_pats]
     return " -or ".join(conds), match_subs[0]
 
 
-def _agent_custom_start_script(scripts_dir, machine, bat, port):
+def _agent_custom_start_script(scripts_dir, machine, bat, port,
+                                stop_bat="", stop_match=None,
+                                stop_names=None):
     import shlex
     var = _agent_token_var(machine.get("name"))
     base = _agent_base(machine)
-    body = json.dumps({"bat": bat, "port": int(port)},
-                      separators=(",", ":"))
+    start_body = json.dumps({
+        "bat": bat, "port": int(port), "stop_bat": stop_bat,
+        "stop_match": list(stop_match or []),
+        "stop_names": list(stop_names or []),
+    }, separators=(",", ":"))
+    stop_body = json.dumps({
+        "port": int(port), "stop_bat": stop_bat,
+        "stop_match": list(stop_match or []),
+        "stop_names": list(stop_names or []),
+    }, separators=(",", ":"))
     return f"""#!/bin/bash
 set -uo pipefail
 source "{scripts_dir}/{SIDECAR_NAME}" 2>/dev/null || true
 : "${{{var}:?agent token not set for {machine.get('name')}}}"
 AGENT="{base}"
 PORT="{int(port)}"
+START_BODY={shlex.quote(start_body)}
+STOP_BODY={shlex.quote(stop_body)}
+agent_stop() {{
+  curl -fsS --max-time 60 -H "Authorization: Bearer ${var}" \
+    -H "Content-Type: application/json" --data-binary "$STOP_BODY" \
+    "$AGENT/custom/stop" >/dev/null 2>&1 || true
+}}
+trap agent_stop EXIT
 if ! curl -fsS --max-time 60 -H "Authorization: Bearer ${var}" \
-  -H "Content-Type: application/json" --data-binary {shlex.quote(body)} \
+  -H "Content-Type: application/json" --data-binary "$START_BODY" \
   "$AGENT/custom/start" >/dev/null; then
   echo "!!! agent custom/start failed for {machine.get('name')}:{int(port)}" >&2
   exit 1
@@ -579,16 +611,21 @@ exit 1
 """
 
 
-def _agent_custom_stop_script(scripts_dir, machine, port):
+def _agent_custom_stop_script(scripts_dir, machine, port, stop_bat="",
+                              stop_match=None, stop_names=None):
     var = _agent_token_var(machine.get("name"))
     base = _agent_base(machine)
-    body = json.dumps({"port": int(port)}, separators=(",", ":"))
+    body = json.dumps({
+        "port": int(port), "stop_bat": stop_bat,
+        "stop_match": list(stop_match or []),
+        "stop_names": list(stop_names or []),
+    }, separators=(",", ":"))
     import shlex
     return f"""#!/bin/bash
 set -uo pipefail
 source "{scripts_dir}/{SIDECAR_NAME}" 2>/dev/null || true
 : "${{{var}:?agent token not set for {machine.get('name')}}}"
-curl -fsS --max-time 60 -H "Authorization: Bearer ${var}" \
+curl -fsS --max-time 90 -H "Authorization: Bearer ${var}" \
   -H "Content-Type: application/json" --data-binary {shlex.quote(body)} \
   "{base}/custom/stop" >/dev/null 2>&1 || true
 """
@@ -715,6 +752,69 @@ def _rpc_cmdstop(model_cfg, peers):
                     f'"{_agent_base(p)}/rpc/stop" >/dev/null 2>&1 || true')
                 continue
     return " ; ".join(cmds) if cmds else None
+
+
+def _custom_runtime_target(model):
+    """(machine, port, stop_bat, stop_match, stop_names) for a custom
+    winbox-bat model, or None when the deployment is not that shape."""
+    if (model.get("runtime") or "") != "custom":
+        return None
+    spec = model.get("custom") or {}
+    if (spec.get("kind") or "winbox-bat") != "winbox-bat":
+        return None
+    servers = model.get("servers") or []
+    if len(servers) != 1:
+        return None
+    try:
+        machine = cfg.machines.require(servers[0])
+    except ValueError:
+        return None
+    if (machine.get("os", "linux")) != "windows":
+        return None
+    bat = (spec.get("bat") or "").strip()
+    try:
+        port = int(spec.get("port") or 8080)
+    except (TypeError, ValueError):
+        return None
+    stop_bat = (spec.get("stop_bat") or "").strip() or _derive_stop_bat(bat)
+    match_subs, name_pats = _custom_stop_lists(spec, bat)
+    return machine, port, stop_bat, match_subs, name_pats
+
+
+def stop_custom_model(model_id):
+    """Stop one custom runtime even when llama-swap thinks it is unloaded."""
+    try:
+        model = cfg.get_model(model_id)
+    except Exception:
+        model = None
+    if model is None:
+        return {"model_id": model_id, "machine": "", "killed": False,
+                "error": "model not found"}
+    target = _custom_runtime_target(model)
+    if target is None:
+        return {"model_id": model_id, "machine": "", "killed": False,
+                "error": "not a custom winbox-bat runtime"}
+    machine, port, stop_bat, match_subs, name_pats = target
+    try:
+        res = agent_client.custom_stop(
+            machine, port, stop_bat=stop_bat,
+            stop_match=match_subs, stop_names=name_pats)
+        return {"model_id": model_id, "machine": machine.get("name"),
+                "port": port, **res}
+    except Exception as e:
+        return {"model_id": model_id, "machine": machine.get("name"),
+                "port": port, "killed": False, "error": str(e)}
+
+
+def stop_custom_runtimes():
+    """Best-effort stop of every configured custom runtime."""
+    out = []
+    for model in cfg.list_models():
+        if (model.get("runtime") or "") != "custom":
+            continue
+        mid = model.get("model_id") or model.get("_file") or ""
+        out.append(stop_custom_model(mid))
+    return out
 
 
 def launch_plan(config_path=None, host_name=None):
@@ -1111,15 +1211,18 @@ def launch_plan(config_path=None, host_name=None):
         remote_ip = (peer.get("ip") or "").strip()
         if not remote_ip:
             raise ValueError(f"machine '{peers[0]}' has no ip configured")
-        conds, probe = _custom_stop_predicates(spec, bat)
+        stop_bat = (spec.get("stop_bat") or "").strip() \
+            or _derive_stop_bat(bat)
+        match_subs, name_pats = _custom_stop_lists(spec, bat)
         key = _custom_key(deploy_model, mid_for_key, is_variant)
         if agent_client.should_use_agent(peer):
             start_name = f"start-{mid_for_key}.sh"
             stop_name = f"stop-{mid_for_key}.sh"
             scripts[start_name] = _agent_custom_start_script(
-                scripts_dir, peer, bat, port)
+                scripts_dir, peer, bat, port, stop_bat, match_subs,
+                name_pats)
             scripts[stop_name] = _agent_custom_stop_script(
-                scripts_dir, peer, port)
+                scripts_dir, peer, port, stop_bat, match_subs, name_pats)
             script_mids.add(mid_for_key)
             models[key] = {
                 "cmd": (
