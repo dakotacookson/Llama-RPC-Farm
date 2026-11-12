@@ -1,7 +1,7 @@
 # Llama RPC Farm
 
 [![Stars](https://img.shields.io/github/stars/dakotacookson/Llama-RPC-Farm?style=flat-square)](https://github.com/dakotacookson/Llama-RPC-Farm/stargazers)
-[![Release](https://img.shields.io/github/v/release/dakotacookson/Llama-RPC-Farm?include_prereleases&style=flat-square)](https://github.com/dakotacookson/Llama-RPC-Farm/releases)
+[![Release](https://img.shields.io/github/v/release/dakotacookson/Llama-RPC-Farm?style=flat-square)](https://github.com/dakotacookson/Llama-RPC-Farm/releases)
 [![CI](https://github.com/dakotacookson/Llama-RPC-Farm/actions/workflows/ci.yml/badge.svg)](https://github.com/dakotacookson/Llama-RPC-Farm/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/dakotacookson/Llama-RPC-Farm?style=flat-square)](LICENSE)
 

@@ -1,10 +1,11 @@
 # Release pipelines
 
 Every push to `main` (and manual `workflow_dispatch`) builds rolling
-prereleases: an **immutable versioned release per build** plus a moving
-**`main-latest`** pointer to the newest one. Historical builds are retained,
-so any past build remains downloadable. There are no tag-driven release
-workflows.
+releases: an **immutable versioned release per build** plus a moving
+**`main-latest`** prerelease pointer to the newest one. The newest
+versioned build is also marked as the repository's **latest full release**.
+Historical builds are retained, so any past build remains downloadable.
+There are no tag-driven release workflows.
 
 ## Versioning
 
@@ -60,16 +61,19 @@ platform also emits a SHA-256 checksum file.
 
 The publish job runs once, after all builds pass:
 
-1. Creates an **immutable per-build prerelease** tagged `release-<version>`
+1. Creates an **immutable per-build release** tagged `release-<version>`
    (e.g. `release-1.0.0`) and uploads every platform asset to it, with a
    generated body: version, commit link, changelog since the previous roll,
    download names per platform, checksum note, and quick-start instructions.
    Older versioned releases are never deleted, so every historical build
    stays downloadable.
-2. Recreates `main-latest` as a **moving pointer** to the newest build. It
-   carries no assets; its body links to the newest `release-<version>`
-   release. This keeps `https://github.com/<repo>/releases/tag/main-latest`
-   stable without duplicating artifacts on the pointer.
+2. Recreates `main-latest` as a **moving prerelease pointer** to the newest
+   build. It carries no assets; its body links to the newest
+   `release-<version>` release. This keeps
+   `https://github.com/<repo>/releases/tag/main-latest` stable without
+   duplicating artifacts on the pointer.
+3. Marks the newest versioned `release-<version>` as the repository's
+   latest full release (`prerelease=false`, `make_latest=true`).
 
 Because the publish step is gated on `needs: [linux, macos, windows]` and
 the workflow serializes on the `rolling-main` concurrency group, a failed

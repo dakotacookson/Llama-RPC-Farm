@@ -679,7 +679,6 @@ jobs:
           fi
           gh release create "$TAG" "${ASSETS[@]}" \
             --target "$SHA" \
-            --prerelease \
             --title "Llama RPC Farm ${VERSION}" \
             --notes-file release-notes.md
 
@@ -694,3 +693,10 @@ jobs:
             --prerelease \
             --title "Llama RPC Farm (main rolling)" \
             --notes-file pointer-notes.md
+
+          # 3. The newest immutable build is the repository's latest full
+          #    release. main-latest stays a prerelease pointer so it never
+          #    steals the latest badge.
+          RELEASE_ID=$(gh api "repos/${REPO}/releases/tags/${TAG}" --jq .id)
+          gh api --method PATCH "repos/${REPO}/releases/${RELEASE_ID}" \
+            -F prerelease=false -f make_latest=true >/dev/null
