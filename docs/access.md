@@ -6,7 +6,7 @@ Each key gets a **model allowlist**, so your kid's PC shows only the fast
 4B, your coding box shows the coder models, and an admin key sees
 everything. Keys are also how usage is attributed per user in the dashboard.
 
-![Access keys: per-key model grants, admin/user level, strict/unrestricted views](img/access-keys.png)
+![Access keys: per-key model grants, admin/user level, strict/unrestricted views](img/access-keys-2026.png)
 
 ## Connect a client
 

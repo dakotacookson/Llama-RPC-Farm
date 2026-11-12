@@ -35,25 +35,25 @@ models, and one OpenAI-compatible endpoint on top.
 - **Pool machines into one cluster** — pick which GPUs (and RAM) each box
   shares; peers run RPC servers started through the peer agent.
 
-  ![Model editor: pick GPU/RAM chips across machines, device order at the bottom](docs/img/model-hardware.png)
+  ![Model editor: pick GPU/RAM chips across machines, device order at the bottom](docs/img/model-hardware-2026.png)
 
 - **Serve many models on demand** — llama-swap starts and stops each model's
   llama-server the moment a client asks, and frees the GPUs when it's done.
   Group models to run together, stay always-on, take turns, or run solo.
 
-  ![Serve groups: per-cluster loading behavior](docs/img/cluster-behavior.png)
+  ![Serve groups: per-cluster loading behavior](docs/img/cluster-behavior-2026.png)
 
 - **Keep it simple day to day** — live dashboard (VRAM, temp, RPC state),
   per-model flag editor, one-click generated launch scripts, auto-tuner.
 
-  ![Cluster dashboard: live per-machine GPU/VRAM/temp status](docs/img/dashboard.png)
+  ![Cluster dashboard: live per-machine GPU/VRAM/temp status](docs/img/dashboard-2026.png)
 
 - **Watch the cluster think** — the Flow Visualizer shows real per-tensor
   device assignment straight from llama.cpp's scheduler: which GPU on
   which machine is handling what, live, as models run. Pulsing GPUs are
   compute in flight.
 
-  ![Flow visualizer: real per-tensor device assignment across your cluster](docs/img/visualizer.png)
+  ![Flow visualizer: real per-tensor device assignment across your cluster](docs/img/visualizer-2026.png)
 
 - **Find and fetch models without leaving the farm** — the built-in
   Hugging Face browser searches the Hub with GGUF-aware filters (quant,
@@ -61,7 +61,7 @@ models, and one OpenAI-compatible endpoint on top.
   downloads straight into your shared `store://` path so every machine
   sees it immediately.
 
-  ![Hugging Face browser: search, filter by quant/task, download to a store](docs/img/downloads.png)
+  ![Hugging Face browser: search, filter by quant/task, download to a store](docs/img/downloads-2026.png)
 
 ## Deployment topologies
 
