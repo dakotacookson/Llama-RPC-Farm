@@ -9,7 +9,7 @@ transport, and paramiko were removed; agents are installed from their own
 `.deb`/`.pkg`/`setup.exe`.
 Separate release artifacts are built automatically on every `main` push by
 `.github/workflows/rolling-main.yml`; the agent is published in each
-versioned rolling prerelease, with `main-latest` pointing at the newest build.
+versioned rolling release, with `main-latest` pointing at the newest build.
 
 ## Why
 
@@ -242,7 +242,7 @@ every `main` push:
 
 - agent: Linux `.deb`, macOS `.pkg`, Windows Inno Setup `setup.exe`,
   raw per-platform standalone binaries, and a universal pip wheel, plus
-  SHA-256 checksums in each versioned rolling prerelease
+  SHA-256 checksums in each versioned rolling release
 - app: the same three installer formats in the same release
 
 `main-latest` is a moving pointer to the newest versioned release; older
