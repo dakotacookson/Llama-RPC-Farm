@@ -18,7 +18,7 @@ a family member needed access. Llama RPC Farm is the dashboard that grew
 out of that: stock llama.cpp underneath, one place to arrange machines and
 models, and one OpenAI-compatible endpoint on top.
 
-![Quick tour: Flow Visualizer, model editor, Hugging Face downloads, chat, launch, and themes](docs/img/demo.gif)
+![Quick tour: Flow Visualizer, model editor, hardware placement, downloads, tests, launch, and themes](docs/img/tour.gif)
 
 - **Good fit:** spare GPUs across a few boxes, mixed OSes, one endpoint,
   stock llama.cpp flags, per-user model access.
