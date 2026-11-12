@@ -17,7 +17,7 @@ before a client sees it:
 Each type routes through the same views, access keys, and `:8090` gateway
 as production traffic, so the test is the whole chain, not just the model.
 
-![Tests: chat, vision, audio, embeddings, decision test benches](img/testing-tabs.png)
+![Tests: chat, vision, audio, embeddings, decision test benches](img/testing-tabs-2026.png)
 
 ## Test suite (development)
 
