@@ -2,7 +2,7 @@
 
 Every push to `main` (and manual `workflow_dispatch`) builds rolling
 releases: an **immutable versioned release per build** plus a moving
-**`main-latest`** prerelease pointer to the newest one. The newest
+**`main-latest`** pointer to the newest one. The newest
 versioned build is also marked as the repository's **latest full release**.
 Historical builds are retained, so any past build remains downloadable.
 There are no tag-driven release workflows.
@@ -67,7 +67,7 @@ The publish job runs once, after all builds pass:
    download names per platform, checksum note, and quick-start instructions.
    Older versioned releases are never deleted, so every historical build
    stays downloadable.
-2. Recreates `main-latest` as a **moving prerelease pointer** to the newest
+2. Recreates `main-latest` as a **moving pointer** to the newest
    build. It carries no assets; its body links to the newest
    `release-<version>` release. This keeps
    `https://github.com/<repo>/releases/tag/main-latest` stable without

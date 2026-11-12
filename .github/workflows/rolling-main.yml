@@ -593,7 +593,7 @@ jobs:
           changes = pathlib.Path("changes.md").read_text().strip()
           release_notes = f"""# Llama RPC Farm — {version}
 
-          Archived prerelease snapshot of `main` at commit [`{short}`](https://github.com/{repo}/commit/{sha}).
+          Archived snapshot of `main` at commit [`{short}`](https://github.com/{repo}/commit/{sha}).
           This release is immutable: it is never replaced by a later build.
 
           - **Version:** `{version}`
@@ -690,13 +690,12 @@ jobs:
           git tag -f main-latest "$SHA"
           git push -f origin refs/tags/main-latest
           gh release create main-latest \
-            --prerelease \
             --title "Llama RPC Farm (main rolling)" \
             --notes-file pointer-notes.md
 
           # 3. The newest immutable build is the repository's latest full
-          #    release. main-latest stays a prerelease pointer so it never
-          #    steals the latest badge.
+          #    release. main-latest is a full pointer release too, so mark
+          #    the versioned build latest after creating it.
           RELEASE_ID=$(gh api "repos/${REPO}/releases/tags/${TAG}" --jq .id)
           gh api --method PATCH "repos/${REPO}/releases/${RELEASE_ID}" \
             -F prerelease=false -f make_latest=true >/dev/null
