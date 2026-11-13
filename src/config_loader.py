@@ -204,6 +204,9 @@ MACHINE_DEFAULTS = {
     "rpc_port": 50052,
     "gpu": "",              # e.g. "CUDA0,CUDA1,CUDA2"
     "llama_bin": "",         # path to llama.cpp build/bin
+    # engine update/install strategy: "auto" (detect), "prebuilt" (fast
+    # binary, switch away from a source build), "source" (rebuild in place)
+    "engine_mode": "auto",
     "expose": {"mode": "both", "gpus": []},  # what RPC exposes: both|vram|ram + gpu subset
     "rdma": False,          # enable RDMA transport for llama.cpp RPC on this machine
     "rdma_ip": "",           # RoCE NIC address (must be in the NIC's GID table); used when rdma=True

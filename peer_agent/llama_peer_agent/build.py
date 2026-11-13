@@ -204,8 +204,18 @@ def update(config: AgentConfig, src_root, build_dir, bin_path,
             (binp.parent / name).unlink()
         except OSError:
             pass
-    proc = _run(["cmake", "--build", str(build), "-j", str(int(jobs))],
-                timeout=7200)
+    # Build only what the farm uses, not tests/examples/benches (much
+    # faster). If a target is absent in an older tree, fall back to the
+    # minimal server+rpc pair.
+    targets = ["llama-server", "ggml-rpc-server", "llama-cli",
+               "llama-completion", "llama-quantize", "llama-fit-params",
+               "llama-bench", "llama-tokenize"]
+    proc = _run(["cmake", "--build", str(build), "--target", *targets,
+                 "-j", str(int(jobs))], timeout=7200)
+    if proc.returncode != 0:
+        proc = _run(["cmake", "--build", str(build), "--target",
+                     "llama-server", "ggml-rpc-server",
+                     "-j", str(int(jobs))], timeout=7200)
     output = ((proc.stdout or "") + (proc.stderr or ""))[-1500:]
     if proc.returncode != 0:
         return {"ok": False, "error": f"build failed: {output}"}

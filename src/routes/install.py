@@ -733,9 +733,27 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
                     job["log"].append("stop_rpc: " + json.dumps(rep)[:400])
                 except Exception as e:
                     job["log"].append(f"stop_rpc failed (continuing anyway): {e}")
-                job["state"] = "installing"
-                res = llamacpp_installer.install_on(
-                    machine, log=lambda m: job["log"].append(str(m)))
+                pref = (machine.get("engine_mode") or "auto").strip().lower()
+                if pref == "source":
+                    probe = llamacpp_installer.probe_setup(
+                        machine, log=lambda m: job["log"].append(str(m)))
+                    if probe.get("kind") != "source":
+                        job["result"] = {
+                            "ok": False, "machine": name,
+                            "detail": "engine_mode=source but no source "
+                                      "build was detected (install one "
+                                      "first, or set engine_mode=auto/"
+                                      "prebuilt)"}
+                        job["state"] = "failed"
+                        return
+                    job["state"] = "updating"
+                    res = llamacpp_installer.update_source_on(
+                        machine, probe,
+                        log=lambda m: job["log"].append(str(m)))
+                else:
+                    job["state"] = "installing"
+                    res = llamacpp_installer.install_on(
+                        machine, log=lambda m: job["log"].append(str(m)))
                 job["result"] = res
                 job["state"] = "done" if res.get("ok") else "failed"
             else:
@@ -751,11 +769,27 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
                 probe = llamacpp_installer.probe_setup(
                     machine, log=lambda m: job["log"].append(str(m)))
                 kind = probe.get("kind", "prebuilt")
+                pref = (machine.get("engine_mode") or "auto").strip().lower()
+                force_prebuilt = pref == "prebuilt"
+                if pref == "source" and kind != "source":
+                    job["result"] = {
+                        "ok": False, "machine": name,
+                        "detail": "engine_mode=source but no source build "
+                                  "was detected (install one first, or set "
+                                  "engine_mode=auto/prebuilt)"}
+                    job["state"] = "failed"
+                    return
+                if force_prebuilt and kind == "source":
+                    job["log"].append(
+                        f"{name}: engine_mode=prebuilt → switching to the "
+                        "prebuilt binary (source tree is kept)")
+                    kind = "prebuilt"
                 src_build = _llama_build_no(probe.get("version") or "")
                 latest_build = vp.get("latest_build")
                 source_current = bool(src_build and latest_build
                                       and src_build >= int(latest_build))
-                if kind != "source" and vp.get("on_latest"):
+                if (kind != "source" and vp.get("on_latest")
+                        and not force_prebuilt):
                     job["log"].append(
                         f"{name} already on the latest release "
                         f"({vp.get('latest')}) — nothing to do")
@@ -837,6 +871,16 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
                     job["state"] = "installing"
                     res = llamacpp_installer.install_on(
                         machine, log=lambda m: job["log"].append(str(m)))
+                    if (not res.get("ok") and force_prebuilt
+                            and probe.get("kind") == "source"):
+                        job["log"].append(
+                            "prebuilt is not viable on this host → falling "
+                            "back to the source rebuild: "
+                            + str(res.get("detail") or ""))
+                        job["state"] = "updating"
+                        res = llamacpp_installer.update_source_on(
+                            machine, probe,
+                            log=lambda m: job["log"].append(str(m)))
                 job["result"] = res
                 job["state"] = "done" if res.get("ok") else "failed"
         except Exception as e:

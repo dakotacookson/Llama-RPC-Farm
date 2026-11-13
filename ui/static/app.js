@@ -2446,6 +2446,11 @@ async function loadMachines(skipCaps = false) {
         <button class="small" data-act="edit">Edit</button>
         <button class="small" data-act="detect">Detect</button>
         <button class="small" data-act="engine-action" data-missing="${needsEngines ? "1" : "0"}" title="${needsEngines ? "Install llama.cpp + RPC" : "Reinstall llama.cpp + RPC"}">${needsEngines ? "Install engines" : "Reinstall engines"}</button>
+        <select class="small" data-act="engine-mode" title="llama.cpp update mode — auto: detect; prebuilt: fast binary; source: rebuild in place">
+          <option value="auto"${((m.engine_mode||"auto").toLowerCase()==="auto")?" selected":""}>auto</option>
+          <option value="prebuilt"${((m.engine_mode||"auto").toLowerCase()==="prebuilt")?" selected":""}>prebuilt</option>
+          <option value="source"${((m.engine_mode||"auto").toLowerCase()==="source")?" selected":""}>source</option>
+        </select>
         ${needsSwap ? '<button class="small" data-act="install-swap">Install llama-swap</button>' : ""}
         ${(m.role === "master" || m.is_local) ? '<button type="button" class="badge" data-app-version data-act="app-update" style="border:0;background:var(--accent-dim);color:var(--accent);cursor:pointer;font-family:inherit" title="Update farm app">app …</button>' : ""}
         ${(m.role === "master" || m.is_local) ? "" : '<button class="small" data-act="agent-update" title="Install or update the peer agent on this machine">Agent ⟳</button>'}
@@ -2499,6 +2504,20 @@ async function loadMachines(skipCaps = false) {
           btn.disabled = false;
         }
         await loadReadiness(true); loadMachines();
+      };
+      const engModeSel = tr.querySelector('[data-act="engine-mode"]');
+      if (engModeSel) engModeSel.onchange = async () => {
+        const mode = engModeSel.value;
+        engModeSel.disabled = true;
+        try {
+          await api("POST", `/api/machines/${encodeURIComponent(m.name)}/engine-mode`, {mode});
+          toast(`${m.name}: engine mode → ${mode}`, "ok");
+        } catch (err) {
+          toast(`engine mode failed on ${m.name}: ${err.message}`, "bad");
+        } finally {
+          engModeSel.disabled = false;
+          loadMachines();
+        }
       };
       const installSwapBtn = tr.querySelector('[data-act="install-swap"]');
       if (installSwapBtn) installSwapBtn.onclick = async (e) => {

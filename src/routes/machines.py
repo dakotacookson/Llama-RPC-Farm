@@ -49,6 +49,9 @@ class MachineIn(pydantic.BaseModel):
     gpu: str = ""
     ram_total_gb: float | None = None
     llama_bin: str = ""
+    # llama.cpp update strategy: auto (detect) | prebuilt | source.
+    # None = "not supplied" so a machine edit never resets the choice.
+    engine_mode: str | None = None
     expose: ExposeIn = ExposeIn()
     # RDMA transport for llama.cpp RPC on this machine. When False (default)
     # the rpc-server is started with GGML_RPC_NO_RDMA=1 so a wedged RoCE QP
@@ -69,6 +72,31 @@ class MachineIn(pydantic.BaseModel):
     # inherit the global per-engine path (swap.yaml config_path), non-empty
     # = pin THIS machine's llama-swap config file.
     swap_config_path: str = ""
+
+    @pydantic.field_validator("engine_mode")
+    @classmethod
+    def _engine_mode_ok(cls, v):
+        if v is None:
+            return None
+        v = str(v).strip().lower()
+        if v not in ("auto", "prebuilt", "source"):
+            raise ValueError("engine_mode must be auto, prebuilt, or source")
+        return v
+
+
+class EngineModeIn(pydantic.BaseModel):
+    mode: str = "auto"
+
+
+@router.post("/api/machines/{name}/engine-mode")
+async def set_engine_mode(name: str, p: EngineModeIn):
+    mode = (p.mode or "auto").strip().lower()
+    if mode not in ("auto", "prebuilt", "source"):
+        raise HTTPException(400, "mode must be auto, prebuilt, or source")
+    if cfg.machines.get(name) is None:
+        raise HTTPException(404, f"machine '{name}' not found")
+    cfg.machines.update(name, {"engine_mode": mode})
+    return {"ok": True, "machine": name, "engine_mode": mode}
 
 
 @router.get("/api/machines")
@@ -162,6 +190,7 @@ def _validate_machine_connection(payload):
 async def add_machine(m: MachineIn):
     try:
         payload = m.model_dump()
+        payload["engine_mode"] = payload.get("engine_mode") or "auto"
         requested_token = (payload.pop("agent_token", "") or "").strip()
         import uuid
         payload.setdefault("id", uuid.uuid4().hex[:8])
@@ -196,6 +225,8 @@ async def add_machine(m: MachineIn):
 async def update_machine(name: str, m: MachineIn):
     try:
         payload = m.model_dump()
+        if payload.get("engine_mode") is None:
+            payload.pop("engine_mode", None)
         old_name = str(name)
         new_name = str(payload.get("name") or old_name).strip()
         if new_name and new_name != old_name and cfg.machines.get(new_name):
