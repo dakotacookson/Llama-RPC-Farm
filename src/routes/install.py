@@ -327,6 +327,54 @@ def _app_release_info():
             "version": version, "commit": _manifest_commit("app_commit")}
 
 
+# Files the source self-update itself rewrites (release stamp). They must
+# not make the tree look "dirty" and block the NEXT update.
+_VOLATILE_VERSION_FILES = (
+    "VERSION", "src/version.py",
+    "peer_agent/llama_peer_agent/__init__.py", "peer_agent/pyproject.toml",
+)
+
+
+def _repo_dirty(repo):
+    """Porcelain dirt that matters for an app update. Ignores exec-bit
+    drift (core.fileMode=false) and the release-version stamp files."""
+    try:
+        d = subprocess.run(
+            ["git", "-c", "core.fileMode=false", "-C", repo,
+             "status", "--porcelain"],
+            capture_output=True, text=True, timeout=30)
+    except Exception:
+        return False
+    for line in (d.stdout or "").splitlines():
+        path = line[3:].strip()
+        if " -> " in path:          # rename entries
+            path = path.split(" -> ", 1)[1].strip()
+        if path in _VOLATILE_VERSION_FILES:
+            continue
+        return True
+    return False
+
+
+def _restore_script_modes(repo):
+    """Source updates copy out of a zip/wheel (no POSIX modes) — restore
+    the executable bits so ./restart.sh etc. keep working."""
+    targets = ["install.sh", "run.sh", "restart.sh",
+               "restart-llama-swap.sh"]
+    try:
+        for name in os.listdir(os.path.join(repo, "scripts")):
+            if name.endswith((".sh", ".py")):
+                targets.append(os.path.join("scripts", name))
+    except OSError:
+        pass
+    for rel in targets:
+        p = os.path.join(repo, rel)
+        try:
+            if os.path.isfile(p):
+                os.chmod(p, 0o755)
+        except OSError:
+            pass
+
+
 def _app_version_payload():
     current = getattr(app_version, "__version__", "")
     packaged = bool(getattr(sys, "frozen", False))
@@ -340,12 +388,7 @@ def _app_version_payload():
     dirty = False
     if not packaged:
         repo = _repo_root()
-        try:
-            d = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
-                               capture_output=True, text=True, timeout=10)
-            dirty = bool((d.stdout or "").strip())
-        except Exception:
-            pass
+        dirty = _repo_dirty(repo)
     return {"current": current, "latest": latest,
             "on_latest": _component_on_latest(
                 own_commit, latest_commit, current, latest),
@@ -379,10 +422,7 @@ def _update_app_binary():
                 return {"ok": False, "source": True,
                         "detail": "could not determine the latest release"}
             if git_repo:
-                dirty = subprocess.run(
-                    ["git", "-C", repo, "status", "--porcelain"],
-                    capture_output=True, text=True, timeout=60)
-                if (dirty.stdout or "").strip():
+                if _repo_dirty(repo):
                     return {"ok": False, "source": True,
                             "detail": "source tree has local changes — commit "
                                       "or stash them before updating"}
@@ -459,6 +499,7 @@ def _update_app_binary():
                     sp = os.path.join(src, name)
                     if os.path.isfile(sp):
                         shutil.copy2(sp, os.path.join(repo, name))
+            _restore_script_modes(repo)
             subprocess.run([sys.executable,
                             os.path.join(repo, "scripts", "stamp_version.py"),
                             version], capture_output=True, text=True,
