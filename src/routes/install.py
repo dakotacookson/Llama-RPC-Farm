@@ -781,28 +781,27 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
                     pref = dec["mode"]
                     probe = dec.get("probe")
                     if pref == "source" and not dec.get("source_available"):
-                        job["result"] = {"ok": False, "machine": name,
-                                         "detail": dec["reason"]}
-                        job["state"] = "failed"
-                        return
+                        job["log"].append(
+                            "no source tree detected → will bootstrap one "
+                            "from source")
                 else:
                     probe = (llamacpp_installer.probe_setup(
                         machine, log=lambda m: job["log"].append(str(m)))
                         if pref == "source" else None)
                 if pref == "source":
-                    if not probe or probe.get("kind") != "source":
-                        job["result"] = {
-                            "ok": False, "machine": name,
-                            "detail": "engine_mode=source but no source "
-                                      "build was detected (install one "
-                                      "first, or set engine_mode=auto/"
-                                      "prebuilt)"}
-                        job["state"] = "failed"
-                        return
-                    job["state"] = "updating"
-                    res = llamacpp_installer.update_source_on(
-                        machine, probe,
-                        log=lambda m: job["log"].append(str(m)))
+                    if probe and probe.get("kind") == "source":
+                        job["state"] = "updating"
+                        res = llamacpp_installer.update_source_on(
+                            machine, probe,
+                            log=lambda m: job["log"].append(str(m)))
+                    else:
+                        job["log"].append(
+                            f"{name}: no source tree → bootstrapping a "
+                            "source build from the release tag")
+                        job["state"] = "installing"
+                        res = llamacpp_installer.bootstrap_source_on(
+                            machine,
+                            log=lambda m: job["log"].append(str(m)))
                 else:
                     job["state"] = "installing"
                     res = llamacpp_installer.install_on(
@@ -829,10 +828,9 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
                         machine, probe=probe)
                     job["log"].append("engine plan: " + dec["reason"])
                     if dec["mode"] == "source" and kind != "source":
-                        job["result"] = {"ok": False, "machine": name,
-                                         "detail": dec["reason"]}
-                        job["state"] = "failed"
-                        return
+                        job["log"].append(
+                            "no source tree detected → will bootstrap one "
+                            "from source")
                     if dec["mode"] != kind:
                         job["log"].append(
                             f"engine plan → {dec['mode']}")
@@ -841,13 +839,10 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
                     dec and dec["mode"] == "prebuilt"
                     and probe.get("kind") == "source")
                 if pref == "source" and kind != "source":
-                    job["result"] = {
-                        "ok": False, "machine": name,
-                        "detail": "engine_mode=source but no source build "
-                                  "was detected (install one first, or set "
-                                  "engine_mode=auto/prebuilt)"}
-                    job["state"] = "failed"
-                    return
+                    job["log"].append(
+                        "engine_mode=source but no source tree → will "
+                        "bootstrap one")
+                    kind = "source"
                 if force_prebuilt and kind == "source":
                     job["log"].append(
                         f"{name}: engine_mode=prebuilt → switching to the "
@@ -875,6 +870,16 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
                     job["result"] = {"ok": True, "machine": name,
                                      "detail": "source build already current"}
                     job["state"] = "done"
+                    return
+                if kind == "source" and probe.get("kind") != "source":
+                    job["log"].append(
+                        f"{name}: no source tree → bootstrapping a source "
+                        f"build from {vp.get('latest') or 'the latest tag'}")
+                    job["state"] = "installing"
+                    res = llamacpp_installer.bootstrap_source_on(
+                        machine, log=lambda m: job["log"].append(str(m)))
+                    job["result"] = res
+                    job["state"] = "done" if res.get("ok") else "failed"
                     return
                 if kind == "source":
                     fl = ", ".join(f"{k}={v}" for k, v in

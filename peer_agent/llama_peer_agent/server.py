@@ -309,6 +309,14 @@ class AgentHandler(BaseHTTPRequestHandler):
             return self._agent_update(body)
         if path == "/agent/update-binary":
             return self._agent_update_binary(body)
+        if path == "/build/bootstrap":
+            try:
+                return 200, build.bootstrap(
+                    config, body.get("src_root"), body.get("build_dir"),
+                    body.get("bin_path"), body.get("tag"),
+                    body.get("cmake_args") or [], body.get("jobs"))
+            except (files.AgentFileError, build.AgentBuildError) as e:
+                return 400, {"error": str(e)}
         if path == "/build/update":
             try:
                 if body.get("ref"):

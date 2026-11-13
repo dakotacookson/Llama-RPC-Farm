@@ -1,6 +1,7 @@
 """Typed llama.cpp source probe/update."""
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -240,3 +241,119 @@ def update(config: AgentConfig, src_root, build_dir, bin_path,
             "devices": devices, "rpc": str(rpc),
             "rpc_ok": rpc_v.returncode == 0, "ref": target,
             "output": output}
+
+
+_CMAKE_ARG_OK = re.compile(
+    r"^-D(GGML_(CUDA|CUDA_FA|CUDA_NCCL|HIP|SYCL|RPC|NATIVE|BLAS|METAL|"
+    r"VULKAN)|CMAKE_BUILD_TYPE|CMAKE_CUDA_ARCHITECTURES|AMDGPU_TARGETS)"
+    r"=[A-Za-z0-9_.;,+-]*$")
+
+
+def _have_tool(name):
+    if shutil.which(name):
+        return True
+    for pat in (f"/usr/local/cuda*/bin/{name}", f"/opt/rocm*/bin/{name}",
+                f"/opt/intel/oneapi/compiler/*/bin/{name}"):
+        if any(Path(x).is_file() for x in __import__("glob").glob(pat)):
+            return True
+    return False
+
+
+def _missing_tools(cmake_args):
+    missing = [t for t in ("git", "cmake") if not shutil.which(t)]
+    blob = " ".join(cmake_args)
+    if "GGML_CUDA=ON" in blob and not _have_tool("nvcc"):
+        missing.append("nvcc (CUDA toolkit)")
+    if "GGML_HIP=ON" in blob and not _have_tool("hipcc"):
+        missing.append("hipcc (ROCm)")
+    if "GGML_SYCL=ON" in blob and not (_have_tool("icpx")
+                                       or _have_tool("icx")):
+        missing.append("icpx (oneAPI)")
+    return missing
+
+
+def bootstrap(config: AgentConfig, src_root, build_dir, bin_path, tag,
+              cmake_args=None, jobs=None) -> dict:
+    """Fresh source provision: clone the release tag, configure with the
+    machine's specs, build the farm targets, verify. POSIX only."""
+    if os.name == "nt":
+        raise AgentBuildError("source bootstrap is POSIX-only")
+    tag = str(tag or "").strip()
+    if not re.match(r"^[A-Za-z0-9._-]+$", tag):
+        raise AgentBuildError("invalid release ref")
+    args = [str(a) for a in (cmake_args or [])]
+    for a in args:
+        if "\x00" in a or not _CMAKE_ARG_OK.match(a):
+            raise AgentBuildError(f"disallowed cmake argument: {a!r}")
+    src = files._path(config, src_root, write=True)
+    build = files._path(config, build_dir, write=True)
+    files._path(config, bin_path, write=True)  # validate under roots
+    missing = _missing_tools(args)
+    if missing:
+        raise AgentBuildError("missing build tools: " + ", ".join(missing))
+    src.parent.mkdir(parents=True, exist_ok=True)
+    if not (src / ".git").is_dir():
+        if src.exists() and any(src.iterdir()):
+            raise AgentBuildError(f"{src} exists but is not a git checkout")
+        proc = _run(["git", "clone", "--depth", "1", "--branch", tag,
+                     "https://github.com/ggml-org/llama.cpp", str(src)],
+                    timeout=1800)
+        if proc.returncode != 0:
+            raise AgentBuildError("git clone failed: "
+                                  + (proc.stderr or "")[-400:])
+    else:
+        proc = _run(["git", "-C", str(src), "fetch", "--depth", "1",
+                     "origin", "tag", tag], timeout=1200)
+        if proc.returncode != 0:
+            _run(["git", "-C", str(src), "fetch", "--tags", "origin"],
+                 timeout=1800)
+        proc = _run(["git", "-C", str(src), "checkout", "--detach", "-f",
+                     tag], timeout=180)
+        if proc.returncode != 0:
+            raise AgentBuildError("git checkout failed: "
+                                  + (proc.stderr or "")[-300:])
+    build.mkdir(parents=True, exist_ok=True)
+    if not (build / "CMakeCache.txt").is_file():
+        proc = _run(["cmake", "-S", str(src), "-B", str(build),
+                     "-DCMAKE_BUILD_TYPE=Release", *args], timeout=1800)
+        if proc.returncode != 0:
+            out = ((proc.stdout or "") + (proc.stderr or ""))[-1200:]
+            raise AgentBuildError("cmake configure failed: " + out)
+    if jobs is None:
+        try:
+            mem = 0
+            with open("/proc/meminfo", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        mem = int(line.split()[1]) // 1024
+                        break
+            jobs = max(1, min(os.cpu_count() or 2, mem // 2048))
+        except (OSError, ValueError):
+            jobs = max(1, os.cpu_count() or 2)
+    targets = ["llama-server", "ggml-rpc-server", "llama-cli",
+               "llama-completion", "llama-quantize", "llama-fit-params",
+               "llama-bench", "llama-tokenize"]
+    proc = _run(["cmake", "--build", str(build), "--target", *targets,
+                 "-j", str(int(jobs))], timeout=21600)
+    if proc.returncode != 0:
+        proc = _run(["cmake", "--build", str(build), "--target",
+                     "llama-server", "ggml-rpc-server",
+                     "-j", str(int(jobs))], timeout=21600)
+    if proc.returncode != 0:
+        raise AgentBuildError("build failed: "
+                              + (((proc.stdout or "") + (proc.stderr or ""))[-1500:]))
+    bin_dir = build / "bin"
+    binp = bin_dir / "llama-server"
+    rpc = bin_dir / "ggml-rpc-server"
+    if not rpc.is_file():
+        raise AgentBuildError("build did not produce ggml-rpc-server "
+                              "(GGML_RPC=ON required)")
+    v = _run([str(binp), "--version"], timeout=120)
+    lines = ((v.stdout or "") + (v.stderr or "")).strip().splitlines()
+    if v.returncode != 0 or not lines:
+        raise AgentBuildError("built llama-server does not run")
+    dev = _run([str(binp), "--list-devices"], timeout=120)
+    return {"ok": True, "version": lines[0], "ref": tag,
+            "llama_bin": str(bin_dir), "src_root": str(src),
+            "build_dir": str(build), "rpc": str(rpc),
+            "devices": ((dev.stdout or "") + (dev.stderr or "")).strip()[:1200]}

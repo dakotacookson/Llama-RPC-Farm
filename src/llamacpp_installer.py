@@ -988,6 +988,144 @@ def _machine_run(machine):
     return (run_local if is_local else run_remote), is_local
 
 
+def source_build_args(machine):
+    """CMake args for a fresh source build, derived from real specs:
+    NVIDIA 10-series+ (compute caps), AMD/HIP, Intel/SYCL, else CPU.
+    RPC is always on; CUDA flash-attention on for NVIDIA."""
+    vendor = _vendor_of(machine)
+    caps = sorted(set(machine_cuda_archs(machine)))
+    args = ["-DGGML_RPC=ON", "-DGGML_NATIVE=ON"]
+    if vendor == "nvidia":
+        args += ["-DGGML_CUDA=ON", "-DGGML_CUDA_FA=ON"]
+        if caps:
+            args.append("-DCMAKE_CUDA_ARCHITECTURES="
+                        + ";".join(str(c) for c in caps))
+    elif vendor == "amd":
+        args += ["-DGGML_HIP=ON"]
+    elif vendor == "intel":
+        args += ["-DGGML_SYCL=ON"]
+    return args
+
+
+def _avail_ram_mb():
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except OSError:
+        pass
+    return 0
+
+
+def bootstrap_source_on(machine, log=lambda m: None):
+    """No compatible prebuilt AND no source tree: clone + configure +
+    build one from source using the machine's detected specs."""
+    import subprocess
+    import shlex
+    import local_node
+    name = machine.get("name", "?")
+    if machine.get("os", "linux") not in ("linux", "macos"):
+        return {"ok": False, "machine": name,
+                "detail": "no compatible prebuilt exists and source "
+                          "bootstrap is POSIX-only on this machine"}
+    try:
+        tag, _assets, _base = _fetch_latest_assets()
+    except Exception as e:
+        return {"ok": False, "machine": name,
+                "detail": f"cannot determine the release tag: {e}"}
+    if not tag:
+        return {"ok": False, "machine": name,
+                "detail": "no llama.cpp release tag found"}
+    args = source_build_args(machine)
+    vendor = _vendor_of(machine)
+    log(f"{name}: no prebuilt/no source tree → bootstrapping {tag} "
+        f"({vendor}; {' '.join(args)})")
+    is_local = local_node.is_local(machine)
+    if not is_local:
+        try:
+            import agent_client
+            res = agent_client.build_bootstrap(
+                machine, "~/llama.cpp", "~/llama.cpp/build",
+                "~/llama.cpp/build/bin/llama-server", tag, args)
+        except Exception as e:
+            return {"ok": False, "machine": name,
+                    "detail": f"source bootstrap failed: {e}"}
+        if not res.get("ok"):
+            return {"ok": False, "machine": name,
+                    "detail": res.get("error") or "source bootstrap failed"}
+        bin_dir = res.get("llama_bin") or "~/llama.cpp/build/bin"
+        try:
+            import config_loader as _cfg
+            _cfg.machines.update(name, {"llama_bin": bin_dir})
+        except Exception:
+            pass
+        log(f"{name} devices: "
+            + " | ".join((res.get("devices") or "").splitlines()[:6]))
+        return {"ok": True, "machine": name,
+                "bin": f"{bin_dir}/llama-server",
+                "backend": "source", "devices": res.get("devices") or "",
+                "detail": f"source build {res.get('version', '')} ({tag})"}
+    jobs = max(1, min(os.cpu_count() or 2, (_avail_ram_mb() or 4096) // 2048))
+    targets = list(SOURCE_BUILD_TARGETS)
+    src = os.path.expanduser("~/llama.cpp")
+    build = os.path.join(src, "build")
+    tool_check = {
+        "nvidia": 'command -v nvcc >/dev/null || [ -x /usr/local/cuda/bin/nvcc ]',
+        "amd": "command -v hipcc >/dev/null",
+        "intel": "command -v icpx >/dev/null || command -v icx >/dev/null",
+    }.get(vendor, "true")
+    qargs = " ".join(shlex.quote(a) for a in args)
+    qtargets = " ".join(shlex.quote(t) for t in targets)
+    script = f"""
+set -e
+{tool_check} || {{ echo "missing toolchain for {vendor} (nvcc/hipcc/icpx)" >&2; exit 2; }}
+src="$HOME/llama.cpp"; build="$src/build"
+if [ ! -d "$src/.git" ]; then
+  if [ -e "$src" ] && [ -n "$(ls -A "$src" 2>/dev/null)" ]; then
+    echo "$src exists but is not a git checkout" >&2; exit 3
+  fi
+  git clone --depth 1 --branch {shlex.quote(tag)} https://github.com/ggml-org/llama.cpp "$src"
+else
+  git -C "$src" fetch --depth 1 origin tag {shlex.quote(tag)} || git -C "$src" fetch --tags origin
+  git -C "$src" checkout --detach -f {shlex.quote(tag)}
+fi
+mkdir -p "$build"
+if [ ! -f "$build/CMakeCache.txt" ]; then
+  cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=Release {qargs}
+fi
+cmake --build "$build" --target {qtargets} -j {jobs}
+test -x "$build/bin/llama-server"
+test -x "$build/bin/ggml-rpc-server"
+"$build/bin/llama-server" --version
+"$build/bin/llama-server" --list-devices
+"""
+    log(f"{name}: building source with -j{jobs} …")
+    try:
+        proc = subprocess.run(["bash", "-c", script], capture_output=True,
+                              text=True, timeout=21600)
+    except (OSError, subprocess.SubprocessError) as e:
+        return {"ok": False, "machine": name,
+                "detail": f"source bootstrap failed: {e}"}
+    out = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode != 0:
+        return {"ok": False, "machine": name,
+                "detail": f"source bootstrap failed (exit {proc.returncode}): "
+                          + out[-800:]}
+    try:
+        import config_loader as _cfg
+        _cfg.machines.update(name, {"llama_bin": build + "/bin"})
+    except Exception:
+        pass
+    lines = [l for l in out.splitlines() if l.strip()]
+    version = next((l for l in lines if l.startswith("version:")), "")
+    log(f"{name}: source build ready ({version or 'ok'})")
+    return {"ok": True, "machine": name,
+            "bin": os.path.join(build, "bin", "llama-server"),
+            "backend": "source", "devices": out[-800:],
+            "detail": f"source build {version or ''} ({tag})"}
+
+
 def probe_setup(machine, log=lambda m: None):
     """Dynamically classify a machine's llama.cpp install by probing it.
 

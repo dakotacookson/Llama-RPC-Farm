@@ -84,3 +84,26 @@ def test_pick_assets_respects_backend_pin():
     names, _d, note, _z = li._pick_assets(hp, tag, assets, glibc=(2, 35))
     assert names == [f"llama-{tag}-bin-ubuntu-x64.tar.gz"]
     assert "CPU" in note
+
+
+def test_source_build_args_follow_specs():
+    import llamacpp_installer as li
+    nv = {"gpu_vendor": "nvidia",
+          "detected": {"compute_cap": ["8.6", "6.0", "7.5"]}}
+    args = li.source_build_args(nv)
+    assert "-DGGML_CUDA=ON" in args
+    assert "-DGGML_CUDA_FA=ON" in args
+    assert "-DGGML_RPC=ON" in args
+    assert "-DCMAKE_CUDA_ARCHITECTURES=60;75;86" in args
+
+    amd = {"gpu_vendor": "amd", "detected": {}}
+    assert "-DGGML_HIP=ON" in li.source_build_args(amd)
+
+    intel = {"gpu_vendor": "intel", "detected": {}}
+    assert "-DGGML_SYCL=ON" in li.source_build_args(intel)
+
+    cpu = {"gpu_vendor": "cpu", "detected": {}}
+    cargs = li.source_build_args(cpu)
+    assert "-DGGML_RPC=ON" in cargs
+    assert not any(x in cargs for x in
+                   ("-DGGML_CUDA=ON", "-DGGML_HIP=ON", "-DGGML_SYCL=ON"))

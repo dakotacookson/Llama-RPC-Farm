@@ -362,6 +362,16 @@ def agent_update_binary(machine, url, version="", sha256="", timeout=300.0) -> d
     }, timeout=timeout)
 
 
+def build_bootstrap(machine, src_root, build_dir, bin_path, tag,
+                    cmake_args, jobs=None, timeout=7300.0) -> dict:
+    """Fresh POSIX source provision on a peer (clone + configure + build)."""
+    return _request(machine, "POST", "/build/bootstrap", {
+        "src_root": src_root, "build_dir": build_dir,
+        "bin_path": bin_path, "tag": tag,
+        "cmake_args": list(cmake_args or []), "jobs": jobs,
+    }, timeout=timeout)
+
+
 def build_probe(machine, llama_bin, timeout=30.0) -> dict:
     query = urllib.parse.urlencode({"llama_bin": llama_bin})
     return _request(machine, "GET", f"/build/probe?{query}",
