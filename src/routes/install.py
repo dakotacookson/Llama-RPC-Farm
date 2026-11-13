@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import contextvars
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -19,6 +20,7 @@ from runtime_paths import asset_dir
 import agent_client
 from llama_version import _latest_llama_tag, _llama_build_no, _llama_version_payload, invalidate_llama_version
 import config_loader as cfg
+import llamacpp_installer
 import local_node
 import rpc_manager
 import version as app_version
@@ -36,6 +38,74 @@ router = APIRouter()
 # time per machine; the registry is tiny and process-local like
 # hf_downloader's jobs.
 _LLAMA_UPDATES: dict = {}
+_GROUP_BATCH = contextvars.ContextVar("group_update_batch", default=False)
+
+
+def _groups_for_machine(name):
+    return [g for g in cfg.groups.all()
+            if name in (g.get("machines") or [])]
+
+
+def _group_preflight(group, releases):
+    """Can EVERY member of this group reach the same latest tag?
+    Returns {ok, target, blockers}; any blocker locks the whole group."""
+    target = releases[0][0] if releases else None
+    blockers = []
+    for mname in (group.get("machines") or []):
+        machine = cfg.machines.get(mname)
+        if not machine:
+            blockers.append(f"{mname}: not configured")
+            continue
+        if not target:
+            blockers.append(f"{mname}: no llama.cpp release tag found")
+            continue
+        try:
+            probe = llamacpp_installer.probe_setup(machine)
+        except Exception as e:
+            blockers.append(f"{mname}: probe failed ({e})")
+            continue
+        try:
+            dec = llamacpp_installer.decide_engine_plan(machine, probe=probe)
+        except Exception as e:
+            blockers.append(f"{mname}: plan failed ({e})")
+            continue
+        if dec["mode"] == "prebuilt":
+            try:
+                sel = llamacpp_installer._choose_release_for(
+                    machine, releases,
+                    glibc=llamacpp_installer._machine_glibc(machine))
+            except Exception as e:
+                blockers.append(f"{mname}: asset check failed ({e})")
+                continue
+            if sel["missing"]:
+                blockers.append(f"{mname}: {target} lacks "
+                                f"{', '.join(sel['missing'])}")
+            elif sel["tag"] != target:
+                blockers.append(f"{mname}: {target} has no usable asset "
+                                f"(would need {sel['tag']})")
+        else:
+            caps = llamacpp_installer.machine_cuda_archs(machine)
+            if (llamacpp_installer._vendor_of(machine) == "nvidia"
+                    and caps and min(caps) < 60):
+                blockers.append(
+                    f"{mname}: GPU sm_{min(caps)} is too old for current "
+                    f"CUDA (needs sm_60+)")
+                continue
+            if probe.get("kind") == "source":
+                continue  # existing source build already proved its toolchain
+            args = llamacpp_installer.source_build_args(machine)
+            try:
+                if local_node.is_local(machine):
+                    miss = llamacpp_installer.source_tool_missing(machine)
+                else:
+                    miss = (agent_client.build_preflight(machine, args)
+                            or {}).get("missing") or []
+            except Exception as e:
+                miss = [f"cannot verify toolchain ({e})"]
+            if miss:
+                blockers.append(f"{mname}: source bootstrap needs "
+                                f"{', '.join(miss)}")
+    return {"ok": not blockers, "target": target, "blockers": blockers}
 @router.get("/api/llama-cpp-latest")
 async def llama_cpp_latest():
     """Newest upstream llama.cpp release with binaries, for the update
@@ -692,6 +762,22 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
     llama-swap if this machine hosts it (stop_rpc's legacy stop-all
     kills it). Poll GET /api/llama-cpp-updates/{job_id} for progress."""
     machine = cfg.machines.require(name)
+    if not _GROUP_BATCH.get():
+        groups = _groups_for_machine(name)
+        if groups:
+            try:
+                releases = llamacpp_installer._fetch_release_asset_sets()
+            except Exception as e:
+                raise HTTPException(
+                    503, f"cannot check the group update target: {e}")
+            for g in groups:
+                pf = _group_preflight(g, releases)
+                if not pf["ok"]:
+                    raise HTTPException(409, detail={
+                        "message": f"group '{g.get('name')}' is "
+                                   f"version-locked: not every member can "
+                                   f"reach {pf['target']}",
+                        "blockers": pf["blockers"]})
     with _LLAMA_UPDATES_LOCK:
         for j in _LLAMA_UPDATES.values():
             if j["machine"] == name and j["state"] in ("stopping", "installing", "updating"):
@@ -978,6 +1064,44 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
 
     threading.Thread(target=_run_update, daemon=True).start()
     return {"job_id": job_id, "status_url": f"/api/llama-cpp-updates/{job_id}"}
+
+
+@router.post("/api/groups/{name}/update-llama-cpp")
+async def update_group_llama_cpp(name: str, force: bool = False):
+    """Version-locked group update: preflight every member first, then
+    start an update job for each. If ANY member cannot reach the target,
+    nothing is started."""
+    group = cfg.groups.get(name)
+    if not group:
+        raise HTTPException(404, f"group '{name}' not found")
+    members = list(group.get("machines") or [])
+    if not members:
+        raise HTTPException(400, "group has no machines")
+    try:
+        releases = llamacpp_installer._fetch_release_asset_sets()
+    except Exception as e:
+        raise HTTPException(
+            503, f"cannot check latest llama.cpp release: {e}")
+    pf = _group_preflight(group, releases)
+    if not pf["ok"]:
+        raise HTTPException(409, detail={
+            "message": f"group '{name}' is version-locked: not every "
+                       f"member can reach {pf['target']}",
+            "blockers": pf["blockers"]})
+    token = _GROUP_BATCH.set(True)
+    jobs = []
+    try:
+        for mname in members:
+            r = await update_llama_cpp_machine(mname, force)
+            if isinstance(r, dict):
+                jobs.append({"machine": mname, "job_id": r.get("id"),
+                             "state": r.get("state")})
+            else:
+                jobs.append({"machine": mname,
+                             "status": getattr(r, "status_code", None)})
+    finally:
+        _GROUP_BATCH.reset(token)
+    return {"group": name, "target": pf["target"], "jobs": jobs}
 
 
 @router.get("/api/llama-cpp-updates/{job_id}")
