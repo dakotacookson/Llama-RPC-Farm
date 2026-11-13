@@ -46,6 +46,13 @@ LINUX_CUDA_VER = "13.4"   # ubuntu-cuda-<ver>; upstream also ships 12.8
 LINUX_CUDA_VER_OLD = "12.8"   # fallback when the newest CUDA asset is absent
 DEST_POSIX = "~/llama.cpp/bin"
 DEST_WIN = "%USERPROFILE%\\llama.cpp\\bin"
+# Source rebuilds only need the farm's binaries — building EVERY target
+# (tests, examples, benches) made upgrades needlessly slow. Unknown targets
+# fall back to the minimal pair in update_source_on / the peer agent.
+SOURCE_BUILD_TARGETS = (
+    "llama-server", "ggml-rpc-server", "llama-cli", "llama-completion",
+    "llama-quantize", "llama-fit-params", "llama-bench", "llama-tokenize",
+)
 
 # CUDA linux prebuilts are built against a newer glibc (2.38 via the
 # release toolchain) while their Vulkan siblings only need 2.34 —
@@ -1095,9 +1102,15 @@ def update_source_on(machine, probe=None, log=lambda m: None):
         # is exactly what produced aibox3's mixed-version SIGSEGV.
         run(f"rm -f '{bin_path}' '{bin_dir}/libllama-server-impl.so' "
             f"'{rpc_path}'")
-        build_cmd = (f"cd '{src_root}' && cmake --build '{build_dir}' "
-                     f"-j {jobs} > /tmp/llamacpp-build.log 2>&1; "
-                     "_ec=$?; tail -3 /tmp/llamacpp-build.log; exit $_ec")
+        _tgt = " ".join(SOURCE_BUILD_TARGETS)
+        build_cmd = (
+            f"cd '{src_root}' && "
+            f"cmake --build '{build_dir}' --target {_tgt} -j {jobs} "
+            f"> /tmp/llamacpp-build.log 2>&1; _ec=$?; "
+            "if [ $_ec -ne 0 ]; then "
+            f"cmake --build '{build_dir}' --target llama-server "
+            f"ggml-rpc-server -j {jobs} >> /tmp/llamacpp-build.log 2>&1; "
+            "_ec=$?; fi; tail -3 /tmp/llamacpp-build.log; exit $_ec")
         code, out = run(build_cmd, timeout=7200)
         if code != 0:
             return {"ok": False, "machine": name,
