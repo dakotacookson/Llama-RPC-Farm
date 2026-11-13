@@ -111,3 +111,28 @@ def test_choose_release_skips_release_missing_this_asset():
     ]
     sel = li._choose_release_for(machine(vendor="cpu"), releases)
     assert sel["tag"] == "b1"
+
+
+def test_prebuilt_cuda_arch_gate():
+    """A CUDA prebuilt only works if its cubins cover every GPU's SM."""
+    aibox3 = {"gpu_vendor": "nvidia",
+              "detected": {"compute_cap": ["7.5", "6.0", "7.5"]}}
+    assert li.machine_cuda_archs(aibox3) == [75, 60, 75]
+    assert not li.prebuilt_cuda_covers(aibox3)
+    assert "source" in li.prebuilt_cuda_error(aibox3)
+
+    aibox2 = {"gpu_vendor": "nvidia",
+              "detected": {"compute_cap": ["6.1"]}}
+    assert not li.prebuilt_cuda_covers(aibox2)
+
+    master = {"gpu_vendor": "nvidia",
+              "detected": {"compute_cap": ["8.6", "8.6", "8.6"]}}
+    assert li.prebuilt_cuda_covers(master)
+    assert li.prebuilt_cuda_error(master) == ""
+
+    # unknown caps (Windows) must not block
+    win = {"gpu_vendor": "nvidia", "detected": {"compute_cap": [None, None]}}
+    assert li.prebuilt_cuda_covers(win)
+
+    cpu = {"gpu_vendor": "cpu", "detected": {}}
+    assert li.prebuilt_cuda_error(cpu) == ""
