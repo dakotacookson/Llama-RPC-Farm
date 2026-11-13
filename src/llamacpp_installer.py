@@ -139,12 +139,14 @@ def _ensure_win_firewall(run, log=lambda m: None):
     return ""
 
 
-def _fetch_latest_assets(limit=30):
-    """(tag, [asset names], download_base) of the newest release that has
-    bin assets. download_base is the per-release URL prefix — the
-    'releases/latest/download' shortcut resolves to the newest SEMVER tag
-    (e.g. v0.4.1, which carries no bin assets), NOT the newest release
-    with binaries, so it must never be used for bin downloads."""
+def _fetch_release_asset_sets(limit=30):
+    """[(tag, [asset names], base)] newest-first, but ONLY releases that
+    contain a real llama.cpp binary asset (a `llama-*-bin-*` file).
+
+    Upstream uploads a release's assets over several minutes (cudart
+    companions first, main bins later). Treating a cudart-only release as
+    "the latest" made installs ask for `llama-bNNN-bin-...` before it
+    existed. Those partial releases are skipped here."""
     _hdrs = {"Accept": "application/vnd.github+json",
              "User-Agent": "llama-rpc-farm"}
     _tok = (os.environ.get("GITHUB_TOKEN")
@@ -155,16 +157,50 @@ def _fetch_latest_assets(limit=30):
         f"{GITHUB_API}?per_page={limit}", headers=_hdrs)
     with urllib.request.urlopen(req, timeout=30) as r:
         releases = json.loads(r.read().decode())
+    out = []
     for rel in releases:
-        # include the cudart companions (they don't carry the llama-
-        # prefix: cudart-llama-bin-win-*.zip / cudart-llama-*-ubuntu-*)
         names = [a["name"] for a in rel.get("assets", [])
                  if (("llama-" in a["name"] and "bin-" in a["name"])
                      or a["name"].startswith("cudart-"))]
-        if names:
-            base = f"https://github.com/ggml-org/llama.cpp/releases/download/{rel['tag_name']}"
-            return rel["tag_name"], names, base
+        mains = [n for n in names if n.startswith("llama-") and "-bin-" in n]
+        if not mains:
+            continue  # still uploading / cudart-only
+        base = (f"https://github.com/ggml-org/llama.cpp/releases/download/"
+                f"{rel['tag_name']}")
+        out.append((rel["tag_name"], names, base))
+    return out
+
+
+def _fetch_latest_assets(limit=30):
+    """(tag, [asset names], download_base) of the newest release that has
+    real llama.cpp binaries (cudart-only/uploading releases skipped)."""
+    sets = _fetch_release_asset_sets(limit)
+    if sets:
+        return sets[0]
     return None, [], GITHUB_LATEST_DL
+
+
+def _choose_release_for(machine, releases, glibc=None, driver_version=None):
+    """Newest release that actually has EVERY asset this machine needs.
+    Falls back to the newest release's missing list for a clear error."""
+    fallback = None
+    for tag, names, base in releases:
+        try:
+            picked = _pick_assets(machine, tag, names, glibc, driver_version)
+        except ValueError:
+            continue
+        assets, dest, note, is_zip = picked
+        missing = [n for n in assets if n not in names]
+        sel = {"tag": tag, "assets": assets, "dest": dest,
+               "backend": note, "zip": is_zip, "base": base,
+               "missing": missing}
+        if not missing:
+            return sel
+        if fallback is None:
+            fallback = sel
+    if fallback is not None:
+        return fallback
+    raise ValueError("no llama.cpp release assets found")
 
 
 def _driver_tuple(text):
@@ -401,20 +437,22 @@ def plan(machine):
     """What WOULD be installed for this machine: asset names + backend.
     No side effects; used by the UI before installing."""
     try:
-        tag, assets, _base = _fetch_latest_assets()
+        releases = _fetch_release_asset_sets()
     except Exception as e:
         return {"ok": False, "error": f"cannot reach GitHub releases: {e}"}
+    if not releases:
+        return {"ok": False, "error": "no llama.cpp release assets found"}
     try:
-        names, dest, note, _zip = _pick_assets(
-            machine, tag, assets,
+        sel = _choose_release_for(
+            machine, releases,
             driver_version=_driver_tuple(
                 (machine.get("detected") or {}).get("driver_version")
                 or machine.get("driver_version")))
     except ValueError as e:
         return {"ok": False, "error": str(e)}
-    missing = [n for n in names if n not in assets]
-    return {"ok": True, "tag": tag, "assets": names, "dest": dest,
-            "backend": note, "missing": missing}
+    return {"ok": True, "tag": sel["tag"], "assets": sel["assets"],
+            "dest": sel["dest"], "backend": sel["backend"],
+            "missing": sel["missing"]}
 
 
 def install_on(machine, log=lambda m: None):
@@ -471,7 +509,6 @@ def install_on(machine, log=lambda m: None):
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
         return {"ok": False, "machine": name, "detail": f"probe failed: {e}"}
     try:
-        tag, assets, base = _fetch_latest_assets()
         if is_win:
             glibc = None
         elif is_local:
@@ -486,11 +523,16 @@ def install_on(machine, log=lambda m: None):
         if is_win and (machine.get("gpu_vendor") or "").lower() == "nvidia":
             driver = _windows_nvidia_driver(machine, run=run,
                                             is_local=is_local)
-        names, dest, note, _zip = _pick_assets(
-            machine, tag, assets, glibc, driver_version=driver)
-        plan_info = {"ok": True, "tag": tag, "assets": names, "dest": dest,
-                     "backend": note,
-                     "missing": [n for n in names if n not in assets]}
+        releases = _fetch_release_asset_sets()
+        if not releases:
+            return {"ok": False, "machine": name,
+                    "detail": "no llama.cpp release assets found"}
+        sel = _choose_release_for(machine, releases, glibc, driver)
+        base = sel["base"]
+        plan_info = {"ok": True, "tag": sel["tag"],
+                     "assets": sel["assets"], "dest": sel["dest"],
+                     "backend": sel["backend"],
+                     "missing": sel["missing"]}
     except Exception as e:
         return {"ok": False, "machine": name,
                 "detail": f"cannot reach GitHub releases: {e}"}
