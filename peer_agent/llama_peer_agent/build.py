@@ -272,6 +272,15 @@ def _missing_tools(cmake_args):
     return missing
 
 
+def preflight(config: AgentConfig, cmake_args=None) -> dict:
+    """Toolchain check for a source bootstrap (no clone/build)."""
+    args = [str(a) for a in (cmake_args or [])]
+    for a in args:
+        if "\x00" in a or not _CMAKE_ARG_OK.match(a):
+            raise AgentBuildError(f"disallowed cmake argument: {a!r}")
+    return {"missing": _missing_tools(args)}
+
+
 def bootstrap(config: AgentConfig, src_root, build_dir, bin_path, tag,
               cmake_args=None, jobs=None) -> dict:
     """Fresh source provision: clone the release tag, configure with the

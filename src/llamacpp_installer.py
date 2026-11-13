@@ -1018,6 +1018,32 @@ def _avail_ram_mb():
     return 0
 
 
+def source_tool_missing(machine):
+    """Missing local prerequisites for a fresh source build, by vendor."""
+    import shutil
+    import glob
+    missing = [t for t in ("git", "cmake") if not shutil.which(t)]
+    vendor = _vendor_of(machine)
+
+    def has(name):
+        if shutil.which(name):
+            return True
+        for pat in (f"/usr/local/cuda*/bin/{name}",
+                    f"/opt/rocm*/bin/{name}",
+                    f"/opt/intel/oneapi/compiler/*/bin/{name}"):
+            if glob.glob(pat):
+                return True
+        return False
+
+    if vendor == "nvidia" and not has("nvcc"):
+        missing.append("nvcc (CUDA toolkit)")
+    elif vendor == "amd" and not has("hipcc"):
+        missing.append("hipcc (ROCm)")
+    elif vendor == "intel" and not (has("icpx") or has("icx")):
+        missing.append("icpx (oneAPI)")
+    return missing
+
+
 def bootstrap_source_on(machine, log=lambda m: None):
     """No compatible prebuilt AND no source tree: clone + configure +
     build one from source using the machine's detected specs."""

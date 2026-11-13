@@ -309,6 +309,12 @@ class AgentHandler(BaseHTTPRequestHandler):
             return self._agent_update(body)
         if path == "/agent/update-binary":
             return self._agent_update_binary(body)
+        if path == "/build/preflight":
+            try:
+                return 200, build.preflight(
+                    config, body.get("cmake_args") or [])
+            except build.AgentBuildError as e:
+                return 400, {"error": str(e)}
         if path == "/build/bootstrap":
             try:
                 return 200, build.bootstrap(

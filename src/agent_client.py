@@ -362,6 +362,13 @@ def agent_update_binary(machine, url, version="", sha256="", timeout=300.0) -> d
     }, timeout=timeout)
 
 
+def build_preflight(machine, cmake_args, timeout=30.0) -> dict:
+    """Check a peer's source-build toolchain without cloning/building."""
+    return _request(machine, "POST", "/build/preflight", {
+        "cmake_args": list(cmake_args or []),
+    }, timeout=timeout)
+
+
 def build_bootstrap(machine, src_root, build_dir, bin_path, tag,
                     cmake_args, jobs=None, timeout=7300.0) -> dict:
     """Fresh POSIX source provision on a peer (clone + configure + build)."""
