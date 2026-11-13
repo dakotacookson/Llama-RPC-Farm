@@ -84,3 +84,30 @@ def test_device_summary_and_warning():
     assert "Vulkan" in li._device_warning(
         machine(vendor="cpu"), "Vulkan0: Intel")
     assert li._device_warning(machine(vendor="cpu"), "CPU") == ""
+
+
+def test_choose_release_skips_uploading_release():
+    """The newest release can briefly contain only cudart assets while
+    upstream is still uploading. It must be skipped for a release that
+    actually has the machine's binary."""
+    releases = [
+        ("b12368", ["cudart-llama-b12368-bin-ubuntu-cuda-13.5-x64.tar.gz"],
+         "base68"),
+        ("b12367", [f"llama-b12367-bin-ubuntu-x64.tar.gz"], "base67"),
+    ]
+    sel = li._choose_release_for(machine(vendor="cpu"), releases)
+    assert sel["tag"] == "b12367"
+    assert sel["assets"] == ["llama-b12367-bin-ubuntu-x64.tar.gz"]
+    assert sel["base"] == "base67"
+    assert sel["missing"] == []
+
+
+def test_choose_release_skips_release_missing_this_asset():
+    """Asset rotation: a release can have CUDA but no CPU generic; a CPU
+    host must fall back to the newest release that has its asset."""
+    releases = [
+        ("b2", [f"llama-b2-bin-ubuntu-cuda-13.5-x64.tar.gz"], "base2"),
+        ("b1", [f"llama-b1-bin-ubuntu-x64.tar.gz"], "base1"),
+    ]
+    sel = li._choose_release_for(machine(vendor="cpu"), releases)
+    assert sel["tag"] == "b1"
