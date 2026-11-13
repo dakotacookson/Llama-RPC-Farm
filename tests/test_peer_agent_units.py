@@ -1167,3 +1167,19 @@ def test_main_loads_persisted_agent_env(monkeypatch, tmp_path):
     monkeypatch.setenv("PEER_AGENT_TOKEN", "env-token")
     assert agent_main.main([]) == 0
     assert seen["config"].token == "env-token"
+
+
+def test_bootstrap_cmake_arg_whitelist():
+    assert agent_build._CMAKE_ARG_OK.match("-DGGML_CUDA=ON")
+    assert agent_build._CMAKE_ARG_OK.match("-DCMAKE_CUDA_ARCHITECTURES=61;86")
+    assert not agent_build._CMAKE_ARG_OK.match("-DCMAKE_C_COMPILER=/bin/sh")
+    assert not agent_build._CMAKE_ARG_OK.match("-DGGML_RPC=ON;rm -rf /")
+
+
+def test_bootstrap_rejects_unsafe_args(tmp_path):
+    import pytest
+    with pytest.raises(agent_build.AgentBuildError):
+        agent_build.bootstrap(
+            cfg(tmp_path), "~/llama.cpp", "~/llama.cpp/build",
+            "~/llama.cpp/build/bin/llama-server", "b1",
+            ["-DCMAKE_C_COMPILER=/bin/sh"])
