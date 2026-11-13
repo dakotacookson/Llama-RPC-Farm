@@ -734,11 +734,21 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
                 except Exception as e:
                     job["log"].append(f"stop_rpc failed (continuing anyway): {e}")
                 pref = (machine.get("engine_mode") or "auto").strip().lower()
-                probe = None
-                if pref != "prebuilt":
-                    probe = llamacpp_installer.probe_setup(
+                if pref == "auto":
+                    dec = llamacpp_installer.decide_engine_plan(machine)
+                    job["log"].append("engine plan: " + dec["reason"])
+                    pref = dec["mode"]
+                    probe = dec.get("probe")
+                    if pref == "source" and not dec.get("source_available"):
+                        job["result"] = {"ok": False, "machine": name,
+                                         "detail": dec["reason"]}
+                        job["state"] = "failed"
+                        return
+                else:
+                    probe = (llamacpp_installer.probe_setup(
                         machine, log=lambda m: job["log"].append(str(m)))
-                if pref == "source" or (probe and probe.get("kind") == "source"):
+                        if pref == "source" else None)
+                if pref == "source":
                     if not probe or probe.get("kind") != "source":
                         job["result"] = {
                             "ok": False, "machine": name,
@@ -772,7 +782,23 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
                     machine, log=lambda m: job["log"].append(str(m)))
                 kind = probe.get("kind", "prebuilt")
                 pref = (machine.get("engine_mode") or "auto").strip().lower()
-                force_prebuilt = pref == "prebuilt"
+                dec = None
+                if pref == "auto":
+                    dec = llamacpp_installer.decide_engine_plan(
+                        machine, probe=probe)
+                    job["log"].append("engine plan: " + dec["reason"])
+                    if dec["mode"] == "source" and kind != "source":
+                        job["result"] = {"ok": False, "machine": name,
+                                         "detail": dec["reason"]}
+                        job["state"] = "failed"
+                        return
+                    if dec["mode"] != kind:
+                        job["log"].append(
+                            f"engine plan → {dec['mode']}")
+                    kind = dec["mode"]
+                force_prebuilt = (pref == "prebuilt") or bool(
+                    dec and dec["mode"] == "prebuilt"
+                    and probe.get("kind") == "source")
                 if pref == "source" and kind != "source":
                     job["result"] = {
                         "ok": False, "machine": name,
