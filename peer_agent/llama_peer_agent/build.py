@@ -28,11 +28,17 @@ def _run(args, timeout=120, cwd=None):
 
 
 def _bin_meta(llama_bin):
-    """(version line, ggml-rpc-server present?) for a llama.cpp bin dir."""
-    base = Path(str(llama_bin or ""))
-    server = base / ("llama-server.exe" if os.name == "nt" else "llama-server")
-    rpc = base / ("ggml-rpc-server.exe" if os.name == "nt"
-                  else "ggml-rpc-server")
+    """(version line, ggml-rpc-server present?) for a llama.cpp bin dir.
+
+    Accepts a directory OR the llama-server executable itself, expands
+    ~, and uses the platform suffix — a bare "llama-server" path made
+    Windows probes return an empty version and rpc=False."""
+    base = Path(os.path.expanduser(str(llama_bin or "")))
+    exe = ".exe" if os.name == "nt" else ""
+    if base.name.lower() in ("llama-server", "llama-server.exe"):
+        base = base.parent  # caller passed the executable, not the dir
+    server = base / f"llama-server{exe}"
+    rpc = base / f"ggml-rpc-server{exe}"
     version = ""
     if server.is_file():
         v = _run([str(server), "--version"], timeout=60)
@@ -71,7 +77,8 @@ def probe(config: AgentConfig, llama_bin) -> dict:
         return out
     out["build_dir"] = str(build)
     build_bin = build / "bin"
-    server = build_bin / "llama-server"
+    exe = ".exe" if os.name == "nt" else ""
+    server = build_bin / f"llama-server{exe}"
     if server.is_file():
         out["llama_bin"] = str(build_bin)
     out["version"], out["rpc"] = _bin_meta(out["llama_bin"])

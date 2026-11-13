@@ -7,12 +7,15 @@ Phase 1 (0 loads, pure math): weights + mmproj + KV(ctx) + SSM state +
 MTP draft overhead vs usable VRAM -> max ctx + integer split weights +
 safe ubatch. Mirrors Ollama fit-vram logic.
 
-Phase 2 (staged live search, early exits): baseline at locked ctx,
-then MTP variants, KV ladder (current/q8/f16/q4), forced splits,
-ubatch/batch/margin neighbors, flash/SWA fallbacks.
+Phase 2 (staged live search, early exits): baseline at the user's ctx,
+then MTP variants, KV ladder, forced splits, ctx balance walk,
+ubatch/batch/margin neighbors, MoE expert placement + cache, threads
+for CPU-bound models, flash/SWA fallbacks. Each stage composes from the
+current SAFE winner so earlier wins are never reverted.
 Winner saved. ctx-size is NEVER changed: it is the user's.
 """
 import os
+import re
 import time
 import threading
 import urllib.request
@@ -41,6 +44,17 @@ def _generated_path(name):
 CTX_LADDER = [262144, 200000, 160000, 128000, 100000,
               65536, 49152, 32768, 16384, 8192, 4096]
 UBATCH_CANDIDATES = [256, 320, 376, 448, 512]
+# MoE expert-cache ladders. These flags only matter when expert weights
+# live on the CPU (--cpu-moe / --n-cpu-moe): --moe-cache-mib sizes the
+# GPU-side hot-expert cache and --moe-cache-cpu-share picks whether cache
+# misses are CPU-computed or uploaded. GPU-resident MoE has no host
+# experts, so stage 5c must NOT probe them there (pure noise).
+MOE_CACHE_MIB_CANDIDATES = [2048, 4096, 8192, 12288]
+MOE_CACHE_CPU_SHARE_CANDIDATES = [0.0, 0.5, 1.0]
+# Single source of truth for first-load batch sizes (safe_defaults,
+# estimate, and the per-trial fallback all use these).
+DEFAULT_BATCH = 1024
+DEFAULT_UBATCH = 1024
 TARGET_TPS_RPC = 20.0    # multi-box over ~1GbE: the physics band
 TARGET_TPS_LOCAL = 25.0  # single box, no network hops: aim higher
 TARGET_TPS_DEFAULT = TARGET_TPS_RPC
@@ -97,8 +111,9 @@ def _model_bytes(resolved_path):
 
 def _kv_per_token(resolved_path, meta, cache_type="q8_0"):
     """Bytes of KV per context token for full-attention blocks."""
-    bpt = {"q8_0": 1.0625, "q4_0": 0.5625, "f16": 2.0,
-           "bf16": 2.0, "f32": 4.0}.get(str(cache_type), 1.0625)
+    bpt = {"q8_0": 1.0625, "f8_e4m3": 1.0, "q4_0": 0.5625,
+           "iq4_nl": 0.5625, "q5_0": 0.6875, "q5_1": 0.6875,
+           "f16": 2.0, "bf16": 2.0, "f32": 4.0}.get(str(cache_type), 1.0625)
     try:
         n_full, _, _ = gguf_inspect.block_attention_kinds(resolved_path)
     except Exception:
@@ -208,9 +223,9 @@ def safe_defaults(base_path, servers, device_order="", target_os="linux",
     # from the search space entirely). Safe pair: 1024/1024 (uniform,
     # no VRAM heuristic — keeps first-load predictable).
     if not existing_flags.get("batch-size"):
-        flags["batch-size"] = 1024
+        flags["batch-size"] = DEFAULT_BATCH
     if not existing_flags.get("ubatch-size"):
-        flags["ubatch-size"] = 1024
+        flags["ubatch-size"] = DEFAULT_UBATCH
     if not (existing_flags.get("ctx-size") or existing_flags.get("c")):
         flags["ctx-size"] = min(32768, model_max)
     for ck in ("cache-type-k", "cache-type-v"):
@@ -293,7 +308,7 @@ def estimate(base_path, servers, device_order="", target_os="linux",
         "gpus": gpus,
         "straggler": straggler,
         "suggested_split": split,
-        "suggested_ubatch": 376,
+        "suggested_ubatch": DEFAULT_UBATCH,
         "ctx_ladder": [c for c in CTX_LADDER if c <= model_max],
     }
 
@@ -301,6 +316,14 @@ def estimate(base_path, servers, device_order="", target_os="linux",
 # ---------------- live verify (background job, few loads) ----------------
 _JOBS = {}
 _JOB_LOCK = threading.Lock()
+# One live Tune at a time per farm process: concurrent tunes contend for
+# the same GPUs and corrupt each other's measurements. Different models
+# can still be tuned sequentially.
+_TUNE_SERIAL = threading.Lock()
+# Modality of the model currently being tuned: text generation is the
+# default; embedding models get an embeddings bench; other non-generative
+# modalities (ASR/TTS) skip the decode search rather than fail every rung.
+_TUNE_MODALITY = "text"
 
 
 def _job(model_id):
@@ -342,13 +365,12 @@ def _wait_healthy(port, timeout_s=900, interval_s=3):
 
 
 def _cache_dir():
-    """OS-aware local SSD cache dir (Windows has no /tmp)."""
-    import tempfile
-    base = tempfile.gettempdir()
-    # minimal sanity: must be an absolute path we can create in
-    if not os.path.isabs(base):
-        base = os.path.expanduser("~")
-    return os.path.join(base, "tune-cache")
+    """Local SSD cache dir for tune rungs. Uses an explicit override, then
+    the per-user data dir — NOT tempfile (which can be tmpfs/RAM and would
+    copy a multi-GB model into memory)."""
+    base = (os.environ.get("LLAMA_TUNE_CACHE")
+            or os.path.join(data_dir(), "tune-cache"))
+    return base
 
 
 def _local_file_cache(model_id, *raw_paths, target_os="linux",
@@ -491,7 +513,6 @@ def _bench_tps(port, timeout=120):
         _probe_body = _json.dumps({
             "prompt": ("Explain ambition in one long paragraph. " * 64),
             "n_predict": 1, "temperature": 0}).encode()
-        _t0 = time.time()
         _req = urllib.request.Request(
             f"http://127.0.0.1:{port}/v1/completions", data=_probe_body,
             headers={"Content-Type": "application/json"})
@@ -522,6 +543,44 @@ def _bench_tps(port, timeout=120):
             "tokens": pred, "acceptance": accept,
             "pp_tps": pp_tps, "eff": eff, "eff_p": eff_p, "eff_g": eff_g,
             "measured": "server" if reported else "wall"}
+
+
+def _bench_embedding(port, timeout=120):
+    """Throughput for embedding models (/v1/embeddings), which have no
+    /v1/completions decode path. Ranked on embeddings/sec."""
+    body = _json.dumps({
+        "model": "tune",
+        "input": [f"benchmark passage {i}" for i in range(16)],
+    }).encode()
+    t0 = time.time()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/embeddings", data=body,
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = _json.loads(r.read().decode("utf-8", "replace"))
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+    dt = max(0.01, time.time() - t0)
+    n = len(data.get("data") or [])
+    if n < 4:
+        return {"ok": False, "error": f"too few embeddings ({n})",
+                "tokens": n}
+    tps = round(n / dt, 2)
+    return {"ok": True, "tps": tps, "seconds": round(dt, 2), "tokens": n,
+            "pp_tps": 0, "eff": tps, "measured": "wall"}
+
+
+def _model_modality(flags, meta):
+    """text | embedding | audio. Detect from explicit flags first, then
+    the GGUF architecture (whisper/asr/audio/tts)."""
+    f = flags or {}
+    if f.get("embeddings"):
+        return "embedding"
+    arch = str((meta or {}).get("general.architecture", "")).lower()
+    if any(x in arch for x in ("asr", "whisper", "audio", "tts", "speech")):
+        return "audio"
+    return "text"
 
 
 def cancel_tune(model_id):
@@ -631,7 +690,6 @@ def _parse_placement(bench_log):
     """Actual layer placement from llama-server output — the ground truth
     our math only estimates. Presence of 'to CPU' here is the definitive
     RAM-spill answer (better than VRAM snapshots between rungs)."""
-    import re as _re
     hits = []
     try:
         with open(bench_log, encoding="utf-8", errors="replace") as f:
@@ -712,11 +770,8 @@ def _fit_print(model_id, base_path, extra_args=None, target_os="linux"):
         resolved = path_resolver.resolve_for(base_path, target_os)
     except Exception:
         return ""
-    for cand in (os.path.expanduser("~/llama.cpp/build/bin/llama-fit-params"),):
-        if os.path.exists(cand):
-            tool = cand
-            break
-    else:
+    tool = _bin_path("llama-fit-params")
+    if not os.path.exists(tool):
         return ""
     try:
         p = subprocess.run(
@@ -836,7 +891,9 @@ def _hw_fingerprint(trial):
 DRIFT_KEYS_FLAGS = ("ctx-size", "batch-size", "ubatch-size", "spec-type",
                     "spec-draft-n-max", "spec-draft-ngl",
                     "spec-draft-device", "cache-type-k", "cache-type-v",
-                    "flash-attn", "split-mode", "n-gpu-layers", "ngl")
+                    "flash-attn", "split-mode", "n-gpu-layers", "ngl",
+                    "cpu-moe", "n-cpu-moe", "moe-cache-mib",
+                    "moe-cache-cpu-share")
 DRIFT_KEYS_TOP = ("tensor_split_mode", "tensor_split", "device_order",
                   "device_order_policy", "servers", "fit_margin",
                   "fit_ram_allow")
@@ -877,43 +934,6 @@ def drift_check(model_id):
             drifts.append({"key": f"flags.{k}", "seed": s, "live": lv,
                            "severity": sev})
     return {"seed": True, "drifts": drifts}
-
-
-def _history_lookup(model_id, label, trial=None, max_age_days=7):
-    """Reuse a recent verified rung instead of reloading it (resume logic:
-    identical model+label+HARDWARE measured within N days returns tps)."""
-    import csv
-    try:
-        p = _generated_path("tune-history.csv")
-        if not os.path.exists(p):
-            return None
-        fp = _hw_fingerprint(trial) if trial is not None else None
-        cutoff = time.time() - max_age_days * 86400
-        best = None
-        with open(p, encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                if row.get("model_id") != model_id or row.get("label") != label:
-                    continue
-                if row.get("ok") != "True":
-                    continue
-                if fp and row.get("hwfp") and row.get("hwfp") != fp:
-                    continue  # same label, different hardware: measure fresh
-                try:
-                    ts = time.mktime(time.strptime(
-                        row.get("time", ""), "%Y-%m-%dT%H:%M:%S"))
-                except (ValueError, TypeError):
-                    continue
-                if ts < cutoff:
-                    continue
-                try:
-                    tps = float(row.get("tps") or 0)
-                except (ValueError, TypeError):
-                    continue
-                if best is None or ts > best[0]:
-                    best = (ts, tps)
-        return best[1] if best else None
-    except Exception:
-        return None
 
 
 def _probe_cache():
@@ -968,7 +988,6 @@ def probe_link_mbps(machine, size_mb=32):
     """Effective master->machine throughput (Mbps), file-cached 7d.
     Agent `/speedtest` transfer: measures the real path RPC tensors take,
     not the NIC label (virtio reports speed -1)."""
-    import subprocess
     import json as _js
     cache, cache_p = _probe_cache()
     name = machine.get("name", "?")
@@ -1069,29 +1088,124 @@ def has_moe_tensors(first_path):
         return False
 
 
-_FLAGS_CACHE = {}
+def is_moe_expert_cached(flags):
+    """True when expert weights are placed on the CPU, which is the ONLY
+    situation where --moe-cache-mib / --moe-cache-cpu-share do anything.
+    A GPU-resident MoE (no cpu-moe/n-cpu-moe) has no host experts."""
+    f = flags or {}
+    return bool(f.get("cpu-moe") or f.get("n-cpu-moe"))
 
 
-def supports_flag(flag):
-    """Does this build's llama-server accept --flag? (version guard:
-    exotic flags must skip, not burn a load, on builds that lack them.)"""
-    import subprocess
-    if flag in _FLAGS_CACHE:
-        return _FLAGS_CACHE[flag]
+def _moe_cpu_ladder(n_layer):
+    """--n-cpu-moe candidates as fractions of the real layer count
+    (never more layers than the model has). Falls back to a fixed
+    ladder only when metadata lacks block_count."""
     try:
-        # no hardcoded build dirs: expanduser finds the local checkout on
-        # any machine (Windows resolves to %USERPROFILE%\llama.cpp).
-        cand = os.path.expanduser("~/llama.cpp/build/bin/llama-server")
-        if os.name == "nt":
-            cand += ".exe"
-        p = subprocess.run(
-            [cand, "--help"],
-            capture_output=True, text=True, timeout=30)
-        ok = flag in (p.stdout or "")
+        n = int(n_layer)
+    except (TypeError, ValueError):
+        n = 0
+    if n > 0:
+        return sorted({max(1, int(n * f)) for f in (0.5, 0.75, 0.9)},
+                      reverse=True)
+    return [24, 32, 12]
+
+
+def moe_cache_mib_ladder(free_gb=None):
+    """GPU expert-cache sizes scaled to the headroom we actually have.
+    A fixed 12 GiB cache on an 8 GiB card is an OOM, not a measurement."""
+    try:
+        free = float(free_gb or 0)
+    except (TypeError, ValueError):
+        free = 0.0
+    if free > 0:
+        return sorted({max(512, int(free * 1024 * f))
+                       for f in (0.25, 0.5, 0.75)})
+    return list(MOE_CACHE_MIB_CANDIDATES)
+
+
+def moe_cache_trials(flags, free_gb=None):
+    """Cache ladders to probe for this placement, or ([], []) when the
+    experts are not on the CPU (probing would only measure noise)."""
+    if not is_moe_expert_cached(flags):
+        return [], []
+    return (moe_cache_mib_ladder(free_gb),
+            list(MOE_CACHE_CPU_SHARE_CANDIDATES))
+
+
+_FLAGS_CACHE = {}
+_HELP_CACHE = {}
+_ACTIVE_BIN_DIR = None
+
+
+def _resolve_bin_dir(model=None, master=None):
+    """Bin dir for the model under tune. Prefers the model's llama_bin
+    (file or dir), then the master machine's llama_bin, then the local
+    default. This is what keeps Tune from probing a stale build (e.g.
+    ~/llama.cpp/bin) while the model actually runs ~/llama.cpp/build/bin."""
+    for raw in ((model or {}).get("llama_bin"),
+                (master or {}).get("llama_bin"),
+                ""):
+        if not raw:
+            continue
+        p = os.path.expanduser(str(raw).strip())
+        low = p.lower()
+        if low.endswith(("llama-server", "llama-server.exe")):
+            return os.path.dirname(p)
+        return p
+    return os.path.expanduser("~/llama.cpp/build/bin")
+
+
+def set_tune_binary(model=None, master=None):
+    """Pin the binary used for capability probes for the active tune."""
+    global _ACTIVE_BIN_DIR
+    _ACTIVE_BIN_DIR = _resolve_bin_dir(model, master)
+
+
+def _bin_path(name, bin_dir=None):
+    d = bin_dir or _ACTIVE_BIN_DIR or _resolve_bin_dir()
+    p = os.path.join(d, name)
+    if os.name == "nt":
+        p += ".exe"
+    return p
+
+
+def _help_text(bin_dir=None):
+    """Cached `llama-server --help` for the active build ('' if absent)."""
+    import subprocess
+    d = bin_dir or _ACTIVE_BIN_DIR or _resolve_bin_dir()
+    if d in _HELP_CACHE:
+        return _HELP_CACHE[d]
+    txt = ""
+    try:
+        p = subprocess.run([_bin_path("llama-server", d), "--help"],
+                           capture_output=True, text=True, timeout=30)
+        txt = (p.stdout or "") + (p.stderr or "")
     except Exception:
-        ok = True  # fail open: a rung failure is still logged, not fatal
-    _FLAGS_CACHE[flag] = ok
+        txt = ""
+    _HELP_CACHE[d] = txt
+    return txt
+
+
+def supports_flag(flag, bin_dir=None):
+    """Does this build's llama-server accept --flag? Version guard so
+    exotic flags skip instead of burning a load. FAILS CLOSED (a build
+    whose help can't be read is treated as not supporting the flag), and
+    matches the exact token so descriptions can't create false hits."""
+    key = (flag, bin_dir or _ACTIVE_BIN_DIR or "")
+    if key in _FLAGS_CACHE:
+        return _FLAGS_CACHE[key]
+    txt = _help_text(bin_dir)
+    ok = False
+    if txt:
+        pat = r"(?<![\w-])" + re.escape(flag) + r"(?![\w-])"
+        ok = re.search(pat, txt) is not None
+    _FLAGS_CACHE[key] = ok
     return ok
+
+
+def supports_cache_type(value, bin_dir=None):
+    """True when the build's help lists this KV cache dtype."""
+    return str(value) in _help_text(bin_dir)
 
 
 def has_swa(meta):
@@ -1236,13 +1350,26 @@ def _run_trial(model_id, trial, port, label, path_map=None):
                 except Exception:
                     pass
         fl = trial.get("flags", {}) or {}
-        if fl.get("mmproj"):
-            try:
-                r = path_resolver.resolve_for(fl["mmproj"], _trial_os(trial))
-                if r in path_map:
-                    fl["mmproj"] = path_map[r]
-            except Exception:
-                pass
+
+        def _remap(val):
+            if not val:
+                return val
+            out = []
+            for p in str(val).split(","):
+                p = p.strip()
+                if not p:
+                    continue
+                try:
+                    r = path_resolver.resolve_for(p, _trial_os(trial))
+                    out.append(path_map.get(r, p))
+                except Exception:
+                    out.append(p)
+            return ",".join(out)
+
+        for _fk in ("mmproj", "spec-draft-model", "model-draft",
+                    "shard", "ple"):
+            if fl.get(_fk):
+                fl[_fk] = _remap(fl[_fk])
         trial["flags"] = fl
     cfg.save_model(tmp_id, {**trial, "model_id": tmp_id})
     blog = open(bench_log, "w", encoding="utf-8")
@@ -1297,13 +1424,21 @@ def _run_trial(model_id, trial, port, label, path_map=None):
                 _log(model_id, f"  server never healthy: {hinfo}\n"
                                f"  bench log tail: {tail[-400:]}")
                 return True, {"ok": False, "error": "never healthy"}
-            b = _bench_tps(port)
+            _bench = _bench_embedding if _TUNE_MODALITY == "embedding" \
+                else _bench_tps
+            b = _bench(port)
             # second consecutive run: nearly free, exposes run-to-run
             # variance (single-rep gen numbers have fooled people before)
-            b2 = _bench_tps(port)
+            b2 = _bench(port)
             if b.get("ok") and b2.get("ok"):
                 b["tps2"] = b2["tps"]
-                b["tps"] = round((b["tps"] + b2["tps"]) / 2, 1)
+                _avg = (b["tps"] + b2["tps"]) / 2
+                b["noise"] = round(abs(b["tps"] - b2["tps"])
+                                   / max(_avg, 1e-6), 4)
+                b["tps"] = round(_avg, 1)
+                for _k in ("eff", "pp_tps"):
+                    if b.get(_k) is not None and b2.get(_k) is not None:
+                        b[_k] = round((float(b[_k]) + float(b2[_k])) / 2, 1)
             # capacity half of the score: headroom right now, same GPUs
             b["min_free_gb"] = measure_headroom(trial.get("servers") or [])
             _temps = _temp_note()
@@ -1337,10 +1472,32 @@ def _run_trial(model_id, trial, port, label, path_map=None):
             pass
 
 
-UB_LADDER = [128, 256, 376, 512, 768, 1024]
+UB_LADDER = [128, 256, 376, 512, 768, 1024, 1536, 2048]
 B_LADDER = [512, 1024, 2048, 4096, 8192]
 MARGIN_LADDER = [256, 512, 1024, 2048]
 KV_CANDIDATES = ["q8_0", "f16", "q4_0"]
+# Relative KV-precision ranking (higher = more bits / better quality).
+# Used so a faster-but-lossier KV pair must clear a bigger margin before
+# it is allowed to replace a higher-precision incumbent.
+KV_RANK = {"q4_0": 0, "q4_1": 0, "iq4_nl": 0,
+           "q5_0": 1, "q5_1": 1,
+           "q8_0": 2, "f8_e4m3": 2,
+           "f16": 3, "bf16": 3, "f32": 4}
+
+
+def _kv_rank(k_type, v_type):
+    return min(KV_RANK.get(str(k_type).lower(), 2),
+               KV_RANK.get(str(v_type).lower(), 2))
+
+
+def _has_native_fp8(gpus):
+    """True when a selected GPU has FP8 tensor cores (Ada/Hopper+).
+    f8_e4m3 KV is only a speed win there; on Ampere/Turing/Pascal it is
+    neutral-to-slower, so it must not enter the ladder."""
+    names = " ".join(str(g.get("name", "")) for g in (gpus or [])).upper()
+    return any(k in names for k in
+               ("RTX 50", "RTX 40", "L40", "L4", "H100", "H200",
+                "B100", "B200", "GB200"))
 
 
 def _ladder_neighbors(current, ladder):
@@ -1365,21 +1522,6 @@ def _ladder_neighbors(current, ladder):
 
 def _ub_neighbors(current):
     return _ladder_neighbors(current, UB_LADDER)
-
-
-def _same_mtp(a_flags, b_flags):
-    """Same speculation setup? (spec-type, n-max, draft-ngl)."""
-    keys = ("spec-type", "spec-draft-n-max", "spec-draft-ngl")
-    norm = lambda f, k: str(f.get(k, "") or "").lower()
-    return all(norm(a_flags, k) == norm(b_flags, k) for k in keys)
-
-
-def _same_split(a_trial, b_trial):
-    """Same placement? (mode, weights, order, policy)."""
-    keys = ("tensor_split_mode", "tensor_split", "device_order",
-            "device_order_policy")
-    return all(str(a_trial.get(k, "") or "") == str(b_trial.get(k, "") or "")
-               for k in keys)
 
 
 def _apply_variant(trial, variant):
@@ -1478,6 +1620,29 @@ def _apply_variant(trial, variant):
             f["n-cpu-moe"] = int(mc)
             f.pop("cpu-moe", None)
             bits.append(f"moecpu={mc}")
+    if "moe_cache_mib" in variant:
+        # GPU cache for hot experts whose master copy lives on the CPU.
+        # Only meaningful alongside cpu-moe/n-cpu-moe (stage 5c gates it).
+        mm = variant["moe_cache_mib"]
+        if mm in (None, "off", 0):
+            f.pop("moe-cache-mib", None)
+            bits.append("moecache=off")
+        else:
+            f["moe-cache-mib"] = int(mm)
+            bits.append(f"moecache={int(mm)}")
+    if "moe_cache_cpu_share" in variant:
+        # Fraction of cache misses computed by the CPU from host experts
+        # instead of uploaded to the GPU once the cache is full (0..1).
+        try:
+            ms = float(variant["moe_cache_cpu_share"])
+        except (TypeError, ValueError):
+            ms = 0.0
+        if ms <= 0:
+            f.pop("moe-cache-cpu-share", None)
+            bits.append("moeshare=0")
+        else:
+            f["moe-cache-cpu-share"] = round(ms, 2)
+            bits.append(f"moeshare={round(ms, 2)}")
     if "split" in variant:
         # Full placement spec verbatim: {mode, device_order, policy,
         # weights} (+ optional servers reorder for peer-swap).
@@ -1513,9 +1678,47 @@ def _apply_variant(trial, variant):
     return t, " ".join(bits)
 
 
+def trial_signature(trial):
+    """Identity of a tuning rung. Every tuned dimension MUST be here or
+    distinct rungs collapse in dedupe (a missing ctx-size silently made
+    the whole context walk a no-op)."""
+    f = trial.get("flags", {}) or {}
+    return (str(f.get("spec-type", "")).lower(),
+            str(f.get("spec-draft-n-max", "")),
+            "ngl" if "spec-draft-ngl" in f else "-",
+            str(f.get("spec-draft-device", "")),
+            str(f.get("n-gpu-layers", "")),
+            ",".join(trial.get("servers") or []),
+            trial.get("tensor_split_mode", ""),
+            trial.get("tensor_split", "") or "",
+            trial.get("device_order", "") or "",
+            trial.get("device_order_policy", ""),
+            str(f.get("ubatch-size", "")),
+            str(f.get("batch-size", "")),
+            str(f.get("ctx-size", "")),
+            str(trial.get("fit_margin", "")),
+            str(f.get("cache-type-k", "")) + "/"
+            + str(f.get("cache-type-v", "")),
+            str(f.get("flash-attn", "")),
+            str(f.get("cpu-moe", "")),
+            str(f.get("n-cpu-moe", "")),
+            str(f.get("moe-cache-mib", "")),
+            str(f.get("moe-cache-cpu-share", "")),
+            "swa" if f.get("swa-full") else "-")
+
+
 def _tune_worker(model_id, target_tps, port, try_mtp_off):
     import rpc_manager
     import copy
+
+    if not _TUNE_SERIAL.acquire(blocking=False):
+        with _JOB_LOCK:
+            _JOBS[model_id].update({
+                "state": "done", "ok": False,
+                "detail": "another Tune is already running — try again "
+                          "after it finishes (concurrent tunes corrupt "
+                          "each other's GPU measurements)"})
+        return
 
     def finish(state, **kw):
         with _JOB_LOCK:
@@ -1537,6 +1740,17 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
             _log(model_id, "llama.cpp build: unknown")
         model = cfg.get_model(model_id)
         master0 = rpc_manager._split_servers(model.get("servers"))[0]
+        set_tune_binary(model, master0)
+        global _TUNE_MODALITY
+        try:
+            _mres = path_resolver.resolve_for(
+                model.get("base_path") or model.get("path", ""),
+                master0.get("os", "linux"))
+            _mmeta = gguf_inspect.metadata(_mres) or {}
+        except Exception:
+            _mmeta = {}
+        _TUNE_MODALITY = _model_modality(model.get("flags") or {}, _mmeta)
+        _log(model_id, f"modality: {_TUNE_MODALITY}")
         d = safe_defaults(model.get("base_path") or model.get("path", ""),
                           model.get("servers"), model.get("device_order") or "",
                           master0.get("os", "linux"),
@@ -1551,6 +1765,13 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
         cfg.save_model(model_id, model)
         _log(model_id, f"safe defaults applied (MTP "
                        f"{'on' if d['has_mtp'] else 'off'}, model cap {d['model_max_ctx']})")
+        if _TUNE_MODALITY == "audio":
+            _log(model_id, "non-generative (audio/ASR) model: decode tune "
+                           "N/A — keeping safe defaults")
+            finish("done", ok=True,
+                   detail="non-generative model — safe defaults kept, "
+                          "decode tune skipped")
+            return
         # drift test: diff live config vs frozen seed BEFORE measuring.
         # HIGH-severity drift (order, numbering, mode) caused the 5→24
         # incident — surface it here, not after an hour of rungs.
@@ -1610,18 +1831,24 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
                 _log(model_id, f"config ERROR: {issue.get('msg')}")
                 return
         # SSD cache: copy once, every rung loads local (not CIFS)
+        _extra_paths = [flags.get("spec-draft-model")
+                        or flags.get("model-draft") or ""]
+        for _pk in ("shard", "ple"):
+            _extra_paths += [p.strip() for p in
+                             str(flags.get(_pk) or "").split(",") if p.strip()]
         pmap = _local_file_cache(
             model_id, model.get("base_path") or model.get("path", ""),
-            flags.get("mmproj", ""), target_os=master.get("os", "linux"))
+            flags.get("mmproj", ""), *_extra_paths,
+            target_os=master.get("os", "linux"))
         base = copy.deepcopy(model)
         bf = base.get("flags", {}) or {}
-        # ctx is the user's (locked): Tune optimizes everything else
-        # around it, never sacrifices it. KV starts locked, stage 2b
-        # measures the ladder.
+        # ctx starts at the user's value; stage 3d may walk it with
+        # backoff (a bigger ctx must not cost >3%; a smaller one must
+        # strictly improve). Nothing silently overrides the user's number.
         # ubatch keeps the hardware-aware safe default (512 on capable
         # cards); only fill when missing.
-        bf.setdefault("ubatch-size", 256)
-        bf.setdefault("batch-size", 2048)
+        bf.setdefault("ubatch-size", DEFAULT_UBATCH)
+        bf.setdefault("batch-size", DEFAULT_BATCH)
         base["flags"] = bf
         locked_ctx = bf.get("ctx-size")
         locked_kv = (bf.get("cache-type-k"), bf.get("cache-type-v"))
@@ -1643,18 +1870,43 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
             # 4% slower config holding 2x the ctx is the better model
             # (decode-only ranking picked fast-but-tiny winners before).
             nonlocal best, best_safe
-            tps = (b or {}).get("eff", (b or {}).get("tps"))
-            if tps is None:
+            rank_speed = (b or {}).get("eff", (b or {}).get("tps"))
+            if rank_speed is None:
                 return
             free = (b or {}).get("min_free_gb", -1.0)
-            if best is not None and tps <= best[0] and tps > best[0] * 0.95 \
-                    and _ctx_of(trial) > _ctx_of(best[2]):
-                tps = best[0] + 0.01  # nudge past best: same speed band, more ctx wins
-            if best is None or tps > best[0]:
-                best = (tps, label, copy.deepcopy(trial), free)
-            if (free >= SAFE_MIN_FREE_GB or trusted) and (
-                    best_safe is None or tps > best_safe[0]):
-                best_safe = (tps, label, copy.deepcopy(trial), free)
+            noise = float((b or {}).get("noise", 0) or 0)
+            # Require a win bigger than measurement noise (floor 1.5%,
+            # cap 8%) before replacing the incumbent. A KV pair with
+            # lower precision than the seed must clear twice that margin,
+            # so a lossy cache never wins on a noise-sized speed delta.
+            margin = max(0.015, min(0.08, noise))
+            f = trial.get("flags", {}) or {}
+            if _kv_rank(f.get("cache-type-k", locked_kv[0]),
+                        f.get("cache-type-v", locked_kv[1])) \
+                    < _kv_rank(locked_kv[0], locked_kv[1]):
+                margin *= 2
+
+            def _beats(incumbent):
+                if incumbent is None:
+                    return True
+                if rank_speed > incumbent[0] * (1.0 + margin):
+                    return True
+                # same speed band (<=5%) but meaningfully more context
+                return (rank_speed > incumbent[0] * 0.95
+                        and _ctx_of(trial) > _ctx_of(incumbent[2]))
+
+            def _rank_against(incumbent):
+                if incumbent is not None and rank_speed <= incumbent[0] \
+                        and _ctx_of(trial) > _ctx_of(incumbent[2]):
+                    return incumbent[0] + 0.01  # same band -> more ctx wins
+                return rank_speed
+
+            if _beats(best):
+                best = (_rank_against(best), label,
+                        copy.deepcopy(trial), free)
+            if (free >= SAFE_MIN_FREE_GB or trusted) and _beats(best_safe):
+                best_safe = (_rank_against(best_safe), label,
+                             copy.deepcopy(trial), free)
 
         def _pick():
             """Winner: fastest SAFE rung; fastest overall only when
@@ -1687,6 +1939,10 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
                       "ubatch": win_flags.get("ubatch-size"),
                       "threads": win_flags.get("threads"),
                       "flash": win_flags.get("flash-attn"),
+                      "moe_cpu": (win_flags.get("cpu-moe")
+                                  or win_flags.get("n-cpu-moe") or "off"),
+                      "moe_cache_mib": win_flags.get("moe-cache-mib"),
+                      "moe_cache_cpu_share": win_flags.get("moe-cache-cpu-share"),
                       "min_free_gb": free,
                       "safe": safe,
                       "tps": tps}
@@ -1712,7 +1968,28 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
                                f"from the UI to pick up the winner")
 
         def _best_flags():
-            return (best[2].get("flags", {}) or {}) if best else {}
+            # Derive every downstream star from the config that would
+            # actually be SAVED (safe winner), not merely the fastest
+            # overall rung — otherwise later stages inherit dimensions
+            # from an OOM-adjacent trial that never becomes the winner.
+            w, _ok = _pick()
+            return (w[2].get("flags", {}) or {}) if w else {}
+
+        def _winner_trial():
+            """Template for composing the next probe: the current SAFE
+            winner (fallback: fastest overall, then the baseline). Each
+            stage then overrides only its own dimension, so previously
+            won dimensions (ctx, kv, moe placement, draft-device, …)
+            persist instead of reverting to the original config."""
+            w, _ok = _pick()
+            if w:
+                return copy.deepcopy(w[2])
+            return copy.deepcopy(base)
+
+        def _best_tps():
+            """Speed of the config that would actually be saved."""
+            w, _ok = _pick()
+            return float(w[0]) if w else 0.0
 
         def _best_mtp():
             f = _best_flags()
@@ -1730,12 +2007,26 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
                 return n
             return "off"
 
+        def _best_moe_cpu():
+            """Placement of the current best trial, in stage-5b vocabulary
+            ('off' | 'all' | <int n-cpu-moe>). Stage 5c replays this so the
+            cache flags are measured on the winning expert placement, not
+            on the original base trial (which never had cpu-moe)."""
+            f = _best_flags()
+            if f.get("cpu-moe"):
+                return "all"
+            try:
+                return int(f.get("n-cpu-moe"))
+            except (TypeError, ValueError):
+                return "off"
+
         def _best_split():
-            """Full placement spec of the current best trial (reproducible)."""
-            if not best:
+            """Full placement spec of the config that would be saved."""
+            w, _ok = _pick()
+            if not w:
                 return {"mode": "fit", "device_order": "",
                         "policy": "vram-first", "weights": ""}
-            t = best[2]
+            t = w[2]
             return {"mode": t.get("tensor_split_mode", "fit"),
                     "device_order": t.get("device_order", ""),
                     "policy": t.get("device_order_policy", "vram-first"),
@@ -1750,34 +2041,19 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
 
         _measured = []
 
-        def _sig(trial):
-            f = trial.get("flags", {}) or {}
-            return (str(f.get("spec-type", "")).lower(),
-                    str(f.get("spec-draft-n-max", "")),
-                    "ngl" if "spec-draft-ngl" in f else "-",
-                    str(f.get("spec-draft-device", "")),
-                    str(f.get("n-gpu-layers", "")),
-                    ",".join(trial.get("servers") or []),
-                    trial.get("tensor_split_mode", ""),
-                    trial.get("tensor_split", "") or "",
-                    trial.get("device_order", "") or "",
-                    trial.get("device_order_policy", ""),
-                    str(f.get("ubatch-size", "")),
-                    str(f.get("batch-size", "")),
-                    str(trial.get("fit_margin", "")),
-                    str(f.get("cache-type-k", "")) + "/"
-                    + str(f.get("cache-type-v", "")),
-                    str(f.get("flash-attn", "")),
-                    "swa" if f.get("swa-full") else "-")
+        _sig = trial_signature
 
         def _probe(stage, variant, key=None):
             if _stop():
                 raise _ExitWorker()
-            trial, label = _apply_variant(base, {"ctx": ctx_star, **variant})
+            # Compose from the current winner, NOT the original config:
+            # every probe inherits all previously-won dimensions and
+            # overrides only the one this stage is testing.
+            trial, label = _apply_variant(_winner_trial(), variant)
             sig = _sig(trial)
             if sig in _measured:
                 _log(model_id, f"{stage} {label} ... already measured — skipped")
-                return
+                return None
             _measured.append(sig)
             load_ok, b = _run_trial(
                 model_id, trial, port, f"{stage} {label}", path_map=pmap)
@@ -1785,6 +2061,8 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
                 consider(b, f"{stage} {label}", trial)
                 if key is not None:
                     _note_result(stage, key, b["tps"])
+                return b.get("eff", b.get("tps"))
+            return None
 
         # ---- stage 0: seed reference (known-good snapshot, if any) ----
         # Measured FIRST so best starts at proven speed, not at whatever
@@ -1811,17 +2089,23 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
                 _log(model_id, "stage0: seed failed to load "
                                "(hardware changed?) — continuing")
 
-        # ---- priors: what won before on this arch family ----
+        # ---- priors: what won before on this arch + hardware class ----
         # orders every stage best-first (cancel-safe: partial runs bank
         # the likely winners) and records every rung's max for next time.
+        # Absolute tok/s only compares within the SAME hardware: a 4B on a
+        # 3080 must not outrank a 27B on a 2060. Key includes the GPUs.
         try:
-            _arch = str((gguf_inspect.metadata(
+            _arch0 = str((gguf_inspect.metadata(
                 path_resolver.resolve_for(
                     model.get("base_path") or model.get("path", ""),
                     master.get("os", "linux"))
             ) or {}).get("general.architecture", "") or "unknown")
         except Exception:
-            _arch = "unknown"
+            _arch0 = "unknown"
+        _hw_key = ",".join(sorted(
+            str(g.get("name") or g.get("label") or "?")
+            for g in (est.get("gpus") or []))) or "cpu"
+        _arch = f"{_arch0}|{_hw_key}"
         _priors = load_priors()
         _arch_priors = _priors.get(_arch, {})
 
@@ -1860,6 +2144,7 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
                    detail="baseline failed to load/bench; check log (likely OOM/split)")
             return
         consider(b, f"stage1 baseline {label}", trial)
+        _measured.append(_sig(trial))  # baseline is the dedupe floor
         _log(model_id, f"stage1: baseline {b['tps']} tok/s @ "
                        f"ctx={locked_ctx} kv={locked_kv[0]}/{locked_kv[1]}")
 
@@ -1915,7 +2200,6 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
             return ",".join(out)
 
         _labels = ",".join(g["label"] for g in _ordered)
-        _by_label = {g["label"]: g for g in _ordered}
         # fastest-last: peers in RPC order, then master GPUs slowest
         # first (fastest silicon last = output head + draft tail).
         _peer_labels = [g["label"] for g in _ordered
@@ -2077,14 +2361,19 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
                            or "q8_0")).lower()
                 _cv = str((_best_flags().get("cache-type-v")
                            or "q8_0")).lower()
+                _win_ctx = int(_best_flags().get("ctx-size") or ctx_star or 0)
                 _pairs = [(_ck, _cv), ("q8_0", "q8_0"), ("f16", "f16"),
                           ("q4_0", "q4_0"), ("q8_0", "f16"),
-                          ("q4_0", "f16")]
+                          ("q4_0", "f16"), ("f16", "q8_0"),
+                          ("q8_0", "q4_0"), ("bf16", "bf16")]
+                if _has_native_fp8(est.get("gpus")) \
+                        and supports_cache_type("f8_e4m3"):
+                    _pairs += [("f8_e4m3", "f8_e4m3"), ("f8_e4m3", "f16")]
                 for _kp, _vp in _order(
                         "kv", list(dict.fromkeys(_pairs)),
                         keyfn=lambda p: f"kv={p[0]}/{p[1]}"):
                     _per = _kv_pair_per_token(_res, _meta, _kp, _vp)
-                    _need = _fixed + _per * int(ctx_star or 0)
+                    _need = _fixed + _per * _win_ctx
                     if _need > _usable:
                         _log(model_id, f"stage2b: kv={_kp}/{_vp} needs "
                                        f"{_need/1024**3:.1f}GB > usable "
@@ -2116,7 +2405,7 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
         # margin only steers the fitter; under plain/split modes it is
         # inert, so the stage self-skips there. Dynamic around live value.
         if split_star.get("mode") == "fit":
-            _cur_m = base.get("fit_margin", 1024)
+            _cur_m = _winner_trial().get("fit_margin", 1024)
             try:
                 _cur_m = int(_cur_m)
             except (TypeError, ValueError):
@@ -2145,12 +2434,13 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
         _dev_stop = False
         if len(_mfirst) > 1 or _peers:
             # solo master GPUs: is one chip enough? (single-box configs
-            # often beat split-over-RPC on speed)
-            for g in _order("devset", _mfirst,
+            # often beat split-over-RPC on speed). Solos are INDEPENDENT
+            # alternatives, so a weak first chip must not abort the rest —
+            # try them fastest-bandwidth first, then stop only when the
+            # master-only/subset climb backs off.
+            _solos = sorted(_mfirst, key=lambda g: -(g.get("bw_gbs") or 0))
+            for g in _order("devset", _solos,
                             keyfn=lambda x: f"devset=solo-{x['label']}"):
-                if _dev_stop:
-                    break
-                _tps_before = best[0] if best else 0
                 _probe("stage3c", {"mtp": mtp_star, "split": split_star,
                                    "kv": kv_star,
                                    "split2": {"mode": "fit",
@@ -2159,20 +2449,16 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
                                               "weights": "",
                                               "servers": [_master_name]}},
                        key=f"devset=solo-{g['label']}")
-                if best is not None and best[0] <= _tps_before:
-                    _dev_stop = True
-                    _log(model_id, "stage3c: solo rung did not improve — "
-                                   "backoff, skipping remaining solos")
-            if not _dev_stop and len(_mfirst) > 1:
-                _tps_before = best[0]
+            if len(_mfirst) > 1:
+                _tps_before = _best_tps()
                 _mo_labels = ",".join(g["label"] for g in _mfirst)
-                _probe("stage3c",
+                _cand = _probe("stage3c",
                        {"mtp": mtp_star, "split": split_star, "kv": kv_star,
                         "split2": {"mode": "fit", "device_order": _mo_labels,
                                    "policy": "vram-first", "weights": "",
                                    "servers": [_master_name]}},
                        key="devset=master-only")
-                if best[0] <= _tps_before:
+                if _cand is None or _cand <= _tps_before:
                     _dev_stop = True
                     _log(model_id, "stage3c: master-only rung did not "
                                    "improve — backoff, skipping subsets")
@@ -2186,12 +2472,12 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
                         continue  # full set = baseline, already measured
                     if _dev_stop:
                         break
-                    _tps_before = best[0]
+                    _tps_before = _best_tps()
                     sub = _peers[:k]
                     sub_labels = ",".join(
                         [l for _pn in sub for l in _peer_labels
                          if l.startswith(_pn + "-")])
-                    _probe("stage3c",
+                    _cand = _probe("stage3c",
                            {"mtp": mtp_star, "split": split_star,
                             "kv": kv_star,
                             "split2": {"mode": split_star.get("mode", "fit"),
@@ -2200,7 +2486,7 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
                                        "weights": "",
                                        "servers": [_master_name] + sub}},
                            key=f"devset=m+{k}peers")
-                    if best[0] <= _tps_before:
+                    if _cand is None or _cand <= _tps_before:
                         _dev_stop = True
                         _log(model_id, f"stage3c: m+{k}peers did not "
                                        f"improve — backoff, device-set "
@@ -2218,6 +2504,10 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
         if locked_ctx:
             _ctx_up_stop = _ctx_dn_stop = False
             _up = _dn = locked_ctx
+            # Compare each ctx step against the speed of the PREVIOUS step
+            # in the same direction (not the global best, which the old
+            # code compared against itself and so never stopped).
+            _up_speed = _dn_speed = _best_tps()
             for _i in range(2):  # max 2 walk steps per direction
                 if not _ctx_up_stop:
                     _nxt = next((c for c in CTX_LADDER if c > _up
@@ -2225,50 +2515,55 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
                     if _nxt is None:
                         _ctx_up_stop = True
                     else:
-                        _before = best[0] if best else 0
-                        _probe("stage3d", {"ctx": _nxt},
-                               key=f"ctx={_nxt}")
-                        if best[0] <= _before * 0.97:
+                        _cand = _probe("stage3d", {"ctx": _nxt},
+                                       key=f"ctx={_nxt}")
+                        if _cand is None or _cand < _up_speed * 0.97:
                             # bigger ctx cost >3% speed: stop walking up
                             # (monotone-ish: next rung only costs more)
                             _ctx_up_stop = True
                         else:
                             _up = _nxt
+                            _up_speed = _cand
                 if not _ctx_dn_stop:
                     _nxt = next((c for c in reversed(CTX_LADDER)
                                  if c < _dn), None)
                     if _nxt is None:
                         _ctx_dn_stop = True
                     else:
-                        _before = best[0]
-                        _probe("stage3d", {"ctx": _nxt}, key=f"ctx={_nxt}")
-                        if best[0] <= _before:
+                        _cand = _probe("stage3d", {"ctx": _nxt},
+                                       key=f"ctx={_nxt}")
+                        if _cand is None or _cand <= _dn_speed:
                             # down-step didn't STRICTLY improve: quality
                             # regression for nothing — stop and revert
                             _ctx_dn_stop = True
                         else:
                             _dn = _nxt
+                            _dn_speed = _cand
                 if _ctx_up_stop and _ctx_dn_stop:
                     break
             _log(model_id, f"stage3d: ctx walk done "
                            f"(up_stop={_ctx_up_stop} dn_stop={_ctx_dn_stop})")
 
-        # ---- stage 4: ubatch neighbors of the LIVE value ----
+        # ---- stage 4: ubatch neighbors of the WINNING value ----
         # dynamic, not a fixed grid: current ± nearest ladder rungs.
-        for ub in _order("ub", _ub_neighbors(
-                base.get("flags", {}).get("ubatch-size", 256)),
+        _win_ub0 = _best_flags().get("ubatch-size") \
+            or base.get("flags", {}).get("ubatch-size", DEFAULT_UBATCH)
+        for ub in _order("ub", _ub_neighbors(_win_ub0),
                 keyfn=lambda u: f"ub={u}"):
             _probe("stage4", {"mtp": mtp_star, "split": split_star,
                               "kv": kv_star, "ubatch": ub},
                    key=f"ub={ub}")
-        ub_star = int(_best_flags().get("ubatch-size", 256) or 256)
+        ub_star = int(_best_flags().get("ubatch-size", DEFAULT_UBATCH)
+                      or DEFAULT_UBATCH)
         _log(model_id, f"stage4: ubatch={ub_star} fastest so far ({best[0]} tok/s)")
 
-        # ---- stage 4b: batch neighbors of the LIVE value ----
+        # ---- stage 4b: batch neighbors of the WINNING value ----
         # dynamic offsets like ubatch; constrained to batch >= ub_star
         # (llama.cpp requires b>=ub — smaller candidates drop out here).
+        _win_b0 = _best_flags().get("batch-size") \
+            or base.get("flags", {}).get("batch-size", DEFAULT_BATCH)
         for _b in _order("batch", [b for b in _ladder_neighbors(
-                base.get("flags", {}).get("batch-size", 2048), B_LADDER)
+                _win_b0, B_LADDER)
                 if b >= ub_star], keyfn=lambda b: f"b={b}"):
             _probe("stage4b", {"mtp": mtp_star, "split": split_star,
                                "kv": kv_star, "ubatch": ub_star,
@@ -2277,23 +2572,33 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
 
         # ---- stage 5: SWA rung for sliding-window archs (any family
         # declaring it in metadata). Flash-attn stays ON and threads stay
-        # as configured (experience: both all downside to touch).
+        # as configured for GPU-resident models (both all downside there).
+        _n_layer = 0
+        _meta5 = {}
         try:
-            _moe = has_moe_tensors(path_resolver.resolve_for(
+            _res5 = path_resolver.resolve_for(
                 base.get("base_path") or base.get("path", ""),
-                master.get("os", "linux")))
+                master.get("os", "linux"))
+            _moe = has_moe_tensors(_res5)
+            _meta5 = gguf_inspect.metadata(_res5) or {}
+            for _k5, _v5 in _meta5.items():
+                if str(_k5).lower().endswith("block_count") \
+                        and isinstance(_v5, int) and _v5 > 0:
+                    _n_layer = _v5
+                    break
         except Exception:
             _moe = False
         _log(model_id, f"moe expert tensors: {'yes' if _moe else 'no'} "
+                       f"(layers={_n_layer or '?'}) "
                        f"{'(expert-placement N/A — dense FFN)' if not _moe else ''}")
         # ---- stage 5b: MoE expert placement (layer-split alternative) ----
         # MoE models with RAM in the device list: keeping expert weights
         # on CPU (--n-cpu-moe / --cpu-moe) usually beats layer-split over
         # RPC — only the expert hop crosses the wire, and VRAM stays
-        # fully busy. Ladder: all-on-CPU, then the first-half fractions.
-        if _moe and best[0] < target_tps:
+        # fully busy. Ladder: fractions of the model's real layer count.
+        if _moe and _best_tps() < target_tps:
             if supports_flag("--n-cpu-moe"):
-                for _nc in _order("moecpu", [24, 32, 12],
+                for _nc in _order("moecpu", _moe_cpu_ladder(_n_layer),
                                   keyfn=lambda n: f"moecpu={n}"):
                     _probe("stage5b", {"mtp": mtp_star, "split": split_star,
                                        "kv": kv_star, "ubatch": ub_star,
@@ -2301,14 +2606,82 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
                            key=f"moecpu={_nc}")
                     if _stop():
                         break
-                if best[0] < target_tps and supports_flag("--cpu-moe"):
+                if _best_tps() < target_tps and supports_flag("--cpu-moe"):
                     _probe("stage5b", {"mtp": mtp_star, "split": split_star,
                                        "kv": kv_star, "ubatch": ub_star,
                                        "moe_cpu": "all"},
                            key="moecpu=all")
             else:
                 _log(model_id, "stage5b: build lacks --n-cpu-moe — skipped")
-        if best[0] < target_tps:
+
+        # ---- stage 5c: MoE expert cache (moe-cache-mib / cpu-share) ----
+        # The two cache flags only engage when expert weights are on the
+        # CPU. Gate on the WINNING placement from stage 5b, not merely on
+        # "file has MoE tensors": a GPU-resident MoE has no host experts,
+        # so probing the cache there would only measure noise.
+        _moe_place = _best_moe_cpu() if _moe else "off"
+        _free_for_cache = sum(float(g.get("free_gb") or 0)
+                              for g in (est.get("gpus") or []))
+        _moe_mibs, _moe_shares = moe_cache_trials(_best_flags(),
+                                                  free_gb=_free_for_cache)
+        if _moe and not _moe_mibs:
+            _log(model_id, "stage5c: experts GPU-resident (no cpu-moe) — "
+                           "MoE cache flags not applicable")
+        elif _moe and _best_tps() < target_tps:
+            _mib_star = None
+            if supports_flag("--moe-cache-mib"):
+                for _mib in _order("moecache", _moe_mibs,
+                                   keyfn=lambda n: f"moecache={n}"):
+                    _probe("stage5c", {"mtp": mtp_star, "split": split_star,
+                                       "kv": kv_star, "ubatch": ub_star,
+                                       "moe_cpu": _moe_place,
+                                       "moe_cache_mib": _mib},
+                           key=f"moecache={_mib}")
+                    if _stop():
+                        break
+                _mib_star = _best_flags().get("moe-cache-mib")
+            else:
+                _log(model_id, "stage5c: build lacks --moe-cache-mib — skipped")
+            if _moe_shares and _best_tps() < target_tps \
+                    and supports_flag("--moe-cache-cpu-share"):
+                # Base the share ladder on the MiB value that actually won;
+                # if no cache rung beat the placement-only best, fall back
+                # to the largest tested cache so the share is still probed
+                # on a realistic cache size.
+                if _mib_star is None:
+                    _mib_star = _moe_mibs[-1]
+                for _share in _order("moeshare", _moe_shares,
+                                     keyfn=lambda s: f"moeshare={s}"):
+                    _probe("stage5c", {"mtp": mtp_star, "split": split_star,
+                                       "kv": kv_star, "ubatch": ub_star,
+                                       "moe_cpu": _moe_place,
+                                       "moe_cache_mib": _mib_star,
+                                       "moe_cache_cpu_share": _share},
+                           key=f"moeshare={_share}")
+                    if _stop():
+                        break
+            elif _moe_shares and not supports_flag("--moe-cache-cpu-share"):
+                _log(model_id, "stage5c: build lacks --moe-cache-cpu-share — skipped")
+
+        # ---- stage 5d: threads when decoding is CPU-bound ----
+        # Threads are noise for a GPU-resident model, but when experts are
+        # on the CPU (or the model runs --n-gpu-layers 0) they dominate.
+        _wf = _best_flags()
+        _cpu_bound = (is_moe_expert_cached(_wf)
+                      or _wf.get("n-gpu-layers") == 0)
+        if _cpu_bound:
+            _cores = int((master.get("detected") or {}).get("cores")
+                         or os.cpu_count() or 4)
+            _tc = sorted({max(1, _cores), max(1, _cores * 3 // 4),
+                          max(1, _cores // 2)}, reverse=True)
+            for _t in _order("threads", _tc, keyfn=lambda t: f"threads={t}"):
+                _probe("stage5d", {"threads": _t}, key=f"threads={_t}")
+                if _stop():
+                    break
+            _log(model_id, f"stage5d: threads tuned for CPU-bound decode "
+                           f"({_cores} cores)")
+
+        if _best_tps() < target_tps:
             # sliding-window archs (any family declaring it in metadata):
             # full-size SWA cache rung
             try:
@@ -2333,3 +2706,9 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
     except Exception as e:
         finish("failed", ok=False, detail=str(e)[:500])
         _log(model_id, f"ERROR {e}")
+    finally:
+        _TUNE_MODALITY = "text"
+        try:
+            _TUNE_SERIAL.release()
+        except RuntimeError:
+            pass
