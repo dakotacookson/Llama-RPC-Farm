@@ -151,3 +151,17 @@ def test_parse_chip_bare_token():
 def test_gpu_sort_key_numeric_order():
     names = ["CUDA10", "CUDA2", "CUDA1", "CPU"]
     assert sorted(names, key=rpc_manager._gpu_sort_key) == ["CPU", "CUDA1", "CUDA2", "CUDA10"]
+
+def test_local_port_stable_across_plans():
+    """Regression: launch_plan must reset the per-plan registry. Without
+    it the registry accumulates across pushes and every model's local port
+    drifts +1 per push (which churned scripts/config/live servers)."""
+    rpc_manager.reset_local_ports()
+    first = rpc_manager.local_port_for("laya-q8-0", "HP-Pavilion-onvertible")
+    # a second plan starts fresh -> same deterministic port
+    rpc_manager.reset_local_ports()
+    second = rpc_manager.local_port_for("laya-q8-0", "HP-Pavilion-onvertible")
+    assert first == second
+    # within ONE plan a repeated request must not reuse the same port
+    third = rpc_manager.local_port_for("laya-q8-0", "HP-Pavilion-onvertible")
+    assert third != first

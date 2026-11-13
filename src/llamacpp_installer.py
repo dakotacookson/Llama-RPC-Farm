@@ -224,82 +224,177 @@ def _glibc_version(cmd_prefix, run):
         return None
 
 
+def _vendor_of(machine):
+    """Effective GPU vendor: recorded field first, then detected device
+    names. A blank/mis-detected vendor must never send an NVIDIA box to
+    the CPU asset."""
+    import gpu_vendor
+    v = gpu_vendor.normalize_vendor((machine or {}).get("gpu_vendor"))
+    if v:
+        return v
+    det = (machine or {}).get("detected") or {}
+    names = " ".join(str(n) for n in (det.get("gpu_names") or [])).lower()
+    if "nvidia" in names:
+        return "nvidia"
+    if "amd" in names or "radeon" in names or "instinct" in names:
+        return "amd"
+    if "intel" in names:
+        return "intel"
+    if "apple" in names:
+        return "apple"
+    return "cpu"
+
+
+_BACKEND_EXPECT = {"nvidia": "CUDA", "amd": "ROCm", "intel": "SYCL",
+                  "apple": "Metal", "cpu": "CPU"}
+
+
+def _device_summary(text):
+    """Backends llama-server reports in --list-devices (CPU if none)."""
+    t = (text or "").lower()
+    found = [n for n in ("CUDA", "ROCm", "HIP", "SYCL", "Vulkan", "Metal")
+             if n.lower() in t]
+    return ",".join(found) or "CPU"
+
+
+def _device_warning(machine, text):
+    """Non-fatal warning when the installed build doesn't expose the
+    accelerator the machine's specs call for (or a CPU-classified host
+    still exposes Vulkan, which llama.cpp will auto-use)."""
+    vendor = _vendor_of(machine)
+    got = _device_summary(text)
+    exp = _BACKEND_EXPECT.get(vendor, "CPU")
+    if exp != "CPU" and exp.lower() not in got.lower():
+        return (f"expected {exp} device for {vendor} host but "
+                f"--list-devices shows: {got}")
+    if exp == "CPU" and "vulkan" in got.lower():
+        return (f"CPU-classified host exposes Vulkan ({got}); llama.cpp "
+                f"will use it automatically — consider a CPU-only build "
+                f"if it is unstable")
+    return ""
+
+
+def _first_present(assets, groups):
+    """First (names, note) whose assets ALL exist upstream. Falls back to
+    the first group so the caller reports the missing asset (upstream
+    rotates asset versions) instead of crashing."""
+    for names, note in groups:
+        if names and all(n in assets for n in names):
+            return names, note
+    return groups[0][0], groups[0][1]
+
+
 def _pick_assets(machine, tag, assets, glibc=None, driver_version=None):
     """Choose release asset name(s) for a machine. Returns
-    (asset_names, dest, backend_note, is_win_zip) or raises ValueError."""
+    (asset_names, dest, backend_note, is_win_zip) or raises ValueError.
+
+    Backend is chosen from the machine's real specs (vendor + arch + OS +
+    glibc/driver), with an ordered fallback chain when upstream lacks an
+    asset: CUDA -> Vulkan -> CPU (NVIDIA), ROCm -> Vulkan -> CPU (AMD),
+    SYCL -> CPU (Intel), Metal (macOS), CPU (no accelerator)."""
     os_type = machine.get("os", "linux")
-    vendor = (machine.get("gpu_vendor") or "nvidia").strip().lower()
+    vendor = _vendor_of(machine)
     arch = (machine.get("detected") or {}).get("arch") or "x86_64"
     is_arm = arch in ("arm64", "aarch64")
     if os_type == "macos":
-        # Apple hardware is overwhelmingly arm64; only pick x64 when the
-        # probe explicitly reported Intel
-        kind = "x64" if arch in ("x86_64", "x64") and vendor != "apple" else "arm64"
+        # Apple Silicon -> arm64; an Intel Mac (x86_64) -> x64.
+        kind = "x64" if arch in ("x86_64", "x64") and not is_arm else "arm64"
         return [f"llama-{tag}-bin-macos-{kind}.tar.gz"], DEST_POSIX, \
             "Metal backend included", False
     if os_type == "windows":
         arch_kind = "arm64" if is_arm else "x64"
         if vendor == "amd":
-            return [f"llama-{tag}-bin-win-rocm-{WIN_ROCM_VER}-{arch_kind}.zip"], \
-                DEST_WIN, "HIP/ROCm backend", True
-        if vendor == "nvidia" and not is_arm:
+            groups = [
+                ([f"llama-{tag}-bin-win-rocm-{WIN_ROCM_VER}-{arch_kind}.zip"],
+                 "HIP/ROCm backend"),
+                ([f"llama-{tag}-bin-win-vulkan-{arch_kind}.zip"],
+                 "Vulkan backend (no ROCm asset upstream)"),
+                ([f"llama-{tag}-bin-win-cpu-{arch_kind}.zip"],
+                 "CPU backend (no ROCm/Vulkan asset upstream)"),
+            ]
+        elif vendor == "intel":
+            groups = [
+                ([f"llama-{tag}-bin-win-sycl-{arch_kind}.zip"],
+                 "SYCL backend (oneAPI runtime bundled)"),
+                ([f"llama-{tag}-bin-win-cpu-{arch_kind}.zip"],
+                 "CPU backend (no SYCL asset upstream)"),
+            ]
+        elif vendor == "nvidia" and is_arm:
+            groups = [
+                ([f"llama-{tag}-bin-win-cuda-13.4-arm64.zip",
+                  "cudart-llama-bin-win-cuda-13.4-arm64.zip"],
+                 "CUDA 13.4 backend (+cudart)"),
+                ([f"llama-{tag}-bin-win-cpu-{arch_kind}.zip"],
+                 "CPU backend (no CUDA arm64 asset upstream)"),
+            ]
+        elif vendor == "nvidia":
             if (driver_version is not None
                     and driver_version < WIN_CUDA_MIN_DRIVER):
-                vulkan = f"llama-{tag}-bin-win-vulkan-{arch_kind}.zip"
-                if vulkan in assets:
-                    return [vulkan], DEST_WIN, (
-                        f"Vulkan backend (NVIDIA driver "
-                        f"{driver_version[0]}.{driver_version[1]} is older "
-                        f"than CUDA {WIN_CUDA_VER}'s minimum)"), True
-                cpu = f"llama-{tag}-bin-win-cpu-{arch_kind}.zip"
-                return [cpu], DEST_WIN, (
-                    "CPU backend (old NVIDIA driver, no Windows Vulkan "
-                    "asset upstream)"), True
-            cud = f"cudart-llama-bin-win-cuda-{WIN_CUDA_VER}-{arch_kind}.zip"
-            return [f"llama-{tag}-bin-win-cuda-{WIN_CUDA_VER}-{arch_kind}.zip",
-                    cud], DEST_WIN, f"CUDA {WIN_CUDA_VER} backend (+cudart)", True
-        if vendor == "intel":
-            return [f"llama-{tag}-bin-win-sycl-{arch_kind}.zip"], DEST_WIN, \
-                "SYCL backend (oneAPI runtime bundled)", True
-        if vendor == "nvidia" and is_arm:
-            return [f"llama-{tag}-bin-win-cuda-13.4-arm64.zip",
-                    f"cudart-llama-bin-win-cuda-13.4-arm64.zip"], DEST_WIN, \
-                "CUDA 13.4 backend (+cudart)", True
-        return [f"llama-{tag}-bin-win-cpu-{arch_kind}.zip"], DEST_WIN, \
-            "CPU backend (Vulkan zip available as fallback)", True
-    # linux (incl. macOS-less POSIX)
+                # Old driver can't run the CUDA prebuilt at all — do not
+                # fall through to CUDA: Vulkan, else CPU.
+                groups = [
+                    ([f"llama-{tag}-bin-win-vulkan-{arch_kind}.zip"],
+                     f"Vulkan backend (NVIDIA driver "
+                     f"{driver_version[0]}.{driver_version[1]} is older "
+                     f"than CUDA {WIN_CUDA_VER}'s minimum)"),
+                    ([f"llama-{tag}-bin-win-cpu-{arch_kind}.zip"],
+                     "CPU backend (old NVIDIA driver, no Vulkan asset "
+                     "upstream)"),
+                ]
+            else:
+                groups = [
+                    ([f"llama-{tag}-bin-win-cuda-{WIN_CUDA_VER}-{arch_kind}.zip",
+                      f"cudart-llama-bin-win-cuda-{WIN_CUDA_VER}-{arch_kind}.zip"],
+                     f"CUDA {WIN_CUDA_VER} backend (+cudart)"),
+                    ([f"llama-{tag}-bin-win-vulkan-{arch_kind}.zip"],
+                     "Vulkan backend (no CUDA asset upstream)"),
+                    ([f"llama-{tag}-bin-win-cpu-{arch_kind}.zip"],
+                     "CPU backend (no CUDA/Vulkan asset upstream)"),
+                ]
+        else:
+            groups = [([f"llama-{tag}-bin-win-cpu-{arch_kind}.zip"],
+                       "CPU backend")]
+        names, note = _first_present(assets, groups)
+        return names, DEST_WIN, note, True
+    # linux / other POSIX
     arch_kind = "arm64" if is_arm else "x64"
     if vendor == "amd":
-        return [f"llama-{tag}-bin-ubuntu-rocm-{LINUX_VER}-{arch_kind}.tar.gz"], \
-            DEST_POSIX, "HIP/ROCm backend", False
-    if vendor == "intel":
-        return [f"llama-{tag}-bin-ubuntu-sycl-fp16-{arch_kind}.tar.gz"], \
-            DEST_POSIX, "SYCL backend (oneAPI runtime bundled)", False
-    if vendor == "nvidia":
-        # CUDA prebuilts exist upstream now — but need glibc >= 2.38
-        # (measured: cuda libllama-*/libggml-base require GLIBC_2.38,
-        # vulkan siblings only 2.34). Prefer CUDA when the target is new
-        # enough, else fall back to Vulkan. Upstream has rotated CUDA
-        # minor versions before (13.3 never shipped) — try the pinned
-        # newest first, then the known-good older one, so a version bump
-        # upstream degrades to OLD instead of failing the install.
+        groups = [
+            ([f"llama-{tag}-bin-ubuntu-rocm-{LINUX_VER}-{arch_kind}.tar.gz"],
+             "HIP/ROCm backend"),
+            ([f"llama-{tag}-bin-ubuntu-vulkan-{arch_kind}.tar.gz"],
+             "Vulkan backend (no ROCm asset upstream)"),
+            ([f"llama-{tag}-bin-ubuntu-{arch_kind}.tar.gz"],
+             "CPU backend (no ROCm/Vulkan asset upstream)"),
+        ]
+    elif vendor == "intel":
+        groups = [
+            ([f"llama-{tag}-bin-ubuntu-sycl-fp16-{arch_kind}.tar.gz"],
+             "SYCL backend (oneAPI runtime bundled)"),
+            ([f"llama-{tag}-bin-ubuntu-{arch_kind}.tar.gz"],
+             "CPU backend (no SYCL asset upstream)"),
+        ]
+    elif vendor == "nvidia":
+        groups = []
+        # CUDA linux prebuilts need glibc >= 2.38; the Vulkan sibling only
+        # needs 2.34. Try newest CUDA then the known-good older one.
         if glibc is not None and glibc >= GLIBC_CUDA_MIN:
-            for _cud_ver in (LINUX_CUDA_VER, LINUX_CUDA_VER_OLD):
-                main = f"llama-{tag}-bin-ubuntu-cuda-{_cud_ver}-{arch_kind}.tar.gz"
-                if main in assets:
-                    cud = f"cudart-llama-{tag}-bin-ubuntu-cuda-{_cud_ver}-{arch_kind}.tar.gz"
-                    return [main, cud], DEST_POSIX, \
-                        f"CUDA {_cud_ver} backend (+cudart)", False
-            # neither CUDA asset present upstream — Vulkan carries it
-            note = f"Vulkan backend on NVIDIA (CUDA assets {LINUX_CUDA_VER}/{LINUX_CUDA_VER_OLD} not upstream)"
-            return [f"llama-{tag}-bin-ubuntu-vulkan-{arch_kind}.tar.gz"], \
-                DEST_POSIX, note, False
-        note = "Vulkan backend on NVIDIA (devices Vulkan0..; glibc-new "
-        note += f" targets get CUDA {LINUX_CUDA_VER} instead)"
-        return [f"llama-{tag}-bin-ubuntu-vulkan-{arch_kind}.tar.gz"], \
-            DEST_POSIX, note, False
-    return [f"llama-{tag}-bin-ubuntu-{arch_kind}.tar.gz"], DEST_POSIX, \
-        "CPU backend", False
+            for _cv in (LINUX_CUDA_VER, LINUX_CUDA_VER_OLD):
+                groups.append(
+                    ([f"llama-{tag}-bin-ubuntu-cuda-{_cv}-{arch_kind}.tar.gz",
+                      f"cudart-llama-{tag}-bin-ubuntu-cuda-{_cv}-{arch_kind}.tar.gz"],
+                     f"CUDA {_cv} backend (+cudart)"))
+        groups += [
+            ([f"llama-{tag}-bin-ubuntu-vulkan-{arch_kind}.tar.gz"],
+             "Vulkan backend (no CUDA asset usable on this glibc)"),
+            ([f"llama-{tag}-bin-ubuntu-{arch_kind}.tar.gz"],
+             "CPU backend (no CUDA/Vulkan asset upstream)"),
+        ]
+    else:
+        groups = [([f"llama-{tag}-bin-ubuntu-{arch_kind}.tar.gz"],
+                   "CPU backend")]
+    names, note = _first_present(assets, groups)
+    return names, DEST_POSIX, note, False
 
 
 def plan(machine):
@@ -432,7 +527,10 @@ def install_on(machine, log=lambda m: None):
                 # Windows release zips are flat (no top-level directory);
                 # stripping one component discarded every member.
                 strip_components=0 if is_win else 1,
-                mode=None if is_win else 0o755)
+                mode=None if is_win else 0o755,
+                # CLEAN install: stage + verify + swap, so stale backend
+                # plugins from a previous build can't survive the upgrade.
+                replace=True)
             bin_name = "llama-server.exe" if is_win else "llama-server"
             rpc_name = "ggml-rpc-server.exe" if is_win else "ggml-rpc-server"
             v = agent_client.install_verify(machine, f"{dest}/{bin_name}")
@@ -469,6 +567,16 @@ def install_on(machine, log=lambda m: None):
                 return {"ok": False, "machine": name,
                         "detail": f"installed but llama RPC verify failed "
                                   f"({rpc_name}): {rpc_out[-300:]}"}
+            dev_note, dev_warn = "", ""
+            try:
+                dv = agent_client.install_verify(
+                    machine, f"{dest}/{bin_name}", ["--list-devices"],
+                    timeout=45) or {}
+                dev_text = str(dv.get("output") or "")
+                dev_note = _device_summary(dev_text)
+                dev_warn = _device_warning(machine, dev_text)
+            except Exception:
+                pass
             bin_path = f"{dest}/{bin_name}"
             try:
                 cfg.machines.update(name, {"llama_bin": dest})
@@ -476,9 +584,12 @@ def install_on(machine, log=lambda m: None):
                 pass
             return {"ok": True, "machine": name, "bin": bin_path,
                     "backend": plan_info["backend"],
+                    "devices": dev_note, "warning": dev_warn,
                     "detail": f"installed {', '.join(plan_info['assets'])} "
                               f"({plan_info['tag']}) to {dest} (llama-server + "
-                              f"ggml-rpc-server)"}
+                              f"ggml-rpc-server)"
+                              + (f"; devices: {dev_note}" if dev_note else "")
+                              + (f"; WARNING: {dev_warn}" if dev_warn else "")}
         except Exception as e:
             return {"ok": False, "machine": name,
                     "detail": f"agent install failed: {e}"}
@@ -488,43 +599,59 @@ def install_on(machine, log=lambda m: None):
     dl_timeout = 1200 * max(1, len(urls))
     try:
         if is_win:
-            # download + expand each zip into the dest dir.
-            # $d MUST use $env:USERPROFILE (PS never expands cmd-style
-            # %VAR%; on a LOCAL windows install there is no cmd.exe
-            # wrapper to expand it first — observed 2026-10-31). The
-            # remote path works either way because cmd.exe expands
-            # %USERPROFILE% before PowerShell ever sees the body, but
-            # $env: is the one spelling correct in BOTH transports.
-            # No checksums: upstream publishes none for these assets —
-            # Expand-Archive validates zip CRCs, and the post-install
-            # --version verify below is the integrity gate.
+            # CLEAN staged install: extract into a fresh staging dir,
+            # verify, then swap it in (old bin kept as .bak-<ts>).
             ps = ["$ErrorActionPreference='Stop'",
-                  '$d="$env:USERPROFILE\\llama.cpp\\bin"',
-                  "New-Item -ItemType Directory -Force -Path $d | Out-Null"]
+                  '$root="$env:USERPROFILE\\llama.cpp"',
+                  '$stage=Join-Path $root (".bin.staging-"+[guid]::NewGuid().ToString("N"))',
+                  '$backup=Join-Path $root ("bin.bak-"+$(Get-Date -Format "yyyyMMdd-HHmmss"))',
+                  'Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue',
+                  'New-Item -ItemType Directory -Force -Path $stage | Out-Null']
             for i, u in enumerate(urls):
                 ps.append(
                     f"Invoke-WebRequest -Uri '{u}' -OutFile \"$env:TEMP\\llamabin{i}.zip\"")
                 ps.append(
-                    f"Expand-Archive -Force \"$env:TEMP\\llamabin{i}.zip\" $d")
+                    f"Expand-Archive -Force \"$env:TEMP\\llamabin{i}.zip\" $stage")
                 ps.append(f"Remove-Item \"$env:TEMP\\llamabin{i}.zip\"")
+            ps += [
+                '& (Join-Path $stage "llama-server.exe") --version | Out-Null',
+                'if ($LASTEXITCODE -ne 0) { Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue; throw "staged llama-server verify failed" }',
+                'if (Test-Path (Join-Path $root "bin")) { Move-Item (Join-Path $root "bin") $backup -Force }',
+                'try { Move-Item $stage (Join-Path $root "bin") -Force } catch { if (Test-Path $backup) { Move-Item $backup (Join-Path $root "bin") -Force }; throw }',
+            ]
             code, out = run("; ".join(ps), timeout=dl_timeout)
         else:
-            # curl each asset, extract FLAT into ~/llama.cpp/bin
-            # (tarballs nest inside llama-<tag>/; --strip-components=1
-            # removes it so bin/llama-server is the real path).
-            # tar -xzf fails on corrupt gzip = the integrity gate
-            # (upstream publishes no checksums for these assets).
-            cmds = ["mkdir -p \"$HOME/llama.cpp/bin\""]
+            # CLEAN staged install: extracting in place left stale backend
+            # plugins from a previous build (an old libggml-vulkan.so
+            # crashing the new core). Stage -> verify -> swap -> keep old.
+            cmds = [
+                "set -e",
+                'root="$HOME/llama.cpp"',
+                'stage="$root/.bin.staging.$$"',
+                'backup="$root/bin.bak-$(date +%Y%m%d-%H%M%S)"',
+                'trap \'rm -rf "$stage"\' EXIT',
+                'rm -rf "$stage"; mkdir -p "$stage"',
+            ]
             for i, u in enumerate(urls):
                 cmds.append(
                     f"curl -fSL --retry 3 -o /tmp/llamabin{i}.tgz '{u}'")
                 cmds.append(
-                    f"tar -xzf /tmp/llamabin{i}.tgz -C \"$HOME/llama.cpp/bin\" "
+                    f'tar -xzf /tmp/llamabin{i}.tgz -C "$stage" '
                     "--strip-components=1")
                 cmds.append(f"rm -f /tmp/llamabin{i}.tgz")
-            cmds.append(
-                "chmod +x \"$HOME/llama.cpp/bin/\"* 2>/dev/null; true")
-            code, out = run(" && ".join(cmds), timeout=dl_timeout)
+            cmds += [
+                'chmod +x "$stage/"* 2>/dev/null || true',
+                'test -x "$stage/llama-server"',
+                '"$stage/llama-server" --version >/dev/null',
+                'if [ -x "$stage/ggml-rpc-server" ]; then '
+                '"$stage/ggml-rpc-server" --version >/dev/null 2>&1 || true; fi',
+                'if [ -e "$root/bin" ]; then mv "$root/bin" "$backup"; fi',
+                'if ! mv "$stage" "$root/bin"; then '
+                'if [ -e "$backup" ]; then mv "$backup" "$root/bin"; fi; '
+                'exit 1; fi',
+                'trap - EXIT',
+            ]
+            code, out = run("\n".join(cmds), timeout=dl_timeout)
         if code != 0:
             return {"ok": False, "machine": name,
                     "detail": f"install failed (exit {code}): {out[-500:]}"}
@@ -583,13 +710,28 @@ def install_on(machine, log=lambda m: None):
         cfg.machines.update(name, {"llama_bin": bin_dir})
     except Exception:
         pass
+    dev_note, dev_warn = "", ""
+    try:
+        dev_cmd = (f'& "{bin_dir}\\llama-server.exe" --list-devices'
+                   if is_win else
+                   f'"{bin_dir}/llama-server" --list-devices')
+        dcode, dout = run(dev_cmd, timeout=60)
+        dev_note = _device_summary(dout)
+        dev_warn = _device_warning(machine, dout)
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        pass
     detail = (f"installed {', '.join(plan_info['assets'])} "
               f"({plan_info['tag']}) to {bin_dir} (llama-server + "
               f"ggml-rpc-server)")
     if fw_note:
         detail += f"; {fw_note}"
+    if dev_note:
+        detail += f"; devices: {dev_note}"
+    if dev_warn:
+        detail += f"; WARNING: {dev_warn}"
     return {"ok": True, "machine": name, "bin": bin_path,
-            "backend": plan_info["backend"], "detail": detail}
+            "backend": plan_info["backend"], "devices": dev_note,
+            "warning": dev_warn, "detail": detail}
 
 
 # ---------- dynamic setup classification ----------

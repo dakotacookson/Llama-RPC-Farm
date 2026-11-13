@@ -16,6 +16,7 @@ import os
 import re
 import time
 import hashlib
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import config_loader as cfg
@@ -108,14 +109,24 @@ def local_port_for(model_id, peer_name):
     the caller passes every other local deployment for that box in
     `taken`, mirroring the rpc allocator's `used` set. 100+ local
     variants on one box each get their own port; the SAME (model, box)
-    always lands on the same port across pushes."""
+    always lands on the same port across pushes.
+
+    Reserves the chosen port atomically so concurrent plans can't hand
+    out the same port, and is bounded (never spins forever if the range
+    is exhausted)."""
     base = LOCAL_PORT_BASE
-    taken = {t.get("_local_port_of") for t in _LOCAL_PORT_REGISTRY}
     h = int(hashlib.md5(f"{model_id}\0{peer_name}".encode()).hexdigest(), 16)
-    port = base + (h % RPC_PORT_RANGE)
-    while port in taken:
-        port = port + 1 if port < base + RPC_PORT_RANGE else base
-    return port
+    with _LOCAL_PORT_LOCK:
+        taken = {t.get("_local_port_of") for t in _LOCAL_PORT_REGISTRY}
+        port = base + (h % RPC_PORT_RANGE)
+        for _ in range(RPC_PORT_RANGE):
+            if port not in taken:
+                _LOCAL_PORT_REGISTRY.append({"_local_port_of": port})
+                return port
+            port = port + 1 if port < base + RPC_PORT_RANGE else base
+    raise ValueError(
+        f"no free local port for {model_id!r} on {peer_name!r} "
+        f"(range {base}..{base + RPC_PORT_RANGE - 1} exhausted)")
 
 
 def _port_match_re(token):
@@ -132,8 +143,24 @@ def _port_match_re(token):
 
 
 # per-generate() registry so launch_plan's sequential _process_one calls
-# can linear-probe against ports already handed out in THIS plan
+# can linear-probe against ports already handed out in THIS plan.
+# MUST be cleared at the start of every plan (reset_local_ports) or it
+# accumulates across pushes and shifts every model's port upward by one
+# each time — which regenerates scripts/config and churns live servers.
 _LOCAL_PORT_REGISTRY: list = []
+_LOCAL_PORT_LOCK = threading.Lock()
+
+
+def reset_local_ports():
+    """Start a fresh local-port plan. Call once at the top of launch_plan."""
+    with _LOCAL_PORT_LOCK:
+        _LOCAL_PORT_REGISTRY.clear()
+
+
+def reserve_local_port(port):
+    """Reserve an explicitly configured local port inside the current plan."""
+    with _LOCAL_PORT_LOCK:
+        _LOCAL_PORT_REGISTRY.append({"_local_port_of": int(port)})
 
 
 def _swap_state_file(model_id):

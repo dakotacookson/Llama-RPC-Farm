@@ -295,7 +295,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                     config, body.get("urls"), body.get("dest"),
                     body.get("archive") or "tar.gz",
                     body.get("strip_components") or 0,
-                    body.get("member") or "", body.get("mode"))
+                    body.get("member") or "", body.get("mode"),
+                    replace=bool(body.get("replace")))
             except (TypeError, ValueError, install.AgentInstallError) as e:
                 return 400, {"error": str(e)}
         if path == "/install/verify":

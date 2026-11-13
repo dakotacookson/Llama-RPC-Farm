@@ -871,14 +871,18 @@ def launch_plan(config_path=None, host_name=None):
     (spin up on load via the peer agent, tear down on EXIT -- the proven
     start-rpc-qwen.sh shape) and cmd calls it, exactly like the live
     config. Single-node models and Windows hosts embed the direct
-    llama-server command with the ${PORT} placeholder.
-    rpc_manager._LOCAL_PORT_REGISTRY.clear()
+    llama-server command with the ${PORT} placeholder. rpc_manager.
+    reset_local_ports() starts a fresh per-plan port registry.
 
     Returns a plan dict: host info, yaml text, per-model entries, the
     script files to push, and all resolved paths. launch() consumes
     this; it never re-derives anything.
     """
     settings = load_settings()
+    # Fresh port plan for THIS push. Without this the module-level
+    # registry accumulated across pushes and every model's port drifted
+    # +1 per push (orphaning live servers / regenerating the config).
+    rpc_manager.reset_local_ports()
     # Engine toggle (ARD §2): one read per generate() call. A bad engine
     # value raises here (startup error, never silent fallback); a missing
     # engine_registry module (partial checkout) keeps llama_cpp behavior.
@@ -1081,12 +1085,11 @@ def launch_plan(config_path=None, host_name=None):
                     remote_port = int(raw_port)
                 except (TypeError, ValueError):
                     remote_port = rpc_manager.LOCAL_PORT_BASE
+                rpc_manager.reserve_local_port(remote_port)
             else:
                 # auto: deterministic + collision-free within this plan
                 remote_port = rpc_manager.local_port_for(
                     mid_for_key, peer_m["name"])
-            rpc_manager._LOCAL_PORT_REGISTRY.append(
-                {"_local_port_of": remote_port})
             remote_ip = (peer_m.get("ip") or "").strip()
             remote_os = peer_m.get("os", "linux")
             # Native llama-server start/stop on the peer through the agent.

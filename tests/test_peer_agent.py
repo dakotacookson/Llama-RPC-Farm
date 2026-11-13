@@ -499,7 +499,7 @@ def test_rdma_install_endpoints(live_agent, monkeypatch):
     status, body = _get(live_agent, "/system/rdma")
     assert status == 200 and body["dev"] == "mlx5_0"
     monkeypatch.setattr(agent_server.install, "artifact",
-                        lambda c, u, d, a, s, m, mode:
+                        lambda c, u, d, a, s, m, mode, replace=False:
                         {"dest": d, "urls": u, "written": []})
     monkeypatch.setattr(agent_server.install, "verify",
                         lambda c, p, a: {"returncode": 0, "output": "ok"})
