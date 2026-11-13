@@ -294,13 +294,17 @@ def file_list(machine, path, hidden=False, timeout=8.0) -> dict:
 
 def install_artifact(machine, urls, dest, archive="tar.gz",
                      strip_components=0, member="", mode=None,
-                     timeout=1800.0) -> dict:
+                     replace=False, timeout=1800.0) -> dict:
     body = {"urls": urls if isinstance(urls, list) else [urls],
             "dest": dest, "archive": archive,
             "strip_components": int(strip_components),
             "member": member}
     if mode is not None:
         body["mode"] = int(mode)
+    if replace:
+        # Clean/staged install: agent extracts to a sibling staging dir,
+        # verifies, then swaps it in (old dir kept as .bak-<ts>).
+        body["replace"] = True
     return _request(machine, "POST", "/install/artifact", body,
                     timeout=timeout)
 

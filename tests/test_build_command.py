@@ -178,3 +178,18 @@ def test_peer_selected_resources_gpuless_peer_is_cpu():
     gpus, ram = rpc_manager._peer_selected_resources("", "cpu-box", peer)
     assert gpus == []
     assert ram is True
+
+def test_moe_cache_flags_emitted(stub_cfg):
+    """The tuner's MoE expert-cache flags must reach llama-server as the
+    exact long flags, with int/float values kept as single argv tokens."""
+    model = {"model_id": "m",
+             "flags": {"n-cpu-moe": 12, "moe-cache-mib": 4096,
+                       "moe-cache-cpu-share": 0.5},
+             "base_path": "store://llm-models/x.gguf"}
+    master = _machine("aibox1", "10.0.0.98", role="master")
+    stub_cfg.update({master["name"]: master})
+    cmd = build_llama_command(model, [master["name"]], master_name=master["name"])
+    toks = shlex.split(cmd.replace("\\\n", " ").replace("${PORT}", "8080"))
+    assert "--n-cpu-moe" in toks and "12" in toks
+    assert "--moe-cache-mib" in toks and "4096" in toks
+    assert "--moe-cache-cpu-share" in toks and "0.5" in toks
