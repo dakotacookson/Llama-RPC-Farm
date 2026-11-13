@@ -207,6 +207,9 @@ MACHINE_DEFAULTS = {
     # engine update/install strategy: "auto" (detect), "prebuilt" (fast
     # binary, switch away from a source build), "source" (rebuild in place)
     "engine_mode": "auto",
+    # explicit prebuilt backend pin: auto|cpu|cuda|rocm|sycl|vulkan|metal.
+    # "vulkan" keeps an Intel/CPU host on the Vulkan asset across updates.
+    "engine_backend": "auto",
     "expose": {"mode": "both", "gpus": []},  # what RPC exposes: both|vram|ram + gpu subset
     "rdma": False,          # enable RDMA transport for llama.cpp RPC on this machine
     "rdma_ip": "",           # RoCE NIC address (must be in the NIC's GID table); used when rdma=True

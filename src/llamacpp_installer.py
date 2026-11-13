@@ -364,6 +364,95 @@ def prebuilt_cuda_error(machine):
             f"needs {need} → use the source build (engine_mode=source)")
 
 
+def backend_pref(machine):
+    """Explicit backend pin: auto|cpu|cuda|rocm|sycl|vulkan|metal."""
+    p = (machine or {}).get("engine_backend") or "auto"
+    p = str(p).strip().lower()
+    return p if p in ("auto", "cpu", "cuda", "rocm", "sycl",
+                      "vulkan", "metal") else "auto"
+
+
+def _machine_glibc(machine):
+    if (machine or {}).get("os", "linux") != "linux":
+        return None
+    try:
+        import local_node
+        if local_node.is_local(machine):
+            import subprocess
+            out = subprocess.run(["ldd", "--version"], capture_output=True,
+                                 text=True, timeout=10).stdout
+            return _glibc_from_text(out)
+    except Exception:
+        pass
+    try:
+        import agent_client
+        sd = agent_client.system_detail(machine) or {}
+        return _glibc_from_text(sd.get("glibc"))
+    except Exception:
+        return None
+
+
+def prebuilt_blocker(machine, glibc=None):
+    """Reason a prebuilt cannot run here, or '' when it can.
+    Only the CUDA path has hard OS/arch/glibc requirements."""
+    os_type = (machine or {}).get("os", "linux")
+    if os_type in ("windows", "macos"):
+        return ""
+    pref = backend_pref(machine)
+    if pref in ("cpu", "vulkan", "rocm", "sycl", "metal"):
+        return ""
+    if _vendor_of(machine) != "nvidia":
+        return ""
+    err = prebuilt_cuda_error(machine)
+    if err:
+        return err
+    if glibc is None:
+        glibc = _machine_glibc(machine)
+    if glibc is not None and glibc < GLIBC_CUDA_MIN:
+        return (f"CUDA prebuilt needs glibc >= {GLIBC_CUDA_MIN[0]}."
+                f"{GLIBC_CUDA_MIN[1]}; this host has {glibc[0]}.{glibc[1]} "
+                f"→ use the source build")
+    return ""
+
+
+def decide_engine_plan(machine, probe=None, glibc=None):
+    """SOURCE OF TRUTH: prebuilt only when this host can actually run it,
+    otherwise source. engine_mode=source/prebuilt overrides.
+
+    Returns {mode, reason, prebuilt_blocker, source_available, probe}.
+    """
+    pref = (machine.get("engine_mode") or "auto").strip().lower()
+    if probe is None:
+        try:
+            probe = probe_setup(machine)
+        except Exception:
+            probe = None
+    source_ok = bool(probe and probe.get("kind") == "source")
+    blocker = prebuilt_blocker(machine, glibc)
+    if pref == "source":
+        return {"mode": "source", "reason": "engine_mode=source",
+                "prebuilt_blocker": blocker, "source_available": source_ok,
+                "probe": probe}
+    if pref == "prebuilt":
+        return {"mode": "prebuilt", "reason": "engine_mode=prebuilt",
+                "prebuilt_blocker": blocker, "source_available": source_ok,
+                "probe": probe}
+    if not blocker:
+        return {"mode": "prebuilt",
+                "reason": "prebuilt is compatible with this host's "
+                          "OS/GPU/glibc",
+                "prebuilt_blocker": "", "source_available": source_ok,
+                "probe": probe}
+    if source_ok:
+        return {"mode": "source", "reason": blocker,
+                "prebuilt_blocker": blocker, "source_available": True,
+                "probe": probe}
+    return {"mode": "source",
+            "reason": blocker + " (no source tree detected)",
+            "prebuilt_blocker": blocker, "source_available": False,
+            "probe": probe}
+
+
 def _first_present(assets, groups):
     """First (names, note) whose assets ALL exist upstream. Falls back to
     the first group so the caller reports the missing asset (upstream
@@ -384,6 +473,7 @@ def _pick_assets(machine, tag, assets, glibc=None, driver_version=None):
     SYCL -> CPU (Intel), Metal (macOS), CPU (no accelerator)."""
     os_type = machine.get("os", "linux")
     vendor = _vendor_of(machine)
+    pref = backend_pref(machine)
     arch = (machine.get("detected") or {}).get("arch") or "x86_64"
     is_arm = arch in ("arm64", "aarch64")
     if os_type == "macos":
@@ -393,6 +483,24 @@ def _pick_assets(machine, tag, assets, glibc=None, driver_version=None):
             "Metal backend included", False
     if os_type == "windows":
         arch_kind = "arm64" if is_arm else "x64"
+        if pref == "cpu":
+            names, note = _first_present(assets, [
+                ([f"llama-{tag}-bin-win-cpu-{arch_kind}.zip"],
+                 "CPU backend (pinned)")])
+            return names, DEST_WIN, note, True
+        if pref == "vulkan":
+            names, note = _first_present(assets, [
+                ([f"llama-{tag}-bin-win-vulkan-{arch_kind}.zip"],
+                 "Vulkan backend (pinned)"),
+                ([f"llama-{tag}-bin-win-cpu-{arch_kind}.zip"],
+                 "CPU backend (no Vulkan asset)")])
+            return names, DEST_WIN, note, True
+        if pref == "cuda":
+            vendor = "nvidia"
+        elif pref == "rocm":
+            vendor = "amd"
+        elif pref == "sycl":
+            vendor = "intel"
         if vendor == "amd":
             groups = [
                 ([f"llama-{tag}-bin-win-rocm-{WIN_ROCM_VER}-{arch_kind}.zip"],
@@ -448,6 +556,24 @@ def _pick_assets(machine, tag, assets, glibc=None, driver_version=None):
         return names, DEST_WIN, note, True
     # linux / other POSIX
     arch_kind = "arm64" if is_arm else "x64"
+    if pref == "cpu":
+        names, note = _first_present(assets, [
+            ([f"llama-{tag}-bin-ubuntu-{arch_kind}.tar.gz"],
+             "CPU backend (pinned)")])
+        return names, DEST_POSIX, note, False
+    if pref == "vulkan":
+        names, note = _first_present(assets, [
+            ([f"llama-{tag}-bin-ubuntu-vulkan-{arch_kind}.tar.gz"],
+             "Vulkan backend (pinned)"),
+            ([f"llama-{tag}-bin-ubuntu-{arch_kind}.tar.gz"],
+             "CPU backend (no Vulkan asset)")])
+        return names, DEST_POSIX, note, False
+    if pref == "cuda":
+        vendor = "nvidia"
+    elif pref == "rocm":
+        vendor = "amd"
+    elif pref == "sycl":
+        vendor = "intel"
     if vendor == "amd":
         groups = [
             ([f"llama-{tag}-bin-ubuntu-rocm-{LINUX_VER}-{arch_kind}.tar.gz"],
@@ -519,12 +645,12 @@ def install_on(machine, log=lambda m: None):
     name = machine.get("name", "?")
     is_local = local_node.is_local(machine)
     is_win = machine.get("os", "linux") == "windows"
-    # A prebuilt must actually have kernels for this machine's GPUs.
-    # Upstream CUDA prebuilts cover sm_86+ only; older cards must build
-    # from source. Bail early with a clear, actionable message.
-    cuda_gap = prebuilt_cuda_error(machine)
-    if cuda_gap:
-        return {"ok": False, "machine": name, "detail": cuda_gap}
+    # The source-of-truth gate: refuse a prebuilt that this host cannot
+    # actually run (CUDA arch coverage / glibc), unless an explicit
+    # backend pin (vulkan/cpu/...) makes it viable.
+    blocker = prebuilt_blocker(machine)
+    if blocker:
+        return {"ok": False, "machine": name, "detail": blocker}
 
     def run_local(cmd, timeout=600):
         import subprocess

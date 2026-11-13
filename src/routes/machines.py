@@ -52,6 +52,8 @@ class MachineIn(pydantic.BaseModel):
     # llama.cpp update strategy: auto (detect) | prebuilt | source.
     # None = "not supplied" so a machine edit never resets the choice.
     engine_mode: str | None = None
+    # explicit prebuilt backend pin (auto|cpu|cuda|rocm|sycl|vulkan|metal)
+    engine_backend: str | None = None
     expose: ExposeIn = ExposeIn()
     # RDMA transport for llama.cpp RPC on this machine. When False (default)
     # the rpc-server is started with GGML_RPC_NO_RDMA=1 so a wedged RoCE QP
@@ -83,6 +85,18 @@ class MachineIn(pydantic.BaseModel):
             raise ValueError("engine_mode must be auto, prebuilt, or source")
         return v
 
+    @pydantic.field_validator("engine_backend")
+    @classmethod
+    def _engine_backend_ok(cls, v):
+        if v is None:
+            return None
+        v = str(v).strip().lower()
+        if v not in ("auto", "cpu", "cuda", "rocm", "sycl",
+                     "vulkan", "metal"):
+            raise ValueError("engine_backend must be auto, cpu, cuda, "
+                             "rocm, sycl, vulkan, or metal")
+        return v
+
 
 class EngineModeIn(pydantic.BaseModel):
     mode: str = "auto"
@@ -97,6 +111,23 @@ async def set_engine_mode(name: str, p: EngineModeIn):
         raise HTTPException(404, f"machine '{name}' not found")
     cfg.machines.update(name, {"engine_mode": mode})
     return {"ok": True, "machine": name, "engine_mode": mode}
+
+
+class EngineBackendIn(pydantic.BaseModel):
+    backend: str = "auto"
+
+
+@router.post("/api/machines/{name}/engine-backend")
+async def set_engine_backend(name: str, p: EngineBackendIn):
+    backend = (p.backend or "auto").strip().lower()
+    if backend not in ("auto", "cpu", "cuda", "rocm", "sycl",
+                       "vulkan", "metal"):
+        raise HTTPException(400, "backend must be auto, cpu, cuda, rocm, "
+                                 "sycl, vulkan, or metal")
+    if cfg.machines.get(name) is None:
+        raise HTTPException(404, f"machine '{name}' not found")
+    cfg.machines.update(name, {"engine_backend": backend})
+    return {"ok": True, "machine": name, "engine_backend": backend}
 
 
 @router.get("/api/machines")
@@ -191,6 +222,7 @@ async def add_machine(m: MachineIn):
     try:
         payload = m.model_dump()
         payload["engine_mode"] = payload.get("engine_mode") or "auto"
+        payload["engine_backend"] = payload.get("engine_backend") or "auto"
         requested_token = (payload.pop("agent_token", "") or "").strip()
         import uuid
         payload.setdefault("id", uuid.uuid4().hex[:8])
@@ -227,6 +259,8 @@ async def update_machine(name: str, m: MachineIn):
         payload = m.model_dump()
         if payload.get("engine_mode") is None:
             payload.pop("engine_mode", None)
+        if payload.get("engine_backend") is None:
+            payload.pop("engine_backend", None)
         old_name = str(name)
         new_name = str(payload.get("name") or old_name).strip()
         if new_name and new_name != old_name and cfg.machines.get(new_name):
