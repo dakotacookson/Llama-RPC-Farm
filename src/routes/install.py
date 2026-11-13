@@ -734,10 +734,12 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
                 except Exception as e:
                     job["log"].append(f"stop_rpc failed (continuing anyway): {e}")
                 pref = (machine.get("engine_mode") or "auto").strip().lower()
-                if pref == "source":
+                probe = None
+                if pref != "prebuilt":
                     probe = llamacpp_installer.probe_setup(
                         machine, log=lambda m: job["log"].append(str(m)))
-                    if probe.get("kind") != "source":
+                if pref == "source" or (probe and probe.get("kind") == "source"):
+                    if not probe or probe.get("kind") != "source":
                         job["result"] = {
                             "ok": False, "machine": name,
                             "detail": "engine_mode=source but no source "

@@ -317,6 +317,53 @@ def _device_warning(machine, text):
     return ""
 
 
+# Upstream CUDA prebuilts carry cubins for these SM levels only (verified
+# on b12368: sm_86/89/103/120/121, PTX compute_121 only). Older cards
+# (P100 sm_60, GTX 1080 sm_61, RTX 2060/2060S sm_75) get no kernels, so a
+# prebuilt install there cannot work — those hosts must build from source.
+# Update this set when upstream's release build matrix changes.
+PREBUILT_CUDA_ARCHS = frozenset({86, 89, 103, 120, 121})
+
+
+def _cap_int(text):
+    """'8.6' -> 86; junk -> 0."""
+    try:
+        major, minor = str(text).strip().split(".")
+        return int(major) * 10 + int(minor)
+    except (TypeError, ValueError, AttributeError):
+        return 0
+
+
+def machine_cuda_archs(machine):
+    """SM levels this machine's GPUs need, from detected compute_cap."""
+    det = (machine or {}).get("detected") or {}
+    out = []
+    for cap in (det.get("compute_cap") or []):
+        v = _cap_int(cap)
+        if v:
+            out.append(v)
+    return out
+
+
+def prebuilt_cuda_covers(machine):
+    """True when the upstream CUDA prebuilt has kernels for every GPU.
+    Unknown capabilities do not block (Windows detects none)."""
+    caps = machine_cuda_archs(machine)
+    if not caps:
+        return True
+    return all(c in PREBUILT_CUDA_ARCHS for c in caps)
+
+
+def prebuilt_cuda_error(machine):
+    """Non-empty reason when a CUDA prebuilt cannot run on this host."""
+    if _vendor_of(machine) != "nvidia" or prebuilt_cuda_covers(machine):
+        return ""
+    need = ",".join(f"sm_{c}" for c in machine_cuda_archs(machine))
+    have = ",".join(f"sm_{c}" for c in sorted(PREBUILT_CUDA_ARCHS))
+    return (f"upstream CUDA prebuilt has kernels only for {have}; this host "
+            f"needs {need} → use the source build (engine_mode=source)")
+
+
 def _first_present(assets, groups):
     """First (names, note) whose assets ALL exist upstream. Falls back to
     the first group so the caller reports the missing asset (upstream
@@ -472,6 +519,12 @@ def install_on(machine, log=lambda m: None):
     name = machine.get("name", "?")
     is_local = local_node.is_local(machine)
     is_win = machine.get("os", "linux") == "windows"
+    # A prebuilt must actually have kernels for this machine's GPUs.
+    # Upstream CUDA prebuilts cover sm_86+ only; older cards must build
+    # from source. Bail early with a clear, actionable message.
+    cuda_gap = prebuilt_cuda_error(machine)
+    if cuda_gap:
+        return {"ok": False, "machine": name, "detail": cuda_gap}
 
     def run_local(cmd, timeout=600):
         import subprocess
@@ -1126,6 +1179,12 @@ def update_source_on(machine, probe=None, log=lambda m: None):
         if target_tag and not _version_matches_tag(version, target_tag):
             return {"ok": False, "machine": name,
                     "detail": f"built {version}, expected {target_tag}"}
+        code, _out = run(f"test -x '{rpc_path}'")
+        if code != 0:
+            return {"ok": False, "machine": name,
+                    "detail": "built llama-server but ggml-rpc-server is "
+                              "missing (GGML_RPC off or target failed) — "
+                              "RPC peers could not start"}
         code, out = run(f"test -x '{rpc_path}' && echo RPC || echo NORPC")
         if "RPC" not in (out or ""):
             return {"ok": False, "machine": name,
