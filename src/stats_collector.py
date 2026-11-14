@@ -6,11 +6,24 @@ queries are vendor-aware:
 nvidia-smi (NVIDIA) or rocm-smi JSON (AMD), normalized to the same
 csv rows either way.
 """
+import math
 import subprocess
 
 import local_node
 import gpu_vendor
 import agent_client
+
+
+def ram_gb(value):
+    """Whole-GB RAM, but keep sub-GB boards nonzero.
+
+    A Raspberry Pi Zero 2 W reports ~0.4 GB; flooring made it 0 and hid
+    its RAM chip in placement/dashboard."""
+    try:
+        gb = float(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return math.floor(gb) if gb >= 1 else round(gb, 2)
 
 GPU_QUERY = gpu_vendor.nvidia_query(
     "index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,"
