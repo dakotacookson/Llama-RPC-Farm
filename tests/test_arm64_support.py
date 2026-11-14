@@ -123,3 +123,39 @@ def test_linux_detail_echoes_glibc(monkeypatch):
     monkeypatch.setattr(system, "_run", fake_run)
     system._linux(AgentConfig(token="t", host="127.0.0.1", port=8198))
     assert 'echo "G:$G"' in captured["cmd"]
+
+
+def test_hw_watch_preserves_board_arch_and_sub_gb_ram(monkeypatch):
+    """Regression: the background hardware watcher replaced `detected`
+    every pass, wiping a Pi's board/arch and flooring 0.4 GB to 0."""
+    from routes import hardware
+    import config_loader as cfg
+    import stats_collector
+
+    pi = {"name": "pi", "ip": "10.0.0.145", "os": "linux",
+          "gpu_vendor": "cpu", "ram_total_gb": 0.4,
+          "detected": {"arch": "aarch64",
+                       "board": "Raspberry Pi Zero 2 W Rev 1.0",
+                       "gpu_names": [], "vram_total_gb": 0, "cores": 4,
+                       "ram_total_gb": 0.4}}
+    writes = {}
+
+    def update(name, upd):
+        writes[name] = upd
+        return {**pi, **upd}
+
+    monkeypatch.setattr(cfg.machines, "all", lambda: [pi])
+    monkeypatch.setattr(cfg.machines, "get", lambda name: pi)
+    monkeypatch.setattr(cfg.machines, "update", update)
+    monkeypatch.setattr(cfg, "sync_models_to_hardware", lambda: [])
+    monkeypatch.setattr(stats_collector, "machine_stats", lambda m: {
+        "status": "online", "gpus": [], "cores": 8, "ram_total_gb": 0.4,
+        "board": "Raspberry Pi Zero 2 W Rev 1.0", "arch": "aarch64"})
+
+    hardware.hw_watch_once()
+
+    det = writes["pi"]["detected"]
+    assert det["board"] == "Raspberry Pi Zero 2 W Rev 1.0"
+    assert det["arch"] == "aarch64"
+    assert det["ram_total_gb"] == 0.4
+    assert writes["pi"]["ram_total_gb"] == 0.4

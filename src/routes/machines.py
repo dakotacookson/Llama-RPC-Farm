@@ -41,15 +41,8 @@ def _board_model_local():
 
 
 def _ram_gb(value):
-    """Whole-GB RAM, but keep sub-GB boards from flooring to zero.
-
-    A Raspberry Pi Zero 2 W reports ~0.4 GB; math.floor made it 0, which
-    hid its RAM chip and made placement/totals look empty."""
-    try:
-        gb = float(value or 0)
-    except (TypeError, ValueError):
-        return 0
-    return math.floor(gb) if gb >= 1 else round(gb, 2)
+    """Whole-GB RAM, but keep sub-GB boards nonzero (Pi Zero 2 W)."""
+    return stats_collector.ram_gb(value)
 
 
 def _detect_arch_board(machine):

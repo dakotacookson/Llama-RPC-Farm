@@ -1,5 +1,4 @@
 """Background hardware watcher + hardware-change reporting."""
-import math
 import os
 import threading
 import time
@@ -55,26 +54,38 @@ def hw_watch_once():
     for name, stats in results:
         if not stats or stats.get("status") != "online":
             continue
-        try:
-            upd = {
-                "gpu": ",".join(gpu_vendor.gpu_token(
-                    cfg.machines.require(name), g["index"])
-                    for g in stats["gpus"]),
-                "detected": {
-                    "gpu_names": [g["name"] for g in stats["gpus"]],
-            "compute_cap": [g.get("compute_cap") for g in stats["gpus"]],
-                    "gpu_uuids": [g.get("uuid") for g in stats["gpus"]],
-                    "vram_total_gb": round(sum(g["mem_total_gb"] for g in stats["gpus"]), 1),
-                    "cores": stats["cores"],
-                    "ram_total_gb": math.floor(stats["ram_total_gb"]),
-                },
-            }
-            if stats["ram_total_gb"]:
-                upd["ram_total_gb"] = math.floor(stats["ram_total_gb"])
-        except (ValueError, KeyError, TypeError):
-            continue
         cur = cfg.machines.get(name)
         if not cur:
+            continue
+        try:
+            # MERGE, don't replace: `detected` also carries identity fields
+            # (arch, board, driver_version) that this stats-based pass does
+            # not collect. Replacing it wiped a Pi's board/arch every pass.
+            detected = dict(cur.get("detected") or {})
+            detected.update({
+                "gpu_names": [g["name"] for g in stats["gpus"]],
+                "compute_cap": [g.get("compute_cap") for g in stats["gpus"]],
+                "gpu_uuids": [g.get("uuid") for g in stats["gpus"]],
+                "vram_total_gb": round(sum(g["mem_total_gb"] for g in stats["gpus"]), 1),
+                "cores": stats["cores"],
+                "ram_total_gb": stats_collector.ram_gb(
+                    stats["ram_total_gb"]),
+            })
+            arch = stats.get("arch") or detected.get("arch") or ""
+            board = stats.get("board") or detected.get("board") or ""
+            if arch:
+                detected["arch"] = arch
+            if board:
+                detected["board"] = board
+            upd = {
+                "gpu": ",".join(gpu_vendor.gpu_token(cur, g["index"])
+                                for g in stats["gpus"]),
+                "detected": detected,
+            }
+            if stats["ram_total_gb"]:
+                upd["ram_total_gb"] = stats_collector.ram_gb(
+                    stats["ram_total_gb"])
+        except (ValueError, KeyError, TypeError):
             continue
         if _hw_fingerprint(cur) != _hw_fingerprint(upd):
             cfg.machines.update(name, upd)
