@@ -9,25 +9,7 @@ import uuid
 
 from . import processes
 from .config import AgentConfig
-
-
-_BOARD_MODEL_PATHS = ("/proc/device-tree/model",
-                      "/sys/firmware/devicetree/base/model")
-
-
-def _board_model() -> str:
-    """SBC/board model from the device tree (Raspberry Pi, etc.).
-
-    `/proc/device-tree/model` is NUL-terminated; desktop/server Linux
-    usually has no such file and returns ''."""
-    for path in _BOARD_MODEL_PATHS:
-        try:
-            with open(path, "rb") as f:
-                return f.read().replace(b"\x00", b"").decode(
-                    "utf-8", "replace").strip()
-        except OSError:
-            continue
-    return ""
+from .platform_info import board_model, tegra_gpu_unsupported_reason
 
 
 def _mac_address() -> str:
@@ -192,7 +174,9 @@ def _linux(config: AgentConfig):
         "mac": _mac_address(),
         "llama_version": p.get("L", ""), "cores": os.cpu_count() or 0,
         "cpu_cores": cores, "arch": platform.machine(),
-        "board": p.get("B", "") or _board_model(),
+        "board": p.get("B", "") or board_model(),
+        "cpu_only": bool(tegra_gpu_unsupported_reason()),
+        "gpu_unsupported": tegra_gpu_unsupported_reason(),
         "virt": p.get("V", ""), "cpu_flags": p.get("CF", ""),
         "glibc": p.get("G", ""), "driver_version": p.get("DRV", ""),
         "pcie": _pcie_tags(p.get("P", "")),
@@ -227,6 +211,7 @@ echo "L:$("BIN/llama-server" --version 2>&1 || "BIN/llama-cli" --version 2>&1)"
         "llama_version": p.get("L", ""), "driver_version": "",
         "virt": "bare", "cpu_flags": "", "pcie": "", "rebar": "",
         "arch": platform.machine(), "board": "",
+        "cpu_only": False, "gpu_unsupported": "",
         "cores": int(subprocess.run(
             ["sysctl", "-n", "hw.ncpu"], capture_output=True, text=True,
             timeout=10).stdout.strip() or 0),
@@ -308,6 +293,7 @@ def _windows(config: AgentConfig):
         "llama_version": o.get("llama", ""), "cores": o.get("cores", 0),
         "cpu_cores": cl or [], "virt": "windows", "cpu_flags": "",
         "arch": platform.machine(), "board": "",
+        "cpu_only": False, "gpu_unsupported": "",
         "driver_version": str(o.get("driver") or ""),
         "pcie": "", "rebar": "",
     }

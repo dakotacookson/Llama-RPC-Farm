@@ -24,6 +24,10 @@ peer. OS of master/peers can mix Linux / Windows / macOS.
 source. Use the `arm64.deb` agent package (or the universal wheel). See
 [raspberry-pi.md](raspberry-pi.md).
 
+**NVIDIA Jetson (JetPack 4.6 / Nano/TX):** GPU offload is unsupported by
+current llama.cpp (CUDA 10.2); the agent detects it and forces CPU-only.
+Source engine builds need `g++-8`; [jetson.md](jetson.md).
+
 ## 1. Install
 
 One-shot, idempotent, safe to re-run. It picks a Python 3.11+ (downloading

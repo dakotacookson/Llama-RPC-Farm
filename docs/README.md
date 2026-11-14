@@ -11,6 +11,7 @@ Frontend is vanilla JS; all state lives in `config/*.yaml`.
 |-----|----------------|
 | [setup.md](setup.md) | Full setup & installation guide: prerequisites, vault, machines, stores, llama.cpp build, llama-swap, gateway, client config, troubleshooting |
 | [raspberry-pi.md](raspberry-pi.md) | Raspberry Pi / Linux arm64: Bookworm vs Trixie install routes, agent, CPU-only RPC peers |
+| [jetson.md](jetson.md) | NVIDIA Jetson/Tegra: GPU support by JetPack generation, CPU-only RPC on JetPack 4 (Nano/TX) |
 | [topologies.md](topologies.md) | Single-box, RPC, peer-local, custom, MLX; deployment recipes and anti-patterns |
 | [access.md](access.md) | Users, API keys, per-key model grants, gateway, client config |
 | [benchmarks.md](benchmarks.md) | Real measured runs, how to reproduce them, and a template for submitting yours |

@@ -45,13 +45,30 @@ def _ram_gb(value):
     return stats_collector.ram_gb(value)
 
 
+def _gpu_unsupported_reason(stats, machine):
+    """Agent-reported (or legacy-board) reason the GPU must be ignored."""
+    det = (machine or {}).get("detected") or {}
+    reason = str((stats or {}).get("gpu_unsupported")
+                 or det.get("gpu_unsupported") or "").strip()
+    if reason:
+        return reason
+    if (stats or {}).get("cpu_only") or det.get("cpu_only"):
+        return "CPU-only host (GPU unsupported)"
+    board = str(det.get("board") or "").lower()
+    if any(k in board for k in ("jetson nano", "jetson tx1", "jetson tx2")):
+        return ("Jetson (JetPack 4 / CUDA 10.2) GPU unsupported — CPU-only")
+    return ""
+
+
 def _detected_vendor(stats, machine):
     """GPU vendor from a stats payload, correcting a stale/default form value.
 
     A fresh Raspberry Pi (or any GPU-less Linux box) often starts with the
     form default `nvidia`; if stats report no GPUs the machine is CPU-only,
     and leaving `nvidia` would make the installer pick a CUDA asset that
-    cannot run there."""
+    cannot run there. Unsupported Tegra GPUs are forced to CPU too."""
+    if _gpu_unsupported_reason(stats, machine):
+        return "cpu"
     gpus = (stats or {}).get("gpus") or []
     detected = gpu_vendor.normalize_vendor((stats or {}).get("gpu_vendor"))
     if detected:
@@ -409,6 +426,10 @@ async def detect_hardware(name: str):
             status_code=503,
             detail=detail or f"{name} is offline (agent port open but the "
                              f"agent failed to answer)")
+    reason = _gpu_unsupported_reason(stats, machine)
+    if reason:
+        stats = dict(stats)
+        stats["gpus"] = []
     vendor = _detected_vendor(stats, machine)
     m2 = dict(machine, gpu_vendor=vendor)
     gpus = [gpu_vendor.gpu_token(m2, g["index"]) for g in stats["gpus"]]
@@ -426,6 +447,12 @@ async def detect_hardware(name: str):
         detected["arch"] = arch
     if board:
         detected["board"] = board
+    if reason:
+        detected["cpu_only"] = True
+        detected["gpu_unsupported"] = reason
+    else:
+        detected.pop("gpu_unsupported", None)
+        detected.pop("cpu_only", None)
     updates = {
         "gpu": ",".join(gpus),
         "gpu_vendor": vendor,
@@ -538,6 +565,10 @@ async def probe_hardware(p: ProbeIn):
         s = stats_collector.machine_stats(machine)
         if s["status"] != "online":
             return {"online": False}
+        reason = _gpu_unsupported_reason(s, machine)
+        if reason:
+            s = dict(s)
+            s["gpus"] = []
         vendor = _detected_vendor(s, machine)
         machine["gpu_vendor"] = vendor
         detected = dict((existing or {}).get("detected") or {})
@@ -554,6 +585,12 @@ async def probe_hardware(p: ProbeIn):
             detected["arch"] = arch
         if board:
             detected["board"] = board
+        if reason:
+            detected["cpu_only"] = True
+            detected["gpu_unsupported"] = reason
+        else:
+            detected.pop("gpu_unsupported", None)
+            detected.pop("cpu_only", None)
         return {
             "online": True,
             "gpu_vendor": vendor,
@@ -619,6 +656,10 @@ async def detect_all():
             return None
         if stats["status"] != "online":
             return None
+        reason = _gpu_unsupported_reason(stats, m)
+        if reason:
+            stats = dict(stats)
+            stats["gpus"] = []
         vendor = _detected_vendor(stats, m)
         m2 = dict(m, gpu_vendor=vendor)
         gpus = [gpu_vendor.gpu_token(m2, g["index"]) for g in stats["gpus"]]
@@ -636,6 +677,12 @@ async def detect_all():
             detected["arch"] = arch
         if board:
             detected["board"] = board
+        if reason:
+            detected["cpu_only"] = True
+            detected["gpu_unsupported"] = reason
+        else:
+            detected.pop("gpu_unsupported", None)
+            detected.pop("cpu_only", None)
         upd = {
             "gpu_vendor": vendor,
             "gpu": ",".join(gpus),

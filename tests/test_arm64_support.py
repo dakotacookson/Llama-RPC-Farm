@@ -78,20 +78,55 @@ def test_arm64_agent_binary_assets():
 
 
 def test_board_model_reads_device_tree(monkeypatch, tmp_path):
-    from llama_peer_agent import system
+    from llama_peer_agent import platform_info
 
     model = tmp_path / "model"
     model.write_bytes(b"Raspberry Pi 5 Model B Rev 1.0\x00")
-    monkeypatch.setattr(system, "_BOARD_MODEL_PATHS", (str(model),))
-    assert system._board_model() == "Raspberry Pi 5 Model B Rev 1.0"
+    monkeypatch.setattr(platform_info, "BOARD_MODEL_PATHS", (str(model),))
+    assert platform_info.board_model() == "Raspberry Pi 5 Model B Rev 1.0"
 
 
 def test_board_model_empty_when_absent(monkeypatch):
-    from llama_peer_agent import system
+    from llama_peer_agent import platform_info
 
-    monkeypatch.setattr(system, "_BOARD_MODEL_PATHS",
+    monkeypatch.setattr(platform_info, "BOARD_MODEL_PATHS",
                         ("/nonexistent/device-tree/model",))
-    assert system._board_model() == ""
+    assert platform_info.board_model() == ""
+
+
+def test_tegra_gpu_is_cpu_only_on_cuda_10(monkeypatch):
+    from llama_peer_agent import platform_info
+
+    monkeypatch.setattr(platform_info, "board_model",
+                        lambda: "NVIDIA Jetson Nano Developer Kit")
+    monkeypatch.setattr(platform_info, "cuda_version", lambda: (10, 2))
+    reason = platform_info.tegra_gpu_unsupported_reason()
+    assert "CUDA 10.2" in reason and "CPU-only" in reason
+    # No toolkit installed -> still CPU-only
+    monkeypatch.setattr(platform_info, "cuda_version", lambda: None)
+    assert "no CUDA" in platform_info.tegra_gpu_unsupported_reason()
+    # Jetson Orin on JetPack 5 (CUDA 11+) is not blocked
+    monkeypatch.setattr(platform_info, "cuda_version", lambda: (11, 4))
+    assert platform_info.tegra_gpu_unsupported_reason() == ""
+
+
+def test_gpu_unsupported_forces_cpu_in_installer():
+    reason = "Jetson/Tegra GPU unsupported"
+    m = {"os": "linux", "gpu_vendor": "nvidia", "gpu": "CUDA0",
+         "detected": {"arch": "aarch64", "gpu_names": ["Tegra X1"],
+                      "compute_cap": ["5.3"], "gpu_unsupported": reason}}
+    assert li.gpu_unsupported(m) == reason
+    assert li._vendor_of(m) == "cpu"
+    assert li.machine_cuda_archs(m) == []
+    assert li.prebuilt_blocker(m) == reason
+
+
+def test_jetson_board_without_agent_flag_is_cpu_only():
+    m = {"os": "linux", "gpu_vendor": "nvidia", "gpu": "",
+         "detected": {"arch": "aarch64", "gpu_names": [],
+                      "board": "NVIDIA Jetson Nano Developer Kit"}}
+    assert "Jetson" in li.gpu_unsupported(m)
+    assert li._vendor_of(m) == "cpu"
 
 
 def test_sub_gb_ram_is_not_floored_to_zero():
@@ -234,3 +269,14 @@ def test_vendor_of_gpuless_arm_is_cpu():
         "os": "linux", "gpu_vendor": "nvidia", "gpu": "CUDA0",
         "detected": {"arch": "aarch64", "gpu_names": ["Jetson Orin"]},
     }) == "nvidia"
+
+
+def test_detected_vendor_cpu_only_flag_beats_gpu_rows():
+    from routes.machines import _gpu_unsupported_reason, _detected_vendor
+
+    stats = {"gpu_unsupported": "Jetson/Tegra GPU unsupported",
+             "gpus": [{"name": "Tegra X1"}]}
+    assert _gpu_unsupported_reason(stats, {}) == "Jetson/Tegra GPU unsupported"
+    assert _detected_vendor(stats, {}) == "cpu"
+    assert _gpu_unsupported_reason(
+        {"gpus": []}, {"detected": {"board": "Jetson Orin Nano"}}) == ""
