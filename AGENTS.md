@@ -264,6 +264,15 @@ anything that runs shell commands:
   bootstrap Python 3.11 with the **musl** uv build (gnu uv needs glibc
   2.28; Jetson is 2.27) and create a **seeded** venv so `/agent/update`
   (`python -m pip`) works.
+- **Model paths for a launch must go through `model_sync.resolve_model_path()`**
+  (it applies the target machine's `model_dir` / the opt-in
+  `model_sync.default_dir`). A raw `path_resolver.resolve_for()` at a
+  launch site will disagree with the model-copy job. The copy targets the
+  machine that runs `llama-server` (`swap_manager.deployment_launch_mode`),
+  not every server. Only the main GGUF is copied; mmproj/draft companions
+  still require the shared store. New agent endpoints `/files/read`
+  (stream) and `/files/write_bin` (stream) are root-confined and
+  token-authenticated; keep that invariant.
 - **`detected` must be MERGED, never replaced.** Hardware detect and the
   120 s watcher (`routes/hardware.py`) both write it from live stats, which
   do not carry `arch`/`board`/`driver_version`. Replacing the dict wiped a

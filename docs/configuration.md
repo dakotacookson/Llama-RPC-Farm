@@ -17,6 +17,7 @@ Per machine:
   rpc_port: 50052       # legacy base; per-model ports are rolled at launch
   gpu: CUDA0,CUDA1,CUDA2   # device tokens (gpu_vendor.py prefixes)
   llama_bin: /home/you/llama.cpp/build/bin
+  model_dir: ""         # optional local model root (empty = shared store)
   expose:
     mode: both          # vram | ram | both — what this box shares to RPC
     gpus: []
@@ -59,7 +60,33 @@ absolute model paths in model configs.
 ## settings.yaml — app settings
 
 `model_dir` (scan root, store:// alias), `llama_bin` (global default bin
-dir; machine `llama_bin` overrides), `theme_family`/`theme_mode`.
+dir; machine `llama_bin` overrides), `theme_family`/`theme_mode`, and the
+optional model-copy block:
+
+```yaml
+model_sync:
+  enabled: false          # opt-in: copy missing models between machines
+  default_dir: ""         # e.g. ~/llama-models; expanded on the TARGET
+```
+
+A machine's `model_dir` overrides the shared `store://` root for that
+machine; when `model_sync.enabled`, the farm copies a model from any
+machine that has it to the box that will run `llama-server` if the file
+is missing. Copies go through the peer agent (`/files/read`,
+`/files/write_bin`) — never a shell. The default dir is expanded with the
+target agent's home (`~` / `%USERPROFILE%`), so one value works across
+Linux, macOS and Windows.
+
+Only the main model GGUF is copied. Companion files (mmproj projectors,
+speculative draft models) are not replicated yet; keep those on the
+shared store or copy them manually.
+
+A peer agent can only read/write paths under its home plus its
+`PEER_AGENT_MODEL_ROOTS` / `PEER_AGENT_FILE_ROOTS`. A target's local
+`model_dir` is normally under home (works out of the box). If you want a
+peer to act as a copy SOURCE from a mount outside home (e.g.
+`/mnt/cassiel_cifs`), add that root to the agent's
+`PEER_AGENT_MODEL_ROOTS`. The master can always read its own mounts.
 
 ### engine selection (schema in `src/engine_registry.py` / `config_loader.py`)
 

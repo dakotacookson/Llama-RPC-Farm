@@ -277,6 +277,12 @@
             <small class="hint" id="m-llama-bin-hint"></small>
           </label>
         </div>
+        <div class="row">
+          <label class="wide">Model dir — override for this machine (empty = shared store)
+            <input id="m-model-dir" placeholder="e.g. ~/llama-models or /mnt/models">
+            <small class="hint">Where this machine reads model files. Model sync copies missing models here (expanded on the target).</small>
+          </label>
+        </div>
         <fieldset>
           <legend>Expose to cluster</legend>
           <div class="row">
@@ -1228,6 +1234,25 @@ technical | bugs, errors, login problems</textarea></label>
             </label>
           </div>
           <p class="hint" style="margin:-8px 0 10px">Used when a machine has no override. Set per-machine bin on Machines tab for Windows vs Linux differences — global default below.</p>
+          <div class="row" style="align-items:flex-start;border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
+            <label class="wide">
+              <span style="display:flex;align-items:center;gap:8px">
+                <input type="checkbox" id="set-model-sync-enabled" style="width:auto">
+                Copy missing models to the machine that serves them
+              </span>
+              <small class="hint">When the shared store is not readable on a box, the farm copies the GGUF from any machine that has it through the peer agent. Leave off to require the shared store.</small>
+            </label>
+          </div>
+          <div class="row">
+            <label class="wide">Default model directory (used when a machine has no Model dir)
+              <input id="set-model-sync-dir" placeholder="~/llama-models">
+              <small class="hint">Expanded on the TARGET machine. <code>~/llama-models</code> works on Linux, macOS and Windows. Per-machine Model dir overrides this.</small>
+            </label>
+          </div>
+          <div class="row" style="align-items:center">
+            <button type="button" class="small" id="set-model-sync-now">Sync models now</button>
+            <span class="hint" id="set-model-sync-status"></span>
+          </div>
           <div class="row">
             <label class="wide">llama.cpp bin dir (global default — per-machine can override)
               <div style="display:flex;gap:6px;align-items:center">

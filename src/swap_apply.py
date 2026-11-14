@@ -30,6 +30,15 @@ async def apply_swap_config(reason="", reload=True):
     result.update(pushed=True,
                   models=report.get("models", []) or [],
                   warnings=report.get("warnings", []) or [])
+    # A config change can introduce a deployment on a box that lacks the
+    # model. If the opt-in sync is on, copy missing files in the background
+    # (coalesced; never blocks this response).
+    try:
+        import model_sync
+        if model_sync.enabled():
+            model_sync.start_job(None)
+    except Exception as exc:
+        print(f"[swap-apply] model sync skipped ({reason}): {exc}")
     if reload:
         async def _reload():
             try:

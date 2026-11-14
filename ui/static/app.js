@@ -2160,7 +2160,7 @@ on("#start-all", "click", async (e) => {
 });
 
 /* ---------------- machines ---------------- */
-const EMPTY_MACHINE = { name: "", ip: "", username: "", password: "", port: 1, transport: "agent", agent_port: 8198, agent_token: "", role: "peer", os: "linux", rpc_port: 50052, gpu: "", llama_bin: "", rdma: false, rdma_ip: "", rdma_dev: "", rdma_gid: "", rdma_cm: false };
+const EMPTY_MACHINE = { name: "", ip: "", username: "", password: "", port: 1, transport: "agent", agent_port: 8198, agent_token: "", role: "peer", os: "linux", rpc_port: 50052, gpu: "", llama_bin: "", model_dir: "", rdma: false, rdma_ip: "", rdma_dev: "", rdma_gid: "", rdma_cm: false };
 
 async function defaultLlamaBin() {
   const s = await getAppSettings();
@@ -2239,6 +2239,7 @@ function machineFormLoad(m, isEdit) {
   $("#m-gpu").value = m.gpu || "";
   $("#m-ram").value = m.ram_total_gb || "";
   $("#m-llama-bin").value = m.llama_bin || "";
+  $("#m-model-dir").value = m.model_dir || "";
   // hint shows global default when no override — machine-specific wins when set
   defaultLlamaBin().then(d => {
     const hint = $("#m-llama-bin-hint");
@@ -2383,6 +2384,7 @@ function machineFormRead() {
     gpu: $("#m-gpu").value.trim(),
     ram_total_gb: parseFloat($("#m-ram").value) || null,
     llama_bin: $("#m-llama-bin").value.trim(),
+    model_dir: $("#m-model-dir").value.trim(),
     expose: {
       mode: $("#m-expose-mode").value,
       gpus: $("#m-expose-gpus").value.split(",").map(s => s.trim()).filter(Boolean),
@@ -7569,11 +7571,74 @@ $("#theme-builder-wrap")?.addEventListener("toggle", (e) => {
 });
 // (light-mode checkbox was replaced by the segmented #theme-mode-seg control)
 
+let _modelSyncTimer = null;
+function _renderModelSync(st, job) {
+  const box = $("#set-model-sync-status");
+  if (!box) return;
+  const cfg = st || {};
+  const parts = [];
+  parts.push(cfg.enabled ? "enabled" : "disabled");
+  if (cfg.default_dir) parts.push(`default: <code>${escHtml(cfg.default_dir)}</code>`);
+  if (job) {
+    const cls = job.state === "failed" ? "status-bad"
+      : job.state === "done" ? "status-ok" : "";
+    parts.push(`<span class="${cls}">${escHtml(job.state)}</span>`);
+    const res = job.result || {};
+    if (job.state === "done") {
+      parts.push(`${(res.copied || []).length} copied · ${(res.skipped || []).length} present · ${(res.errors || []).length} errors`);
+      for (const e of (res.errors || [])) parts.push(`<span class="status-bad">${escHtml(e)}</span>`);
+    }
+    const log = (job.log || []).slice(-4);
+    if (log.length) parts.push(`<span class="hint">${log.map(escHtml).join("<br>")}</span>`);
+  }
+  box.innerHTML = parts.join(" · ");
+}
+async function loadModelSyncStatus() {
+  try {
+    const st = await api("GET", "/api/model-sync/status");
+    _renderModelSync(st.config, st.job);
+    if (st.job && (st.job.state === "queued" || st.job.state === "running")) {
+      if (_modelSyncTimer) clearTimeout(_modelSyncTimer);
+      _modelSyncTimer = setTimeout(loadModelSyncStatus, 2000);
+    }
+  } catch (_) {}
+}
+on("#set-model-sync-now", "click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true; btn.textContent = "syncing…";
+  try {
+    const res = await api("POST", "/api/model-sync/ensure", {});
+    if (res && res.job_id) {
+      const poll = async () => {
+        const st = await api("GET", `/api/model-sync/jobs/${encodeURIComponent(res.job_id)}`);
+        _renderModelSync(st ? {enabled: true} : {}, st);
+        if (st && (st.state === "queued" || st.state === "running")) {
+          setTimeout(poll, 2000);
+        } else {
+          btn.disabled = false; btn.textContent = "Sync models now";
+          toast(st && st.state === "done" ? "Model sync finished" : "Model sync failed",
+                st && st.state === "done" ? "ok" : "bad");
+        }
+      };
+      poll();
+      return;
+    }
+    toast(res?.error || "could not start sync", "bad");
+  } catch (err) { toast(err.message, "bad"); }
+  btn.disabled = false; btn.textContent = "Sync models now";
+});
+
 async function loadSettings() {
   try {
     const s = await api("GET", "/api/settings");
     $("#set-model-dir").value = s.model_dir || "store://llm-models";
     $("#set-llama-bin").value = s.llama_bin || "~/llama.cpp/build/bin";
+    const ms = s.model_sync || {};
+    const msEn = $("#set-model-sync-enabled");
+    if (msEn) msEn.checked = !!ms.enabled;
+    const msDir = $("#set-model-sync-dir");
+    if (msDir) msDir.value = ms.default_dir || "";
+    loadModelSyncStatus();
     const tok = $("#set-hf-token");
     if (tok) tok.value = ""; // never fill the real token — placeholder shows state
     const hint = $("#set-hf-token-hint");
@@ -7596,6 +7661,8 @@ on("#set-save", "click", async (e) => {
     const payload = {
       model_dir: $("#set-model-dir").value.trim(),
       llama_bin: $("#set-llama-bin").value.trim(),
+      model_sync_enabled: !!$("#set-model-sync-enabled")?.checked,
+      model_sync_default_dir: ($("#set-model-sync-dir")?.value || "").trim(),
       theme_family: currentTheme(),
       theme_mode: currentMode(),
       ribbon_mode: currentRibbonMode(),
@@ -7616,6 +7683,7 @@ on("#set-save", "click", async (e) => {
     // no tab keeps the retired engine's rows on screen.
     const prevEngine = (appSettings || {}).engine;
     appSettings = await api("GET", "/api/settings");
+    loadModelSyncStatus();
     applyEngineHints(appSettings);
     if ((appSettings.engine || "llama_cpp") !== (prevEngine || "llama_cpp")) {
       // wholesale re-render: models table + scan list are engine-filtered
@@ -7663,6 +7731,8 @@ on("#set-hf-token-clear", "click", async (e) => {
     const saved = await api("POST", "/api/settings", {
       model_dir: $("#set-model-dir").value.trim(),
       llama_bin: $("#set-llama-bin").value.trim(),
+      model_sync_enabled: !!$("#set-model-sync-enabled")?.checked,
+      model_sync_default_dir: ($("#set-model-sync-dir")?.value || "").trim(),
       theme_family: currentTheme(),
       theme_mode: currentMode(),
       clear_hf_token: true,

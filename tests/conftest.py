@@ -62,6 +62,15 @@ def _default_engine_llama_cpp(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_settings_store(monkeypatch, tmp_path):
+    """Keep settings_store / model_sync away from the live settings.yaml."""
+    import settings_store
+    isolated = tmp_path / "settings-store.yaml"
+    isolated.write_text("engine: llama_cpp\n", encoding="utf-8")
+    monkeypatch.setattr(settings_store, "SETTINGS_FILE", str(isolated))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_access_settings(monkeypatch, tmp_path):
     """Never let tests read the developer's live config/settings.yaml.
 

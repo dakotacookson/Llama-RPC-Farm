@@ -138,3 +138,82 @@ def list_dir(config: AgentConfig, path, hidden=False) -> dict:
         except OSError:
             continue
     return {"path": str(p), "entries": rows}
+
+
+def read_info(config: AgentConfig, path):
+    """(resolved Path, size) for a readable file."""
+    p = _path(config, path)
+    if not p.is_file():
+        raise AgentFileError("not a file")
+    try:
+        size = p.stat().st_size
+    except OSError as e:
+        raise AgentFileError(f"cannot stat file: {e}") from e
+    return p, size
+
+
+def read_chunks(config: AgentConfig, path, chunk_size=1024 * 1024):
+    """Yield file bytes in bounded chunks (never loads the whole model)."""
+    p, _ = read_info(config, path)
+    chunk_size = max(64 * 1024, min(int(chunk_size or 0), 16 * 1024 * 1024))
+    with open(p, "rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            yield chunk
+
+
+def write_stream(config: AgentConfig, path, reader, length, mode=None,
+                 create_parents=False) -> dict:
+    """Atomically write exactly `length` bytes from a readable stream.
+
+    Used by the master's model-copy job to push a GGUF/artifact without
+    base64 or holding the whole file in memory."""
+    p = _path(config, path, write=True)
+    try:
+        length = int(length)
+    except (TypeError, ValueError) as e:
+        raise AgentFileError("valid Content-Length required") from e
+    if length < 0:
+        raise AgentFileError("negative Content-Length")
+    if create_parents:
+        p.parent.mkdir(parents=True, exist_ok=True)
+    if not p.parent.is_dir():
+        raise AgentFileError(f"parent directory does not exist: {p.parent}")
+    fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".tmp-agent-")
+    written = 0
+    try:
+        with os.fdopen(fd, "wb") as f:
+            while written < length:
+                want = min(1024 * 1024, length - written)
+                chunk = reader.read(want)
+                if not chunk:
+                    break
+                if isinstance(chunk, str):
+                    chunk = chunk.encode()
+                f.write(chunk)
+                written += len(chunk)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        if written != length:
+            raise AgentFileError(
+                f"short upload: received {written} of {length} bytes")
+        if mode is not None:
+            os.chmod(tmp, int(mode))
+        os.replace(tmp, p)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    if mode is not None:
+        try:
+            os.chmod(p, int(mode))
+        except OSError:
+            pass
+    return {"path": str(p), "bytes": written}

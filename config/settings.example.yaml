@@ -62,3 +62,10 @@ access_keys:
     - Huihui-Qwen3.6-35B-A3B-Q4_K-128k--dad
     admin: true
     admin_unrestricted: false
+
+# Opt-in: copy a model to the machine that will serve it when that box
+# cannot read the shared store. default_dir is expanded on the TARGET
+# machine (~ / %USERPROFILE%); empty = keep using the store path.
+model_sync:
+  enabled: false
+  default_dir: ""

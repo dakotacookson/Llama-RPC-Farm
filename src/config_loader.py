@@ -204,6 +204,9 @@ MACHINE_DEFAULTS = {
     "rpc_port": 50052,
     "gpu": "",              # e.g. "CUDA0,CUDA1,CUDA2"
     "llama_bin": "",         # path to llama.cpp build/bin
+    # optional per-machine model storage root; empty = use the shared
+    # store:// mapping (model_sync can copy models here)
+    "model_dir": "",
     # engine update/install strategy: "auto" (detect), "prebuilt" (fast
     # binary, switch away from a source build), "source" (rebuild in place)
     "engine_mode": "auto",

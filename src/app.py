@@ -42,6 +42,7 @@ from routes.files import router as files_router
 from routes.hardware import router as hardware_router
 from routes.inference import router as inference_router
 from routes.launch import router as launch_router
+from routes.model_sync import router as model_sync_router
 from routes.machines import router as machines_router
 from routes.models import router as models_router
 from routes.settings import router as settings_router
@@ -60,7 +61,8 @@ for _router in (flow_router, hf_router, hardware_router, files_router,
                 chat_router, inference_router, scanning_router,
                 install_router, tools_router, views_router,
                 tools_install_router, auth_router, machines_router,
-                models_router, settings_router, launch_router):
+                models_router, settings_router, launch_router,
+                model_sync_router):
     app.include_router(_router)
 
 

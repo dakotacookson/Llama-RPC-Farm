@@ -522,6 +522,63 @@ class AgentHandler(BaseHTTPRequestHandler):
         except OSError:
             pass
 
+
+    def _send_file(self):
+        """Stream one file from an allowed root (model copy source)."""
+        config = self.server.config
+        query = urllib.parse.parse_qs(
+            self.path.split("?", 1)[1] if "?" in self.path else "")
+        try:
+            path, size = files.read_info(
+                config, (query.get("path") or [""])[0])
+        except files.AgentFileError as e:
+            self._send_json(400, {"error": str(e)})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(size))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            with open(path, "rb") as f:
+                while True:
+                    chunk = f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except OSError:
+            pass
+
+    def _send_write_bin(self):
+        """Stream a file body into an allowed destination (model copy target)."""
+        config = self.server.config
+        query = urllib.parse.parse_qs(
+            self.path.split("?", 1)[1] if "?" in self.path else "")
+        raw_path = (query.get("path") or [""])[0]
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._send_json(400, {"error": "invalid Content-Length"})
+            return
+        if length < 0:
+            self._send_json(400, {"error": "negative Content-Length"})
+            return
+        mode = (query.get("mode") or [""])[0]
+        try:
+            mode = int(mode) if mode else None
+        except ValueError:
+            mode = None
+        create = (query.get("create_parents") or ["1"])[0].lower() in (
+            "1", "true", "yes")
+        try:
+            res = files.write_stream(
+                config, raw_path, self.rfile, length, mode=mode,
+                create_parents=create)
+        except (files.AgentFileError, OSError, ValueError) as e:
+            self._send_json(400, {"error": str(e)})
+            return
+        self._send_json(200, res)
+
     def _handle(self, method: str):
         path = (self.path or "/").split("?", 1)[0].rstrip("/") or "/"
         if not self._authorized():
@@ -532,6 +589,12 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return
         if method == "GET" and path == "/speedtest":
             self._send_speedtest()
+            return
+        if method == "GET" and path == "/files/read":
+            self._send_file()
+            return
+        if method == "POST" and path == "/files/write_bin":
+            self._send_write_bin()
             return
         try:
             if method == "GET":

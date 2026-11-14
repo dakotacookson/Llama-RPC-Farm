@@ -49,6 +49,14 @@ install, no `--device CUDA0`, no GPU chips.
 4. Select the Jetson's **RAM** chip in a model's hardware placement. It
    joins as a CPU/RAM RPC peer (`-d CPU`, `-ngl 0`).
 
+### Shared storage / local model space
+
+The Jetson can mount the shared store with SMB1 if the NAS allows it
+(`vers=1.0` in `/etc/fstab`; legacy/insecure — LAN/VPN only). If it
+cannot, set the machine's **Model dir** (e.g. `~/llama-models`) and enable
+**Settings → Copy missing models**; the farm copies the GGUF from any
+machine that has it via the agent and launches from the local path.
+
 ## RPC notes
 
 - `ggml-rpc-server` exposes one `CPU` device; the farm numbers it as an
