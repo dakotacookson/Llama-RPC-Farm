@@ -1227,6 +1227,7 @@ async function refreshLiveMachineState() {
     if (appPill) hydrateAppVersion(appPill);
     document.querySelectorAll(".scan-model[data-machine-name]").forEach(tr => {
       fillAgentUpdateState(tr, tr.dataset.machineName);
+      fillInlineUpdateState(tr, tr.dataset.machineName);
     });
   } finally {
     _liveRefreshBusy = false;
@@ -2478,6 +2479,7 @@ async function loadMachines(skipCaps = false) {
         const expRaw = mode === "update"
           ? parseInt(btn.dataset.latestBuild || "", 10) : NaN;
         const expected = Number.isFinite(expRaw) ? expRaw : null;
+        btn.dataset.busy = "1";
         btn.disabled = true; btn.textContent = mode === "install" ? "Installing…" : mode === "update" ? "Updating…" : "Reinstalling…";
         try {
           const job = await runLlamaCppUpdate(m.name, (state) => {
@@ -2487,6 +2489,7 @@ async function loadMachines(skipCaps = false) {
           }, mode === "reinstall");
           if (job.state !== "done") {
             toast(`${mode} failed on ${m.name}: ${(job.result && job.result.detail) || "failed"}`, "bad");
+            delete btn.dataset.busy;
             btn.disabled = false;
             await loadReadiness(true); loadMachines();
             return;
@@ -2501,8 +2504,10 @@ async function loadMachines(skipCaps = false) {
                 : `llama.cpp + RPC reinstalled on ${m.name}`, "ok");
         } catch (err) {
           toast(err.message, "bad");
+          delete btn.dataset.busy;
           btn.disabled = false;
         }
+        delete btn.dataset.busy;
         await loadReadiness(true); loadMachines();
       };
       const engModeSel = tr.querySelector('[data-act="engine-mode"]');
@@ -2583,7 +2588,7 @@ async function loadMachines(skipCaps = false) {
       };
       secBody.appendChild(tr);
       if (engineBtn) engineBtn.dataset.mode = needsEngines ? "install" : "reinstall";
-      fillInlineUpdateState(tr, m.name);
+      fillInlineUpdateState(tr, m.name, true);
       fillAgentUpdateState(tr, m.name);
     }
     body.appendChild(sec);
@@ -2651,10 +2656,15 @@ async function waitForEngineVersion(name, expectedBuild, previousBuild, mode,
   throw new Error(`timed out after 30 min waiting for the new llama.cpp build on ${name}`);
 }
 
-function fillInlineUpdateState(tr, name) {
+function fillInlineUpdateState(tr, name, force = false) {
   const btn = tr.querySelector('[data-act="engine-action"]');
   if (!btn) return;
   if (btn.dataset.missing === "1") return;   // missing engines: keep Install
+  if (btn.dataset.busy === "1") return;      // update in flight: don't overwrite
+  const now = Date.now();
+  if (!force && btn.dataset.verChecked &&
+      now - Number(btn.dataset.verChecked) < 30000) return;
+  btn.dataset.verChecked = String(now);
   api("GET", `/api/machines/${encodeURIComponent(name)}/llama-cpp-version`)
     .then(v => {
       if (!btn.isConnected) return;          // grid re-rendered meanwhile
