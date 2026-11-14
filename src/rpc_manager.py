@@ -2671,7 +2671,7 @@ def validate_model(model_id):
     # "model doesn't contain MTP layers". Header-only scan, no weights.
     def _check_mtp_file(label, raw):
         try:
-            resolved = path_resolver.resolve_for(raw, target_os)
+            resolved = path_resolver.resolve_local(raw, target_os)
         except Exception as e:
             err(f"{label} path does not resolve: {e}")
             return
@@ -2733,7 +2733,7 @@ def validate_model(model_id):
                 err("no model base_path set")
             continue
         try:
-            resolved = path_resolver.resolve_for(path, target_os)
+            resolved = path_resolver.resolve_local(path, target_os)
         except Exception as e:
             err(f"{label} path '{path}' does not resolve: {e}")
             continue

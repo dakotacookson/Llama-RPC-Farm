@@ -53,6 +53,23 @@ def resolve_for(path, machine_os=None):
     return resolve(path, machine_os or LOCAL_PLATFORM)
 
 
+def resolve_local(path, machine_os=None):
+    """Resolve a store:// path for THIS app host, honoring storage_mode.
+
+    shared mode -> the NAS/CIFS mount; sync mode -> this host's model_dir/
+    default space. `machine_os` is accepted for call-site compatibility;
+    the app host's own storage always wins. Lazy import avoids a
+    model_sync <-> path_resolver cycle."""
+    if not path or not str(path).startswith(PREFIX):
+        return resolve(path)
+    try:
+        import model_sync
+        return model_sync.resolve_model_path(
+            model_sync.local_machine(), str(path))
+    except Exception:
+        return resolve(path)
+
+
 def to_alias(path):
     """Reverse of resolve(): turn a concrete platform path back into its
     store:// alias so saved configs stay portable. Unknown paths pass

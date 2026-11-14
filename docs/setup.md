@@ -157,6 +157,8 @@ shards), every `mmproj`/MTP/draft GGUF in the repo, config/tokenizer
 metadata (from the repo, or from its declared `base_model` when the GGUF
 repo omits them), LICENSE/README files, and a `farm-bundle.json` manifest.
 Existing flat files keep working; only new downloads use bundles.
+Large Xet-backed HF repos need `hf_xet`; it is in `requirements.txt`, so
+`install.sh` / `install.bat` and the packaged app include it.
 
 ## 6. Install llama.cpp + RPC (UI: Install engines)
 

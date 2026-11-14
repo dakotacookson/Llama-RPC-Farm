@@ -479,9 +479,9 @@ async def delete_scanned_file(delete_file: bool = False, path: str = ""):
     inside a configured store so arbitrary paths are rejected."""
     if not path or not path.startswith(path_resolver.PREFIX):
         raise HTTPException(status_code=400, detail="store:// path required")
-    local = path_resolver.resolve(path)
+    local = path_resolver.resolve_local(path)
     store_name = path[len(path_resolver.PREFIX):].split("/")[0]
-    root = path_resolver.resolve(f"store://{store_name}")
+    root = path_resolver.resolve_local(f"store://{store_name}")
     norm_local = os.path.normpath(local)
     norm_root = os.path.normpath(root)
     if not norm_local.startswith(norm_root):
@@ -710,7 +710,7 @@ async def delete_model_file(model_id: str, d: DeleteModelIn):
         for raw in raws:
             if not raw:
                 continue
-            path = path_resolver.resolve(raw)
+            path = path_resolver.resolve_local(raw)
             if path not in seen:
                 seen.add(path)
                 files.append(_file_entry(path))

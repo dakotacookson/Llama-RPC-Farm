@@ -50,7 +50,7 @@ def _local_resolved(base_path, target_os):
     resolve so a Windows peer target still inspects on a Linux master."""
     resolved = path_resolver.resolve_for(base_path, target_os)
     if not os.path.exists(resolved):
-        local = path_resolver.resolve(base_path)
+        local = path_resolver.resolve_local(base_path)
         if os.path.exists(local):
             return local
     return resolved

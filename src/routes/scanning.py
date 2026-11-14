@@ -501,7 +501,7 @@ async def safe_defaults(path: str = "", group: str = "", servers: str = ""):
         if any(t in pl for t in ("embed", "bge", "gte", "minilm")):
             is_embed = True
         try:
-            real = path_resolver.resolve(path)
+            real = path_resolver.resolve_local(path)
             real_exp = _os.path.expanduser(real)
             # TypeSafe decision models (laya/clef/...): detected from the
             # GGUF's <arch>.decision.type — the same gate llama.cpp uses.
@@ -539,7 +539,7 @@ async def safe_defaults(path: str = "", group: str = "", servers: str = ""):
     # embed uses fixed small-window values below, never the estimator)
     if path and not is_embed and free_vram + free_ram > 0:
         try:
-            real = path_resolver.resolve(path)
+            real = path_resolver.resolve_local(path)
             real_exp = _os.path.expanduser(real)
             if _os.path.exists(real_exp):
                 meta = gguf_inspect.metadata(real_exp)

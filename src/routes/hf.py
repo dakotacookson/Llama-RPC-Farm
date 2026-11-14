@@ -254,7 +254,7 @@ async def _resolve_icon_url(icons, cache_key, base_path="", persist=True):
     hint = None
     if base_path:
         try:
-            resolved = path_resolver.resolve(base_path)
+            resolved = path_resolver.resolve_local(base_path)
             meta = gguf_inspect.metadata(resolved)
             hint = meta.get("general.basename") or meta.get("general.name")
         except Exception:

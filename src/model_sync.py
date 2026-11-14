@@ -75,6 +75,53 @@ def enabled(settings=None):
 
 
 # ------------------------------------------------------------- path helpers
+def local_machine():
+    """The machine this app process runs on (downloads/scans land here)."""
+    try:
+        for m in cfg.machines.all():
+            if local_node.is_local(m):
+                return m
+    except Exception:
+        pass
+    return {"name": "local", "os": path_resolver.LOCAL_PLATFORM,
+            "model_dir": ""}
+
+
+def resolve_store_root(store, settings=None):
+    """Physical root for a store alias on the app host.
+
+    shared mode -> the NAS/CIFS mount; sync mode -> the app host's local
+    model dir. Both modes keep the `store://` alias in model configs."""
+    name = str(store or "").strip()
+    alias = (name if name.startswith(path_resolver.PREFIX)
+             else f"{path_resolver.PREFIX}{name}")
+    return resolve_model_path(local_machine(), alias, settings)
+
+
+def alias_under(path, root, alias):
+    """Map an absolute path under `root` back to `alias/<relative>`.
+
+    Used by model scanning when the scan root is a local model dir: the
+    saved config must keep the portable store:// alias, not the local
+    absolute path."""
+    if not path or not root or not alias:
+        return path
+    try:
+        p = os.path.normpath(os.path.expanduser(str(path)))
+        r = os.path.normpath(os.path.expanduser(str(root)))
+    except Exception:
+        return path
+    if p == r:
+        return str(alias).rstrip("/\\")
+    try:
+        rel = os.path.relpath(p, r)
+    except ValueError:
+        return path
+    if rel == ".." or rel.startswith(".." + os.sep):
+        return path
+    return str(alias).rstrip("/\\") + "/" + rel.replace(os.sep, "/")
+
+
 def _home(machine):
     name = (machine or {}).get("name") or (machine or {}).get("ip") or "?"
     if name in _HOME_CACHE:
