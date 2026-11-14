@@ -50,8 +50,9 @@ DEST_WIN = "%USERPROFILE%\\llama.cpp\\bin"
 # (tests, examples, benches) made upgrades needlessly slow. Unknown targets
 # fall back to the minimal pair in update_source_on / the peer agent.
 SOURCE_BUILD_TARGETS = (
-    "llama-server", "ggml-rpc-server", "llama-cli", "llama-completion",
-    "llama-quantize", "llama-fit-params", "llama-bench", "llama-tokenize",
+    # Only the farm's binaries. Extra CLI/bench targets made slow source
+    # builds (Jetson) much longer without being used.
+    "llama-server", "ggml-rpc-server",
 )
 
 # CUDA linux prebuilts are built against a newer glibc (2.38 via the
@@ -1181,6 +1182,11 @@ def bootstrap_source_on(machine, log=lambda m: None):
         return {"ok": False, "machine": name,
                 "detail": "no llama.cpp release tag found"}
     args = source_build_args(machine)
+    import re as _re
+    _tag_num = _re.match(r"^b(\d+)$", tag)
+    if _tag_num:
+        # Shallow tag clones report build 1; pin the real release number.
+        args.append(f"-DLLAMA_BUILD_NUMBER={_tag_num.group(1)}")
     vendor = _vendor_of(machine)
     log(f"{name}: no prebuilt/no source tree → bootstrapping {tag} "
         f"({vendor}; {' '.join(args)})")

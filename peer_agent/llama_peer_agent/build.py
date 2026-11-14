@@ -305,6 +305,12 @@ def update(config: AgentConfig, src_root, build_dir, bin_path,
             return {"ok": False,
                     "error": f"cmake reconfigure failed after stale cache "
                              f"({stale_cmake}): {out}"}
+    tag_num = re.match(r"^b(\d+)$", target or "")
+    if tag_num:
+        # Keep --version in sync with the tag on shallow clones (otherwise
+        # it reports build 1 forever) without discarding cached options.
+        _run([_ensure_cmake(), "-S", str(src), "-B", str(build),
+              f"-DLLAMA_BUILD_NUMBER={tag_num.group(1)}"], timeout=900)
     if jobs is None:
         try:
             mem = 0
@@ -331,9 +337,9 @@ def update(config: AgentConfig, src_root, build_dir, bin_path,
     # Build only what the farm uses, not tests/examples/benches (much
     # faster). If a target is absent in an older tree, fall back to the
     # minimal server+rpc pair.
-    targets = ["llama-server", "ggml-rpc-server", "llama-cli",
-               "llama-completion", "llama-quantize", "llama-fit-params",
-               "llama-bench", "llama-tokenize"]
+    # Only the farm's binaries. Building cli/quantize/bench/tokenize made a
+    # 4-core Jetson source build needlessly long.
+    targets = ["llama-server", "ggml-rpc-server"]
     cmake = _ensure_cmake()
     proc = _run([cmake, "--build", str(build), "--target", *targets,
                  "-j", str(int(jobs))], timeout=7200)
@@ -426,6 +432,11 @@ def bootstrap(config: AgentConfig, src_root, build_dir, bin_path, tag,
     cmake = _ensure_cmake()
     cc, cxx, compiler_args = _pick_compiler()
     args = args + compiler_args
+    tag_num = re.match(r"^b(\d+)$", tag)
+    if tag_num:
+        # A shallow tag clone makes llama.cpp report "build 1"; pin the
+        # real release number so the farm's update badge is correct.
+        args.append(f"-DLLAMA_BUILD_NUMBER={tag_num.group(1)}")
     build_env = dict(os.environ)
     if cc:
         build_env["CC"] = cc
@@ -497,9 +508,7 @@ def bootstrap(config: AgentConfig, src_root, build_dir, bin_path, tag,
             jobs = max(1, min(os.cpu_count() or 2, mem // 2048))
         except (OSError, ValueError):
             jobs = max(1, os.cpu_count() or 2)
-    targets = ["llama-server", "ggml-rpc-server", "llama-cli",
-               "llama-completion", "llama-quantize", "llama-fit-params",
-               "llama-bench", "llama-tokenize"]
+    targets = ["llama-server", "ggml-rpc-server"]
     proc = _run([cmake, "--build", str(build), "--target", *targets,
                  "-j", str(int(jobs))], timeout=21600, env=build_env)
     if proc.returncode != 0:
