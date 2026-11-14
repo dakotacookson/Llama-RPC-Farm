@@ -284,10 +284,21 @@ def _vendor_of(machine):
     the CPU asset."""
     import gpu_vendor
     v = gpu_vendor.normalize_vendor((machine or {}).get("gpu_vendor"))
+    det = (machine or {}).get("detected") or {}
+    # A GPU-less arm64 host (Raspberry Pi) added with the form's default
+    # `nvidia` must not get a CUDA build just because detection hasn't
+    # corrected the vendor yet. x86 keeps the recorded vendor for boxes
+    # that legitimately have not been hardware-probed.
+    arch = str(det.get("arch") or "").lower()
+    gpu_names = det.get("gpu_names") or []
+    gpu_tokens = [t for t in (machine.get("gpu") or "").split(",")
+                  if t.strip()]
+    if (arch in ("arm64", "aarch64") and not gpu_names
+            and not gpu_tokens):
+        return "cpu"
     if v:
         return v
-    det = (machine or {}).get("detected") or {}
-    names = " ".join(str(n) for n in (det.get("gpu_names") or [])).lower()
+    names = " ".join(str(n) for n in gpu_names).lower()
     if "nvidia" in names:
         return "nvidia"
     if "amd" in names or "radeon" in names or "instinct" in names:
