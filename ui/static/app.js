@@ -2799,28 +2799,45 @@ function connectionBadge(m) {
   const cls = c === "none" ? " status-bad" : "";
   return `<span class="badge badge-conn${cls}" title="Detected connection: ${connectionLabel(m)}"><i class="fa-solid ${icon}"></i> ${connectionLabel(m)}</span>`;
 }
-// A Raspberry Pi is a distinct machine type, not just "Linux": show the
-// Pi brand icon anywhere a machine is identified (board comes from
-// /proc/device-tree/model via hardware detect).
-function isRaspberryPi(m) {
+// The raspberry mark is the farm's "ARM Linux / SBC" icon: every 64-bit
+// Linux ARM machine (Raspberry Pi, Jetson Nano, other boards) uses it,
+// while x86 Linux keeps the penguin. Board/arch come from hardware detect
+// (or the agent's discovery identity).
+function isArmLinux(m) {
   if (!m || typeof m !== "object") return false;
+  const os = String(m.os || "").toLowerCase();
+  if (os && os !== "linux") return false;
+  const arch = String((m.detected && m.detected.arch) || m.arch || "")
+    .toLowerCase();
+  if (arch === "arm64" || arch === "aarch64") return true;
   const board = String((m.detected && m.detected.board) || m.board || "")
     .toLowerCase();
-  return board.includes("raspberry pi");
+  return board.includes("raspberry pi") || board.includes("jetson")
+    || board.includes("tegra");
+}
+
+function armIconTitle(m) {
+  const board = String(
+    (m && ((m.detected && m.detected.board) || m.board)) || "");
+  if (/raspberry pi/i.test(board)) return "Raspberry Pi (ARM Linux)";
+  if (/jetson|tegra/i.test(board)) return "NVIDIA Jetson (ARM Linux)";
+  return "ARM Linux";
 }
 
 function machineGlyph(m, cls = "") {
   const extra = cls ? " " + cls : "";
-  if (isRaspberryPi(m)) {
-    return '<i class="fa-brands fa-raspberry-pi' + extra + '" title="Raspberry Pi"></i>';
+  if (isArmLinux(m)) {
+    return '<i class="fa-brands fa-raspberry-pi' + extra + '" title="'
+      + armIconTitle(m) + '"></i>';
   }
   return '<i class="fa-solid fa-server' + extra + '"></i>';
 }
 
 function osIcon(osOrMachine) {
   if (osOrMachine && typeof osOrMachine === "object") {
-    if (isRaspberryPi(osOrMachine)) {
-      return '<i class="fa-brands fa-raspberry-pi os-icon" title="Raspberry Pi"></i>';
+    if (isArmLinux(osOrMachine)) {
+      return '<i class="fa-brands fa-raspberry-pi os-icon" title="'
+        + armIconTitle(osOrMachine) + '"></i>';
     }
     return osIcon(osOrMachine.os);
   }
