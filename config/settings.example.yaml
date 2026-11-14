@@ -63,9 +63,11 @@ access_keys:
     admin: true
     admin_unrestricted: false
 
-# Opt-in: copy a model to the machine that will serve it when that box
-# cannot read the shared store. default_dir is expanded on the TARGET
-# machine (~ / %USERPROFILE%); empty = keep using the store path.
+# Storage mode: shared = every machine reads the store:// mount (NAS/CIFS);
+# sync = per-machine local model dir + copy missing models through the agent.
+storage_mode: shared
+# Used only in sync mode. default_dir is expanded on the TARGET machine
+# (~ / %USERPROFILE%). `enabled` is kept in sync by the API for older code.
 model_sync:
   enabled: false
   default_dir: ""

@@ -7572,12 +7572,19 @@ $("#theme-builder-wrap")?.addEventListener("toggle", (e) => {
 // (light-mode checkbox was replaced by the segmented #theme-mode-seg control)
 
 let _modelSyncTimer = null;
+function syncStorageModeUi() {
+  const sel = $("#set-storage-mode");
+  const box = $("#model-sync-options");
+  if (!sel || !box) return;
+  box.style.display = sel.value === "sync" ? "" : "none";
+}
+on("#set-storage-mode", "change", syncStorageModeUi);
 function _renderModelSync(st, job) {
   const box = $("#set-model-sync-status");
   if (!box) return;
   const cfg = st || {};
   const parts = [];
-  parts.push(cfg.enabled ? "enabled" : "disabled");
+  parts.push(cfg.mode || (cfg.enabled ? "sync" : "shared"));
   if (cfg.default_dir) parts.push(`default: <code>${escHtml(cfg.default_dir)}</code>`);
   if (job) {
     const cls = job.state === "failed" ? "status-bad"
@@ -7634,10 +7641,13 @@ async function loadSettings() {
     $("#set-model-dir").value = s.model_dir || "store://llm-models";
     $("#set-llama-bin").value = s.llama_bin || "~/llama.cpp/build/bin";
     const ms = s.model_sync || {};
-    const msEn = $("#set-model-sync-enabled");
-    if (msEn) msEn.checked = !!ms.enabled;
+    const modeSel = $("#set-storage-mode");
+    if (modeSel) {
+      modeSel.value = s.storage_mode || (ms.enabled ? "sync" : "shared");
+    }
     const msDir = $("#set-model-sync-dir");
     if (msDir) msDir.value = ms.default_dir || "";
+    syncStorageModeUi();
     loadModelSyncStatus();
     const tok = $("#set-hf-token");
     if (tok) tok.value = ""; // never fill the real token — placeholder shows state
@@ -7661,7 +7671,8 @@ on("#set-save", "click", async (e) => {
     const payload = {
       model_dir: $("#set-model-dir").value.trim(),
       llama_bin: $("#set-llama-bin").value.trim(),
-      model_sync_enabled: !!$("#set-model-sync-enabled")?.checked,
+      storage_mode: ($("#set-storage-mode")?.value || "shared"),
+      model_sync_enabled: ($("#set-storage-mode")?.value === "sync"),
       model_sync_default_dir: ($("#set-model-sync-dir")?.value || "").trim(),
       theme_family: currentTheme(),
       theme_mode: currentMode(),
@@ -7731,7 +7742,8 @@ on("#set-hf-token-clear", "click", async (e) => {
     const saved = await api("POST", "/api/settings", {
       model_dir: $("#set-model-dir").value.trim(),
       llama_bin: $("#set-llama-bin").value.trim(),
-      model_sync_enabled: !!$("#set-model-sync-enabled")?.checked,
+      storage_mode: ($("#set-storage-mode")?.value || "shared"),
+      model_sync_enabled: ($("#set-storage-mode")?.value === "sync"),
       model_sync_default_dir: ($("#set-model-sync-dir")?.value || "").trim(),
       theme_family: currentTheme(),
       theme_mode: currentMode(),

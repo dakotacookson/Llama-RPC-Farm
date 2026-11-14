@@ -266,7 +266,8 @@ anything that runs shell commands:
   (`python -m pip`) works.
 - **Model paths for a launch must go through `model_sync.resolve_model_path()`**
   (it applies the target machine's `model_dir` / the opt-in
-  `model_sync.default_dir`). A raw `path_resolver.resolve_for()` at a
+  `model_sync.default_dir` only when `storage_mode: sync`; in the default
+  `storage_mode: shared` it must resolve to the shared store). A raw `path_resolver.resolve_for()` at a
   launch site will disagree with the model-copy job. The copy targets the
   machine that runs `llama-server` (`swap_manager.deployment_launch_mode`),
   not every server. Only the main GGUF is copied; mmproj/draft companions

@@ -64,15 +64,18 @@ dir; machine `llama_bin` overrides), `theme_family`/`theme_mode`, and the
 optional model-copy block:
 
 ```yaml
+storage_mode: shared      # shared | sync
 model_sync:
-  enabled: false          # opt-in: copy missing models between machines
+  enabled: false          # legacy mirror of storage_mode == sync
   default_dir: ""         # e.g. ~/llama-models; expanded on the TARGET
 ```
 
-A machine's `model_dir` overrides the shared `store://` root for that
-machine; when `model_sync.enabled`, the farm copies a model from any
-machine that has it to the box that will run `llama-server` if the file
-is missing. Copies go through the peer agent (`/files/read`,
+`storage_mode` is the switch:
+- **shared** — every machine reads the shared `store://` mount (NAS/CIFS,
+  the original setup). Per-machine `model_dir` is ignored.
+- **sync** — each machine uses its `model_dir` or the default dir; the
+  farm copies a missing model from any machine that has it to the box that
+  will run `llama-server`. Copies go through the peer agent (`/files/read`,
 `/files/write_bin`) — never a shell. The default dir is expanded with the
 target agent's home (`~` / `%USERPROFILE%`), so one value works across
 Linux, macOS and Windows.

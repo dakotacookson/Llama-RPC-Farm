@@ -53,8 +53,7 @@ install, no `--device CUDA0`, no GPU chips.
 
 The Jetson can mount the shared store with SMB1 if the NAS allows it
 (`vers=1.0` in `/etc/fstab`; legacy/insecure — LAN/VPN only). If it
-cannot, set the machine's **Model dir** (e.g. `~/llama-models`) and enable
-**Settings → Copy missing models**; the farm copies the GGUF from any
+cannot, set the machine's **Model dir** (e.g. `~/llama-models`) and set **Settings → Model storage mode** to **Model sync**; the farm copies the GGUF from any
 machine that has it via the agent and launches from the local path.
 
 ## RPC notes

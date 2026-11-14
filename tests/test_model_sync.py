@@ -90,7 +90,8 @@ def test_resolve_model_path_machine_override(monkeypatch):
     m = {"name": "pi", "os": "linux", "model_dir": "/data/models"}
     p = model_sync.resolve_model_path(
         m, "store://llm-models/a.gguf",
-        {"model_sync": {"enabled": False, "default_dir": "~/ignored"}})
+        {"storage_mode": "sync",
+         "model_sync": {"enabled": True, "default_dir": "~/ignored"}})
     assert p == "/data/models/a.gguf"
 
 
@@ -208,3 +209,27 @@ def test_copy_remote_to_remote(monkeypatch, tmp_path):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_storage_mode_shared_ignores_model_dir(monkeypatch):
+    monkeypatch.setattr(local_node, "is_local", lambda m: True)
+    model_sync._HOME_CACHE.clear()
+    m = {"name": "pi", "os": "linux", "model_dir": "/data/models"}
+    monkeypatch.setattr(model_sync.path_resolver, "resolve_for",
+                        lambda path, osname: "/STORE/" + path.split("/", 3)[-1])
+    p = model_sync.resolve_model_path(
+        m, "store://llm-models/a.gguf",
+        {"storage_mode": "shared",
+         "model_sync": {"enabled": True, "default_dir": "~/ignored"}})
+    assert p == "/STORE/a.gguf"
+
+
+def test_storage_mode_sync_overrides_legacy_enabled(monkeypatch):
+    monkeypatch.setattr(local_node, "is_local", lambda m: True)
+    model_sync._HOME_CACHE.clear()
+    m = {"name": "pi", "os": "linux", "model_dir": ""}
+    p = model_sync.resolve_model_path(
+        m, "store://llm-models/a.gguf",
+        {"storage_mode": "sync",
+         "model_sync": {"enabled": False, "default_dir": "~/models"}})
+    assert p.endswith("/models/a.gguf")

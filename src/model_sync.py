@@ -6,9 +6,11 @@ that cannot reach that store (a Pi on a different mount, a Jetson with
 an old CIFS client, ...):
 
   * a machine's `model_dir` overrides the store root for that machine;
-  * settings `model_sync.enabled` + `model_sync.default_dir` gives every
-    machine without an override a local default space (`~/llama-models`
-    works on Linux/macOS/Windows once expanded on the target);
+  * settings `storage_mode: sync` (`model_sync.enabled` for old configs)
+    + `model_sync.default_dir` gives every machine without an override a
+    local default space (`~/llama-models` works on Linux/macOS/Windows
+    once expanded on the target); `storage_mode: shared` keeps the
+    NAS/CIFS mount and ignores per-machine model dirs;
   * when enabled, a deployment whose model file is missing on the box
     that will run llama-server is copied from any machine that has it.
 
@@ -52,11 +54,19 @@ def _load_settings():
 
 
 def sync_config(settings=None):
+    """Storage mode + local-dir settings.
+
+    `storage_mode` is the switch: "shared" keeps the store:// mount (NAS/
+    CIFS); "sync" uses a per-machine model space and copies missing files.
+    A legacy `model_sync.enabled` is honored when storage_mode is absent."""
     s = settings if isinstance(settings, dict) else _load_settings()
     ms = s.get("model_sync") or {}
     if not isinstance(ms, dict):
         ms = {}
-    return {"enabled": bool(ms.get("enabled")),
+    mode = str(s.get("storage_mode") or "").strip().lower()
+    if mode not in ("shared", "sync"):
+        mode = "sync" if bool(ms.get("enabled")) else "shared"
+    return {"mode": mode, "enabled": mode == "sync",
             "default_dir": str(ms.get("default_dir") or "").strip()}
 
 
@@ -113,12 +123,15 @@ def _expand_dir(machine, raw):
 
 
 def effective_model_dir(machine, settings=None):
-    """Absolute model root for this machine, or "" to use the store."""
+    """Absolute local model root for this machine, or "" for shared store.
+
+    Shared NAS/CIFS mode ignores per-machine model_dir entirely — the
+    switch is authoritative so flipping it always returns to the store."""
+    ms = sync_config(settings)
+    if ms["mode"] != "sync":
+        return ""
     md = str((machine or {}).get("model_dir") or "").strip()
     if not md:
-        ms = sync_config(settings)
-        if not ms["enabled"]:
-            return ""
         md = ms["default_dir"]
     return _expand_dir(machine, md)
 

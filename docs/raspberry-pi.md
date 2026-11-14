@@ -68,8 +68,8 @@ The same rule applies to the farm app and agent installers: the arm64
 ### Local model space (optional)
 
 If the shared `store://` mount is not available on the Pi, set the
-machine's **Model dir** (Machines editor) or enable **Settings → Copy
-missing models** with a default dir such as `~/llama-models`. The farm
+machine's **Model dir** (Machines editor) or set **Settings → Model storage mode** to **Model
+sync** and use a default dir such as `~/llama-models`. The farm
 then copies the GGUF from any machine that has it through the peer agent
 and launches from the local path. See `docs/configuration.md`
 (`model_sync`).
