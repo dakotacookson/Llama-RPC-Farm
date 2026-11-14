@@ -159,3 +159,43 @@ def test_hw_watch_preserves_board_arch_and_sub_gb_ram(monkeypatch):
     assert det["arch"] == "aarch64"
     assert det["ram_total_gb"] == 0.4
     assert writes["pi"]["ram_total_gb"] == 0.4
+
+
+def test_cpu_ram_budget_uses_selected_ram(monkeypatch):
+    import tuner
+    import config_loader as cfg
+
+    pi = {"name": "pi", "ram_total_gb": 0.4,
+          "detected": {"ram_total_gb": 0.4}}
+    monkeypatch.setattr(cfg.machines, "all", lambda: [pi])
+    assert tuner._cpu_ram_budget(["pi"], "pi-RAM") == 0.4 * tuner.RAM_USABLE_FRAC
+    # no explicit chip -> all selected servers' RAM
+    assert tuner._cpu_ram_budget(["pi"], "") == 0.4 * tuner.RAM_USABLE_FRAC
+
+
+def test_tuner_estimate_cpu_only_uses_ram(monkeypatch, tmp_path):
+    """A GPU-less Pi must still get a math estimate (from RAM), not
+    'no GPUs selected'."""
+    import tuner
+    import config_loader as cfg
+
+    pi = {"name": "pi", "ram_total_gb": 8,
+          "detected": {"ram_total_gb": 8}}
+    monkeypatch.setattr(cfg.machines, "all", lambda: [pi])
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    monkeypatch.setattr(tuner.path_resolver, "resolve_for",
+                        lambda p, o: str(model))
+    monkeypatch.setattr(tuner.gguf_inspect, "metadata", lambda p: {})
+    monkeypatch.setattr(tuner, "_model_bytes", lambda p: 1024 * 1024)
+    monkeypatch.setattr(tuner, "_kv_per_token", lambda *a, **k: 1024)
+    monkeypatch.setattr(tuner.gguf_inspect, "ssm_state_bytes",
+                        lambda *a, **k: 0)
+    monkeypatch.setattr(tuner, "has_swa", lambda meta: False)
+    monkeypatch.setattr(tuner, "virt_info", lambda m: {})
+
+    est = tuner.estimate(str(model), ["pi"], "pi-RAM")
+    assert est["gpus"] == []
+    assert est["suggested_split"] == []
+    assert est["usable_ram_gb"] > 0
+    assert est["recommended_ctx"] >= 4096
