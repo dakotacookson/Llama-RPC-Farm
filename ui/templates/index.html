@@ -1398,7 +1398,10 @@ technical | bugs, errors, login problems</textarea></label>
           </label>
           <div id="setup-shared-fields">
             <label class="wide">Shared model store path (this machine's platform)
-              <input id="setup-store-path" placeholder="/mnt/cassiel_cifs/llm-models">
+              <div style="display:flex;gap:6px;align-items:center">
+                <input id="setup-store-path" placeholder="/mnt/cassiel_cifs/llm-models">
+                <button type="button" class="small" id="setup-store-path-browse" title="Browse the app host filesystem"><i class="fa-solid fa-folder-open"></i> Browse</button>
+              </div>
               <small class="hint">Saved in <code>config/stores.yaml</code> for this platform. Model configs keep using <code>store://llm-models</code>.</small>
             </label>
           </div>
@@ -1421,7 +1424,8 @@ technical | bugs, errors, login problems</textarea></label>
             <li>Add any peers and install the peer agent on them.</li>
             <li><b>Install llama-swap</b> on the swap host.</li>
           </ol>
-          <p class="hint">The <b>Setup needed</b> panel on the Machines page shows exactly what is still missing.</p>
+          <p class="hint">This is the same live checklist as the Machines page — it knows which boxes still need engines or llama-swap.</p>
+          <div id="setup-engines" class="card" style="margin:10px 0;padding:8px 10px"><p class="hint" style="margin:0">Checking machines…</p></div>
         </div>
       </div>
       <div class="modal-footer" style="display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--border-soft)">

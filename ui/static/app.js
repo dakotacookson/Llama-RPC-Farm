@@ -1,5 +1,6 @@
 /* Llama RPC Farm UI */
 const $ = (sel) => document.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 /* Safe binder: one missing/stale element must never kill the rest of
    the UI (a stale cached index.html used to throw here and left every
@@ -1123,17 +1124,18 @@ function _readinessIssues(data) {
   return out;
 }
 async function loadReadiness(force = false) {
-  const host = $("#setup-readiness");
-  if (!host) return;
+  const hosts = [$("#setup-readiness"), $("#setup-engines")].filter(Boolean);
+  if (!hosts.length) return;
   try {
     const data = await fetchReadiness(force);
     const issues = _readinessIssues(data);
     if (!issues.length) {
-      host.style.display = "";
-      host.innerHTML = '<p class="status-ok" style="margin:0"><i class="fa-solid fa-circle-check"></i> Setup complete — every machine has its agent, llama.cpp, llama RPC, and llama-swap where needed.</p>';
+      for (const host of hosts) {
+        host.style.display = "";
+        host.innerHTML = '<p class="status-ok" style="margin:0"><i class="fa-solid fa-circle-check"></i> Setup complete — every machine has its agent, llama.cpp, llama RPC, and llama-swap where needed.</p>';
+      }
       return;
     }
-    host.style.display = "";
     const rows = issues.map(({ name, r, missing }) => {
       const acts = [];
       if (!(r.agent || {}).ok) {
@@ -1153,15 +1155,18 @@ async function loadReadiness(force = false) {
         ${acts.join(" ")}
       </div>`;
     }).join("");
-    host.innerHTML = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+    for (const host of hosts) {
+      host.style.display = "";
+      host.innerHTML = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
         <strong><i class="fa-solid fa-list-check"></i> Setup needed</strong>
         <small class="hint">install engines on each peer; llama-swap on the swap host</small>
       </div>${rows}`;
+    }
   } catch (_) {
-    host.style.display = "none";
+    for (const host of hosts) host.style.display = "none";
   }
 }
-on("#setup-readiness", "click", async (e) => {
+async function _readinessAction(e) {
   const btn = e.target.closest("[data-ready-act]");
   if (!btn) return;
   const name = btn.dataset.machine;
@@ -1213,7 +1218,9 @@ on("#setup-readiness", "click", async (e) => {
     }
     await loadReadiness(true); loadMachines(true); loadStatus();
   }
-});
+}
+on("#setup-readiness", "click", _readinessAction);
+on("#setup-engines", "click", _readinessAction);
 
 /* Lightweight live refresh for the Machines page: agent/app version
    pills update in place every few seconds without re-rendering rows. */
@@ -5512,10 +5519,13 @@ window.addEventListener("DOMContentLoaded", async () => {
       // Fresh install: no login and no access key yet. Show the create-admin
       // form instead of an unusable sign-in box.
       showLogin(true, true);
+    } else if (me && me.setup_wizard_required) {
+      // Existing admin + required walkthrough (including the forced test
+      // flag). This must win over the bare-key login prompt so testing and
+      // first-run storage setup are not hidden behind a sign-in box.
+      showSetupWizard(2);
     } else if (me && me.has_logins && !me.user && me.trust_via !== "loopback") {
       showLogin(true, false);
-    } else if (me && me.setup_wizard_required) {
-      showSetupWizard(2);
     }
     window.__me = me || null;
     renderLoginChip(me);
@@ -5692,6 +5702,7 @@ function setupStep(n) {
   if ($("#setup-next")) $("#setup-next").style.display = is3 ? "none" : "";
   if ($("#setup-machines")) $("#setup-machines").style.display = is3 ? "" : "none";
   if ($("#setup-finish")) $("#setup-finish").style.display = is3 ? "" : "none";
+  if (is3) loadReadiness(true).catch(() => {});
   $$("#setup-steps .setup-step").forEach((el) => {
     const s = Number(el.dataset.step || 0);
     el.classList.toggle("active", s === n);
@@ -8039,6 +8050,7 @@ on("#fs-select", "click", () => {
 });
 
 on("#set-model-dir-browse", "click", () => openFsBrowse("set-model-dir", null));
+on("#setup-store-path-browse", "click", () => openFsBrowse("setup-store-path", null));
 on("#set-llama-bin-browse", "click", () => openFsBrowse("set-llama-bin", null));
 on("#m-llama-bin-browse", "click", () => {
   const orig = $("#machine-original-name")?.value?.trim() || $("#m-name")?.value?.trim() || "";
