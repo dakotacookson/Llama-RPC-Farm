@@ -278,11 +278,33 @@ def _glibc_version(cmd_prefix, run):
         return None
 
 
+def gpu_unsupported(machine):
+    """Reason this host's GPU must be ignored (CPU-only), or ''.
+
+    Legacy Jetson Nano/TX boards ship CUDA 10.2, which cannot build the
+    current llama.cpp CUDA backend (C++17 + cuda_bf16.h need CUDA 11+).
+    The peer agent reports `gpu_unsupported` from the live CUDA version;
+    fall back to the board name for records detected before that flag
+    existed. Orin/Xavier on JetPack 5 report CUDA >= 11 and are left
+    alone — don't blanket-block "tegra"."""
+    det = (machine or {}).get("detected") or {}
+    reason = str(det.get("gpu_unsupported") or "").strip()
+    if reason:
+        return reason
+    if det.get("cpu_only"):
+        return "CPU-only host (GPU unsupported)"
+    board = str(det.get("board") or "").lower()
+    if any(k in board for k in ("jetson nano", "jetson tx1", "jetson tx2")):
+        return ("Jetson (JetPack 4 / CUDA 10.2) GPU unsupported — CPU-only")
+    return ""
+
 def _vendor_of(machine):
     """Effective GPU vendor: recorded field first, then detected device
     names. A blank/mis-detected vendor must never send an NVIDIA box to
     the CPU asset."""
     import gpu_vendor
+    if gpu_unsupported(machine):
+        return "cpu"
     v = gpu_vendor.normalize_vendor((machine or {}).get("gpu_vendor"))
     det = (machine or {}).get("detected") or {}
     # A GPU-less arm64 host (Raspberry Pi) added with the form's default
@@ -358,6 +380,8 @@ def _cap_int(text):
 
 def machine_cuda_archs(machine):
     """SM levels this machine's GPUs need, from detected compute_cap."""
+    if gpu_unsupported(machine):
+        return []
     det = (machine or {}).get("detected") or {}
     out = []
     for cap in (det.get("compute_cap") or []):
@@ -459,6 +483,9 @@ def prebuilt_blocker(machine, glibc=None):
     os_type = (machine or {}).get("os", "linux")
     if os_type in ("windows", "macos"):
         return ""
+    reason = gpu_unsupported(machine)
+    if reason:
+        return reason
     # All upstream Linux arm64 assets are built on Ubuntu 24.04. On older
     # glibc (Raspberry Pi OS Bookworm = 2.36) the loader fails before
     # llama.cpp can start, so steer the caller to the source build.
@@ -1206,9 +1233,28 @@ else
   git -C "$src" fetch --depth 1 origin tag {shlex.quote(tag)} || git -C "$src" fetch --tags origin
   git -C "$src" checkout --detach -f {shlex.quote(tag)}
 fi
+# Current llama.cpp needs C++17 <filesystem>. Ubuntu 18.04/Jetson ships
+# g++ 7.5, so prefer g++-8+. g++ 8 needs -lstdc++fs at link time.
+CXX_BIN="$(command -v g++-8 || command -v g++-9 || command -v g++-10 || command -v g++-11 || command -v g++-12 || command -v g++ || true)"
+CC_BIN="$(command -v gcc-8 || command -v gcc-9 || command -v gcc-10 || command -v gcc-11 || command -v gcc-12 || command -v gcc || true)"
+[ -n "$CXX_BIN" ] || {{ echo "no C++ compiler found" >&2; exit 2; }}
+CXX_MAJOR="$("$CXX_BIN" -dumpversion | cut -d. -f1)"
+if [ "$CXX_MAJOR" -lt 8 ]; then
+  echo "g++ >= 8 is required for <filesystem>; install g++-8" >&2; exit 2
+fi
+EXTRA_CXX=""
+if [ "$CXX_MAJOR" = "8" ]; then EXTRA_CXX="-DCMAKE_CXX_STANDARD_LIBRARIES=-lstdc++fs"; fi
+CM_VER="$(cmake --version | head -1 | awk '{{print $3}}')"
+CM_MAJ="$(echo "$CM_VER" | cut -d. -f1)"
+CM_MIN="$(echo "$CM_VER" | cut -d. -f2)"
+if [ "$CM_MAJ" -lt 3 ] || {{ [ "$CM_MAJ" -eq 3 ] && [ "$CM_MIN" -lt 14 ]; }}; then
+  echo "cmake >= 3.14 is required (have $CM_VER)" >&2; exit 2
+fi
 mkdir -p "$build"
 if [ ! -f "$build/CMakeCache.txt" ]; then
-  cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=Release {qargs}
+  cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER="$CC_BIN" -DCMAKE_CXX_COMPILER="$CXX_BIN" \
+    $EXTRA_CXX {qargs}
 fi
 cmake --build "$build" --target {qtargets} -j {jobs}
 test -x "$build/bin/llama-server"

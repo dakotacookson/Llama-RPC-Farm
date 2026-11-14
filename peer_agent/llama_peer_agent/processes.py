@@ -14,6 +14,7 @@ from pathlib import Path
 
 from . import files
 from .config import AgentConfig
+from .platform_info import board_model, tegra_gpu_unsupported_reason
 
 _PORT_RE = re.compile(r"(?:^|\s)(?:-p|--port)\s+(\d+)(?:\s|$)")
 _LISTEN_RE = re.compile(r"--listen[=\s]+[^\s]*:(\d+)")
@@ -700,19 +701,6 @@ def logs_tail(config: AgentConfig, name: str, lines: int = 20) -> dict:
             "text": "\n".join(tail)}
 
 
-def _board_model() -> str:
-    """SBC/board model from the device tree (Raspberry Pi, etc.)."""
-    if not sys.platform.startswith("linux"):
-        return ""
-    for path in ("/proc/device-tree/model",
-                 "/sys/firmware/devicetree/base/model"):
-        try:
-            with open(path, "rb") as f:
-                return f.read().replace(b"\x00", b"").decode(
-                    "utf-8", "replace").strip()
-        except OSError:
-            continue
-    return ""
 
 
 def info(config: AgentConfig) -> dict:
@@ -736,7 +724,9 @@ def info(config: AgentConfig) -> dict:
         "agent_port": int(config.port),
         "os": platform.system().lower(),
         "arch": platform.machine(),
-        "board": _board_model(),
+        "board": board_model(),
+        "cpu_only": bool(tegra_gpu_unsupported_reason()),
+        "gpu_unsupported": tegra_gpu_unsupported_reason(),
         "model_roots": list(config.model_roots),
         "rpc_available": bool(rpc_binary(config)),
         "llama_available": bool(llama_binary(config)),

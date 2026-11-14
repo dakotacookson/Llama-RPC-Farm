@@ -415,6 +415,8 @@ def machine_stats_light(machine):
             "rpc_running": rpc,
             "board": det.get("board") or "",
             "arch": det.get("arch") or "",
+            "cpu_only": bool(det.get("cpu_only")),
+            "gpu_unsupported": det.get("gpu_unsupported") or "",
             "rdma": bool(machine.get("rdma")),
             "rdma_cm": bool(machine.get("rdma_cm")),
             "transport": "agent",
@@ -444,8 +446,11 @@ def machine_stats(machine):
             "os": machine_os, "is_local": is_local,
             "is_master": machine.get("role") == "master",
             "rpc_running": rpc,
-            "board": det.get("board") or "",
-            "arch": det.get("arch") or "",
+            "board": det.get("board") or s.get("board") or "",
+            "arch": det.get("arch") or s.get("arch") or "",
+            "cpu_only": bool(det.get("cpu_only") or s.get("cpu_only")),
+            "gpu_unsupported": (det.get("gpu_unsupported")
+                                or s.get("gpu_unsupported") or ""),
             "transport": "agent",
             "connection": "local" if is_local else "agent"}
 

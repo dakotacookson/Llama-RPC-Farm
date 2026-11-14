@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 
+from .platform_info import tegra_gpu_unsupported_reason
 from . import BUILD_COMMIT, PROTOCOL_VERSION, __version__
 from .config import AgentConfig, ensure_dirs
 from . import processes
@@ -105,6 +106,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 "uptime_s": round(time.time() - _START_TS, 1),
                 "os": platform.system().lower(),
                 "arch": platform.machine(),
+                "cpu_only": bool(tegra_gpu_unsupported_reason()),
+                "gpu_unsupported": tegra_gpu_unsupported_reason(),
             }
         if path == "/version":
             import sys as _sys

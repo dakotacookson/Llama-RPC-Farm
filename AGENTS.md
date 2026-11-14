@@ -253,6 +253,17 @@ anything that runs shell commands:
 - llama-swap's log endpoints replay buffered history on connect — any new
   consumer of `/logs/stream/*` must prime silently (~1.5s) before
   forwarding, or old activity flares up the UI on every page load.
+- **Legacy Jetson/Tegra = CPU-only.** The peer agent reports
+  `gpu_unsupported`/`cpu_only` when the board is Jetson/Tegra and the
+  installed CUDA is < 11 (JetPack 4.6 = CUDA 10.2, no `cuda_bf16.h`, C++17
+  nvcc). The farm must force `gpu_vendor: cpu`, empty GPU chips and a
+  source build — never add Tegra CUDA detection. Orin/Xavier on JetPack 5
+  (CUDA ≥ 11) is not blocked. Source builds on gcc 7 need `g++-8` +
+  `-lstdc++fs`; `peer_agent/build.py` picks g++-8+ and can download a
+  portable CMake when the distro one is < 3.14. The agent installers
+  bootstrap Python 3.11 with the **musl** uv build (gnu uv needs glibc
+  2.28; Jetson is 2.27) and create a **seeded** venv so `/agent/update`
+  (`python -m pip`) works.
 - **`detected` must be MERGED, never replaced.** Hardware detect and the
   120 s watcher (`routes/hardware.py`) both write it from live stats, which
   do not carry `arch`/`board`/`driver_version`. Replacing the dict wiped a

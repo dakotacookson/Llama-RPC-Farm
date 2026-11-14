@@ -7,6 +7,8 @@ import subprocess
 import sys
 import time
 
+from .platform_info import tegra_gpu_unsupported_reason
+
 _NVIDIA = ("nvidia-smi", "--query-gpu=index,name,utilization.gpu,"
            "memory.used,memory.total,temperature.gpu,compute_cap,uuid",
            "--format=csv,noheader,nounits")
@@ -221,6 +223,10 @@ def _win_fallback_gpus():
 
 def gpus():
     """(rows, vendor) — NVIDIA first, then ROCm, Intel, Win WMI, Apple."""
+    # Legacy Jetson/Tegra (CUDA 10.2) GPUs are unusable by current
+    # llama.cpp; never advertise them, so the farm routes CPU-only.
+    if tegra_gpu_unsupported_reason():
+        return [], ""
     rows = _nvidia_gpus()
     if rows:
         return rows, "nvidia"
@@ -295,6 +301,8 @@ def _linux():
         "ram_total_gb": round(total_kb / 1024 / 1024, 1),
         "ram_used_gb": round((total_kb - avail_kb) / 1024 / 1024, 1),
         "cpu_cores": cores,
+        "cpu_only": bool(tegra_gpu_unsupported_reason()),
+        "gpu_unsupported": tegra_gpu_unsupported_reason(),
     }
 
 

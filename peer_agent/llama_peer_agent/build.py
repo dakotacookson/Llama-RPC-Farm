@@ -1,8 +1,13 @@
 """Typed llama.cpp source probe/update."""
 import os
+import platform
 import re
 import shutil
 import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
 from pathlib import Path
 
 from . import files
@@ -20,12 +25,129 @@ class AgentBuildError(RuntimeError):
     pass
 
 
-def _run(args, timeout=120, cwd=None):
+def _run(args, timeout=120, cwd=None, env=None):
     try:
         return subprocess.run(args, capture_output=True, text=True,
-                              timeout=timeout, cwd=cwd)
+                              timeout=timeout, cwd=cwd, env=env)
     except (OSError, subprocess.SubprocessError) as e:
         raise AgentBuildError(str(e)) from e
+
+
+def _tool_major(binary):
+    proc = _run([binary, "-dumpversion"], timeout=10)
+    m = re.search(r"(\d+)", (proc.stdout or "") + (proc.stderr or ""))
+    return int(m.group(1)) if m else 0
+
+
+def _pick_compiler():
+    """(cc, cxx, extra_cmake_args) for a C++17 <filesystem> compiler.
+
+    Old distros (Ubuntu 18.04 / Jetson) ship g++ 7.5, which has no
+    `<filesystem>`. Prefer g++-8..12 when the default is too old; g++ 8
+    needs -lstdc++fs at link time."""
+    if os.name == "nt":
+        return "", "", []
+    candidates = []
+    for name in (os.environ.get("CXX"), "g++", "g++-8", "g++-9",
+                 "g++-10", "g++-11", "g++-12"):
+        if not name:
+            continue
+        path = shutil.which(name) or (name if os.path.isabs(name)
+                                       and os.path.isfile(name) else None)
+        if path and path not in candidates:
+            candidates.append(path)
+    if sys.platform == "darwin":
+        for name in ("clang++", "c++"):
+            p = shutil.which(name)
+            if p:
+                candidates.insert(0, p)
+                break
+    chosen = ""
+    for cxx in candidates:
+        if sys.platform == "darwin" or _tool_major(cxx) >= 8:
+            chosen = cxx
+            break
+    if not chosen:
+        raise AgentBuildError(
+            "no C++17 <filesystem> compiler found (need g++ >= 8). "
+            "On Ubuntu 18.04: sudo apt install g++-8")
+    suffix = ""
+    m = re.search(r"-(\d+(?:\.\d+)?)$", chosen)
+    if m:
+        suffix = "-" + m.group(1)
+    cc = shutil.which("gcc" + suffix) or shutil.which("gcc") or ""
+    if sys.platform == "darwin":
+        cc = shutil.which("clang") or shutil.which("cc") or cc
+    extra = []
+    if sys.platform.startswith("linux") and _tool_major(chosen) == 8:
+        extra.append("-DCMAKE_CXX_STANDARD_LIBRARIES=-lstdc++fs")
+    if cc:
+        extra.append(f"-DCMAKE_C_COMPILER={cc}")
+    extra.append(f"-DCMAKE_CXX_COMPILER={chosen}")
+    return cc, chosen, extra
+
+
+_CMAKE_PORTABLE = "3.28.3"
+
+
+def _cmake_ok(binary):
+    proc = _run([binary, "--version"], timeout=10)
+    m = re.search(r"(\d+)\.(\d+)", (proc.stdout or "") + (proc.stderr or ""))
+    if not m:
+        # Probe failed (mocked runner, odd wrapper): prefer the binary we
+        # already have over attempting a network download.
+        return True
+    try:
+        return (int(m.group(1)), int(m.group(2))) >= (3, 14)
+    except (TypeError, ValueError):
+        return True
+
+
+def _ensure_cmake():
+    """A cmake >= 3.14, downloading a portable build when needed.
+
+    Ubuntu 18.04/Jetson ships cmake 3.10, which cannot configure current
+    llama.cpp. Downloading Kitware's static-ish aarch64 build keeps the
+    first install automatic without sudo."""
+    system = shutil.which("cmake")
+    if system and _cmake_ok(system):
+        return system
+    local = (Path.home() / ".llama-peer-agent" / ".tools" / "cmake"
+             / "bin" / "cmake")
+    if local.is_file() and _cmake_ok(str(local)):
+        return str(local)
+    arch = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64",
+            "arm64": "aarch64"}.get(platform.machine().lower())
+    if not arch or os.name == "nt" or sys.platform == "darwin":
+        raise AgentBuildError(
+            "cmake >= 3.14 is required; install a newer CMake for this platform")
+    dest = Path.home() / ".llama-peer-agent" / ".tools" / "cmake"
+    dest.mkdir(parents=True, exist_ok=True)
+    url = (f"https://github.com/Kitware/CMake/releases/download/"
+           f"v{_CMAKE_PORTABLE}/cmake-{_CMAKE_PORTABLE}-linux-{arch}.tar.gz")
+    tmp = Path(tempfile.mkdtemp(prefix="farm-cmake-"))
+    try:
+        tgz = tmp / "cmake.tar.gz"
+        with urllib.request.urlopen(url, timeout=180) as r, open(tgz, "wb") as f:
+            shutil.copyfileobj(r, f)
+        with tarfile.open(tgz) as tf:
+            members = []
+            for m in tf.getmembers():
+                parts = m.name.split("/", 1)
+                if len(parts) == 2:
+                    m.name = parts[1]
+                    members.append(m)
+            try:
+                tf.extractall(dest, members=members, filter="data")
+            except TypeError:
+                tf.extractall(dest, members=members)
+        local = dest / "bin" / "cmake"
+        os.chmod(local, 0o755)
+        if not _cmake_ok(str(local)):
+            raise AgentBuildError("downloaded cmake is not runnable")
+        return str(local)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _bin_meta(llama_bin):
@@ -176,7 +298,8 @@ def update(config: AgentConfig, src_root, build_dir, bin_path,
                 home = h.group(1).strip()
         except Exception:
             pass
-        proc = _run(["cmake", "-S", home, "-B", str(build)], timeout=900)
+        proc = _run([_ensure_cmake(), "-S", home, "-B", str(build)],
+                    timeout=900)
         if proc.returncode != 0:
             out = ((proc.stdout or "") + (proc.stderr or ""))[-1000:]
             return {"ok": False,
@@ -211,10 +334,11 @@ def update(config: AgentConfig, src_root, build_dir, bin_path,
     targets = ["llama-server", "ggml-rpc-server", "llama-cli",
                "llama-completion", "llama-quantize", "llama-fit-params",
                "llama-bench", "llama-tokenize"]
-    proc = _run(["cmake", "--build", str(build), "--target", *targets,
+    cmake = _ensure_cmake()
+    proc = _run([cmake, "--build", str(build), "--target", *targets,
                  "-j", str(int(jobs))], timeout=7200)
     if proc.returncode != 0:
-        proc = _run(["cmake", "--build", str(build), "--target",
+        proc = _run([cmake, "--build", str(build), "--target",
                      "llama-server", "ggml-rpc-server",
                      "-j", str(int(jobs))], timeout=7200)
     output = ((proc.stdout or "") + (proc.stderr or ""))[-1500:]
@@ -297,6 +421,14 @@ def bootstrap(config: AgentConfig, src_root, build_dir, bin_path, tag,
     src = files._path(config, src_root, write=True)
     build = files._path(config, build_dir, write=True)
     files._path(config, bin_path, write=True)  # validate under roots
+    cmake = _ensure_cmake()
+    cc, cxx, compiler_args = _pick_compiler()
+    args = args + compiler_args
+    build_env = dict(os.environ)
+    if cc:
+        build_env["CC"] = cc
+    if cxx:
+        build_env["CXX"] = cxx
     missing = _missing_tools(args)
     if missing:
         raise AgentBuildError("missing build tools: " + ", ".join(missing))
@@ -323,8 +455,9 @@ def bootstrap(config: AgentConfig, src_root, build_dir, bin_path, tag,
                                   + (proc.stderr or "")[-300:])
     build.mkdir(parents=True, exist_ok=True)
     if not (build / "CMakeCache.txt").is_file():
-        proc = _run(["cmake", "-S", str(src), "-B", str(build),
-                     "-DCMAKE_BUILD_TYPE=Release", *args], timeout=1800)
+        proc = _run([cmake, "-S", str(src), "-B", str(build),
+                     "-DCMAKE_BUILD_TYPE=Release", *args],
+                    timeout=1800, env=build_env)
         if proc.returncode != 0:
             out = ((proc.stdout or "") + (proc.stderr or ""))[-1200:]
             raise AgentBuildError("cmake configure failed: " + out)
@@ -342,12 +475,12 @@ def bootstrap(config: AgentConfig, src_root, build_dir, bin_path, tag,
     targets = ["llama-server", "ggml-rpc-server", "llama-cli",
                "llama-completion", "llama-quantize", "llama-fit-params",
                "llama-bench", "llama-tokenize"]
-    proc = _run(["cmake", "--build", str(build), "--target", *targets,
-                 "-j", str(int(jobs))], timeout=21600)
+    proc = _run([cmake, "--build", str(build), "--target", *targets,
+                 "-j", str(int(jobs))], timeout=21600, env=build_env)
     if proc.returncode != 0:
-        proc = _run(["cmake", "--build", str(build), "--target",
+        proc = _run([cmake, "--build", str(build), "--target",
                      "llama-server", "ggml-rpc-server",
-                     "-j", str(int(jobs))], timeout=21600)
+                     "-j", str(int(jobs))], timeout=21600, env=build_env)
     if proc.returncode != 0:
         raise AgentBuildError("build failed: "
                               + (((proc.stdout or "") + (proc.stderr or ""))[-1500:]))
