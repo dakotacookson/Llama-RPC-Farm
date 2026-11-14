@@ -233,3 +233,17 @@ def test_storage_mode_sync_overrides_legacy_enabled(monkeypatch):
         {"storage_mode": "sync",
          "model_sync": {"enabled": False, "default_dir": "~/models"}})
     assert p.endswith("/models/a.gguf")
+
+
+def test_save_store_keeps_other_platforms(monkeypatch, tmp_path):
+    import yaml
+    import path_resolver
+
+    p = tmp_path / "stores.yaml"
+    p.write_text("stores:\n  llm-models:\n    windows: '\\\\nas\\models'\n",
+                 encoding="utf-8")
+    monkeypatch.setattr(path_resolver, "STORES_FILE", str(p))
+    path_resolver.save_store("llm-models", "linux", "/mnt/models")
+    data = yaml.safe_load(p.read_text())
+    assert data["stores"]["llm-models"]["linux"] == "/mnt/models"
+    assert data["stores"]["llm-models"]["windows"] == "\\\\nas\\models"

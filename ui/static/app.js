@@ -5514,6 +5514,8 @@ window.addEventListener("DOMContentLoaded", async () => {
       showLogin(true, true);
     } else if (me && me.has_logins && !me.user && me.trust_via !== "loopback") {
       showLogin(true, false);
+    } else if (me && me.setup_wizard_required) {
+      showSetupWizard(2);
     }
     window.__me = me || null;
     renderLoginChip(me);
@@ -5672,6 +5674,89 @@ async function doBootstrap() {
     if (me && !me.needs_setup) showLogin(true, false);
   }
 }
+
+/* ---------------- first-run setup walkthrough -------------------- */
+let _setupState = null;
+function syncSetupStorageFields() {
+  const mode = $("#setup-storage-mode")?.value || "shared";
+  const shared = $("#setup-shared-fields");
+  const sync = $("#setup-sync-fields");
+  if (shared) shared.hidden = mode !== "shared";
+  if (sync) sync.hidden = mode !== "sync";
+}
+function setupStep(n) {
+  const is3 = n === 3;
+  if ($("#setup-step-2")) $("#setup-step-2").hidden = is3;
+  if ($("#setup-step-3")) $("#setup-step-3").hidden = !is3;
+  if ($("#setup-back")) $("#setup-back").style.display = is3 ? "" : "none";
+  if ($("#setup-next")) $("#setup-next").style.display = is3 ? "none" : "";
+  if ($("#setup-machines")) $("#setup-machines").style.display = is3 ? "" : "none";
+  if ($("#setup-finish")) $("#setup-finish").style.display = is3 ? "" : "none";
+  $$("#setup-steps .setup-step").forEach((el) => {
+    const s = Number(el.dataset.step || 0);
+    el.classList.toggle("active", s === n);
+    el.classList.toggle("done", s < n);
+  });
+  const err = $("#setup-err");
+  if (err) { err.hidden = true; err.textContent = ""; }
+}
+async function showSetupWizard(step = 2) {
+  try { _setupState = await api("GET", "/api/setup/status"); }
+  catch (_) { _setupState = null; }
+  const platform = _setupState?.platform || "linux";
+  const store = (_setupState?.stores || {})["llm-models"] || {};
+  $("#setup-store-path").value = store[platform] || "";
+  $("#setup-storage-mode").value = _setupState?.storage_mode || "shared";
+  $("#setup-model-dir").value = _setupState?.model_dir || "store://llm-models";
+  $("#setup-sync-dir").value = _setupState?.default_dir || "~/llama-models";
+  syncSetupStorageFields();
+  setupStep(step);
+  $("#setup-modal")?.classList.remove("hidden");
+}
+async function saveSetupStorage() {
+  const err = $("#setup-err");
+  const mode = $("#setup-storage-mode").value;
+  const storePath = $("#setup-store-path").value.trim();
+  if (mode === "shared" && !storePath) {
+    err.textContent = "Enter the shared model store path for this machine.";
+    err.hidden = false;
+    return;
+  }
+  try {
+    await api("POST", "/api/setup/storage", {
+      mode,
+      model_dir: $("#setup-model-dir").value.trim() || "store://llm-models",
+      default_dir: $("#setup-sync-dir").value.trim(),
+      store_name: "llm-models",
+      store_path: storePath,
+      platform: _setupState?.platform || "",
+    });
+    _setupState = await api("GET", "/api/setup/status").catch(() => _setupState);
+    await loadSettings();
+    setupStep(3);
+  } catch (e) {
+    err.textContent = e.message;
+    err.hidden = false;
+  }
+}
+async function completeSetup() {
+  try { await api("POST", "/api/setup/complete", {}); } catch (_) {}
+  $("#setup-modal")?.classList.add("hidden");
+  loadSettings();
+}
+async function openSetupMachines() {
+  await completeSetup();
+  const btn = document.querySelector('nav button[data-tab="machines"]');
+  if (btn) btn.click();
+}
+on("#setup-next", "click", saveSetupStorage);
+on("#setup-back", "click", () => setupStep(2));
+on("#setup-machines", "click", openSetupMachines);
+on("#setup-finish", "click", completeSetup);
+on("#setup-skip", "click", completeSetup);
+on("#setup-close", "click", completeSetup);
+on("#setup-storage-mode", "change", syncSetupStorageFields);
+on("#set-setup-guide", "click", () => showSetupWizard(2));
 
 /* Boot-time Access-tab gate: same decision loadAccess makes
    (whoami.trusted), applied without loading the tab — hides the nav

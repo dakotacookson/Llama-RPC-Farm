@@ -1289,6 +1289,7 @@ technical | bugs, errors, login problems</textarea></label>
           </label>
         </div>
         <div class="actions">
+          <button type="button" class="small" id="set-setup-guide"><i class="fa-solid fa-wand-magic-sparkles"></i> Setup guide</button>
           <button type="button" id="set-save">Save defaults</button>
         </div>
         <div id="set-status"></div>
@@ -1370,6 +1371,66 @@ technical | bugs, errors, login problems</textarea></label>
         <span style="flex:1"></span>
         <button class="small" id="login-setup" style="display:none"><i class="fa-solid fa-user-plus"></i> Create admin</button>
         <button class="small" id="login-go"><i class="fa-solid fa-right-to-bracket"></i> Sign in</button>
+      </div>
+    </div>
+  </div>
+  <!-- First-run setup walkthrough (storage + engines; admin step is the login modal) -->
+  <div id="setup-modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-backdrop"></div>
+    <div class="modal-dialog" role="dialog" aria-modal="true" style="max-width:580px">
+      <div class="modal-header">
+        <h3 id="setup-title"><i class="fa-solid fa-wand-magic-sparkles"></i> First-time setup</h3>
+        <button class="small" id="setup-close" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body" style="padding:14px">
+        <div class="setup-steps" id="setup-steps">
+          <span class="setup-step done">1 · Admin</span>
+          <span class="setup-step active" data-step="2">2 · Model storage</span>
+          <span class="setup-step" data-step="3">3 · Engines</span>
+        </div>
+        <div id="setup-step-2">
+          <p class="hint" style="margin-top:0">Choose where model files live. Shared keeps the NAS/CIFS mount for every machine (the original setup); Model sync uses a local model space and copies a missing model to the machine that serves it.</p>
+          <label class="wide">Model storage mode
+            <select id="setup-storage-mode">
+              <option value="shared">Shared NAS / CIFS (store:// paths)</option>
+              <option value="sync">Model sync (copy models to each machine)</option>
+            </select>
+          </label>
+          <div id="setup-shared-fields">
+            <label class="wide">Shared model store path (this machine's platform)
+              <input id="setup-store-path" placeholder="/mnt/cassiel_cifs/llm-models">
+              <small class="hint">Saved in <code>config/stores.yaml</code> for this platform. Model configs keep using <code>store://llm-models</code>.</small>
+            </label>
+          </div>
+          <div id="setup-sync-fields" hidden>
+            <label class="wide">Default local model directory
+              <input id="setup-sync-dir" placeholder="~/llama-models">
+              <small class="hint">Expanded on each target machine (<code>~</code> / <code>%USERPROFILE%</code>). Per-machine overrides live in the Machines editor.</small>
+            </label>
+          </div>
+          <label class="wide">Model directory / scan root
+            <input id="setup-model-dir" placeholder="store://llm-models">
+            <small class="hint">Usually <code>store://llm-models</code>. Downloads and model scans use this alias.</small>
+          </label>
+          <p class="status-bad" id="setup-err" hidden></p>
+        </div>
+        <div id="setup-step-3" hidden>
+          <p class="hint" style="margin-top:0">Storage is configured. Open the Machines page to install the engines:</p>
+          <ol class="hint" style="line-height:1.8;margin:8px 0 10px 18px">
+            <li><b>Install engines</b> on the master (llama.cpp + <code>ggml-rpc-server</code>).</li>
+            <li>Add any peers and install the peer agent on them.</li>
+            <li><b>Install llama-swap</b> on the swap host.</li>
+          </ol>
+          <p class="hint">The <b>Setup needed</b> panel on the Machines page shows exactly what is still missing.</p>
+        </div>
+      </div>
+      <div class="modal-footer" style="display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--border-soft)">
+        <button class="small" id="setup-skip">Skip setup</button>
+        <span style="flex:1"></span>
+        <button class="small" id="setup-back" style="display:none">Back</button>
+        <button class="small" id="setup-next" style="background:var(--accent-dim);color:var(--accent);border-color:var(--accent)">Save &amp; continue</button>
+        <button class="small" id="setup-machines" style="display:none">Open Machines</button>
+        <button class="small" id="setup-finish" style="display:none">Finish</button>
       </div>
     </div>
   </div>

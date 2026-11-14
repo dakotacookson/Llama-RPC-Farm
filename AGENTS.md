@@ -264,6 +264,13 @@ anything that runs shell commands:
   bootstrap Python 3.11 with the **musl** uv build (gnu uv needs glibc
   2.28; Jetson is 2.27) and create a **seeded** venv so `/agent/update`
   (`python -m pip`) works.
+- **First-run walkthrough state:** `auth_bootstrap` writes
+  `setup_wizard_done: false` only for a genuinely fresh install (no logins
+  and no keys). `/api/setup/complete` sets it true; `/api/setup/status`,
+  `/api/setup/storage` drive the storage step. Never reset the marker on
+  existing installs (that would re-prompt them); Settings → Setup guide
+  reopens it client-side. The account step is the existing
+  `/api/auth/bootstrap` form, not a second wizard.
 - **Model paths for a launch must go through `model_sync.resolve_model_path()`**
   (it applies the target machine's `model_dir` / the opt-in
   `model_sync.default_dir` only when `storage_mode: sync`; in the default

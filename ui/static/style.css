@@ -6579,3 +6579,9 @@ body.login-locked #login-modal * { pointer-events: auto !important; }
   .md-hero-main { align-items: flex-start; }
   .md-hero-main .md-tabs { margin-left: 0; }
 }
+
+/* first-run setup walkthrough */
+.setup-steps { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 12px; }
+.setup-step { padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; font-size: 10px; color: var(--muted); font-family: var(--mono); }
+.setup-step.active { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+.setup-step.done { border-color: var(--ok); color: var(--ok); }
