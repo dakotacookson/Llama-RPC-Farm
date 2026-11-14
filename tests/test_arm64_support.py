@@ -89,3 +89,37 @@ def test_board_model_empty_when_absent(monkeypatch):
     monkeypatch.setattr(system, "_BOARD_MODEL_PATHS",
                         ("/nonexistent/device-tree/model",))
     assert system._board_model() == ""
+
+
+def test_sub_gb_ram_is_not_floored_to_zero():
+    from routes.machines import _ram_gb
+
+    assert _ram_gb(0.4) == 0.4
+    assert _ram_gb(27.9) == 27
+    assert _ram_gb(None) == 0
+
+
+def test_machine_in_accepts_mac_for_arp_healing():
+    from routes.machines import MachineIn
+
+    assert MachineIn(name="pi", ip="10.0.0.145",
+                     mac="d8:3a:dd:a6:39:1a").mac \
+        == "d8:3a:dd:a6:39:1a"
+    assert MachineIn(name="pi", ip="10.0.0.145").mac is None
+
+
+def test_linux_detail_echoes_glibc(monkeypatch):
+    """Regression: the agent computed G but never echoed it, so the farm
+    saw glibc='' and could not gate Bookworm's arm64 prebuilt."""
+    from llama_peer_agent import system
+    from llama_peer_agent.config import AgentConfig
+
+    captured = {}
+
+    def fake_run(cmd, timeout=30):
+        captured["cmd"] = cmd
+        return 1, "", ""
+
+    monkeypatch.setattr(system, "_run", fake_run)
+    system._linux(AgentConfig(token="t", host="127.0.0.1", port=8198))
+    assert 'echo "G:$G"' in captured["cmd"]

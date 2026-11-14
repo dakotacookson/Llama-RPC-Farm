@@ -120,6 +120,11 @@ def _rebar_values(raw):
 def _linux(config: AgentConfig):
     bin_dir = os.path.dirname(processes.llama_binary(config) or
                                shutil.which("llama-server") or "")
+    # No llama.cpp install yet: keep L empty instead of probing "/llama-server".
+    llama_arg = (
+        f'L=$("{bin_dir}/llama-server" --version 2>&1 || '
+        f'"{bin_dir}/llama-cli" --version 2>&1); '
+        if bin_dir else 'L=""; ')
     cmd = (
         'K=$(uname -a); '
         "C=$(lscpu | grep 'Model name' | cut -d: -f2 | sed 's/^ *//'); "
@@ -157,12 +162,11 @@ def _linux(config: AgentConfig):
         "--format=csv,noheader,nounits 2>/dev/null); "
         "R=$(nvidia-smi --query-gpu=pci.bar1_memory_total "
         "--format=csv,noheader,nounits 2>/dev/null); "
-        f'L=$("{bin_dir}/llama-server" --version 2>&1 || '
-        f'"{bin_dir}/llama-cli" --version 2>&1); '
+        + llama_arg +
         'echo "K:$K"; echo "C:$C"; echo "U:$U"; echo "I:$I"; '
         'echo "S:$S"; echo "D:$D"; echo "DT:$DT"; echo "V:$V"; '
-        'echo "CF:$CF"; echo "B:$B"; echo "P:$P"; echo "R:$R"; '
-        'echo "L:$L"; echo "DRV:$DRV"'
+        'echo "CF:$CF"; echo "B:$B"; echo "G:$G"; echo "P:$P"; '
+        'echo "R:$R"; echo "L:$L"; echo "DRV:$DRV"'
     )
     code, out, _ = _run(cmd)
     if code != 0:

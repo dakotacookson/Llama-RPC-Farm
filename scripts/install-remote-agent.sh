@@ -35,15 +35,19 @@ raise SystemExit("no agent wheel asset found in the latest release")
 PY
 )"
 
-echo "==> Downloading peer agent wheel"
-curl -fsSL --retry 3 "$WHEEL_URL" -o "$TMP/agent.whl"
+WHEEL_NAME="$(basename "$WHEEL_URL")"
+echo "==> Downloading peer agent wheel ($WHEEL_NAME)"
+# pip validates the wheel filename, so keep the release basename instead of
+# renaming it to a generic agent.whl (which pip rejects: "Invalid wheel
+# filename (wrong number of parts)").
+curl -fsSL --retry 3 "$WHEEL_URL" -o "$TMP/$WHEEL_NAME"
 
 echo "==> Installing into $VENV"
 mkdir -p "$ROOT"
 if [[ ! -x "$VENV/bin/python" ]]; then
   python3 -m venv "$VENV"
 fi
-"$VENV/bin/python" -m pip install --quiet --force-reinstall --no-deps "$TMP/agent.whl"
+"$VENV/bin/python" -m pip install --quiet --force-reinstall --no-deps "$TMP/$WHEEL_NAME"
 
 if [[ -n "${PEER_AGENT_TOKEN:-}" ]]; then
   ENV_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/llama-peer-agent"
