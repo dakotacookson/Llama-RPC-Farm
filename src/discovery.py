@@ -124,6 +124,11 @@ def discover_agents(port=8199, timeout=2.0, include_known=True):
             "ip": ip, "port": 0,
             "ping_alive": None, "banner": None, "os": a.get("os"),
             "hostname": a.get("hostname"),
+            "arch": a.get("arch"),
+            "board": a.get("board") or hw.get("board") or "",
+            "cpu_only": bool(a.get("cpu_only") or hw.get("cpu_only")),
+            "gpu_unsupported": (a.get("gpu_unsupported")
+                                or hw.get("gpu_unsupported") or ""),
             "gpus": hw.get("gpu_names") or [],
             "gpu_vendor": hw.get("gpu_vendor") or None,
             "ram_total_gb": hw.get("ram_total_gb"),
