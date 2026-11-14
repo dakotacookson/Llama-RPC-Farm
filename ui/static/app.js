@@ -1036,7 +1036,7 @@ function statCardHTML(m) {
     <div class="machine-status-card ${online ? "online" : "offline"}" data-machine="${escHtml(m.name)}" title="Click for details">
       <div class="card-header">
         <span class="card-label machine-identity">
-          <span class="machine-glyph"><i class="fa-solid fa-server"></i></span>
+          <span class="machine-glyph">${machineGlyph(m)}</span>
           <span class="machine-ident">
             <span class="machine-name-row">
               <span class="card-name">${escHtml(m.name)}</span>
@@ -1046,7 +1046,7 @@ function statCardHTML(m) {
               <span class="status-dot ${online ? "on" : "off"}"></span>
               <span class="machine-state-text">${online ? "online" : "offline"}</span>
               <span class="machine-sep">·</span>
-              <span class="machine-os">${osIcon(m.os)} ${escHtml(osLabel)}</span>
+              <span class="machine-os">${osIcon(m)} ${escHtml(osLabel)}</span>
             </span>
           </span>
         </span>
@@ -1412,7 +1412,7 @@ function renderMachineDetail(body, d) {
   body.innerHTML = `
     <div class="md-hero">
       <div class="md-hero-main">
-        <span class="md-hero-glyph"><i class="fa-solid fa-server"></i></span>
+        <span class="md-hero-glyph">${machineGlyph(d)}</span>
         <div class="md-hero-id">
           <div class="md-hero-title">
             <strong>${escHtml(d.name)}</strong>
@@ -1420,7 +1420,7 @@ function renderMachineDetail(body, d) {
             ${d.is_local ? '<span class="badge badge-local">this machine</span>' : ""}
             <span class="md-status-pill ${online ? "is-on" : "is-off"}"><span class="status-dot ${online ? "on" : "off"}"></span>${online ? "online" : "offline"}</span>
           </div>
-          <div class="md-hero-sub">${escHtml(osLabel)} · ${escHtml(d.role || "peer")} · ${escHtml(d.ip || "—")}</div>
+          <div class="md-hero-sub">${osIcon(d)}${escHtml(osLabel)} · ${escHtml(d.role || "peer")} · ${escHtml(d.ip || "—")}</div>
         </div>
       <div class="md-tabs" role="tablist" aria-label="Machine detail sections">
         <button type="button" class="md-tab ${activeTab === "resources" ? "active" : ""}" data-md-tab="resources" role="tab" aria-selected="${activeTab === "resources"}" id="md-tab-resources" aria-controls="md-panel-resources">
@@ -2442,7 +2442,7 @@ async function loadMachines(skipCaps = false) {
       const needsSwap = !!(rr && rr.is_swap_host
                            && !(rr.llama_swap || {}).installed);
       tr.innerHTML = `
-      <div class="scan-main"><div class="scan-title">${osIcon(m.os)}${m.name}${m.role === "master" ? ' <span class="badge badge-master">master</span>' : ""}</div>
+      <div class="scan-main"><div class="scan-title">${osIcon(m)}${m.name}${m.role === "master" ? ' <span class="badge badge-master">master</span>' : ""}</div>
         <small>${m.ip} · ${m.role} (${m.os}) · GPUs: ${m.gpu || "-"} · ${exposeHTML(m)} · ${connectionBadge(m)}</small>${readinessBadgeHTML(rr)}
         ${detectedHTML(m)}</div>
       <div class="scan-model-actions">
@@ -2792,8 +2792,31 @@ function connectionBadge(m) {
   const cls = c === "none" ? " status-bad" : "";
   return `<span class="badge badge-conn${cls}" title="Detected connection: ${connectionLabel(m)}"><i class="fa-solid ${icon}"></i> ${connectionLabel(m)}</span>`;
 }
-function osIcon(os) {
-  const o = (os || "").toLowerCase();
+// A Raspberry Pi is a distinct machine type, not just "Linux": show the
+// Pi brand icon anywhere a machine is identified (board comes from
+// /proc/device-tree/model via hardware detect).
+function isRaspberryPi(m) {
+  if (!m || typeof m !== "object") return false;
+  const board = String((m.detected && m.detected.board) || m.board || "")
+    .toLowerCase();
+  return board.includes("raspberry pi");
+}
+
+function machineGlyph(m) {
+  if (isRaspberryPi(m)) {
+    return '<i class="fa-brands fa-raspberry-pi" title="Raspberry Pi"></i>';
+  }
+  return '<i class="fa-solid fa-server"></i>';
+}
+
+function osIcon(osOrMachine) {
+  if (osOrMachine && typeof osOrMachine === "object") {
+    if (isRaspberryPi(osOrMachine)) {
+      return '<i class="fa-brands fa-raspberry-pi os-icon" title="Raspberry Pi"></i>';
+    }
+    return osIcon(osOrMachine.os);
+  }
+  const o = (osOrMachine || "").toLowerCase();
   if (o === "windows") return '<i class="fa-brands fa-windows os-icon" title="Windows"></i>';
   if (o === "macos" || o === "darwin") return '<i class="fa-brands fa-apple os-icon" title="macOS"></i>';
   if (o === "linux") return '<i class="fa-brands fa-linux os-icon" title="Linux"></i>';
@@ -2938,7 +2961,7 @@ on("#d-scan", "click", async (e) => {
       for (const h of r.results) {
         const tr = document.createElement("tr");
         const osTxt = h.os
-          ? `${osIcon(h.os)}${escHtml(h.os)}${h.banner ? ` <small class="hint" title="${escHtml(h.banner)}">${escHtml(h.banner.split("$").pop() || "")}</small>` : ""}`
+          ? `${osIcon(h)}${escHtml(h.os)}${h.banner ? ` <small class="hint" title="${escHtml(h.banner)}">${escHtml(h.banner.split("$").pop() || "")}</small>` : ""}`
           : '<span class="status-warn">unknown</span>';
         const addCell = h.already_added
           ? '<small class="hint">already added</small>'
