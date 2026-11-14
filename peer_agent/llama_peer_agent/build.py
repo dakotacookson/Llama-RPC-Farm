@@ -48,8 +48,8 @@ def _pick_compiler():
     if os.name == "nt":
         return "", "", []
     candidates = []
-    for name in (os.environ.get("CXX"), "g++", "g++-8", "g++-9",
-                 "g++-10", "g++-11", "g++-12"):
+    for name in (os.environ.get("CXX"), "g++-12", "g++-11", "g++-10",
+                 "g++-9", "g++-8", "g++"):
         if not name:
             continue
         path = shutil.which(name) or (name if os.path.isabs(name)
@@ -384,7 +384,9 @@ def _have_tool(name):
 
 
 def _missing_tools(cmake_args):
-    missing = [t for t in ("git", "cmake") if not shutil.which(t)]
+    # cmake is resolved/downloaded by _ensure_cmake, so it need not be on
+    # PATH (Ubuntu 18.04 ships a too-old one but may not have another).
+    missing = [t for t in ("git",) if not shutil.which(t)]
     blob = " ".join(cmake_args)
     if "GGML_CUDA=ON" in blob and not _have_tool("nvcc"):
         missing.append("nvcc (CUDA toolkit)")
@@ -454,6 +456,29 @@ def bootstrap(config: AgentConfig, src_root, build_dir, bin_path, tag,
             raise AgentBuildError("git checkout failed: "
                                   + (proc.stderr or "")[-300:])
     build.mkdir(parents=True, exist_ok=True)
+    if (build / "CMakeCache.txt").is_file():
+        cached_cxx = ""
+        try:
+            cache_txt = (build / "CMakeCache.txt").read_text(
+                encoding="utf-8", errors="replace")
+            m = re.search(r"^CMAKE_CXX_COMPILER:[^=]*=(.+)$", cache_txt, re.M)
+            cached_cxx = m.group(1).strip() if m else ""
+        except OSError:
+            cached_cxx = ""
+        if (cxx and cached_cxx
+                and os.path.realpath(cached_cxx) != os.path.realpath(cxx)):
+            # A previous/partial configure used another compiler (e.g. the
+            # distro g++ 7/8 on aarch64). Reusing its objects cannot work;
+            # force a clean configure with the chosen compiler.
+            for name in ("CMakeCache.txt", "CMakeFiles", "bin"):
+                target = build / name
+                if target.is_dir():
+                    shutil.rmtree(target, ignore_errors=True)
+                else:
+                    try:
+                        target.unlink()
+                    except OSError:
+                        pass
     if not (build / "CMakeCache.txt").is_file():
         proc = _run([cmake, "-S", str(src), "-B", str(build),
                      "-DCMAKE_BUILD_TYPE=Release", *args],
