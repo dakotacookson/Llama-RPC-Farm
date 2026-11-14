@@ -155,9 +155,15 @@ scripts, same probe, same dashboard), it just needs real-world users**:
 | NVIDIA GPUs, Linux (CUDA) | ✅ Tested by @dakotacookson — multi-GPU tensor-split, RPC + local GPU mix |
 | NVIDIA GPUs, Windows peers | ✅ Tested by @dakotacookson — RPC over the peer agent |
 | CPU + RAM sharing over RPC | ✅ Tested by @dakotacookson |
+| Raspberry Pi 4/5, 64-bit (Trixie / Ubuntu 24.04) | ✅ arm64 prebuilt — CPU-only RPC peer or single-box (glibc ≥ 2.38) |
+| Raspberry Pi 4/5, 64-bit (Bookworm) | ✅ source build — Bookworm's glibc 2.36 cannot load the arm64 prebuilt |
 | AMD GPUs (ROCm/HIP, `rocm-smi` stats) | 🧪 Code paths complete, needs contributors to test |
 | Apple Silicon (Metal backend) | ✅ Tested by @joshuamsalazar — Metal backend |
 | Intel XPU (SYCL) | 🧪 Vendor supported in detection/scripts, untested |
+
+Raspberry Pis are CPU-only over llama.cpp RPC (no VideoCore backend): use
+one as a small single-box endpoint or as an extra RAM/CPU peer. Setup and
+the Bookworm-vs-Trixie matrix: [docs/raspberry-pi.md](docs/raspberry-pi.md).
 
 Each backend speaks the same tokens (`CUDA0/1..`, `ROCm0/1..`, `Metal`,
 `CPU`) and flows through identical launch scripts — see

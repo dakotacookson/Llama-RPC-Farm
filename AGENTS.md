@@ -210,6 +210,15 @@ anything that runs shell commands:
   Vulkan builds only 2.34. `llamacpp_installer.py` probes `ldd --version`
   and falls back Vulkan-first. POSIX tarballs need `--strip-components=1`
   (they nest in `llama-<tag>/`); Windows zips are flat.
+- **Linux arm64 prebuilts (Raspberry Pi) need glibc ≥ 2.38** — CPU,
+  Vulkan and CUDA arm64 assets are all built on Ubuntu 24.04. Bookworm
+  (2.36) must source-build; `prebuilt_blocker()` handles this. A Pi is a
+  CPU-only RPC peer (`ggml-rpc-server` exposes one `CPU` device). Arch is
+  resolved by `resolve_arch()` before asset/glibc decisions because a
+  fresh machine has no `detected.arch`; hardware detect persists `arch`
+  and `board` (from `/proc/device-tree/model`) and must merge, not
+  replace, the existing `detected` dict. Release assets:
+  `...-linux-arm64`, `..._arm64.deb`, `llama-peer-agent-linux-arm64`.
 
 ## Config / state model
 

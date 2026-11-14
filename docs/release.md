@@ -36,22 +36,25 @@ live-checks GitHub releases and uses the highest published `release-*` tag.
 
 1. Reads `VERSION` and computes the next `X.Y.Z` from published
    `release-*` tags.
-2. Runs three platform **build jobs** in parallel in the same workflow:
+2. Runs four platform **build jobs** in parallel in the same workflow:
    - `linux` — linux-x64, also runs the pre-release checks
      (py_compile, `node --check`, `bash -n`, pytest)
+   - `linux-arm64` — linux-arm64 (Raspberry Pi), same checks on
+     `ubuntu-24.04-arm`
    - `macos` — macos-arm64
    - `windows` — windows-x64
-3. Runs a **single** publish job only after **all three** builds succeed.
+3. Runs a **single** publish job only after **all** builds succeed.
 
 Each build job produces both the app and the peer agent:
 
 | Platform | App artifacts | Agent artifacts |
 |---|---|---|
-| Linux | `.deb` | `.deb` + `llama-peer-agent-linux-x86_64` |
+| Linux x64 | `.deb` (amd64) | `.deb` (amd64) + `llama-peer-agent-linux-x86_64` |
+| Linux arm64 | `.deb` (arm64) | `.deb` (arm64) + `llama-peer-agent-linux-arm64` |
 | macOS | `.pkg` | `.pkg` + `llama-peer-agent-macos-arm64` |
 | Windows | `setup.exe` | `setup.exe` + `llama-peer-agent-windows-x64.exe` |
 
-The Linux job also publishes the universal agent wheel
+The Linux jobs also publish the universal agent wheel
 `llama_rpc_farm_agent-<version>-py3-none-any.whl` and the app source wheel
 `llama_rpc_farm-<version>-py3-none-any.whl`. The app wheel lets source
 installs update in place even when they are not git checkouts. Each

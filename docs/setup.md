@@ -18,6 +18,12 @@ and the agent are installed to standard user locations.
 The machine running the app is **always the master**; everything else is a
 peer. OS of master/peers can mix Linux / Windows / macOS.
 
+**Raspberry Pi (Linux arm64):** a Pi is a CPU-only peer. Trixie (glibc
+2.41) and Ubuntu 24.04 (2.39) use the upstream arm64 prebuilt; Bookworm
+(glibc 2.36) cannot load it and the farm automatically builds from
+source. Use the `arm64.deb` agent package (or the universal wheel). See
+[raspberry-pi.md](raspberry-pi.md).
+
 ## 1. Install
 
 One-shot, idempotent, safe to re-run. It picks a Python 3.11+ (downloading

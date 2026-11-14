@@ -1,6 +1,7 @@
 """Machine detail used by the dashboard modal."""
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -8,6 +9,25 @@ import uuid
 
 from . import processes
 from .config import AgentConfig
+
+
+_BOARD_MODEL_PATHS = ("/proc/device-tree/model",
+                      "/sys/firmware/devicetree/base/model")
+
+
+def _board_model() -> str:
+    """SBC/board model from the device tree (Raspberry Pi, etc.).
+
+    `/proc/device-tree/model` is NUL-terminated; desktop/server Linux
+    usually has no such file and returns ''."""
+    for path in _BOARD_MODEL_PATHS:
+        try:
+            with open(path, "rb") as f:
+                return f.read().replace(b"\x00", b"").decode(
+                    "utf-8", "replace").strip()
+        except OSError:
+            continue
+    return ""
 
 
 def _mac_address() -> str:
@@ -128,6 +148,8 @@ def _linux(config: AgentConfig):
         "DT=$(df -k / | tail -n1 | awk '{print $2}'); "
         "V=$(systemd-detect-virt 2>/dev/null || echo bare); "
         "CF=$(lscpu | grep '^Flags:' | cut -d: -f2- | sed 's/^ *//'); "
+        # Board model (Raspberry Pi 4/5, other SBCs); empty on most PCs.
+        "B=$(tr -d '\\0' < /proc/device-tree/model 2>/dev/null); "
         'G=$(ldd --version 2>&1 | head -1); '
         'DRV=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader '
         '2>/dev/null | head -1); '
@@ -139,8 +161,8 @@ def _linux(config: AgentConfig):
         f'"{bin_dir}/llama-cli" --version 2>&1); '
         'echo "K:$K"; echo "C:$C"; echo "U:$U"; echo "I:$I"; '
         'echo "S:$S"; echo "D:$D"; echo "DT:$DT"; echo "V:$V"; '
-        'echo "CF:$CF"; echo "P:$P"; echo "R:$R"; echo "L:$L"; '
-        'echo "DRV:$DRV"'
+        'echo "CF:$CF"; echo "B:$B"; echo "P:$P"; echo "R:$R"; '
+        'echo "L:$L"; echo "DRV:$DRV"'
     )
     code, out, _ = _run(cmd)
     if code != 0:
@@ -165,7 +187,8 @@ def _linux(config: AgentConfig):
         "disk": {"free": disk_free, "total": disk_total, "mount": "/"},
         "mac": _mac_address(),
         "llama_version": p.get("L", ""), "cores": os.cpu_count() or 0,
-        "cpu_cores": cores,
+        "cpu_cores": cores, "arch": platform.machine(),
+        "board": p.get("B", "") or _board_model(),
         "virt": p.get("V", ""), "cpu_flags": p.get("CF", ""),
         "glibc": p.get("G", ""), "driver_version": p.get("DRV", ""),
         "pcie": _pcie_tags(p.get("P", "")),
@@ -199,6 +222,7 @@ echo "L:$("BIN/llama-server" --version 2>&1 || "BIN/llama-cli" --version 2>&1)"
         "mac": _mac_address(),
         "llama_version": p.get("L", ""), "driver_version": "",
         "virt": "bare", "cpu_flags": "", "pcie": "", "rebar": "",
+        "arch": platform.machine(), "board": "",
         "cores": int(subprocess.run(
             ["sysctl", "-n", "hw.ncpu"], capture_output=True, text=True,
             timeout=10).stdout.strip() or 0),
@@ -279,6 +303,7 @@ def _windows(config: AgentConfig):
         "mac": _mac_address(),
         "llama_version": o.get("llama", ""), "cores": o.get("cores", 0),
         "cpu_cores": cl or [], "virt": "windows", "cpu_flags": "",
+        "arch": platform.machine(), "board": "",
         "driver_version": str(o.get("driver") or ""),
         "pcie": "", "rebar": "",
     }

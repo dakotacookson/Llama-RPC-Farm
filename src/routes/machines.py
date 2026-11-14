@@ -27,6 +27,39 @@ _CONN_CACHE = {"ts": 0.0, "data": None}
 _CONN_TTL = 5.0
 
 
+def _board_model_local():
+    """Board model from the device tree (Raspberry Pi, other SBCs)."""
+    for path in ("/proc/device-tree/model",
+                 "/sys/firmware/devicetree/base/model"):
+        try:
+            with open(path, "rb") as f:
+                return f.read().replace(b"\x00", b"").decode(
+                    "utf-8", "replace").strip()
+        except OSError:
+            continue
+    return ""
+
+
+def _detect_arch_board(machine):
+    """(arch, board) for hardware detection.
+
+    `detected` is replaced wholesale by the detect endpoints, so arch/board
+    must be recomputed every time — otherwise a Raspberry Pi would lose its
+    arm64 arch and later asset picks would silently fall back to x64.
+    """
+    import llamacpp_installer
+    arch = llamacpp_installer.resolve_arch(machine)
+    board = ""
+    try:
+        if local_node.is_local(machine):
+            board = _board_model_local()
+        else:
+            board = str((agent_client.info(machine) or {}).get("board") or "")
+    except Exception:
+        board = ""
+    return arch, board
+
+
 # ---------------- machines ----------------
 class ExposeIn(pydantic.BaseModel):
     mode: str = "both"      # both | vram | ram
@@ -335,17 +368,24 @@ async def detect_hardware(name: str):
             detail=detail or f"{name} is offline (agent port open but the "
                              f"agent failed to answer)")
     gpus = [gpu_vendor.gpu_token(machine, g["index"]) for g in stats["gpus"]]
+    detected = dict(machine.get("detected") or {})
+    detected.update({
+        "gpu_names": [g["name"] for g in stats["gpus"]],
+        "compute_cap": [g.get("compute_cap") for g in stats["gpus"]],
+        "gpu_uuids": [g.get("uuid") for g in stats["gpus"]],
+        "vram_total_gb": round(sum(g["mem_total_gb"] for g in stats["gpus"]), 1),
+        "cores": stats["cores"],
+        "ram_total_gb": math.floor(stats["ram_total_gb"]),
+    })
+    arch, board = _detect_arch_board(machine)
+    if arch:
+        detected["arch"] = arch
+    if board:
+        detected["board"] = board
     updates = {
         "gpu": ",".join(gpus),
         "ram_total_gb": math.floor(stats["ram_total_gb"]) if stats["ram_total_gb"] else None,
-        "detected": {
-            "gpu_names": [g["name"] for g in stats["gpus"]],
-            "compute_cap": [g.get("compute_cap") for g in stats["gpus"]],
-            "gpu_uuids": [g.get("uuid") for g in stats["gpus"]],
-            "vram_total_gb": round(sum(g["mem_total_gb"] for g in stats["gpus"]), 1),
-            "cores": stats["cores"],
-            "ram_total_gb": math.floor(stats["ram_total_gb"]),
-        },
+        "detected": detected,
     }
     # RDMA auto-detect: probe for an ACTIVE RoCE NIC even when the flag is
     # currently off. If one is found, auto-enable RDMA and persist the
@@ -456,20 +496,27 @@ async def probe_hardware(p: ProbeIn):
         vendor = (s.get("gpu_vendor")
                   or machine.get("gpu_vendor") or "nvidia")
         machine["gpu_vendor"] = vendor
+        detected = dict((existing or {}).get("detected") or {})
+        detected.update({
+            "gpu_names": [g["name"] for g in s["gpus"]],
+            "compute_cap": [g.get("compute_cap") for g in s["gpus"]],
+            "gpu_uuids": [g.get("uuid") for g in s["gpus"]],
+            "vram_total_gb": round(sum(g["mem_total_gb"] for g in s["gpus"]), 1),
+            "cores": s["cores"],
+            "ram_total_gb": math.floor(s["ram_total_gb"]),
+        })
+        arch, board = _detect_arch_board(machine)
+        if arch:
+            detected["arch"] = arch
+        if board:
+            detected["board"] = board
         return {
             "online": True,
             "gpu_vendor": vendor,
             "gpu": ",".join(gpu_vendor.gpu_token(machine, g["index"]) for g in s["gpus"]),
             "ram_total_gb": float(math.floor(s["ram_total_gb"])) if s["ram_total_gb"] else None,
             "cores": s["cores"],
-            "detected": {
-                "gpu_names": [g["name"] for g in s["gpus"]],
-                "compute_cap": [g.get("compute_cap") for g in s["gpus"]],
-                "gpu_uuids": [g.get("uuid") for g in s["gpus"]],
-                "vram_total_gb": round(sum(g["mem_total_gb"] for g in s["gpus"]), 1),
-                "cores": s["cores"],
-                "ram_total_gb": math.floor(s["ram_total_gb"]),
-            },
+            "detected": detected,
         }
     result = await run_in_threadpool(run)
     if not result["online"]:
@@ -532,17 +579,24 @@ async def detect_all():
                   or m.get("gpu_vendor") or "nvidia")
         m2 = dict(m, gpu_vendor=vendor)
         gpus = [gpu_vendor.gpu_token(m2, g["index"]) for g in stats["gpus"]]
+        detected = dict(m.get("detected") or {})
+        detected.update({
+            "gpu_names": [g["name"] for g in stats["gpus"]],
+            "compute_cap": [g.get("compute_cap") for g in stats["gpus"]],
+            "gpu_uuids": [g.get("uuid") for g in stats["gpus"]],
+            "vram_total_gb": round(sum(g["mem_total_gb"] for g in stats["gpus"]), 1),
+            "cores": stats["cores"],
+            "ram_total_gb": math.floor(stats["ram_total_gb"]),
+        })
+        arch, board = _detect_arch_board(m2)
+        if arch:
+            detected["arch"] = arch
+        if board:
+            detected["board"] = board
         upd = {
             "gpu_vendor": vendor,
             "gpu": ",".join(gpus),
-            "detected": {
-                "gpu_names": [g["name"] for g in stats["gpus"]],
-            "compute_cap": [g.get("compute_cap") for g in stats["gpus"]],
-                "gpu_uuids": [g.get("uuid") for g in stats["gpus"]],
-                "vram_total_gb": round(sum(g["mem_total_gb"] for g in stats["gpus"]), 1),
-                "cores": stats["cores"],
-                "ram_total_gb": math.floor(stats["ram_total_gb"]),
-            },
+            "detected": detected,
         }
         if stats["ram_total_gb"]:
             upd["ram_total_gb"] = math.floor(stats["ram_total_gb"])

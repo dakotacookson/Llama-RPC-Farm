@@ -240,10 +240,11 @@ Every slice is agent-backed; there is no parallel shell runtime path.
 Source stays in this monorepo; releases are rolling artifacts built on
 every `main` push:
 
-- agent: Linux `.deb`, macOS `.pkg`, Windows Inno Setup `setup.exe`,
-  raw per-platform standalone binaries, and a universal pip wheel, plus
-  SHA-256 checksums in each versioned rolling release
-- app: the same three installer formats in the same release
+- agent: Linux `.deb` (x86_64 + arm64), macOS `.pkg`, Windows Inno Setup
+  `setup.exe`, raw per-platform standalone binaries, and a universal pip
+  wheel, plus SHA-256 checksums in each versioned rolling release
+- app: the same installer formats in the same release (Linux x86_64 +
+  arm64, macOS arm64, Windows x64)
 
 `main-latest` is a moving pointer to the newest versioned release; older
 builds are retained under their own version tags.

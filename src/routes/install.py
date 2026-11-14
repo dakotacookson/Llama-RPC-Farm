@@ -198,6 +198,8 @@ def _agent_binary_asset(machine):
         return ("llama-peer-agent-macos-arm64"
                 if arch in ("arm64", "aarch64") else None)
     if os_type == "linux":
+        if arch in ("arm64", "aarch64"):
+            return "llama-peer-agent-linux-arm64"
         return ("llama-peer-agent-linux-x86_64"
                 if arch in ("x86_64", "amd64", "") else None)
     return None
@@ -378,6 +380,8 @@ def _app_binary_asset():
         return ("llama-rpc-farm-macos-arm64"
                 if arch in ("arm64", "aarch64") else None)
     if os_name == "linux":
+        if arch in ("arm64", "aarch64"):
+            return "llama-rpc-farm-linux-arm64"
         return ("llama-rpc-farm-linux-x86_64"
                 if arch in ("x86_64", "amd64") else None)
     return None

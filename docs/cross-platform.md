@@ -74,6 +74,7 @@ Verified against upstream release b11056:
 | Linux + NVIDIA (glibc 2.34–2.37, e.g. Ubuntu 22.04) | `bin-ubuntu-vulkan-x64` | only needs 2.34; devices are `Vulkan0..` |
 | Linux + AMD | `bin-ubuntu-rocm-10.0` | |
 | Linux + Intel | `bin-ubuntu-sycl-fp16` | |
+| Linux arm64 CPU (Raspberry Pi 4/5) | `bin-ubuntu-arm64` | needs glibc ≥ 2.38; Bookworm (2.36) → source build |
 | Windows + NVIDIA | `bin-win-cuda-12.4-x64` + `cudart-...12.4` zip | zips are FLAT (no strip) |
 | Windows + AMD/Intel/CPU | rocm / sycl / cpu zips | |
 
@@ -88,6 +89,12 @@ Hard-learned rules baked into the installer:
   must include them or the "missing assets" check falsely aborts.
 - glibc is probed via `ldd --version`; detected arch is persisted into
   `machines.yaml.detected.arch`.
+- Linux arm64 prebuilts (CPU/Vulkan/CUDA) are built on Ubuntu 24.04 and
+  import `GLIBC_2.38`. `prebuilt_blocker()` forces the source build when
+  glibc < 2.38 (Raspberry Pi OS Bookworm = 2.36). Trixie (2.41) and
+  Ubuntu 24.04 (2.39) use the prebuilt. Fresh machines get their arch
+  from `resolve_arch()` (local `platform.machine()` or the agent's
+  `/info`) before asset selection.
 
 ## llama-swap prebuilts (swap_installer.py)
 
