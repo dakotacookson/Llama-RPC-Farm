@@ -247,3 +247,16 @@ def test_save_store_keeps_other_platforms(monkeypatch, tmp_path):
     data = yaml.safe_load(p.read_text())
     assert data["stores"]["llm-models"]["linux"] == "/mnt/models"
     assert data["stores"]["llm-models"]["windows"] == "\\\\nas\\models"
+
+
+def test_force_setup_wizard_override(monkeypatch):
+    import setup_state
+
+    monkeypatch.setattr(setup_state, "FORCE_SETUP_WIZARD", False)
+    monkeypatch.delenv("FARM_SETUP_WIZARD_FORCE", raising=False)
+    assert setup_state.force_enabled() is False
+    monkeypatch.setenv("FARM_SETUP_WIZARD_FORCE", "1")
+    assert setup_state.force_enabled() is True
+    monkeypatch.delenv("FARM_SETUP_WIZARD_FORCE", raising=False)
+    monkeypatch.setattr(setup_state, "FORCE_SETUP_WIZARD", True)
+    assert setup_state.force_enabled() is True

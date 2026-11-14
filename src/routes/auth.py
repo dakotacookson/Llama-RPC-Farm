@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 import access
 import settings_store
+import setup_state
 from settings_store import _dump_settings_yaml_preserving, _load_settings_yaml_preserving
 from web_shared import LOGIN_COOKIE, _mask_token
 
@@ -58,6 +59,8 @@ async def auth_me(request: Request, response: Response):
             setup_required = _cur.get("setup_wizard_done") is False
         except Exception:
             setup_required = False
+        if setup_state.force_enabled():
+            setup_required = True
     return {"name": name, "user": user, "admin": admin, "scoped": scoped,
             "models": sorted(access.view_allow() or []),
             "logged_in": bool(user) or bool(tok),

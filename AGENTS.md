@@ -264,6 +264,12 @@ anything that runs shell commands:
   bootstrap Python 3.11 with the **musl** uv build (gnu uv needs glibc
   2.28; Jetson is 2.27) and create a **seeded** venv so `/agent/update`
   (`python -m pip`) works.
+- **Testing the first-run walkthrough on an existing install:** set
+  `FORCE_SETUP_WIZARD = True` in `src/setup_state.py`, or launch with
+  `FARM_SETUP_WIZARD_FORCE=1`, then restart the UI. The walkthrough opens
+  for an admin despite `setup_wizard_done: true`; the override never
+  changes users, the marker, or storage. Leave the constant False in
+  committed code.
 - **First-run walkthrough state:** `auth_bootstrap` writes
   `setup_wizard_done: false` only for a genuinely fresh install (no logins
   and no keys). `/api/setup/complete` sets it true; `/api/setup/status`,

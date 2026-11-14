@@ -12,6 +12,7 @@ import access
 import model_sync
 import path_resolver
 import settings_store
+import setup_state
 from settings_store import (_dump_settings_yaml_preserving,
                             _load_settings_yaml_preserving)
 
@@ -43,9 +44,12 @@ async def setup_status():
     current = _load_settings_yaml_preserving(settings_store.SETTINGS_FILE)
     cfg = model_sync.sync_config(current)
     stores = path_resolver._load_stores()
+    forced = setup_state.force_enabled()
+    required = forced or current.get("setup_wizard_done") is False
     return {
-        "required": current.get("setup_wizard_done") is False,
-        "done": current.get("setup_wizard_done") is not False,
+        "required": required,
+        "done": not required,
+        "forced": forced,
         "platform": path_resolver.LOCAL_PLATFORM,
         "stores": stores,
         "store_name": "llm-models",
