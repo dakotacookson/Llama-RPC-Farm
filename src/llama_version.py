@@ -11,7 +11,7 @@ _LATEST_TAG_CACHE = {"tag": None, "ts": 0.0}
 # per-machine llama-server version probe (agent/bash, ~seconds) — cached
 # so the machine grid can re-ask on every render without hammering
 _LLAMA_VER_CACHE: dict = {}
-_LLAMA_VER_TTL = 600
+_LLAMA_VER_TTL = 60
 
 
 def _llama_build_no(version_str):
@@ -103,13 +103,12 @@ def _llama_version_payload(machine):
 
 
 def _latest_llama_tag():
-    """Newest upstream release tag that carries bin assets (5-min cache —
-    the machine grid re-asks on every detail open and GitHub's API is
-    rate-limited)."""
+    """Newest upstream release tag that carries bin assets (2-min cache —
+    the machine grid polls it, but GitHub's API is rate-limited)."""
     import llamacpp_installer
     now = time.time()
     with _LLAMA_UPDATES_LOCK:
-        if _LATEST_TAG_CACHE["tag"] and now - _LATEST_TAG_CACHE["ts"] < 300:
+        if _LATEST_TAG_CACHE["tag"] and now - _LATEST_TAG_CACHE["ts"] < 120:
             return _LATEST_TAG_CACHE["tag"]
     tag, _assets, _base = llamacpp_installer._fetch_latest_assets()
     with _LLAMA_UPDATES_LOCK:
