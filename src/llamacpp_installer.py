@@ -60,6 +60,14 @@ SOURCE_BUILD_TARGETS = (
 # 22.04's 2.35), cuda binaries' libggml-base/libllama-* need 2.38.
 GLIBC_CUDA_MIN = (2, 38)
 
+# Every upstream Linux arm64 binary (CPU, Vulkan, CUDA) is built on
+# Ubuntu 24.04 and imports GLIBC_2.38 symbols — verified against
+# llama-b12374-bin-ubuntu-arm64.tar.gz (ggml-rpc-server, libggml-base.so,
+# libllama.so all carry GLIBC_2.38). Raspberry Pi OS Bookworm ships glibc
+# 2.36, so the arm64 prebuilt cannot load there and the host must build
+# from source. Trixie (2.41) and Ubuntu 24.04 (2.39) run it fine.
+GLIBC_ARM64_MIN = (2, 38)
+
 # ---------- Windows Firewall rules ----------
 # Program-scoped firewall rules match the LISTENING exe's exact path.
 # The 2026-10 llama.cpp upgrade moved the Windows binaries from the
@@ -392,11 +400,61 @@ def _machine_glibc(machine):
         return None
 
 
+def resolve_arch(machine):
+    """Best-effort CPU arch for asset/glibc decisions; persists nothing.
+
+    `detected.arch` is only written by a hardware probe, so a freshly added
+    machine (a Raspberry Pi, say) has no arch yet. Read it from the local
+    host or the peer agent's /info instead of silently assuming x86_64."""
+    arch = str(((machine or {}).get("detected") or {})
+               .get("arch") or "").strip().lower()
+    if arch:
+        return arch
+    try:
+        import local_node
+        if local_node.is_local(machine):
+            import platform
+            return platform.machine().strip().lower()
+    except Exception:
+        pass
+    try:
+        import agent_client
+        return str((agent_client.info(machine) or {})
+                   .get("arch") or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def is_arm64_linux(machine):
+    """True for a Linux host on 64-bit Arm (Raspberry Pi, arm64 servers)."""
+    if (machine or {}).get("os", "linux") != "linux":
+        return False
+    arch = str(((machine or {}).get("detected") or {})
+               .get("arch") or "").strip().lower()
+    if not arch:
+        arch = resolve_arch(machine)
+    return arch in ("arm64", "aarch64")
+
+
 def prebuilt_blocker(machine, glibc=None):
     """Reason a prebuilt cannot run here, or '' when it can.
-    Only the CUDA path has hard OS/arch/glibc requirements."""
+
+    Hard requirements: every Linux arm64 prebuilt needs glibc >= 2.38, and
+    the CUDA Linux path additionally needs a new enough glibc (the Vulkan
+    sibling only needs 2.34)."""
     os_type = (machine or {}).get("os", "linux")
     if os_type in ("windows", "macos"):
+        return ""
+    # All upstream Linux arm64 assets are built on Ubuntu 24.04. On older
+    # glibc (Raspberry Pi OS Bookworm = 2.36) the loader fails before
+    # llama.cpp can start, so steer the caller to the source build.
+    if is_arm64_linux(machine):
+        if glibc is None:
+            glibc = _machine_glibc(machine)
+        if glibc is not None and glibc < GLIBC_ARM64_MIN:
+            return (f"Linux arm64 prebuilt needs glibc >= "
+                    f"{GLIBC_ARM64_MIN[0]}.{GLIBC_ARM64_MIN[1]}; this host "
+                    f"has {glibc[0]}.{glibc[1]} → use the source build")
         return ""
     pref = backend_pref(machine)
     if pref in ("cpu", "vulkan", "rocm", "sycl", "metal"):
@@ -424,6 +482,11 @@ def decide_engine_plan(machine, probe=None, glibc=None):
 
     Returns {mode, reason, prebuilt_blocker, source_available, probe}.
     """
+    # Asset and glibc decisions need the real arch; a fresh machine may not
+    # have been hardware-probed yet (a Pi added by IP has no detected.arch).
+    arch = resolve_arch(machine)
+    if arch:
+        machine.setdefault("detected", {})["arch"] = arch
     if probe is None:
         try:
             probe = probe_setup(machine)
@@ -620,6 +683,9 @@ def _pick_assets(machine, tag, assets, glibc=None, driver_version=None):
 def plan(machine):
     """What WOULD be installed for this machine: asset names + backend.
     No side effects; used by the UI before installing."""
+    arch = resolve_arch(machine)
+    if arch:
+        machine.setdefault("detected", {})["arch"] = arch
     try:
         releases = _fetch_release_asset_sets()
     except Exception as e:
@@ -649,8 +715,14 @@ def install_on(machine, log=lambda m: None):
     name = machine.get("name", "?")
     is_local = local_node.is_local(machine)
     is_win = machine.get("os", "linux") == "windows"
+    # Resolve the arch BEFORE the prebuilt gate: a fresh arm64 machine (Pi)
+    # has no detected.arch yet, and the arm64 glibc requirement must apply
+    # on the very first install, not after a second probe.
+    arch = resolve_arch(machine)
+    if arch:
+        machine.setdefault("detected", {})["arch"] = arch
     # The source-of-truth gate: refuse a prebuilt that this host cannot
-    # actually run (CUDA arch coverage / glibc), unless an explicit
+    # actually run (CUDA arch coverage / arm64 + glibc), unless an explicit
     # backend pin (vulkan/cpu/...) makes it viable.
     blocker = prebuilt_blocker(machine)
     if blocker:

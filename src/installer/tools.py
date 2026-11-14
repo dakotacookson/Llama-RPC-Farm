@@ -332,6 +332,17 @@ def install_tool(step, downloader, run, log, info, offline=False):
     if name == "llama.cpp":
         if (step.source or "") == "source":
             return install_llcpp_source(step, run, log)
+        # Every upstream Linux arm64 prebuilt imports GLIBC_2.38. Bookworm
+        # (2.36) cannot load it; refuse instead of installing a binary that
+        # will fail at exec. The app's machine installer falls back to a
+        # fresh source build for this case.
+        if (info.os == "linux"
+                and str(info.arch).lower() in ("arm64", "aarch64")
+                and info.glibc and tuple(info.glibc) < (2, 38)):
+            raise RuntimeError(
+                "Linux arm64 llama.cpp prebuilts need glibc >= 2.38; this "
+                f"host has {info.glibc[0]}.{info.glibc[1]} — build from "
+                "source (the farm app does this automatically)")
         return install_llcpp(step, downloader, run, log, info.os, info.arch)
     if name == "uv":
         return ensure_uv(run, log, downloader)

@@ -1304,8 +1304,8 @@ function _mergeMachineDetail(prev, fresh) {
   if (!prev || typeof prev !== "object") return fresh;
   const out = { ...fresh };
   for (const key of ["name", "ip", "os", "role", "kernel", "uptime",
-    "cpu_model", "llama_version", "llama_bin", "mac", "agent_port",
-    "is_master", "is_local"]) {
+    "cpu_model", "board", "arch", "llama_version", "llama_bin", "mac",
+    "agent_port", "is_master", "is_local"]) {
     if (_mdBlank(out[key]) && !_mdBlank(prev[key])) out[key] = prev[key];
   }
   out.net = { ...(prev.net || {}), ...(fresh.net || {}) };
@@ -1516,6 +1516,8 @@ function renderMachineDetail(body, d) {
       <div class="md-card md-card-system">
         <h4><i class="fa-solid fa-server"></i> System <span class="md-card-hint">host &amp; runtime</span></h4>
         ${kv("OS", osLabel)}
+        ${d.board ? kv("Board", d.board) : ""}
+        ${kv("Arch", d.arch, "md-val-mono")}
         ${kv("Kernel", d.kernel, "md-val-mono")}
         ${kv("CPU", d.cpu_model)}
         ${kv("Cores", s.cores)}
