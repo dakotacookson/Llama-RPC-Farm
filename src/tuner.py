@@ -59,6 +59,7 @@ TARGET_TPS_RPC = 20.0    # multi-box over ~1GbE: the physics band
 TARGET_TPS_LOCAL = 25.0  # single box, no network hops: aim higher
 TARGET_TPS_DEFAULT = TARGET_TPS_RPC
 HEADROOM_FRac = 0.90  # keep 10% VRAM free (fragmentation + server overhead)
+RAM_USABLE_FRAC = 0.80  # never plan against all system RAM (matches placement)
 SLOW_GPU_DERATE = {  # memory-bandwidth / arch derate for split weighting
     "GTX 1080": 0.6, "GTX 10": 0.6, "Pascal": 0.6,
     "RTX 2060": 0.8, "RTX 3050": 0.8, "Turing": 0.85,
@@ -189,6 +190,36 @@ def _hardware_vram(servers, device_order=""):
     return out
 
 
+def _cpu_ram_budget(servers, device_order=""):
+    """Usable RAM (GB) for a CPU-only placement (no accelerator chips).
+
+    Used when a model targets a GPU-less box (Raspberry Pi, CPU/RAM-only
+    host) so the math estimate can still pick a context instead of
+    erroring with 'no GPUs selected'."""
+    machines = {m["name"]: m for m in cfg.machines.all()}
+    selected = [s for s in (servers or []) if s in machines]
+    chips = [c.strip() for c in (device_order or "").split(",") if c.strip()]
+    wanted = set()
+    for tok in chips:
+        if "-" not in tok:
+            continue
+        mn, res = tok.rsplit("-", 1)
+        if res == "RAM" and mn in selected:
+            wanted.add(mn)
+    if not wanted:
+        wanted = set(selected)
+    total = 0.0
+    for name in wanted:
+        m = machines.get(name) or {}
+        det = m.get("detected") or {}
+        try:
+            total += float(det.get("ram_total_gb")
+                           or m.get("ram_total_gb") or 0)
+        except (TypeError, ValueError):
+            pass
+    return total * RAM_USABLE_FRAC
+
+
 def safe_defaults(base_path, servers, device_order="", target_os="linux",
                  existing_flags=None):
     """Safe starting flags for a new/existing model (no loads).
@@ -266,16 +297,32 @@ def estimate(base_path, servers, device_order="", target_os="linux",
     except Exception:
         ssm_b = 0
     draft_b = int(weights * 0.06)  # MTP draft heads + buffers, ~6% heuristic
-    gpus = _hardware_vram(servers, device_order)
-    usable = sum(g["free_gb"] for g in gpus) * 1024**3 * HEADROOM_FRac
+    try:
+        gpus = _hardware_vram(servers, device_order)
+    except ValueError:
+        # No accelerator chips selected: this can be a legitimate CPU-only
+        # box (Raspberry Pi / RAM-only host). Budget against host/peer RAM
+        # instead of failing the estimate outright.
+        gpus = []
+    if gpus:
+        usable = sum(g["free_gb"] for g in gpus) * 1024**3 * HEADROOM_FRac
+        # integer split weights proportional to derated VRAM (cf. #18273 4,3,3,4,4)
+        w = [g["weight"] for g in gpus]
+        scale = 18 / sum(w) if sum(w) else 1
+        split = [max(1, round(x * scale)) for x in w]
+        # pipeline straggler: slowest known-bandwidth hop gates every token
+        known = [g for g in gpus if g.get("bw_gbs")]
+        straggler = min(known, key=lambda g: g["bw_gbs"])["label"] if known else ""
+        usable_ram_gb = 0
+    else:
+        ram_gb = _cpu_ram_budget(servers, device_order)
+        if ram_gb <= 0:
+            raise ValueError(
+                "no usable VRAM or RAM selected — pick hardware in the form first")
+        usable = ram_gb * 1024**3 * 0.9   # small headroom for the OS
+        split, straggler = [], ""
+        usable_ram_gb = round(usable / 1024**3, 1)
     fixed = weights + mmproj_b + ssm_b + draft_b
-    # integer split weights proportional to derated VRAM (cf. #18273 4,3,3,4,4)
-    w = [g["weight"] for g in gpus]
-    scale = 18 / sum(w) if sum(w) else 1
-    split = [max(1, round(x * scale)) for x in w]
-    # pipeline straggler: slowest known-bandwidth hop gates every token
-    known = [g for g in gpus if g.get("bw_gbs")]
-    straggler = min(known, key=lambda g: g["bw_gbs"])["label"] if known else ""
     best = 4096
     for ctx in CTX_LADDER:
         if ctx > model_max:
@@ -304,7 +351,8 @@ def estimate(base_path, servers, device_order="", target_os="linux",
         "ssm_gb": round(ssm_b / 1024**3, 2),
         "kv_per_token_kb": round(kv_tok / 1024, 1),
         "kv_at_ctx_gb": round(kv_tok * best / 1024**3, 2),
-        "usable_vram_gb": round(usable / 1024**3, 1),
+        "usable_vram_gb": round(usable / 1024**3, 1) if gpus else 0,
+        "usable_ram_gb": usable_ram_gb,
         "gpus": gpus,
         "straggler": straggler,
         "suggested_split": split,

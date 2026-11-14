@@ -25,7 +25,8 @@ Per machine:
     vram_total_gb: 36.0
     cores: 10
     ram_total_gb: 27
-    arch: x86_64        # written by llamacpp_installer probes
+    arch: x86_64        # written by arch probes (aarch64 on Raspberry Pi)
+    board: ""           # SBC model from /proc/device-tree/model (e.g. Pi 5)
   ram_total_gb: 27
   gpu_vendor: nvidia    # nvidia | amd | intel | apple | cpu
   rdma: false           # RDMA/RoCE transport (opt-in; TCP default)

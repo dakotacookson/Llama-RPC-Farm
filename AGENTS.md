@@ -253,5 +253,16 @@ anything that runs shell commands:
 - llama-swap's log endpoints replay buffered history on connect — any new
   consumer of `/logs/stream/*` must prime silently (~1.5s) before
   forwarding, or old activity flares up the UI on every page load.
+- **`detected` must be MERGED, never replaced.** Hardware detect and the
+  120 s watcher (`routes/hardware.py`) both write it from live stats, which
+  do not carry `arch`/`board`/`driver_version`. Replacing the dict wiped a
+  Pi's identity (Linux icon regression, wrong prebuilt gate) and floored
+  sub-GB RAM to 0. Use `stats_collector.ram_gb()` for RAM (0.4 GB stays
+  0.4). Any new writer must merge into the existing dict.
+- **CPU/RAM-only placements are first-class**: model chips are
+  `<machine>-RAM`, exposure mode `ram`, launch `-ngl 0`; `rpc_manager`
+  gives a GPU-less peer its own `cpu` RPC group. `tuner.estimate` falls
+  back to a RAM budget (`_cpu_ram_budget`) when no accelerator chips are
+  selected — don't reintroduce a GPU-only early raise there.
 - Ports: rpc-servers get per-model rolled ports (`_roll_port_if_busy`);
   Windows excludes Hyper-V/WSL reserved ranges. Base 50052 is legacy.

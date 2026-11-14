@@ -2756,6 +2756,13 @@ function gpuPrefix(vendor) {
   const v = (vendor || "").toLowerCase();
   return v === "amd" ? "ROCm" : v === "apple" ? "Metal" : v === "intel" ? "SYCL" : "CUDA";
 }
+// ~80% usable RAM for a chip label; sub-GB boards (Pi Zero = 0.4 GB)
+// must not round down to "0 GB".
+function ramChipGB(gb) {
+  const g = Number(gb) || 0;
+  const v = g * 0.8;
+  return g >= 1 ? String(Math.round(v)) : String(Math.round(v * 10) / 10);
+}
 const CONN_CAPS = {};
 let _connCapsAt = 0;
 async function refreshConnectionCaps(force = false) {
@@ -2802,11 +2809,12 @@ function isRaspberryPi(m) {
   return board.includes("raspberry pi");
 }
 
-function machineGlyph(m) {
+function machineGlyph(m, cls = "") {
+  const extra = cls ? " " + cls : "";
   if (isRaspberryPi(m)) {
-    return '<i class="fa-brands fa-raspberry-pi" title="Raspberry Pi"></i>';
+    return '<i class="fa-brands fa-raspberry-pi' + extra + '" title="Raspberry Pi"></i>';
   }
-  return '<i class="fa-solid fa-server"></i>';
+  return '<i class="fa-solid fa-server' + extra + '"></i>';
 }
 
 function osIcon(osOrMachine) {
@@ -4310,7 +4318,7 @@ async function renderVariantServers(vData, container){
     const gpus = d.gpu_names || [];
     const pref = gpuPrefix(mac.gpu_vendor);
     const hasRAM = d.ram_total_gb && d.ram_total_gb > 0;
-    const ramGB = hasRAM ? Math.round(d.ram_total_gb * 0.8) : 0;
+    const ramGB = hasRAM ? ramChipGB(d.ram_total_gb) : 0;
     let gpuCheckboxes = gpus.map((gpu, i) => {
       const id = `${mac.name}-${pref}${i}`;
       const checked = selectedHardware.has(id) ? "checked" : "";
@@ -4322,7 +4330,7 @@ async function renderVariantServers(vData, container){
       const checked = selectedHardware.has(id) ? "checked" : "";
       ramCheckbox = '<label class="hw-chip ram-chip"><input type="checkbox" value="' + escHtml(id) + '" ' + checked + ' data-machine="' + escHtml(mac.name) + '"><i class="fa-solid fa-memory chip-icon"></i><span class="chip-name">RAM (' + ramGB + ' GB)</span><span class="chip-sub">~80% of ' + escHtml(String(d.ram_total_gb)) + ' GB</span></label>';
     }
-    return '<div class="machine-hw-group"><div class="machine-hw-header"><i class="fa-solid fa-server hw-server-icon"></i><strong>' + escHtml(mac.name) + '</strong> <small>' + escHtml(mac.ip) + '</small></div><div class="machine-hw-chips">' + gpuCheckboxes + ramCheckbox + '</div></div>';
+    return '<div class="machine-hw-group"><div class="machine-hw-header">' + machineGlyph(mac, "hw-server-icon") + '<strong>' + escHtml(mac.name) + '</strong> <small>' + escHtml(mac.ip) + '</small></div><div class="machine-hw-chips">' + gpuCheckboxes + ramCheckbox + '</div></div>';
   }).join("");
   container._selectedHardware = selectedHardware;
   container._machinesData = machines;
@@ -5210,7 +5218,7 @@ async function renderModelServers(m) {
     const gpus = d.gpu_names || [];
     const pref = gpuPrefix(mac.gpu_vendor);
     const hasRAM = d.ram_total_gb && d.ram_total_gb > 0;
-    const ramGB = hasRAM ? Math.round(d.ram_total_gb * 0.8) : 0;
+    const ramGB = hasRAM ? ramChipGB(d.ram_total_gb) : 0;
 
     let gpuCheckboxes = gpus.map((gpu, i) => {
       const id = `${mac.name}-${pref}${i}`;
@@ -5225,7 +5233,7 @@ async function renderModelServers(m) {
       ramCheckbox = '<label class="hw-chip ram-chip"><input type="checkbox" value="' + id + '" ' + checked + ' data-machine="' + mac.name + '"><span class="chip-name">RAM (' + ramGB + ' GB)</span><span class="chip-sub">~80% of ' + d.ram_total_gb + ' GB</span></label>';
     }
 
-    return '<div class="machine-hw-group"><div class="machine-hw-header"><strong>' + mac.name + '</strong> <small>' + mac.ip + '</small></div><div class="machine-hw-chips">' + gpuCheckboxes + ramCheckbox + '</div></div>';
+    return '<div class="machine-hw-group"><div class="machine-hw-header">' + machineGlyph(mac, "hw-server-icon") + '<strong>' + mac.name + '</strong> <small>' + mac.ip + '</small></div><div class="machine-hw-chips">' + gpuCheckboxes + ramCheckbox + '</div></div>';
   }).join("");
 
   chipList._selectedHardware = selectedHardware;
@@ -8016,7 +8024,8 @@ on("#dl-start", "click", async (e) => {
 let hfPage = 0, hfQuery = "", hfQuant = "", hfTask = "", hfCompany = "", hfCollection = "", hfSort = "downloads", hfActiveId = null, hfDebounce = null;
 let hfCursor = null, hfNextCursor = null, hfCursorMode = false, hfCursorStack = [];
 let hfFormat = "gguf"; // "gguf" | "safetensors" — which HF repo flavor the browse pane lists
-let hfVramTotal = 0; // for recommended highlight
+let hfVramTotal = 0; // for recommended highlight (VRAM, or RAM on CPU-only farms)
+let hfFitKind = "VRAM";
 let hfAvatarCache = {}; // author -> url
 let hfCompaniesFull = [];
 let hfCompanyFilterDebounce = null;
@@ -8165,8 +8174,12 @@ async function initHfBrowse(){
   // fetch vram for recommendation
   try{
     const st = await api("GET","/api/stats");
-    hfVramTotal = (st.totals?.vram?.total) || 0;
-  }catch(_){ hfVramTotal = 0; }
+    const vram = (st.totals?.vram?.total) || 0;
+    const ram = (st.totals?.ram?.total) || 0;
+    // GPU-less farms (CPU/RAM-only, Raspberry Pi) recommend by RAM.
+    hfVramTotal = vram > 0 ? vram : ram;
+    hfFitKind = vram > 0 ? "VRAM" : "RAM";
+  }catch(_){ hfVramTotal = 0; hfFitKind = "VRAM"; }
   // Broad-discovery defaults: All quants, All tasks, Most downloads,
   // All companies, Recommended OFF. Recommended is an opt-in curated
   // shortlist; defaulting it on hid every GGUF publisher not in it.
@@ -8368,7 +8381,7 @@ async function selectHfModel(modelId){
         <a href="https://huggingface.co/${escHtml(data.id)}" target="_blank" class="small"><i class="fa-solid fa-external-link"></i> HF</a>
       </div>
       ${data.gated ? `<div id="hf-access-box" style="margin-bottom:10px"><p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Checking saved token against this repo…</p></div>` : ""}
-      <div class="hint" style="margin-bottom:8px">${entries.length} download option(s)${files.length !== entries.length ? ` (combined from ${files.length} files)` : ` — ${files.length} GGUF file(s)`} — pick quant/size. Highlighted = fits your VRAM (~${hfVramTotal || "?"} GB). Split models show as one row and download <strong>all shards</strong> together.</div>
+      <div class="hint" style="margin-bottom:8px">${entries.length} download option(s)${files.length !== entries.length ? ` (combined from ${files.length} files)` : ` — ${files.length} GGUF file(s)`} — pick quant/size. Highlighted = fits your ${hfFitKind} (~${hfVramTotal || "?"} GB). Split models show as one row and download <strong>all shards</strong> together.</div>
       ${entries.map((e, i) => {
         const label = e.single ? "Download" : `Download all ${e.shards.length} shards`;
         const sub = e.single

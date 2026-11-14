@@ -27,13 +27,13 @@ Releases and its SHA-256 matches the published `.sha256` file.
 2. Or remove the download mark first, then run:
 
    ```powershell
-   Unblock-File .\llama-rpc-farm__windows-x64-setup.exe
+   Unblock-File .\llama-rpc-farm_*_windows-x64-setup.exe
    ```
 
 3. Verify the hash before running:
 
    ```powershell
-   Get-FileHash .\llama-rpc-farm__windows-x64-setup.exe -Algorithm SHA256
+   Get-FileHash .\llama-rpc-farm_*_windows-x64-setup.exe -Algorithm SHA256
    ```
 
    Compare it with the `.sha256` asset in the same release.
@@ -81,7 +81,7 @@ The next push to `main` (or a manual `workflow_dispatch`) signs:
 ### 3. Verify locally
 
 ```powershell
-Get-AuthenticodeSignature .\llama-rpc-farm__windows-x64-setup.exe |
+Get-AuthenticodeSignature .\llama-rpc-farm_*_windows-x64-setup.exe |
   Format-List Status, StatusMessage, SignerCertificate
 ```
 

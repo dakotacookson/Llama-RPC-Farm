@@ -198,6 +198,9 @@ def _fetch_latest_assets(limit=30):
 def _choose_release_for(machine, releases, glibc=None, driver_version=None):
     """Newest release that actually has EVERY asset this machine needs.
     Falls back to the newest release's missing list for a clear error."""
+    arch = resolve_arch(machine)
+    if arch:
+        machine.setdefault("detected", {})["arch"] = arch
     fallback = None
     for tag, names, base in releases:
         try:

@@ -74,6 +74,15 @@ def _tag_number(tag):
 
 def plan(machine):
     """What WOULD be installed; no side effects (UI pre-check)."""
+    # A fresh arm64 box (Pi) has no detected.arch yet; resolve it before
+    # asset choice or we would ask for the amd64 llama-swap build.
+    try:
+        import llamacpp_installer
+        arch = llamacpp_installer.resolve_arch(machine)
+        if arch:
+            machine.setdefault("detected", {})["arch"] = arch
+    except Exception:
+        pass
     try:
         tag, assets, base = _fetch_latest_assets()
     except Exception as e:
