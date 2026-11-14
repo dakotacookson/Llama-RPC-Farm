@@ -416,39 +416,43 @@ def prebuilt_blocker(machine, glibc=None):
 
 
 def decide_engine_plan(machine, probe=None, glibc=None):
-    """SOURCE OF TRUTH: prebuilt only when this host can actually run it,
-    otherwise source. engine_mode=source/prebuilt overrides.
+    """Derive the engine mode from what is ALREADY installed — there is no
+    user choice. A source install rebuilds source; a prebuilt install stays
+    prebuilt (and is blocked if the target prebuilt cannot run there); a
+    machine with no install prefers a compatible prebuilt and otherwise
+    bootstraps source.
 
     Returns {mode, reason, prebuilt_blocker, source_available, probe}.
     """
-    pref = (machine.get("engine_mode") or "auto").strip().lower()
     if probe is None:
         try:
             probe = probe_setup(machine)
         except Exception:
             probe = None
-    source_ok = bool(probe and probe.get("kind") == "source")
+    installed = (probe or {}).get("kind")
     blocker = prebuilt_blocker(machine, glibc)
-    if pref == "source":
-        return {"mode": "source", "reason": "engine_mode=source",
-                "prebuilt_blocker": blocker, "source_available": source_ok,
-                "probe": probe}
-    if pref == "prebuilt":
-        return {"mode": "prebuilt", "reason": "engine_mode=prebuilt",
-                "prebuilt_blocker": blocker, "source_available": source_ok,
-                "probe": probe}
-    if not blocker:
-        return {"mode": "prebuilt",
-                "reason": "prebuilt is compatible with this host's "
-                          "OS/GPU/glibc",
-                "prebuilt_blocker": "", "source_available": source_ok,
-                "probe": probe}
-    if source_ok:
-        return {"mode": "source", "reason": blocker,
+    if installed == "source":
+        return {"mode": "source", "reason": "installed as a source build",
                 "prebuilt_blocker": blocker, "source_available": True,
                 "probe": probe}
-    return {"mode": "source",
-            "reason": blocker + " (no source tree detected)",
+    if installed == "prebuilt":
+        if not blocker:
+            return {"mode": "prebuilt",
+                    "reason": "installed as a prebuilt; target is compatible",
+                    "prebuilt_blocker": "", "source_available": False,
+                    "probe": probe}
+        return {"mode": "prebuilt",
+                "reason": "installed prebuilt cannot move to the target: "
+                          + blocker,
+                "prebuilt_blocker": blocker, "source_available": False,
+                "probe": probe}
+    # No install (or unknown): pick the best option for this host.
+    if not blocker:
+        return {"mode": "prebuilt",
+                "reason": "no install; prebuilt is compatible with this host",
+                "prebuilt_blocker": "", "source_available": False,
+                "probe": probe}
+    return {"mode": "source", "reason": blocker,
             "prebuilt_blocker": blocker, "source_available": False,
             "probe": probe}
 

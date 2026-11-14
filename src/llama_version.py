@@ -84,18 +84,25 @@ def _llama_version_payload(machine):
     if hit and hit.get("version") and now - hit["ts"] < _LLAMA_VER_TTL:
         version = hit.get("version")
         build = hit.get("build")
+        kind = hit.get("kind")
     else:
         version = _llama_version_on(machine)
         build = _llama_build_no(version or "")
+        kind = None
+        try:
+            import llamacpp_installer
+            kind = (llamacpp_installer.probe_setup(machine) or {}).get("kind")
+        except Exception:
+            pass
         with _LLAMA_UPDATES_LOCK:
             if version:
-                _LLAMA_VER_CACHE[name] = {"version": version,
-                                          "build": build, "ts": now}
+                _LLAMA_VER_CACHE[name] = {"version": version, "build": build,
+                                          "kind": kind, "ts": now}
             else:
                 _LLAMA_VER_CACHE.pop(name, None)
     latest = _latest_llama_tag()
     latest_build = _llama_build_no(latest)
-    return {"version": version, "build": build,
+    return {"version": version, "build": build, "kind": kind,
             "latest": latest, "latest_build": latest_build,
             "on_latest": bool(build and latest_build
                               and build >= latest_build),

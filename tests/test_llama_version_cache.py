@@ -12,12 +12,16 @@ def _clear(monkeypatch):
     monkeypatch.setattr(lv, "_latest_llama_tag", lambda: "b12374")
     monkeypatch.setattr(lv, "_llama_version_on",
                         lambda m: "version: 1.0.0-dev (build 12370, commit x)")
+    import llamacpp_installer as li
+    monkeypatch.setattr(li, "probe_setup",
+                        lambda m, log=None: {"kind": "source"})
 
 
 def test_basic_payload():
     p = lv._llama_version_payload({"name": "m"})
     assert p["build"] == 12370 and p["latest_build"] == 12374
     assert p["on_latest"] is False
+    assert p["kind"] == "source"
 
 
 def test_latest_is_not_frozen_in_machine_cache(monkeypatch):
