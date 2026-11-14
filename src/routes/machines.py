@@ -40,6 +40,18 @@ def _board_model_local():
     return ""
 
 
+def _ram_gb(value):
+    """Whole-GB RAM, but keep sub-GB boards from flooring to zero.
+
+    A Raspberry Pi Zero 2 W reports ~0.4 GB; math.floor made it 0, which
+    hid its RAM chip and made placement/totals look empty."""
+    try:
+        gb = float(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return math.floor(gb) if gb >= 1 else round(gb, 2)
+
+
 def _detect_arch_board(machine):
     """(arch, board) for hardware detection.
 
@@ -72,6 +84,7 @@ class MachineIn(pydantic.BaseModel):
     username: str = ""
     password: str = ""
     port: int = 22
+    mac: str | None = None      # None = preserve/auto-fill; identity for ARP healing
     transport: str = "agent"    # agent-only (kept for config compatibility)
     agent_port: int = 8198
     agent_token: str = ""       # write-only; stored in the vault, never YAML
@@ -270,6 +283,14 @@ async def add_machine(m: MachineIn):
             if tok:
                 _vault.set_machine_agent_token(payload["id"], tok)
                 payload["_agent_token"] = tok
+            if not payload.get("mac"):
+                # Store the MAC so DHCP re-leases self-heal via ARP later.
+                try:
+                    payload["mac"] = str(
+                        (agent_client.info(payload) or {}).get("mac") or "")
+                except Exception:
+                    payload["mac"] = ""
+        payload["mac"] = payload.get("mac") or ""
         detail = _agent_guard(payload)
         if detail:
             raise HTTPException(status_code=400, detail=detail)
@@ -294,6 +315,8 @@ async def update_machine(name: str, m: MachineIn):
             payload.pop("engine_mode", None)
         if payload.get("engine_backend") is None:
             payload.pop("engine_backend", None)
+        if payload.get("mac") is None:
+            payload.pop("mac", None)   # omitted = keep the stored identity
         old_name = str(name)
         new_name = str(payload.get("name") or old_name).strip()
         if new_name and new_name != old_name and cfg.machines.get(new_name):
@@ -375,7 +398,7 @@ async def detect_hardware(name: str):
         "gpu_uuids": [g.get("uuid") for g in stats["gpus"]],
         "vram_total_gb": round(sum(g["mem_total_gb"] for g in stats["gpus"]), 1),
         "cores": stats["cores"],
-        "ram_total_gb": math.floor(stats["ram_total_gb"]),
+        "ram_total_gb": _ram_gb(stats["ram_total_gb"]),
     })
     arch, board = _detect_arch_board(machine)
     if arch:
@@ -384,7 +407,7 @@ async def detect_hardware(name: str):
         detected["board"] = board
     updates = {
         "gpu": ",".join(gpus),
-        "ram_total_gb": math.floor(stats["ram_total_gb"]) if stats["ram_total_gb"] else None,
+        "ram_total_gb": _ram_gb(stats["ram_total_gb"]) if stats["ram_total_gb"] else None,
         "detected": detected,
     }
     # RDMA auto-detect: probe for an ACTIVE RoCE NIC even when the flag is
@@ -503,7 +526,7 @@ async def probe_hardware(p: ProbeIn):
             "gpu_uuids": [g.get("uuid") for g in s["gpus"]],
             "vram_total_gb": round(sum(g["mem_total_gb"] for g in s["gpus"]), 1),
             "cores": s["cores"],
-            "ram_total_gb": math.floor(s["ram_total_gb"]),
+            "ram_total_gb": _ram_gb(s["ram_total_gb"]),
         })
         arch, board = _detect_arch_board(machine)
         if arch:
@@ -514,7 +537,7 @@ async def probe_hardware(p: ProbeIn):
             "online": True,
             "gpu_vendor": vendor,
             "gpu": ",".join(gpu_vendor.gpu_token(machine, g["index"]) for g in s["gpus"]),
-            "ram_total_gb": float(math.floor(s["ram_total_gb"])) if s["ram_total_gb"] else None,
+            "ram_total_gb": float(_ram_gb(s["ram_total_gb"])) if s["ram_total_gb"] else None,
             "cores": s["cores"],
             "detected": detected,
         }
@@ -586,7 +609,7 @@ async def detect_all():
             "gpu_uuids": [g.get("uuid") for g in stats["gpus"]],
             "vram_total_gb": round(sum(g["mem_total_gb"] for g in stats["gpus"]), 1),
             "cores": stats["cores"],
-            "ram_total_gb": math.floor(stats["ram_total_gb"]),
+            "ram_total_gb": _ram_gb(stats["ram_total_gb"]),
         })
         arch, board = _detect_arch_board(m2)
         if arch:
@@ -599,7 +622,7 @@ async def detect_all():
             "detected": detected,
         }
         if stats["ram_total_gb"]:
-            upd["ram_total_gb"] = math.floor(stats["ram_total_gb"])
+            upd["ram_total_gb"] = _ram_gb(stats["ram_total_gb"])
         return m["name"], upd
 
     with ThreadPoolExecutor(max_workers=len(machines) or 1) as pool:
