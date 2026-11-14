@@ -395,10 +395,13 @@ def machine_stats_light(machine):
         except Exception:
             online = False
     s["status"] = "online" if online else "offline"
+    det = machine.get("detected") or {}
     return {**s, "name": machine["name"], "ip": machine["ip"],
             "os": machine_os, "is_local": is_local,
             "is_master": machine.get("role") == "master",
             "rpc_running": rpc,
+            "board": det.get("board") or "",
+            "arch": det.get("arch") or "",
             "rdma": bool(machine.get("rdma")),
             "rdma_cm": bool(machine.get("rdma_cm")),
             "transport": "agent",
@@ -423,10 +426,13 @@ def machine_stats(machine):
             rpc = bool(agent_client.status(machine).get("rpc_running"))
         except Exception:
             rpc = False
+    det = machine.get("detected") or {}
     return {**s, "name": machine["name"], "ip": machine["ip"],
             "os": machine_os, "is_local": is_local,
             "is_master": machine.get("role") == "master",
             "rpc_running": rpc,
+            "board": det.get("board") or "",
+            "arch": det.get("arch") or "",
             "transport": "agent",
             "connection": "local" if is_local else "agent"}
 
