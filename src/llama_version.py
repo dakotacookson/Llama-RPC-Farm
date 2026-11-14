@@ -69,26 +69,37 @@ def _llama_version_on(machine):
 
 
 def _llama_version_payload(machine):
-    """Current build vs latest upstream for one machine, TTL-cached —
-    shared by the version endpoint and the update job's skip check."""
+    """Current build vs latest upstream for one machine.
+
+    Only the MACHINE'S build is cached (10 min). `latest` is always
+    re-derived from the 5-min tag cache, so a new upstream release is seen
+    promptly instead of being frozen inside a stale payload. A failed/
+    transient probe (version None — e.g. the binary is being relinked) is
+    NOT cached, so it recovers on the next call instead of showing a
+    misleading action for 10 minutes."""
     name = machine.get("name", "?")
     now = time.time()
     with _LLAMA_UPDATES_LOCK:
         hit = _LLAMA_VER_CACHE.get(name)
-    if hit and now - hit["ts"] < _LLAMA_VER_TTL:
-        return hit
-    version = _llama_version_on(machine)
+    if hit and hit.get("version") and now - hit["ts"] < _LLAMA_VER_TTL:
+        version = hit.get("version")
+        build = hit.get("build")
+    else:
+        version = _llama_version_on(machine)
+        build = _llama_build_no(version or "")
+        with _LLAMA_UPDATES_LOCK:
+            if version:
+                _LLAMA_VER_CACHE[name] = {"version": version,
+                                          "build": build, "ts": now}
+            else:
+                _LLAMA_VER_CACHE.pop(name, None)
     latest = _latest_llama_tag()
-    build = _llama_build_no(version or "")
     latest_build = _llama_build_no(latest)
-    payload = {"version": version, "build": build,
-               "latest": latest, "latest_build": latest_build,
-               "on_latest": bool(build and latest_build
-                                 and build >= latest_build),
-               "ts": now}
-    with _LLAMA_UPDATES_LOCK:
-        _LLAMA_VER_CACHE[name] = payload
-    return payload
+    return {"version": version, "build": build,
+            "latest": latest, "latest_build": latest_build,
+            "on_latest": bool(build and latest_build
+                              and build >= latest_build),
+            "ts": now}
 
 
 def _latest_llama_tag():
