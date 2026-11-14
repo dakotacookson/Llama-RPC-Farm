@@ -40,6 +40,7 @@ from datetime import datetime
 
 from huggingface_hub import get_hf_file_metadata, hf_hub_url
 
+import model_sync
 import path_resolver
 
 # llama.cpp split convention: model-00001-of-00002.gguf (width varies)
@@ -185,6 +186,21 @@ def _walk_incomplete(cache, hashes):
                 continue
             if hashes and f.split(".")[0] not in hashes:
                 continue
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return total
+
+
+def _xet_bytes(local_dir, job_id):
+    """Bytes in this job's hf_xet chunk cache (progress while Xet runs)."""
+    cache = os.path.join(local_dir, ".cache", "hf-xet", str(job_id or ""))
+    total = 0
+    if not os.path.isdir(cache):
+        return 0
+    for root, _, files in os.walk(cache):
+        for f in files:
             try:
                 total += os.path.getsize(os.path.join(root, f))
             except OSError:
@@ -504,9 +520,13 @@ def _finalize_bundle(bundle_id):
     ids = list(bundle.get("job_ids") or [])
     while any(JOBS.get(j, {}).get("status") == "downloading" for j in ids):
         time.sleep(1)
-    # hf leaves .cache/<...>/download metadata + hf-xet under the bundle;
-    # keep the model folder clean for model_parser.
-    shutil.rmtree(os.path.join(bundle["dir"], ".cache"), ignore_errors=True)
+    # hf leaves .cache/<...>/download metadata + hf-xet under the bundle
+    # AND under metadata subdirs (hf-base); remove every .cache directory
+    # so model_parser never sees them.
+    for root, dirs, _files in os.walk(bundle["dir"]):
+        if ".cache" in dirs:
+            shutil.rmtree(os.path.join(root, ".cache"), ignore_errors=True)
+            dirs.remove(".cache")
     statuses = {JOBS.get(j, {}).get("status") for j in ids}
     bundle["status"] = ("done" if statuses and statuses <= {"done"}
                         else "error")
@@ -558,8 +578,11 @@ def _start_file(repo_id, filename, store, bundle_dir, kind, local_subdir=""):
 
 def _plan_bundle(repo_id, filename, store, all_shards):
     """Resolve the bundle folder + every file that belongs to it."""
-    root = path_resolver.resolve(f"store://{store}")
-    if not root or root.startswith("store://"):
+    # In shared mode this is the NAS/CIFS mount; in model-sync mode it is
+    # the app host's local model dir. The store alias is still what the
+    # model config records, so both modes keep portable configs.
+    root = model_sync.resolve_store_root(store)
+    if not root or str(root).startswith("store://"):
         raise ValueError(f"unknown store '{store}'")
     name = _bundle_name(filename)
     bundle_dir = os.path.join(root, name)
@@ -746,12 +769,16 @@ def _run(job_id):
     job = JOBS[job_id]
     local_dir = job["local_dir"]
     # Each job gets its own child process (isolation: two concurrent
-    # downloads must not share xet's chunk graph) and its own xet
-    # cache. hf_xet is disabled anyway so bytes stream straight into
-    # the .incomplete file inside local_dir -- never into ~/.cache.
+    # downloads must not share xet's chunk graph) and its own xet cache.
+    # hf_xet is REQUIRED for Xet-backed repos (HF rejects huge files on
+    # the regular HTTP path). The cache lives under the bundle's .cache,
+    # which _finalize_bundle removes afterwards, so the store never keeps
+    # a duplicate chunk graph.
     env = dict(os.environ)
-    env["HF_HUB_DISABLE_XET"] = "1"
-    env["HF_XET_CACHE"] = os.path.join(local_dir, ".cache", "hf-xet")
+    env.pop("HF_HUB_DISABLE_XET", None)
+    bundle_cache = os.path.join(job.get("bundle_dir") or local_dir,
+                                ".cache", "hf-xet", job_id)
+    env["HF_XET_CACHE"] = bundle_cache
     env.pop("HF_HUB_ENABLE_HF_TRANSFER", None)
     _tok = _token()
     if _tok:
@@ -766,11 +793,19 @@ def _run(job_id):
     reader = threading.Thread(target=_pump, args=(proc, lines), daemon=True)
     reader.start()
     while proc.poll() is None:
-        job["done_bytes"] = _incomplete_bytes(local_dir, job["filename"])
+        done = max(_incomplete_bytes(local_dir, job["filename"]),
+                   _xet_bytes(job.get("bundle_dir") or local_dir, job_id))
+        if job.get("total_bytes"):
+            done = min(done, job["total_bytes"])
+        job["done_bytes"] = done
         job["log"] = list(lines)
         time.sleep(1)
     reader.join(timeout=5)
-    job["done_bytes"] = _incomplete_bytes(local_dir, job["filename"])
+    done = max(_incomplete_bytes(local_dir, job["filename"]),
+               _xet_bytes(job.get("bundle_dir") or local_dir, job_id))
+    if job.get("total_bytes"):
+        done = min(done, job["total_bytes"])
+    job["done_bytes"] = done
     job["log"] = list(lines)
     if proc.returncode == 0:
         job["status"] = "done"
@@ -879,9 +914,15 @@ def cleanup_stale_cache(min_age_seconds=3600, stores=None):
         try:
             root = path_resolver.resolve(f"store://{name}")
         except Exception:
-            continue
+            root = ""
         if root and not str(root).startswith("store://"):
             roots.append(root)
+        try:
+            eff = model_sync.resolve_store_root(name)
+        except Exception:
+            eff = ""
+        if eff and not str(eff).startswith("store://"):
+            roots.append(eff)
     roots = list(dict.fromkeys(roots))
 
     cache_dirs = []

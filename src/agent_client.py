@@ -292,6 +292,68 @@ def file_list(machine, path, hidden=False, timeout=8.0) -> dict:
     return _request(machine, "GET", f"/files/list?{query}", timeout=timeout)
 
 
+def file_read_stream(machine, path, timeout=3600.0):
+    """Open a raw byte stream for one agent file (caller closes).
+
+    Used by model sync to pipe a GGUF to a target without loading it into
+    memory. The response object supports read(n)."""
+    token = _token(machine)
+    if not token:
+        raise AgentError("agent token is not configured for this machine")
+    query = urllib.parse.urlencode({"path": str(path)})
+    req = urllib.request.Request(
+        _base(machine) + f"/files/read?{query}",
+        headers={"Authorization": f"Bearer {token}"})
+    try:
+        return _OPENER.open(req, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read(1000).decode("utf-8", "replace")
+        except Exception:
+            detail = ""
+        raise AgentError(f"agent HTTP {e.code}: {detail or e.reason}") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise AgentError(f"agent file read failed: {e}") from e
+
+
+def file_write_stream(machine, path, fileobj, size, mode=None,
+                      create_parents=True, timeout=3600.0) -> dict:
+    """Stream exactly `size` bytes from a readable file object to the agent.
+
+    The destination is written atomically (temp + rename) by the agent."""
+    token = _token(machine)
+    if not token:
+        raise AgentError("agent token is not configured for this machine")
+    try:
+        length = int(size)
+    except (TypeError, ValueError) as e:
+        raise AgentError("valid size required") from e
+    params = {"path": str(path),
+              "create_parents": "1" if create_parents else "0"}
+    if mode is not None:
+        params["mode"] = str(int(mode))
+    query = urllib.parse.urlencode(params)
+    req = urllib.request.Request(
+        _base(machine) + f"/files/write_bin?{query}",
+        data=fileobj, method="POST",
+        headers={"Authorization": f"Bearer {token}",
+                 "Content-Type": "application/octet-stream",
+                 "Content-Length": str(length),
+                 "Accept": "application/json"})
+    try:
+        with _OPENER.open(req, timeout=timeout) as resp:
+            raw = resp.read(1_048_576)
+            return json.loads(raw.decode("utf-8") or "{}")
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read(1000).decode("utf-8", "replace")
+        except Exception:
+            detail = ""
+        raise AgentError(f"agent HTTP {e.code}: {detail or e.reason}") from e
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise AgentError(f"agent file write failed: {e}") from e
+
+
 def install_artifact(machine, urls, dest, archive="tar.gz",
                      strip_components=0, member="", mode=None,
                      replace=False, timeout=1800.0) -> dict:

@@ -416,7 +416,7 @@ class LlamaCppAdapter(UiHintsMixin):
             return [{"level": "error",
                      "msg": f"llama.cpp engine serves GGUF files — "
                             f"'{p}' is not one"}]
-        local = path_resolver.resolve(p)
+        local = path_resolver.resolve_local(p)
         if not os.path.isfile(local):
             return [{"level": "error",
                      "msg": f"model file not found: {p}"}]

@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 import access
 import settings_store
+import setup_state
 from settings_store import _dump_settings_yaml_preserving, _load_settings_yaml_preserving
 from web_shared import LOGIN_COOKIE, _mask_token
 
@@ -47,6 +48,19 @@ async def auth_me(request: Request, response: Response):
     is_console = peer in access._TRUSTED_ANCHORS
     has_logins = bool(_vault.list_web_logins())
     has_keys = bool(access.access_keys())
+    # First-run storage/engine walkthrough: only when bootstrap explicitly
+    # left the marker False (a genuinely fresh install). Missing/true =
+    # existing install, no wizard.
+    setup_required = False
+    if admin and (has_logins or has_keys):
+        try:
+            _cur = _load_settings_yaml_preserving(
+                settings_store.SETTINGS_FILE)
+            setup_required = _cur.get("setup_wizard_done") is False
+        except Exception:
+            setup_required = False
+        if setup_state.force_enabled():
+            setup_required = True
     return {"name": name, "user": user, "admin": admin, "scoped": scoped,
             "models": sorted(access.view_allow() or []),
             "logged_in": bool(user) or bool(tok),
@@ -58,7 +72,8 @@ async def auth_me(request: Request, response: Response):
             # First boot on a fresh install: no web login AND no access key.
             # The UI uses this to show the "create admin" setup form rather
             # than an unusable sign-in box.
-            "needs_setup": (not has_logins and not has_keys)}
+            "needs_setup": (not has_logins and not has_keys),
+            "setup_wizard_required": setup_required}
 
 
 @router.get("/api/auth/my-key")
@@ -392,7 +407,12 @@ async def auth_bootstrap(l: FirstLoginIn, response: Response):
         raise HTTPException(400, "password must be at least 8 characters")
     # admin key for the login (reuse existing by name or create)
     tok = access.generate_token()
+    first_run = not has_logins and not has_keys
     current = _load_settings_yaml_preserving(settings_store.SETTINGS_FILE)
+    if first_run:
+        # Explicit marker: the UI shows the storage/engine walkthrough until
+        # it is completed. Existing installs have no marker and never see it.
+        current["setup_wizard_done"] = False
     keys = current.get(_a.KEYS_SETTINGS_KEY) or {}
     if not isinstance(keys, dict):
         keys = {}

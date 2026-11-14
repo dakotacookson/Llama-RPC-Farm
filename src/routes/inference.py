@@ -13,6 +13,7 @@ import config_loader as cfg
 import engine_registry
 import local_node
 import model_parser
+import model_sync
 import path_resolver
 import swap_manager
 from web_shared import (_access_filter_models, _gateway_headers,
@@ -284,8 +285,14 @@ async def scan_models(path: str, recursive: bool = False,
                       refresh: bool = False):
     if not path:
         raise HTTPException(status_code=400, detail="path query param required")
-    # resolve store:// alias for THIS platform, then scan locally
-    local = path_resolver.resolve(path)
+    # Resolve the scan root for the app host. shared mode: the NAS/CIFS
+    # mount. sync mode: this machine's model_dir/default space.
+    requested_alias = (path if str(path).startswith(path_resolver.PREFIX)
+                       else "")
+    if requested_alias:
+        local = model_sync.resolve_store_root(path)
+    else:
+        local = path_resolver.resolve(path)
     key = (local, bool(recursive))
     cached = _scan_cache_get(key, refresh)
     if cached is None:
@@ -362,11 +369,19 @@ async def scan_models(path: str, recursive: bool = False,
     ]
     # report paths back in store-alias form so configs stay portable
     # (configured-ness below compares AFTER aliasing — configs store
-    # store:// paths, scan rows are absolute until here)
+    # store:// paths, scan rows are absolute until here). In sync mode the
+    # scan root is a local model dir, so map it back to the requested alias
+    # before falling back to the shared-store roots.
+    def _alias(p):
+        if p and requested_alias:
+            a = model_sync.alias_under(p, local, requested_alias)
+            if a != p:
+                return a
+        return path_resolver.to_alias(p)
     for m in filtered_models:
-        m["base_path"] = path_resolver.to_alias(m["base_path"])
+        m["base_path"] = _alias(m["base_path"])
         for f in m["files"].values():
-            f["path"] = path_resolver.to_alias(f["path"])
+            f["path"] = _alias(f["path"])
     # Wizard source rule (per-IP): a config existing ANYWHERE on this
     # farm = configured. For restricted viewers those rows leave the
     # source list entirely (not theirs to re-configure — and their own
@@ -382,7 +397,7 @@ async def scan_models(path: str, recursive: bool = False,
         kept.append(model)
     filtered_models = kept
     for p in projectors:
-        p["base_path"] = path_resolver.to_alias(p["base_path"])
+        p["base_path"] = _alias(p["base_path"])
     # attach architecture for grouping in the wizard source list
     # Configured source rows inherit the SAME capability tags as the model
     # list (mmproj -> vision, embed -> embedding, etc.). File-scan heuristics

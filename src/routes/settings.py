@@ -29,11 +29,18 @@ async def get_settings():
     import yaml
     defaults = {"model_dir": "store://llm-models",
                 "llama_bin": "~/llama.cpp/build/bin",
-                "theme_family": "nord", "theme_mode": "dark"}
+                "theme_family": "nord", "theme_mode": "dark",
+                "model_sync": {"enabled": False, "default_dir": ""},
+                "storage_mode": "shared"}
     if os.path.exists(settings_store.SETTINGS_FILE):
         with open(settings_store.SETTINGS_FILE, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         defaults.update(data)
+    if not defaults.get("storage_mode"):
+        _ms = defaults.get("model_sync") or {}
+        defaults["storage_mode"] = (
+            "sync" if isinstance(_ms, dict) and _ms.get("enabled")
+            else "shared")
     # engine schema (ARD §2): inject engine defaults so the frontend never
     # None-checks. A typo in settings.yaml (bad engine) must NOT fall back
     # silently — ValueError -> 400 with the valid values in the detail.
@@ -89,6 +96,11 @@ class AppSettingsIn(pydantic.BaseModel):
     hf_token: str | None = None  # only a non-empty value updates the stored token
     clear_hf_token: bool = False
     engine: str | None = None  # llama_cpp — None leaves the stored value
+    # Opt-in model replication (farm-wide). Flat in the API, nested in YAML:
+    # model_sync: {enabled, default_dir}
+    model_sync_enabled: bool | None = None
+    model_sync_default_dir: str | None = None
+    storage_mode: str | None = None   # shared | sync
 
 
 async def _restart_everything_for_engine(new_engine: str):
@@ -182,7 +194,10 @@ async def save_settings(s: AppSettingsIn, r: Request):
         or access.is_admin(None)
     _key_name_for_ui = access.key_display_name()
     if not _control_identity and (s.engine is not None
-                                  or s.hf_token or s.clear_hf_token):
+                                  or s.hf_token or s.clear_hf_token
+                                  or s.model_sync_enabled is not None
+                                  or s.model_sync_default_dir is not None
+                                  or s.storage_mode is not None):
         raise HTTPException(404, "not found")
     # merge over the CURRENT FILE so unknown/future keys survive the write;
     # loaded via the comment-preserving persister (B9c) — a plain
@@ -190,6 +205,9 @@ async def save_settings(s: AppSettingsIn, r: Request):
     current = _load_settings_yaml_preserving(settings_store.SETTINGS_FILE)
     engine_changed = False
     update = s.model_dump()
+    ms_enabled = update.pop("model_sync_enabled", None)
+    ms_dir = update.pop("model_sync_default_dir", None)
+    storage_mode = update.pop("storage_mode", None)
     tok = (update.pop("hf_token", None) or "").strip()
     clear_tok = update.pop("clear_hf_token", False)
     engine = update.pop("engine", None)
@@ -218,6 +236,24 @@ async def save_settings(s: AppSettingsIn, r: Request):
         if update.get(_k) is None:
             update.pop(_k, None)
     current.update(update)
+    if storage_mode is None and ms_enabled is not None:
+        storage_mode = "sync" if ms_enabled else "shared"
+    if storage_mode is not None:
+        storage_mode = str(storage_mode).strip().lower()
+        if storage_mode not in ("shared", "sync"):
+            raise HTTPException(400, "storage_mode must be shared or sync")
+        current["storage_mode"] = storage_mode
+    if ms_enabled is not None or ms_dir is not None or storage_mode is not None:
+        ms = current.get("model_sync")
+        if not isinstance(ms, dict):
+            ms = {}
+        if storage_mode is not None:
+            ms["enabled"] = storage_mode == "sync"
+        elif ms_enabled is not None:
+            ms["enabled"] = bool(ms_enabled)
+        if ms_dir is not None:
+            ms["default_dir"] = str(ms_dir).strip()
+        current["model_sync"] = ms
     if engine is not None:
         # enum check with the valid values in the message (never a silent
         # fallback — ARD §2); ValueError -> 400
@@ -253,6 +289,13 @@ async def save_settings(s: AppSettingsIn, r: Request):
     # scrubs the stale copy from disk.
     current.pop("_engine_save_warnings", None)
     _dump_settings_yaml_preserving(current, settings_store.SETTINGS_FILE)
+    if str(current.get("storage_mode") or "shared").lower() == "sync":
+        # Turning sync on is an explicit request to fill the gaps now.
+        try:
+            import model_sync
+            model_sync.start_job(None)
+        except Exception as exc:
+            print(f"[model-sync] start after settings save failed: {exc}")
     out = dict(current)
     out.pop("hf_token", None)  # response-only: never echoed
     out["hf_token_set"] = _vault.hf_token_set()

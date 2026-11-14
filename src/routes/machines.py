@@ -121,6 +121,7 @@ class MachineIn(pydantic.BaseModel):
     password: str = ""
     port: int = 22
     mac: str | None = None      # None = preserve/auto-fill; identity for ARP healing
+    model_dir: str | None = None  # per-machine model root (empty = shared store)
     transport: str = "agent"    # agent-only (kept for config compatibility)
     agent_port: int = 8198
     agent_token: str = ""       # write-only; stored in the vault, never YAML
@@ -303,6 +304,7 @@ def _validate_machine_connection(payload):
 async def add_machine(m: MachineIn):
     try:
         payload = m.model_dump()
+        payload["model_dir"] = payload.get("model_dir") or ""
         payload["engine_mode"] = payload.get("engine_mode") or "auto"
         payload["engine_backend"] = payload.get("engine_backend") or "auto"
         requested_token = (payload.pop("agent_token", "") or "").strip()
@@ -353,6 +355,8 @@ async def update_machine(name: str, m: MachineIn):
             payload.pop("engine_backend", None)
         if payload.get("mac") is None:
             payload.pop("mac", None)   # omitted = keep the stored identity
+        if payload.get("model_dir") is None:
+            payload.pop("model_dir", None)
         old_name = str(name)
         new_name = str(payload.get("name") or old_name).strip()
         if new_name and new_name != old_name and cfg.machines.get(new_name):

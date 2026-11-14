@@ -264,6 +264,29 @@ anything that runs shell commands:
   bootstrap Python 3.11 with the **musl** uv build (gnu uv needs glibc
   2.28; Jetson is 2.27) and create a **seeded** venv so `/agent/update`
   (`python -m pip`) works.
+- **Testing the first-run walkthrough on an existing install:** set
+  `FORCE_SETUP_WIZARD = True` in `src/setup_state.py`, or launch with
+  `FARM_SETUP_WIZARD_FORCE=1`, then restart the UI. The walkthrough opens
+  for an admin despite `setup_wizard_done: true`; the override never
+  changes users, the marker, or storage. Leave the constant False in
+  committed code.
+- **First-run walkthrough state:** `auth_bootstrap` writes
+  `setup_wizard_done: false` only for a genuinely fresh install (no logins
+  and no keys). `/api/setup/complete` sets it true; `/api/setup/status`,
+  `/api/setup/storage` drive the storage step. Never reset the marker on
+  existing installs (that would re-prompt them); Settings → Setup guide
+  reopens it client-side. The account step is the existing
+  `/api/auth/bootstrap` form, not a second wizard.
+- **Model paths for a launch must go through `model_sync.resolve_model_path()`**
+  (it applies the target machine's `model_dir` / the opt-in
+  `model_sync.default_dir` only when `storage_mode: sync`; in the default
+  `storage_mode: shared` it must resolve to the shared store). A raw `path_resolver.resolve_for()` at a
+  launch site will disagree with the model-copy job. The copy targets the
+  machine that runs `llama-server` (`swap_manager.deployment_launch_mode`),
+  not every server. Only the main GGUF is copied; mmproj/draft companions
+  still require the shared store. New agent endpoints `/files/read`
+  (stream) and `/files/write_bin` (stream) are root-confined and
+  token-authenticated; keep that invariant.
 - **`detected` must be MERGED, never replaced.** Hardware detect and the
   120 s watcher (`routes/hardware.py`) both write it from live stats, which
   do not carry `arch`/`board`/`driver_version`. Replacing the dict wiped a

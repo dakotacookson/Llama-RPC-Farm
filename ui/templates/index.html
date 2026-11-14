@@ -277,6 +277,12 @@
             <small class="hint" id="m-llama-bin-hint"></small>
           </label>
         </div>
+        <div class="row">
+          <label class="wide">Model dir — override for this machine (empty = shared store)
+            <input id="m-model-dir" placeholder="e.g. ~/llama-models or /mnt/models">
+            <small class="hint">Where this machine reads model files. Model sync copies missing models here (expanded on the target).</small>
+          </label>
+        </div>
         <fieldset>
           <legend>Expose to cluster</legend>
           <div class="row">
@@ -1228,6 +1234,27 @@ technical | bugs, errors, login problems</textarea></label>
             </label>
           </div>
           <p class="hint" style="margin:-8px 0 10px">Used when a machine has no override. Set per-machine bin on Machines tab for Windows vs Linux differences — global default below.</p>
+          <div class="row" style="align-items:flex-start;border-top:1px solid var(--border);padding-top:12px;margin-top:4px">
+            <label class="wide">Model storage mode
+              <select id="set-storage-mode">
+                <option value="shared">Shared NAS / CIFS (store:// paths)</option>
+                <option value="sync">Model sync (copy models to each machine)</option>
+              </select>
+              <small class="hint">Shared = every machine reads the same mounted store (current setup). Sync = each machine uses a local model dir; a missing GGUF is copied from any machine that has it through the peer agent.</small>
+            </label>
+          </div>
+          <div id="model-sync-options">
+            <div class="row">
+              <label class="wide">Default model directory (used when a machine has no Model dir)
+                <input id="set-model-sync-dir" placeholder="~/llama-models">
+                <small class="hint">Expanded on the TARGET machine. <code>~/llama-models</code> works on Linux, macOS and Windows. Per-machine Model dir overrides this.</small>
+              </label>
+            </div>
+            <div class="row" style="align-items:center">
+              <button type="button" class="small" id="set-model-sync-now">Sync models now</button>
+              <span class="hint" id="set-model-sync-status"></span>
+            </div>
+          </div>
           <div class="row">
             <label class="wide">llama.cpp bin dir (global default — per-machine can override)
               <div style="display:flex;gap:6px;align-items:center">
@@ -1262,6 +1289,7 @@ technical | bugs, errors, login problems</textarea></label>
           </label>
         </div>
         <div class="actions">
+          <button type="button" class="small" id="set-setup-guide"><i class="fa-solid fa-wand-magic-sparkles"></i> Setup guide</button>
           <button type="button" id="set-save">Save defaults</button>
         </div>
         <div id="set-status"></div>
@@ -1343,6 +1371,70 @@ technical | bugs, errors, login problems</textarea></label>
         <span style="flex:1"></span>
         <button class="small" id="login-setup" style="display:none"><i class="fa-solid fa-user-plus"></i> Create admin</button>
         <button class="small" id="login-go"><i class="fa-solid fa-right-to-bracket"></i> Sign in</button>
+      </div>
+    </div>
+  </div>
+  <!-- First-run setup walkthrough (storage + engines; admin step is the login modal) -->
+  <div id="setup-modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-backdrop"></div>
+    <div class="modal-dialog" role="dialog" aria-modal="true" style="max-width:580px">
+      <div class="modal-header">
+        <h3 id="setup-title"><i class="fa-solid fa-wand-magic-sparkles"></i> First-time setup</h3>
+        <button class="small" id="setup-close" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body" style="padding:14px">
+        <div class="setup-steps" id="setup-steps">
+          <span class="setup-step done">1 · Admin</span>
+          <span class="setup-step active" data-step="2">2 · Model storage</span>
+          <span class="setup-step" data-step="3">3 · Engines</span>
+        </div>
+        <div id="setup-step-2">
+          <p class="hint" style="margin-top:0">Choose where model files live. Shared keeps the NAS/CIFS mount for every machine (the original setup); Model sync uses a local model space and copies a missing model to the machine that serves it.</p>
+          <label class="wide">Model storage mode
+            <select id="setup-storage-mode">
+              <option value="shared">Shared NAS / CIFS (store:// paths)</option>
+              <option value="sync">Model sync (copy models to each machine)</option>
+            </select>
+          </label>
+          <div id="setup-shared-fields">
+            <label class="wide">Shared model store path (this machine's platform)
+              <div style="display:flex;gap:6px;align-items:center">
+                <input id="setup-store-path" placeholder="/mnt/cassiel_cifs/llm-models">
+                <button type="button" class="small" id="setup-store-path-browse" title="Browse the app host filesystem"><i class="fa-solid fa-folder-open"></i> Browse</button>
+              </div>
+              <small class="hint">Saved in <code>config/stores.yaml</code> for this platform. Model configs keep using <code>store://llm-models</code>.</small>
+            </label>
+          </div>
+          <div id="setup-sync-fields" hidden>
+            <label class="wide">Default local model directory
+              <input id="setup-sync-dir" placeholder="~/llama-models">
+              <small class="hint">Expanded on each target machine (<code>~</code> / <code>%USERPROFILE%</code>). Per-machine overrides live in the Machines editor.</small>
+            </label>
+          </div>
+          <label class="wide">Model directory / scan root
+            <input id="setup-model-dir" placeholder="store://llm-models">
+            <small class="hint">Usually <code>store://llm-models</code>. Downloads and model scans use this alias.</small>
+          </label>
+          <p class="status-bad" id="setup-err" hidden></p>
+        </div>
+        <div id="setup-step-3" hidden>
+          <p class="hint" style="margin-top:0">Storage is configured. Open the Machines page to install the engines:</p>
+          <ol class="hint" style="line-height:1.8;margin:8px 0 10px 18px">
+            <li><b>Install engines</b> on the master (llama.cpp + <code>ggml-rpc-server</code>).</li>
+            <li>Add any peers and install the peer agent on them.</li>
+            <li><b>Install llama-swap</b> on the swap host.</li>
+          </ol>
+          <p class="hint">This is the same live checklist as the Machines page — it knows which boxes still need engines or llama-swap.</p>
+          <div id="setup-engines" class="card" style="margin:10px 0;padding:8px 10px"><p class="hint" style="margin:0">Checking machines…</p></div>
+        </div>
+      </div>
+      <div class="modal-footer" style="display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--border-soft)">
+        <button class="small" id="setup-skip">Skip setup</button>
+        <span style="flex:1"></span>
+        <button class="small" id="setup-back" style="display:none">Back</button>
+        <button class="small" id="setup-next" style="background:var(--accent-dim);color:var(--accent);border-color:var(--accent)">Save &amp; continue</button>
+        <button class="small" id="setup-machines" style="display:none">Open Machines</button>
+        <button class="small" id="setup-finish" style="display:none">Finish</button>
       </div>
     </div>
   </div>

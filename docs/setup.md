@@ -64,6 +64,25 @@ UI opens a **Create admin account** dialog instead of an unusable sign-in
 box. Pick a username and a password (8+ characters); this creates the
 first web login plus its admin access key and signs the browser in.
 
+### First-run walkthrough
+
+Right after the admin account is created (or on the next reload while it
+is still pending), the setup walkthrough continues:
+
+1. **Model storage** — choose **Shared NAS / CIFS** (and give the store
+   path for this machine's platform; it is written to
+   `config/stores.yaml`) or **Model sync** (a default local model dir;
+   missing models are copied through the peer agent). The scan root stays
+   `store://llm-models` so model configs remain portable.
+2. **Engines** — the last step opens the **Machines** page. Use
+   **Install engines** (llama.cpp + `ggml-rpc-server`) and
+   **Install llama-swap** on the swap host. The **Setup needed** panel
+   lists anything still missing.
+
+The walkthrough is recorded as `setup_wizard_done` in
+`config/settings.yaml`; existing installs are not prompted. Reopen it
+any time from **Settings → Setup guide**.
+
 - The dialog appears whenever `/api/auth/me` reports `needs_setup: true`
   (no web logins and no access keys).
 - `POST /api/auth/bootstrap` is the same first-run path; once any login or
@@ -157,6 +176,8 @@ shards), every `mmproj`/MTP/draft GGUF in the repo, config/tokenizer
 metadata (from the repo, or from its declared `base_model` when the GGUF
 repo omits them), LICENSE/README files, and a `farm-bundle.json` manifest.
 Existing flat files keep working; only new downloads use bundles.
+Large Xet-backed HF repos need `hf_xet`; it is in `requirements.txt`, so
+`install.sh` / `install.bat` and the packaged app include it.
 
 ## 6. Install llama.cpp + RPC (UI: Install engines)
 

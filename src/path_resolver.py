@@ -53,6 +53,50 @@ def resolve_for(path, machine_os=None):
     return resolve(path, machine_os or LOCAL_PLATFORM)
 
 
+def resolve_local(path, machine_os=None):
+    """Resolve a store:// path for THIS app host, honoring storage_mode.
+
+    shared mode -> the NAS/CIFS mount; sync mode -> this host's model_dir/
+    default space. `machine_os` is accepted for call-site compatibility;
+    the app host's own storage always wins. Lazy import avoids a
+    model_sync <-> path_resolver cycle."""
+    if not path or not str(path).startswith(PREFIX):
+        return resolve(path)
+    try:
+        import model_sync
+        return model_sync.resolve_model_path(
+            model_sync.local_machine(), str(path))
+    except Exception:
+        return resolve(path)
+
+
+def save_store(name, platform, root):
+    """Set one store alias's root for one platform (setup wizard)."""
+    import settings_persister
+    name = str(name or "").strip()
+    platform = str(platform or LOCAL_PLATFORM).strip().lower()
+    root = str(root or "").strip()
+    if not name:
+        raise ValueError("store name is required")
+    if platform not in ("linux", "macos", "windows"):
+        raise ValueError("platform must be linux, macos or windows")
+    if not root:
+        raise ValueError("store path is required")
+    data = settings_persister.load_yaml_preserving(STORES_FILE)
+    stores = data.get("stores")
+    if not isinstance(stores, dict):
+        stores = {}
+    entry = stores.get(name)
+    if not isinstance(entry, dict):
+        entry = {}
+    entry[platform] = root.rstrip("/\\")
+    stores[name] = entry
+    data["stores"] = stores
+    os.makedirs(os.path.dirname(STORES_FILE), exist_ok=True)
+    settings_persister.dump_yaml_preserving(data, STORES_FILE)
+    return {"name": name, "platform": platform, "root": entry[platform]}
+
+
 def to_alias(path):
     """Reverse of resolve(): turn a concrete platform path back into its
     store:// alias so saved configs stay portable. Unknown paths pass

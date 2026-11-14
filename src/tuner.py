@@ -228,7 +228,7 @@ def safe_defaults(base_path, servers, device_order="", target_os="linux",
     a starting point (stage 2b measures q8/f16/q4). Tune optimizes
     placement/spec/batches around them, never sacrifices ctx."""
     existing_flags = existing_flags or {}
-    resolved = path_resolver.resolve_for(base_path, target_os)
+    resolved = path_resolver.resolve_local(base_path, target_os)
     try:
         meta = gguf_inspect.metadata(resolved)
     except Exception:
@@ -275,7 +275,7 @@ def estimate(base_path, servers, device_order="", target_os="linux",
     """Math-only max-ctx estimate (0 loads). Returns breakdown + split."""
     if not servers:
         raise ValueError("no servers selected — pick hardware in the form first")
-    resolved = path_resolver.resolve_for(base_path, target_os)
+    resolved = path_resolver.resolve_local(base_path, target_os)
     if not os.path.exists(resolved):
         raise ValueError(f"model file not found: {resolved}")
     meta = gguf_inspect.metadata(resolved)
@@ -288,7 +288,7 @@ def estimate(base_path, servers, device_order="", target_os="linux",
     mmproj_b = 0
     if mmproj_raw:
         try:
-            mmproj_b = _model_bytes(path_resolver.resolve_for(mmproj_raw, target_os))
+            mmproj_b = _model_bytes(path_resolver.resolve_local(mmproj_raw, target_os))
         except Exception:
             mmproj_b = 0
     kv_tok = _kv_per_token(resolved, meta, cache_type)
@@ -464,7 +464,7 @@ def _local_file_cache(model_id, *raw_paths, target_os="linux",
             if not raw:
                 continue
             try:
-                _o = path_resolver.resolve_for(raw, target_os)
+                _o = path_resolver.resolve_local(raw, target_os)
             except Exception:
                 continue
             if os.path.exists(_o) and not _o.startswith(cache_dir):
@@ -489,7 +489,7 @@ def _local_file_cache(model_id, *raw_paths, target_os="linux",
         if not raw:
             continue
         try:
-            orig = path_resolver.resolve_for(raw, target_os)
+            orig = path_resolver.resolve_local(raw, target_os)
         except Exception:
             continue
         if not os.path.exists(orig) or orig.startswith(cache_dir):
@@ -815,7 +815,7 @@ def _fit_print(model_id, base_path, extra_args=None, target_os="linux"):
     output tail (or '' when the binary lacks the tool). Best-effort."""
     import subprocess
     try:
-        resolved = path_resolver.resolve_for(base_path, target_os)
+        resolved = path_resolver.resolve_local(base_path, target_os)
     except Exception:
         return ""
     tool = _bin_path("llama-fit-params")
@@ -1392,7 +1392,7 @@ def _run_trial(model_id, trial, port, label, path_map=None):
         for key in ("base_path", "path"):
             if trial.get(key):
                 try:
-                    r = path_resolver.resolve_for(trial[key], _trial_os(trial))
+                    r = path_resolver.resolve_local(trial[key], _trial_os(trial))
                     if r in path_map:
                         trial[key] = path_map[r]
                 except Exception:
@@ -1408,7 +1408,7 @@ def _run_trial(model_id, trial, port, label, path_map=None):
                 if not p:
                     continue
                 try:
-                    r = path_resolver.resolve_for(p, _trial_os(trial))
+                    r = path_resolver.resolve_local(p, _trial_os(trial))
                     out.append(path_map.get(r, p))
                 except Exception:
                     out.append(p)
@@ -1791,7 +1791,7 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
         set_tune_binary(model, master0)
         global _TUNE_MODALITY
         try:
-            _mres = path_resolver.resolve_for(
+            _mres = path_resolver.resolve_local(
                 model.get("base_path") or model.get("path", ""),
                 master0.get("os", "linux"))
             _mmeta = gguf_inspect.metadata(_mres) or {}
@@ -2144,7 +2144,7 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
         # 3080 must not outrank a 27B on a 2060. Key includes the GPUs.
         try:
             _arch0 = str((gguf_inspect.metadata(
-                path_resolver.resolve_for(
+                path_resolver.resolve_local(
                     model.get("base_path") or model.get("path", ""),
                     master.get("os", "linux"))
             ) or {}).get("general.architecture", "") or "unknown")
@@ -2398,7 +2398,7 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
         if True:
             try:
                 _tgt = master.get("os", "linux")
-                _res = path_resolver.resolve_for(
+                _res = path_resolver.resolve_local(
                     base.get("base_path") or base.get("path", ""), _tgt)
                 _meta = gguf_inspect.metadata(_res)
                 _fixed = ((est["weights_gb"] + est["mmproj_gb"]
@@ -2624,7 +2624,7 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
         _n_layer = 0
         _meta5 = {}
         try:
-            _res5 = path_resolver.resolve_for(
+            _res5 = path_resolver.resolve_local(
                 base.get("base_path") or base.get("path", ""),
                 master.get("os", "linux"))
             _moe = has_moe_tensors(_res5)
@@ -2734,7 +2734,7 @@ def _tune_worker(model_id, target_tps, port, try_mtp_off):
             # full-size SWA cache rung
             try:
                 _meta = (gguf_inspect.metadata(
-                    path_resolver.resolve_for(
+                    path_resolver.resolve_local(
                         base.get("base_path") or base.get("path", ""),
                         master.get("os", "linux"))
                 ) or {})

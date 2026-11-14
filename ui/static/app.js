@@ -1,5 +1,6 @@
 /* Llama RPC Farm UI */
 const $ = (sel) => document.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 /* Safe binder: one missing/stale element must never kill the rest of
    the UI (a stale cached index.html used to throw here and left every
@@ -1123,17 +1124,18 @@ function _readinessIssues(data) {
   return out;
 }
 async function loadReadiness(force = false) {
-  const host = $("#setup-readiness");
-  if (!host) return;
+  const hosts = [$("#setup-readiness"), $("#setup-engines")].filter(Boolean);
+  if (!hosts.length) return;
   try {
     const data = await fetchReadiness(force);
     const issues = _readinessIssues(data);
     if (!issues.length) {
-      host.style.display = "";
-      host.innerHTML = '<p class="status-ok" style="margin:0"><i class="fa-solid fa-circle-check"></i> Setup complete — every machine has its agent, llama.cpp, llama RPC, and llama-swap where needed.</p>';
+      for (const host of hosts) {
+        host.style.display = "";
+        host.innerHTML = '<p class="status-ok" style="margin:0"><i class="fa-solid fa-circle-check"></i> Setup complete — every machine has its agent, llama.cpp, llama RPC, and llama-swap where needed.</p>';
+      }
       return;
     }
-    host.style.display = "";
     const rows = issues.map(({ name, r, missing }) => {
       const acts = [];
       if (!(r.agent || {}).ok) {
@@ -1153,15 +1155,18 @@ async function loadReadiness(force = false) {
         ${acts.join(" ")}
       </div>`;
     }).join("");
-    host.innerHTML = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+    for (const host of hosts) {
+      host.style.display = "";
+      host.innerHTML = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
         <strong><i class="fa-solid fa-list-check"></i> Setup needed</strong>
         <small class="hint">install engines on each peer; llama-swap on the swap host</small>
       </div>${rows}`;
+    }
   } catch (_) {
-    host.style.display = "none";
+    for (const host of hosts) host.style.display = "none";
   }
 }
-on("#setup-readiness", "click", async (e) => {
+async function _readinessAction(e) {
   const btn = e.target.closest("[data-ready-act]");
   if (!btn) return;
   const name = btn.dataset.machine;
@@ -1213,7 +1218,9 @@ on("#setup-readiness", "click", async (e) => {
     }
     await loadReadiness(true); loadMachines(true); loadStatus();
   }
-});
+}
+on("#setup-readiness", "click", _readinessAction);
+on("#setup-engines", "click", _readinessAction);
 
 /* Lightweight live refresh for the Machines page: agent/app version
    pills update in place every few seconds without re-rendering rows. */
@@ -2160,7 +2167,7 @@ on("#start-all", "click", async (e) => {
 });
 
 /* ---------------- machines ---------------- */
-const EMPTY_MACHINE = { name: "", ip: "", username: "", password: "", port: 1, transport: "agent", agent_port: 8198, agent_token: "", role: "peer", os: "linux", rpc_port: 50052, gpu: "", llama_bin: "", rdma: false, rdma_ip: "", rdma_dev: "", rdma_gid: "", rdma_cm: false };
+const EMPTY_MACHINE = { name: "", ip: "", username: "", password: "", port: 1, transport: "agent", agent_port: 8198, agent_token: "", role: "peer", os: "linux", rpc_port: 50052, gpu: "", llama_bin: "", model_dir: "", rdma: false, rdma_ip: "", rdma_dev: "", rdma_gid: "", rdma_cm: false };
 
 async function defaultLlamaBin() {
   const s = await getAppSettings();
@@ -2239,6 +2246,7 @@ function machineFormLoad(m, isEdit) {
   $("#m-gpu").value = m.gpu || "";
   $("#m-ram").value = m.ram_total_gb || "";
   $("#m-llama-bin").value = m.llama_bin || "";
+  $("#m-model-dir").value = m.model_dir || "";
   // hint shows global default when no override — machine-specific wins when set
   defaultLlamaBin().then(d => {
     const hint = $("#m-llama-bin-hint");
@@ -2383,6 +2391,7 @@ function machineFormRead() {
     gpu: $("#m-gpu").value.trim(),
     ram_total_gb: parseFloat($("#m-ram").value) || null,
     llama_bin: $("#m-llama-bin").value.trim(),
+    model_dir: $("#m-model-dir").value.trim(),
     expose: {
       mode: $("#m-expose-mode").value,
       gpus: $("#m-expose-gpus").value.split(",").map(s => s.trim()).filter(Boolean),
@@ -5510,6 +5519,11 @@ window.addEventListener("DOMContentLoaded", async () => {
       // Fresh install: no login and no access key yet. Show the create-admin
       // form instead of an unusable sign-in box.
       showLogin(true, true);
+    } else if (me && me.setup_wizard_required) {
+      // Existing admin + required walkthrough (including the forced test
+      // flag). This must win over the bare-key login prompt so testing and
+      // first-run storage setup are not hidden behind a sign-in box.
+      showSetupWizard(2);
     } else if (me && me.has_logins && !me.user && me.trust_via !== "loopback") {
       showLogin(true, false);
     }
@@ -5670,6 +5684,90 @@ async function doBootstrap() {
     if (me && !me.needs_setup) showLogin(true, false);
   }
 }
+
+/* ---------------- first-run setup walkthrough -------------------- */
+let _setupState = null;
+function syncSetupStorageFields() {
+  const mode = $("#setup-storage-mode")?.value || "shared";
+  const shared = $("#setup-shared-fields");
+  const sync = $("#setup-sync-fields");
+  if (shared) shared.hidden = mode !== "shared";
+  if (sync) sync.hidden = mode !== "sync";
+}
+function setupStep(n) {
+  const is3 = n === 3;
+  if ($("#setup-step-2")) $("#setup-step-2").hidden = is3;
+  if ($("#setup-step-3")) $("#setup-step-3").hidden = !is3;
+  if ($("#setup-back")) $("#setup-back").style.display = is3 ? "" : "none";
+  if ($("#setup-next")) $("#setup-next").style.display = is3 ? "none" : "";
+  if ($("#setup-machines")) $("#setup-machines").style.display = is3 ? "" : "none";
+  if ($("#setup-finish")) $("#setup-finish").style.display = is3 ? "" : "none";
+  if (is3) loadReadiness(true).catch(() => {});
+  $$("#setup-steps .setup-step").forEach((el) => {
+    const s = Number(el.dataset.step || 0);
+    el.classList.toggle("active", s === n);
+    el.classList.toggle("done", s < n);
+  });
+  const err = $("#setup-err");
+  if (err) { err.hidden = true; err.textContent = ""; }
+}
+async function showSetupWizard(step = 2) {
+  try { _setupState = await api("GET", "/api/setup/status"); }
+  catch (_) { _setupState = null; }
+  const platform = _setupState?.platform || "linux";
+  const store = (_setupState?.stores || {})["llm-models"] || {};
+  $("#setup-store-path").value = store[platform] || "";
+  $("#setup-storage-mode").value = _setupState?.storage_mode || "shared";
+  $("#setup-model-dir").value = _setupState?.model_dir || "store://llm-models";
+  $("#setup-sync-dir").value = _setupState?.default_dir || "~/llama-models";
+  syncSetupStorageFields();
+  setupStep(step);
+  $("#setup-modal")?.classList.remove("hidden");
+}
+async function saveSetupStorage() {
+  const err = $("#setup-err");
+  const mode = $("#setup-storage-mode").value;
+  const storePath = $("#setup-store-path").value.trim();
+  if (mode === "shared" && !storePath) {
+    err.textContent = "Enter the shared model store path for this machine.";
+    err.hidden = false;
+    return;
+  }
+  try {
+    await api("POST", "/api/setup/storage", {
+      mode,
+      model_dir: $("#setup-model-dir").value.trim() || "store://llm-models",
+      default_dir: $("#setup-sync-dir").value.trim(),
+      store_name: "llm-models",
+      store_path: storePath,
+      platform: _setupState?.platform || "",
+    });
+    _setupState = await api("GET", "/api/setup/status").catch(() => _setupState);
+    await loadSettings();
+    setupStep(3);
+  } catch (e) {
+    err.textContent = e.message;
+    err.hidden = false;
+  }
+}
+async function completeSetup() {
+  try { await api("POST", "/api/setup/complete", {}); } catch (_) {}
+  $("#setup-modal")?.classList.add("hidden");
+  loadSettings();
+}
+async function openSetupMachines() {
+  await completeSetup();
+  const btn = document.querySelector('nav button[data-tab="machines"]');
+  if (btn) btn.click();
+}
+on("#setup-next", "click", saveSetupStorage);
+on("#setup-back", "click", () => setupStep(2));
+on("#setup-machines", "click", openSetupMachines);
+on("#setup-finish", "click", completeSetup);
+on("#setup-skip", "click", completeSetup);
+on("#setup-close", "click", completeSetup);
+on("#setup-storage-mode", "change", syncSetupStorageFields);
+on("#set-setup-guide", "click", () => showSetupWizard(2));
 
 /* Boot-time Access-tab gate: same decision loadAccess makes
    (whoami.trusted), applied without loading the tab — hides the nav
@@ -7569,11 +7667,84 @@ $("#theme-builder-wrap")?.addEventListener("toggle", (e) => {
 });
 // (light-mode checkbox was replaced by the segmented #theme-mode-seg control)
 
+let _modelSyncTimer = null;
+function syncStorageModeUi() {
+  const sel = $("#set-storage-mode");
+  const box = $("#model-sync-options");
+  if (!sel || !box) return;
+  box.style.display = sel.value === "sync" ? "" : "none";
+}
+on("#set-storage-mode", "change", syncStorageModeUi);
+function _renderModelSync(st, job) {
+  const box = $("#set-model-sync-status");
+  if (!box) return;
+  const cfg = st || {};
+  const parts = [];
+  parts.push(cfg.mode || (cfg.enabled ? "sync" : "shared"));
+  if (cfg.default_dir) parts.push(`default: <code>${escHtml(cfg.default_dir)}</code>`);
+  if (job) {
+    const cls = job.state === "failed" ? "status-bad"
+      : job.state === "done" ? "status-ok" : "";
+    parts.push(`<span class="${cls}">${escHtml(job.state)}</span>`);
+    const res = job.result || {};
+    if (job.state === "done") {
+      parts.push(`${(res.copied || []).length} copied · ${(res.skipped || []).length} present · ${(res.errors || []).length} errors`);
+      for (const e of (res.errors || [])) parts.push(`<span class="status-bad">${escHtml(e)}</span>`);
+    }
+    const log = (job.log || []).slice(-4);
+    if (log.length) parts.push(`<span class="hint">${log.map(escHtml).join("<br>")}</span>`);
+  }
+  box.innerHTML = parts.join(" · ");
+}
+async function loadModelSyncStatus() {
+  try {
+    const st = await api("GET", "/api/model-sync/status");
+    _renderModelSync(st.config, st.job);
+    if (st.job && (st.job.state === "queued" || st.job.state === "running")) {
+      if (_modelSyncTimer) clearTimeout(_modelSyncTimer);
+      _modelSyncTimer = setTimeout(loadModelSyncStatus, 2000);
+    }
+  } catch (_) {}
+}
+on("#set-model-sync-now", "click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true; btn.textContent = "syncing…";
+  try {
+    const res = await api("POST", "/api/model-sync/ensure", {});
+    if (res && res.job_id) {
+      const poll = async () => {
+        const st = await api("GET", `/api/model-sync/jobs/${encodeURIComponent(res.job_id)}`);
+        _renderModelSync(st ? {enabled: true} : {}, st);
+        if (st && (st.state === "queued" || st.state === "running")) {
+          setTimeout(poll, 2000);
+        } else {
+          btn.disabled = false; btn.textContent = "Sync models now";
+          toast(st && st.state === "done" ? "Model sync finished" : "Model sync failed",
+                st && st.state === "done" ? "ok" : "bad");
+        }
+      };
+      poll();
+      return;
+    }
+    toast(res?.error || "could not start sync", "bad");
+  } catch (err) { toast(err.message, "bad"); }
+  btn.disabled = false; btn.textContent = "Sync models now";
+});
+
 async function loadSettings() {
   try {
     const s = await api("GET", "/api/settings");
     $("#set-model-dir").value = s.model_dir || "store://llm-models";
     $("#set-llama-bin").value = s.llama_bin || "~/llama.cpp/build/bin";
+    const ms = s.model_sync || {};
+    const modeSel = $("#set-storage-mode");
+    if (modeSel) {
+      modeSel.value = s.storage_mode || (ms.enabled ? "sync" : "shared");
+    }
+    const msDir = $("#set-model-sync-dir");
+    if (msDir) msDir.value = ms.default_dir || "";
+    syncStorageModeUi();
+    loadModelSyncStatus();
     const tok = $("#set-hf-token");
     if (tok) tok.value = ""; // never fill the real token — placeholder shows state
     const hint = $("#set-hf-token-hint");
@@ -7596,6 +7767,9 @@ on("#set-save", "click", async (e) => {
     const payload = {
       model_dir: $("#set-model-dir").value.trim(),
       llama_bin: $("#set-llama-bin").value.trim(),
+      storage_mode: ($("#set-storage-mode")?.value || "shared"),
+      model_sync_enabled: ($("#set-storage-mode")?.value === "sync"),
+      model_sync_default_dir: ($("#set-model-sync-dir")?.value || "").trim(),
       theme_family: currentTheme(),
       theme_mode: currentMode(),
       ribbon_mode: currentRibbonMode(),
@@ -7616,6 +7790,7 @@ on("#set-save", "click", async (e) => {
     // no tab keeps the retired engine's rows on screen.
     const prevEngine = (appSettings || {}).engine;
     appSettings = await api("GET", "/api/settings");
+    loadModelSyncStatus();
     applyEngineHints(appSettings);
     if ((appSettings.engine || "llama_cpp") !== (prevEngine || "llama_cpp")) {
       // wholesale re-render: models table + scan list are engine-filtered
@@ -7663,6 +7838,9 @@ on("#set-hf-token-clear", "click", async (e) => {
     const saved = await api("POST", "/api/settings", {
       model_dir: $("#set-model-dir").value.trim(),
       llama_bin: $("#set-llama-bin").value.trim(),
+      storage_mode: ($("#set-storage-mode")?.value || "shared"),
+      model_sync_enabled: ($("#set-storage-mode")?.value === "sync"),
+      model_sync_default_dir: ($("#set-model-sync-dir")?.value || "").trim(),
       theme_family: currentTheme(),
       theme_mode: currentMode(),
       clear_hf_token: true,
@@ -7872,6 +8050,7 @@ on("#fs-select", "click", () => {
 });
 
 on("#set-model-dir-browse", "click", () => openFsBrowse("set-model-dir", null));
+on("#setup-store-path-browse", "click", () => openFsBrowse("setup-store-path", null));
 on("#set-llama-bin-browse", "click", () => openFsBrowse("set-llama-bin", null));
 on("#m-llama-bin-browse", "click", () => {
   const orig = $("#machine-original-name")?.value?.trim() || $("#m-name")?.value?.trim() || "";

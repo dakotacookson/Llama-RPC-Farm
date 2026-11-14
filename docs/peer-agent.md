@@ -138,6 +138,7 @@ the same typed agent endpoints on every OS.
 | `POST /files/write` | bounded atomic write under allowed roots |
 | `POST /files/mkdir`, `/files/chmod`, `/files/backup` | bounded file ops |
 | `GET /files/stat`, `/files/list` | bounded path inspection |
+| `GET /files/read`, `POST /files/write_bin` | streaming model-copy endpoints (root-confined, token-authenticated) |
 | `POST /service/start`, `/service/stop`, `/service/validate` | llama-swap control plane |
 | `GET /service/status` | daemon status |
 | `GET /which?name=` | allowlisted binary lookup |

@@ -62,3 +62,12 @@ access_keys:
     - Huihui-Qwen3.6-35B-A3B-Q4_K-128k--dad
     admin: true
     admin_unrestricted: false
+
+# Storage mode: shared = every machine reads the store:// mount (NAS/CIFS);
+# sync = per-machine local model dir + copy missing models through the agent.
+storage_mode: shared
+# Used only in sync mode. default_dir is expanded on the TARGET machine
+# (~ / %USERPROFILE%). `enabled` is kept in sync by the API for older code.
+model_sync:
+  enabled: false
+  default_dir: ""

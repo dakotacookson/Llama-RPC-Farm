@@ -1466,10 +1466,16 @@ def build_llama_command(model_cfg, servers, master_name=None):
             '  --host 0.0.0.0 \\\n'
             '  --port "$PORT"'
         )
-    # paths in the command must match the OS of the machine running llama-server
+    # paths in the command must match the OS of the machine running llama-server.
+    # model_sync.resolve_model_path also applies that machine's model_dir /
+    # the opt-in local model space, so launch and copy agree on the path.
     target_os = master.get("os", "linux")
-    model_path = path_resolver.resolve_for(
-        model_cfg.get("base_path") or model_cfg.get("path", ""), target_os)
+    base_path = model_cfg.get("base_path") or model_cfg.get("path", "")
+    try:
+        import model_sync
+        model_path = model_sync.resolve_model_path(master, base_path)
+    except Exception:
+        model_path = path_resolver.resolve_for(base_path, target_os)
     # Bash does not expand `~` inside quotes; emit `$HOME/...` so the
     # quoted model path resolves on POSIX masters (observed: literal
     # `~/GGUF_models/...` caused "No such file or directory").
@@ -2665,7 +2671,7 @@ def validate_model(model_id):
     # "model doesn't contain MTP layers". Header-only scan, no weights.
     def _check_mtp_file(label, raw):
         try:
-            resolved = path_resolver.resolve_for(raw, target_os)
+            resolved = path_resolver.resolve_local(raw, target_os)
         except Exception as e:
             err(f"{label} path does not resolve: {e}")
             return
@@ -2727,7 +2733,7 @@ def validate_model(model_id):
                 err("no model base_path set")
             continue
         try:
-            resolved = path_resolver.resolve_for(path, target_os)
+            resolved = path_resolver.resolve_local(path, target_os)
         except Exception as e:
             err(f"{label} path '{path}' does not resolve: {e}")
             continue
@@ -2890,6 +2896,20 @@ def launch_model(model_id, servers, port=8080, variant=None, master_name=None,
         raise ValueError(f"model '{model_id}' not found")
     if variant or var_label:
         model = _resolve_variant(model, variant or var_label)
+    # Opt-in model sync: ensure the box that will run llama-server has the
+    # file before we build the command / start the agent.
+    try:
+        import model_sync
+        if model_sync.enabled():
+            rep = model_sync.ensure_model(
+                base_id, variant or var_label,
+                log=lambda m: print(f"[model-sync] {m}"))
+            for line in (rep.get("copied") or []):
+                print(f"[model-sync] copied {line}")
+            for line in (rep.get("errors") or []):
+                print(f"[model-sync] WARN {line}")
+    except Exception as e:
+        print(f"[model-sync] skipped: {e}")
     master, peers = _split_servers(servers, master_name)
     if mode == "local" and not local_node.is_local(master):
         # Remote-box local launch: the app starts llama-server on that box

@@ -31,7 +31,7 @@ def _get_model_meta(gguf_path):
         return _meta_cache[gguf_path]
     arch, dtype = "unknown", ""
     try:
-        meta = gguf_inspect.metadata(path_resolver.resolve(gguf_path))
+        meta = gguf_inspect.metadata(path_resolver.resolve_local(gguf_path))
         arch = str(meta.get("general.architecture", "") or "").strip().lower() \
             or "unknown"
         if arch != "unknown":
@@ -204,6 +204,9 @@ MACHINE_DEFAULTS = {
     "rpc_port": 50052,
     "gpu": "",              # e.g. "CUDA0,CUDA1,CUDA2"
     "llama_bin": "",         # path to llama.cpp build/bin
+    # optional per-machine model storage root; empty = use the shared
+    # store:// mapping (model_sync can copy models here)
+    "model_dir": "",
     # engine update/install strategy: "auto" (detect), "prebuilt" (fast
     # binary, switch away from a source build), "source" (rebuild in place)
     "engine_mode": "auto",
@@ -523,7 +526,7 @@ def _is_mtp_draft(gguf_path):
         return _mtp_cache[gguf_path]
     try:
         # Resolve store:// paths etc.
-        resolved = path_resolver.resolve(gguf_path)
+        resolved = path_resolver.resolve_local(gguf_path)
         result = gguf_inspect.has_mtp_layers_anywhere(resolved)
     except Exception:
         # If we can't read the file, assume it's not an MTP draft to avoid hiding valid models.
