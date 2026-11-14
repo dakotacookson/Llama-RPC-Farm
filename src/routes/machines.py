@@ -45,6 +45,32 @@ def _ram_gb(value):
     return stats_collector.ram_gb(value)
 
 
+def _detected_vendor(stats, machine):
+    """GPU vendor from a stats payload, correcting a stale/default form value.
+
+    A fresh Raspberry Pi (or any GPU-less Linux box) often starts with the
+    form default `nvidia`; if stats report no GPUs the machine is CPU-only,
+    and leaving `nvidia` would make the installer pick a CUDA asset that
+    cannot run there."""
+    gpus = (stats or {}).get("gpus") or []
+    detected = gpu_vendor.normalize_vendor((stats or {}).get("gpu_vendor"))
+    if detected:
+        return detected
+    if not gpus:
+        return "cpu"
+    names = " ".join(str(g.get("name") or "") for g in gpus).lower()
+    if any(k in names for k in ("nvidia", "geforce", "rtx", "tesla",
+                                "quadro")):
+        return "nvidia"
+    if any(k in names for k in ("amd", "radeon", "instinct", "firepro")):
+        return "amd"
+    if "apple" in names:
+        return "apple"
+    if "intel" in names or "arc" in names:
+        return "intel"
+    return gpu_vendor.normalize_vendor(machine.get("gpu_vendor")) or "cpu"
+
+
 def _detect_arch_board(machine):
     """(arch, board) for hardware detection.
 
@@ -383,7 +409,9 @@ async def detect_hardware(name: str):
             status_code=503,
             detail=detail or f"{name} is offline (agent port open but the "
                              f"agent failed to answer)")
-    gpus = [gpu_vendor.gpu_token(machine, g["index"]) for g in stats["gpus"]]
+    vendor = _detected_vendor(stats, machine)
+    m2 = dict(machine, gpu_vendor=vendor)
+    gpus = [gpu_vendor.gpu_token(m2, g["index"]) for g in stats["gpus"]]
     detected = dict(machine.get("detected") or {})
     detected.update({
         "gpu_names": [g["name"] for g in stats["gpus"]],
@@ -400,6 +428,7 @@ async def detect_hardware(name: str):
         detected["board"] = board
     updates = {
         "gpu": ",".join(gpus),
+        "gpu_vendor": vendor,
         "ram_total_gb": _ram_gb(stats["ram_total_gb"]) if stats["ram_total_gb"] else None,
         "detected": detected,
     }
@@ -509,8 +538,7 @@ async def probe_hardware(p: ProbeIn):
         s = stats_collector.machine_stats(machine)
         if s["status"] != "online":
             return {"online": False}
-        vendor = (s.get("gpu_vendor")
-                  or machine.get("gpu_vendor") or "nvidia")
+        vendor = _detected_vendor(s, machine)
         machine["gpu_vendor"] = vendor
         detected = dict((existing or {}).get("detected") or {})
         detected.update({
@@ -591,8 +619,7 @@ async def detect_all():
             return None
         if stats["status"] != "online":
             return None
-        vendor = (stats.get("gpu_vendor")
-                  or m.get("gpu_vendor") or "nvidia")
+        vendor = _detected_vendor(stats, m)
         m2 = dict(m, gpu_vendor=vendor)
         gpus = [gpu_vendor.gpu_token(m2, g["index"]) for g in stats["gpus"]]
         detected = dict(m.get("detected") or {})

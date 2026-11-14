@@ -33,7 +33,10 @@ def test_arm64_linux_picks_arm64_assets():
     names, _ = pick(pi(), assets)
     assert names == [f"llama-{TAG}-bin-ubuntu-arm64.tar.gz"]
     vulkan = [f"llama-{TAG}-bin-ubuntu-vulkan-arm64.tar.gz"]
-    names, _ = pick(pi(vendor="nvidia"), vulkan)
+    jetson = pi(vendor="nvidia")
+    jetson["gpu"] = "CUDA0"
+    jetson["detected"]["gpu_names"] = ["Jetson Orin"]
+    names, _ = pick(jetson, vulkan)
     assert names == vulkan
 
 
@@ -199,3 +202,35 @@ def test_tuner_estimate_cpu_only_uses_ram(monkeypatch, tmp_path):
     assert est["suggested_split"] == []
     assert est["usable_ram_gb"] > 0
     assert est["recommended_ctx"] >= 4096
+
+
+def test_detected_vendor_corrects_gpuless_default():
+    """A Pi added with the form-default 'nvidia' must become 'cpu' when
+    detection finds no GPUs, or the installer would pick a CUDA asset."""
+    from routes.machines import _detected_vendor
+
+    assert _detected_vendor({"gpus": [], "gpu_vendor": ""},
+                            {"gpu_vendor": "nvidia"}) == "cpu"
+    assert _detected_vendor(
+        {"gpus": [{"name": "NVIDIA GeForce RTX 3080"}], "gpu_vendor": ""},
+        {}) == "nvidia"
+    assert _detected_vendor({"gpus": [], "gpu_vendor": "amd"}, {}) == "amd"
+
+
+def test_vendor_of_gpuless_arm_is_cpu():
+    """An arm64 host with no GPUs is CPU-only even if gpu_vendor still
+    says nvidia (form default before detection)."""
+    assert li._vendor_of({
+        "os": "linux", "gpu_vendor": "nvidia", "gpu": "",
+        "detected": {"arch": "aarch64", "gpu_names": []},
+    }) == "cpu"
+    # x86 without a probe keeps the recorded vendor
+    assert li._vendor_of({
+        "os": "linux", "gpu_vendor": "nvidia", "gpu": "",
+        "detected": {"arch": "x86_64", "gpu_names": []},
+    }) == "nvidia"
+    # arm64 with a real GPU keeps that vendor
+    assert li._vendor_of({
+        "os": "linux", "gpu_vendor": "nvidia", "gpu": "CUDA0",
+        "detected": {"arch": "aarch64", "gpu_names": ["Jetson Orin"]},
+    }) == "nvidia"
