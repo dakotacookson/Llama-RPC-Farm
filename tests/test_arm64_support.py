@@ -280,3 +280,29 @@ def test_detected_vendor_cpu_only_flag_beats_gpu_rows():
     assert _detected_vendor(stats, {}) == "cpu"
     assert _gpu_unsupported_reason(
         {"gpus": []}, {"detected": {"board": "Jetson Orin Nano"}}) == ""
+
+
+def test_pick_compiler_prefers_newer_and_handles_gcc8(monkeypatch):
+    from llama_peer_agent import build as b
+
+    avail = {"g++": "/usr/bin/g++", "g++-8": "/usr/bin/g++-8",
+             "g++-11": "/usr/bin/g++-11",
+             "gcc": "/usr/bin/gcc", "gcc-8": "/usr/bin/gcc-8",
+             "gcc-11": "/usr/bin/gcc-11"}
+    monkeypatch.setattr(b.shutil, "which",
+                        lambda name: avail.get(name))
+    majors = {"/usr/bin/g++": 7, "/usr/bin/g++-8": 8, "/usr/bin/g++-11": 11}
+    monkeypatch.setattr(b, "_tool_major",
+                        lambda p: majors.get(p, 0))
+    monkeypatch.delenv("CXX", raising=False)
+
+    _cc, cxx, extra = b._pick_compiler()
+    assert cxx == "/usr/bin/g++-11"
+    assert not any("lstdc++fs" in a for a in extra)
+    assert "-DCMAKE_CXX_COMPILER=/usr/bin/g++-11" in extra
+
+    # Only gcc 8 available -> still usable, but needs -lstdc++fs
+    avail.pop("g++-11"); avail.pop("gcc-11")
+    _cc, cxx, extra = b._pick_compiler()
+    assert cxx == "/usr/bin/g++-8"
+    assert "-DCMAKE_CXX_STANDARD_LIBRARIES=-lstdc++fs" in extra

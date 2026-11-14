@@ -1235,8 +1235,8 @@ else
 fi
 # Current llama.cpp needs C++17 <filesystem>. Ubuntu 18.04/Jetson ships
 # g++ 7.5, so prefer g++-8+. g++ 8 needs -lstdc++fs at link time.
-CXX_BIN="$(command -v g++-8 || command -v g++-9 || command -v g++-10 || command -v g++-11 || command -v g++-12 || command -v g++ || true)"
-CC_BIN="$(command -v gcc-8 || command -v gcc-9 || command -v gcc-10 || command -v gcc-11 || command -v gcc-12 || command -v gcc || true)"
+CXX_BIN="$(command -v g++-12 || command -v g++-11 || command -v g++-10 || command -v g++-9 || command -v g++-8 || command -v g++ || true)"
+CC_BIN="$(command -v gcc-12 || command -v gcc-11 || command -v gcc-10 || command -v gcc-9 || command -v gcc-8 || command -v gcc || true)"
 [ -n "$CXX_BIN" ] || {{ echo "no C++ compiler found" >&2; exit 2; }}
 CXX_MAJOR="$("$CXX_BIN" -dumpversion | cut -d. -f1)"
 if [ "$CXX_MAJOR" -lt 8 ]; then
