@@ -863,7 +863,8 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
                     job["log"].append("stop_rpc: " + json.dumps(rep)[:400])
                 except Exception as e:
                     job["log"].append(f"stop_rpc failed (continuing anyway): {e}")
-                pref = (machine.get("engine_mode") or "auto").strip().lower()
+                # No user choice: the plan follows the installed kind.
+                pref = "auto"
                 if pref == "auto":
                     dec = llamacpp_installer.decide_engine_plan(machine)
                     job["log"].append("engine plan: " + dec["reason"])
@@ -910,7 +911,7 @@ async def update_llama_cpp_machine(name: str, force: bool = False):
                 probe = llamacpp_installer.probe_setup(
                     machine, log=lambda m: job["log"].append(str(m)))
                 kind = probe.get("kind", "prebuilt")
-                pref = (machine.get("engine_mode") or "auto").strip().lower()
+                pref = "auto"  # no user choice: derive from installed kind
                 dec = None
                 if pref == "auto":
                     dec = llamacpp_installer.decide_engine_plan(

@@ -48,22 +48,32 @@ def test_backend_pin_and_decision():
     win = {"os": "windows", "gpu_vendor": "nvidia",
            "detected": {"arch": "x86_64", "compute_cap": [None, None]}}
 
-    # glibc 2.35 blocks the CUDA prebuilt on master; aibox3/Aibox2 lack SM
+    # Installed source stays source — there is no user switch.
     assert li.decide_engine_plan(
         master, probe={"kind": "source"}, glibc=(2, 35))["mode"] == "source"
     assert li.decide_engine_plan(
-        master, probe={"kind": "source"}, glibc=(2, 39))["mode"] == "prebuilt"
+        master, probe={"kind": "source"}, glibc=(2, 39))["mode"] == "source"
     assert li.decide_engine_plan(
         aibox3, probe={"kind": "source"}, glibc=(2, 35))["mode"] == "source"
     assert li.decide_engine_plan(
         aibox2, probe={"kind": "source"}, glibc=(2, 43))["mode"] == "source"
-    # HP is pinned to Vulkan, so a prebuilt is viable (CPU asset not forced)
+    # No install: prebuilt only when the host can run it, else source.
+    assert li.decide_engine_plan(
+        master, probe={"kind": "missing"}, glibc=(2, 39))["mode"] == "prebuilt"
+    assert li.decide_engine_plan(
+        master, probe={"kind": "missing"}, glibc=(2, 35))["mode"] == "source"
+    assert li.decide_engine_plan(
+        aibox3, probe={"kind": "missing"}, glibc=(2, 35))["mode"] == "source"
+    assert li.decide_engine_plan(
+        aibox2, probe={"kind": "missing"}, glibc=(2, 43))["mode"] == "source"
+    # Installed prebuilt stays prebuilt.
     assert li.prebuilt_blocker(hp) == ""
     assert li.decide_engine_plan(
         hp, probe={"kind": "prebuilt"}, glibc=(2, 35))["mode"] == "prebuilt"
-    # Windows has no source path; prebuilt is the only option
     assert li.decide_engine_plan(
         win, probe={"kind": "prebuilt"})["mode"] == "prebuilt"
+    assert li.decide_engine_plan(
+        win, probe={"kind": "missing"})["mode"] == "prebuilt"
 
 
 def test_pick_assets_respects_backend_pin():
