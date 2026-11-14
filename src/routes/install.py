@@ -121,12 +121,15 @@ async def llama_cpp_latest():
 
 
 @router.get("/api/machines/{name}/llama-cpp-version")
-async def llama_cpp_version_machine(name: str):
+async def llama_cpp_version_machine(name: str, refresh: bool = False):
     """Current llama-server build on one machine vs the latest upstream
     release — lets the UI swap the Update button for an 'on latest'
     chip. TTL-cached (agent probe + GitHub tag are both slow-ish), so the
-    machine grid can re-ask on every render without hammering anything."""
+    machine grid can re-ask on every render without hammering anything.
+    ?refresh=1 drops the per-machine cache first."""
     machine = cfg.machines.require(name)
+    if refresh:
+        invalidate_llama_version(name)
     return await run_in_threadpool(_llama_version_payload, machine)
 
 
