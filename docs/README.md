@@ -13,6 +13,7 @@ Frontend is vanilla JS; all state lives in `config/*.yaml`.
 | [raspberry-pi.md](raspberry-pi.md) | Raspberry Pi / Linux arm64: Bookworm vs Trixie install routes, agent, CPU-only RPC peers |
 | [jetson.md](jetson.md) | NVIDIA Jetson/Tegra: GPU support by JetPack generation, CPU-only RPC on JetPack 4 (Nano/TX) |
 | [topologies.md](topologies.md) | Single-box, RPC, peer-local, custom, MLX; deployment recipes and anti-patterns |
+| [examples.md](examples.md) | Minimal worked examples and step-by-step smoke tests |
 | [access.md](access.md) | Users, API keys, per-key model grants, gateway, client config |
 | [benchmarks.md](benchmarks.md) | Real measured runs, how to reproduce them, and a template for submitting yours |
 | [testing.md](testing.md) | In-app test bench and the development/e2e test suite |

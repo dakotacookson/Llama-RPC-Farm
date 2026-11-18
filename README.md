@@ -58,10 +58,23 @@ models, and one OpenAI-compatible endpoint on top.
 - **Find and fetch models without leaving the farm** — the built-in
   Hugging Face browser searches the Hub with GGUF-aware filters (quant,
   task, company, collection), shows sharded variants as one model, and
-  downloads straight into your shared `store://` path so every machine
-  sees it immediately.
+  downloads them as self-contained per-model folders (weights + shards,
+  `mmproj`/draft GGUFs, tokenizer metadata, license). Xet-backed repos use
+  `hf_xet` when installed.
 
   ![Hugging Face browser: search, filter by quant/task, download to a store](docs/img/downloads-2026b.png)
+
+- **Store models your way** — either a shared NAS/CIFS mount
+  (`storage_mode: shared`, every machine reads the same `store://`), or
+  **Model sync** (`storage_mode: sync`) with a per-machine model dir; the
+  farm copies missing GGUFs through the peer agent (no shell) from any
+  machine that already has them.
+
+- **Update a fleet safely** — engine updates stay per-machine, but a
+  machine in a group only updates when **every** member can reach the same
+  llama.cpp tag; the group update preflights each peer's assets and
+  toolchain first and reports blockers instead of leaving a mixed-version
+  cluster.
 
 ## Deployment topologies
 
@@ -104,9 +117,12 @@ login and include the embedded gateway.
 ./farmctl doctor                      # readiness checklist
 ```
 
-The install script sets up the app and Python environment only. On first
-launch, the dashboard's **Setup needed** panel installs llama.cpp + RPC on
-peers and llama-swap on the swap host. Full walkthrough:
+The install script sets up the app and Python environment only. A fresh
+install opens a guided walkthrough: create the admin account, choose model
+storage (**shared** NAS/CIFS store or **Model sync** with a local dir per
+machine), then install engines. The dashboard's **Setup needed** panel
+installs llama.cpp + RPC on peers and llama-swap on the swap host, and
+reports anything still missing. Full walkthrough:
 **[docs/setup.md](docs/setup.md)**.
 
 > **LAN/VPN only.** llama.cpp's RPC server is unauthenticated by design.
@@ -229,7 +245,7 @@ control over where every layer runs. More:
 | [docs/faq.md](docs/faq.md) | RPC speed, matching GPUs, Windows, security, and common questions |
 | [docs/architecture.md](docs/architecture.md) | Module map, request/data flow |
 | [docs/rpc-model.md](docs/rpc-model.md) | RPC numbering, device tokens, ports, generated scripts |
-| [docs/configuration.md](docs/configuration.md) | Every config file, what owns it |
+| [docs/configuration.md](docs/configuration.md) | Every config file, what owns it — incl. `storage_mode` / model sync and engine selection |
 | [docs/api.md](docs/api.md) | Full HTTP/WebSocket endpoint reference |
 | [docs/README.md](docs/README.md) | Full documentation index |
 
