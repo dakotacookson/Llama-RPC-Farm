@@ -36,6 +36,35 @@ every OpenAI-compatible tool already sends, so most of the time you only
 ever paste the key once. The master (or any trusted IP) can skip the key
 entirely. List what a key can see:
 
+### Anthropic Messages API
+
+The same gateway speaks the Anthropic Messages API, with the same access
+keys, model grants, and usage attribution:
+
+```bash
+curl http://<master-ip>:8090/v1/messages \
+  -H "x-api-key: sk-farm-XXXX" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "my-model-128k",
+    "max_tokens": 512,
+    "messages": [{"role": "user", "content": "hi"}]
+  }'
+```
+
+`/v1/messages/count_tokens` is model-gated too. For a Claude-style client:
+
+```bash
+export ANTHROPIC_BASE_URL=http://<master-ip>:8090
+export ANTHROPIC_AUTH_TOKEN=sk-farm-XXXX
+export ANTHROPIC_MODEL=my-model-128k
+```
+
+Both `x-api-key` and `Authorization: Bearer` are accepted. The gateway
+forwards the Anthropic SSE stream verbatim and records exact
+`input_tokens`/`output_tokens` usage.
+
 ```bash
 curl http://<master-ip>:8090/v1/models -H "Authorization: Bearer sk-farm-XXXX"
 ```

@@ -9,14 +9,14 @@
 real llama.cpp serving: run a model on a single machine, pool GPUs and RAM
 across machines over RPC, or serve many models on demand through
 llama-swap — any mix of Linux, Windows, and macOS machines. Any client
-that speaks OpenAI.
+that speaks OpenAI or Anthropic.
 
 It started with the GPUs already in the house: a few machines, different
 cards, and no clean way to make them one usable endpoint. Hand-rolled
 `llama-server --rpc` scripts worked until a second model, a Windows box, or
 a family member needed access. Llama RPC Farm is the dashboard that grew
 out of that: stock llama.cpp underneath, one place to arrange machines and
-models, and one OpenAI-compatible endpoint on top.
+models, and one OpenAI- and Anthropic-compatible endpoint on top.
 
 ![Quick tour: Flow Visualizer, model editor, hardware placement, downloads, tests, launch, and themes](docs/img/tour.gif)
 
@@ -145,9 +145,9 @@ This repo ships an agent playbook (`AGENTS.md`). Tell your coding agent:
 
 ## Connect a client
 
-Point any OpenAI-compatible client at the gateway (`:8090`) or llama-swap
-directly (`:8080`). Keys, per-user model grants, and client configs:
-**[docs/access.md](docs/access.md)**.
+Point any OpenAI- or Anthropic-compatible client at the gateway (`:8090`)
+or llama-swap directly (`:8080`). Keys, per-user model grants, and client
+configs: **[docs/access.md](docs/access.md)**.
 
 ```bash
 curl http://<master-ip>:8090/v1/chat/completions \
@@ -156,6 +156,18 @@ curl http://<master-ip>:8090/v1/chat/completions \
   -d '{"model":"my-model-128k",
        "messages":[{"role":"user","content":"hi"}],
        "stream":true}'
+```
+
+Anthropic Messages API clients (Claude Code, Cline, etc.) use the same key
+and model grants:
+
+```bash
+curl http://<master-ip>:8090/v1/messages \
+  -H "x-api-key: sk-farm-XXXX" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"my-model-128k","max_tokens":512,
+       "messages":[{"role":"user","content":"hi"}]}'
 ```
 
 ## Supported hardware

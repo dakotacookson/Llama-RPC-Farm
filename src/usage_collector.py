@@ -46,6 +46,7 @@ def kind_for(path: str) -> str:
     p = "/" + (path or "").lstrip("/")
     for pref, kind in (
             ("v1/chat/completions", "chat"),
+            ("v1/messages", "chat"),
             ("v1/completions", "completions"),
             ("v1/embeddings", "embeddings"),
             ("v1/systemone", "systemone"),
