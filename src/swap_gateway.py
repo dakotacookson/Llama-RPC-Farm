@@ -57,9 +57,11 @@ app.add_middleware(CORSMiddleware,
                                   "content-type"])
 # Local models on big contexts can stall for many minutes between streamed
 # chunks (huge prefill, RPC backends, memory pressure). The read timeout is
-# *idle-gap* based, so a generous value is safe; the old 30s read was what
-# surfaced as client-side "connection reset" during long 27B/RPC prefills.
-client = httpx.AsyncClient(base_url=UPSTREAM, timeout=httpx.Timeout(1800.0, connect=30.0, read=1800.0, write=600.0))
+# *idle-gap* based; the old 30s read surfaced as client-side "connection
+# reset" during long 27B/RPC prefills, and 30 min still cut first-load crams
+# that can legitimately take an hour or more. No read deadline: client
+# disconnects cancel the upstream pull, and the gateway is LAN/VPN-only.
+client = httpx.AsyncClient(base_url=UPSTREAM, timeout=httpx.Timeout(None, connect=30.0, read=None, write=600.0))
 
 
 def _ip_or_net(value):

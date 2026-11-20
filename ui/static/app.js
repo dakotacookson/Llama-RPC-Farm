@@ -6909,8 +6909,12 @@ async function sendChat() {
   sendBtn.disabled = true;
   stopBtn.disabled = false;
   const t0 = performance.now();
-  let ttft = null, nTok = 0, full = "";
-  const holder = chatAdd("assistant", `⏳ Loading \`${model}\`… (first load streams when ready — big multi-node loads can take a while)`);
+  let ttft = null, nTok = 0, full = "", reasoning = "", timings = null;
+  const holder = chatAdd("assistant", "");
+  holder.innerHTML = `<details class="chat-reasoning" hidden><summary>Thinking…</summary><div class="chat-reasoning-body"></div></details><div class="chat-answer"><p class="hint">⏳ Loading <code>${escHtml(model)}</code>… (first load can take a while)</p></div>`;
+  const rBox = holder.querySelector(".chat-reasoning");
+  const rBody = holder.querySelector(".chat-reasoning-body");
+  const aBox = holder.querySelector(".chat-answer");
   chatAbort = new AbortController();
   try {
     const res = await fetch("/api/chat", {
@@ -6946,43 +6950,71 @@ async function sendChat() {
         let ev;
         try { ev = JSON.parse(payload); } catch (_) { continue; }
         if (ev.error) throw new Error(ev.error);
-        const delta = (ev.choices && ev.choices[0] && ev.choices[0].delta && ev.choices[0].delta.content) || "";
-        if (!delta) continue;
-        if (ttft === null) {
-          ttft = (performance.now() - t0) / 1000;
-          full = "";
-        }
+        if (ev.timings) timings = ev.timings;
+        const d = (ev.choices && ev.choices[0] && ev.choices[0].delta) || {};
+        const delta = d.content || "";
+        const rDelta = d.reasoning_content || "";
+        if (!delta && !rDelta) continue;
+        if (ttft === null) ttft = (performance.now() - t0) / 1000;
         nTok++;
-        full += delta;
-        holder.innerHTML = chatMd(full);
+        if (rDelta) {
+          reasoning += rDelta;
+          rBox.hidden = false;
+          rBody.innerHTML = chatMd(reasoning);
+        }
+        if (delta) {
+          full += delta;
+          aBox.innerHTML = chatMd(full);
+        }
         chatScroll();
       }
     }
     if (ttft === null) {
-      holder.innerHTML = `<p class="status-bad">No output from \`${escHtml(model)}\` — check the Launch tab / swap log for load errors.</p>`;
+      aBox.innerHTML = `<p class="status-bad">No output from \`${escHtml(model)}\` — check the Launch tab / swap log for load errors.</p>`;
       chatAbort = null;
       sendBtn.disabled = false;
       stopBtn.disabled = true;
       return;
     }
-    chatHistory.push({ role: "assistant", content: full });
+    if (full) {
+      chatHistory.push({ role: "assistant", content: full });
+    } else if (reasoning) {
+      aBox.innerHTML = `<p class="chat-meta">Model streamed reasoning but no final answer.</p>`;
+    }
     const genS = (performance.now() - t0) / 1000;
-    const tps = (genS - ttft) > 0 && nTok > 1 ? ((nTok - 1) / (genS - ttft)).toFixed(1) : "0";
+    // Match the usage/Performance numbers: llama.cpp's final streamed
+    // `timings` block is the server's own decode measurement (predicted
+    // tokens / decode seconds, prefill excluded). The old math counted
+    // SSE delta CHUNKS and wall-clock time, so it drifted with chunking,
+    // network gaps, reasoning output, and load time.
+    const srv = timings || {};
+    const srvN = Number(srv.predicted_n);
+    const srvTps = Number(srv.predicted_per_second);
+    const tokCount = Number.isFinite(srvN) && srvN > 0 ? srvN : nTok;
+    const srvMs = Number(srv.predicted_ms);
+    const decodeS = Number.isFinite(srvMs) && srvMs > 0
+      ? srvMs / 1000 : Math.max(0, genS - ttft);
+    const tps = Number.isFinite(srvTps) && srvTps > 0
+      ? srvTps.toFixed(1)
+      : (decodeS > 0 && tokCount > 1 ? ((tokCount - 1) / decodeS).toFixed(1) : "0");
+    const label = (Number.isFinite(srvTps) && srvTps > 0) ? "" : "~";
     const meta = document.createElement("div");
     meta.className = "chat-meta";
-    meta.textContent = `${model} — TTFT ${ttft.toFixed(2)}s · ${tps} tok/s · ${nTok} tokens · ${genS.toFixed(1)}s`;
+    meta.textContent = `${model} — TTFT ${ttft.toFixed(2)}s · ${label}${tps} tok/s · ${tokCount} tokens · ${decodeS.toFixed(1)}s decode`;
     holder.appendChild(meta);
     chatScroll();
   } catch (e) {
     if (e.name === "AbortError") {
       if (full) {
         chatHistory.push({ role: "assistant", content: full + " …(stopped)" });
-        holder.innerHTML = chatMd(full);
+        aBox.innerHTML = chatMd(full);
+      } else if (reasoning) {
+        aBox.innerHTML = `<p class="status-bad">Stopped before the final answer.</p>`;
       } else {
-        holder.innerHTML = `<p class="status-bad">Stopped.</p>`;
+        aBox.innerHTML = `<p class="status-bad">Stopped.</p>`;
       }
     } else {
-      holder.innerHTML = `<p class="status-bad">${escHtml(e.message)}</p>`;
+      aBox.innerHTML = `<p class="status-bad">${escHtml(e.message)}</p>`;
     }
   }
   chatAbort = null;

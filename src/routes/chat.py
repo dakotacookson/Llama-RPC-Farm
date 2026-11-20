@@ -1,4 +1,5 @@
 """Native chat test endpoint (streaming proxy to llama-swap/gateway)."""
+import asyncio
 import json
 
 import pydantic
@@ -14,6 +15,11 @@ from web_shared import (_access_filter_models, _gateway_headers,
                         _gateway_url, _raw_is_private, LOGIN_COOKIE)
 
 router = APIRouter()
+
+# SSE comment heartbeat while the upstream is quiet (model load / long
+# prefill). Without bytes on the wire, browsers and reverse proxies can
+# drop an idle request before the first token exists.
+_SSE_KEEPALIVE_SECONDS = 15.0
 
 
 # ---------------- chat test (native, no chainlit) ----------------
@@ -120,20 +126,26 @@ async def chat_complete(c: ChatIn, request: Request = None):
     payload = {"model": mid, "messages": msgs, "stream": True,
                "temperature": c.temperature, "max_tokens": c.max_tokens}
 
-    async def gen():
+    # identity forward: cookie/Bearer from the CALLER rides to the
+    # gateway — usage attributes / grants apply per-user
+    fwd = {}
+    sid = (request.cookies.get(LOGIN_COOKIE) if request else "") or ""
+    if sid:
+        fwd["cookie"] = f"{LOGIN_COOKIE}={sid}"
+    tok = access.request_key(request) if request else ""
+    if tok:
+        fwd["authorization"] = f"Bearer {tok}"
+
+    async def _pump(q):
+        """Read the upstream SSE stream into a bounded queue.
+
+        Decoupled from the response generator so it can emit keepalive
+        comments while the upstream is silent (loading/prefill).
+        """
         timeout = _httpx.Timeout(connect=10.0, read=None, write=60.0,
                                  pool=60.0)
-        async with _httpx.AsyncClient(timeout=timeout) as client:
-            # identity forward: cookie/Bearer from the CALLER rides to
-            # the gateway — usage attributes / grants apply per-user
-            fwd = {}
-            sid = (request.cookies.get(LOGIN_COOKIE) if request else "") or ""
-            if sid:
-                fwd["cookie"] = f"{LOGIN_COOKIE}={sid}"
-            tok = access.request_key(request) if request else ""
-            if tok:
-                fwd["authorization"] = f"Bearer {tok}"
-            try:
+        try:
+            async with _httpx.AsyncClient(timeout=timeout) as client:
                 async with client.stream(
                         "POST", f"{base}/v1/chat/completions",
                         json=payload, headers=fwd) as up:
@@ -147,13 +159,46 @@ async def chat_complete(c: ChatIn, request: Request = None):
                                 "error", {}).get("message", body)
                         except Exception:
                             detail = body or f"upstream {up.status_code}"
-                        # SSE error frame so the UI renders it inline
-                        yield f"data: {json.dumps({'error': detail})}\n\n"
+                        await q.put(("error", detail))
                         return
                     async for line in up.aiter_lines():
                         if line.strip():
-                            yield line + "\n"
-            except _httpx.ConnectError as e:
-                yield f"data: {json.dumps({'error': f'swap unreachable: {e}'})}\n\n"
+                            await q.put(("line", line))
+            await q.put(("done", None))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:                              # noqa: BLE001
+            await q.put(("error", f"swap error: {e}"))
 
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    async def gen():
+        q = asyncio.Queue(maxsize=256)
+        task = asyncio.create_task(_pump(q))
+        try:
+            # First byte immediately: proves the SSE channel is live even
+            # when the model has not produced a token yet.
+            yield ": connected\n\n"
+            while True:
+                try:
+                    kind, value = await asyncio.wait_for(
+                        q.get(), timeout=_SSE_KEEPALIVE_SECONDS)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                if kind == "line":
+                    yield value + "\n"
+                elif kind == "error":
+                    yield f"data: {json.dumps({'error': value})}\n\n"
+                    break
+                else:
+                    break
+        finally:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    headers = {"Cache-Control": "no-cache",
+               "X-Accel-Buffering": "no"}
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers=headers)
