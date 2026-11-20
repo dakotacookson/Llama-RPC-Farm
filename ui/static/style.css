@@ -6603,3 +6603,19 @@ body.login-locked #login-modal * { pointer-events: auto !important; }
 .setup-step { padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; font-size: 10px; color: var(--muted); font-family: var(--mono); }
 .setup-step.active { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
 .setup-step.done { border-color: var(--ok); color: var(--ok); }
+
+/* onboarding: recipe cards + client snippets */
+.connect-snippet {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+#setup-recipes .card { min-height: 100%; }
+#setup-recipes .serving-ind { white-space: nowrap; }

@@ -9,6 +9,7 @@ Frontend is vanilla JS; all state lives in `config/*.yaml`.
 
 | Doc | What it covers |
 |-----|----------------|
+| [quickstart.md](quickstart.md) | One-command solo demo, Docker, starter recipes, endpoints |
 | [setup.md](setup.md) | Full setup & installation guide: prerequisites, vault, machines, stores, llama.cpp build, llama-swap, gateway, client config, troubleshooting |
 | [raspberry-pi.md](raspberry-pi.md) | Raspberry Pi / Linux arm64: Bookworm vs Trixie install routes, agent, CPU-only RPC peers |
 | [jetson.md](jetson.md) | NVIDIA Jetson/Tegra: GPU support by JetPack generation, CPU-only RPC on JetPack 4 (Nano/TX) |
@@ -32,6 +33,7 @@ Frontend is vanilla JS; all state lives in `config/*.yaml`.
 | [development.md](development.md) | Running, testing, the string-assertion test style, common pitfalls (see also `AGENTS.md`) |
 | [peer-agent.md](peer-agent.md) | Peer agent: agent-first transport, endpoints, discovery, auto-start, in-place updates, packaging roadmap |
 | [release.md](release.md) | Rolling `main-latest` build pipelines and native artifacts |
+| [distribution.md](distribution.md) | Docker/GHCR, Homebrew, winget, Proxmox, Unraid, CasaOS, TrueNAS |
 | [windows-signing.md](windows-signing.md) | Windows SmartScreen, code-signing options, and how to run an unsigned build safely |
 | [gpu-e2e.md](gpu-e2e.md) | GPU backend E2E: hosted runner limits, self-hosted labels, ROCm/XPU/Metal |
 

@@ -1,0 +1,14 @@
+# winget manifest template — update PackageVersion + InstallerSha256 per release.
+PackageIdentifier: DakotaCookson.LlamaRPCFarm
+PackageVersion: 2.0.52
+PackageName: Llama RPC Farm
+Publisher: Dakota Cookson
+License: Apache-2.0
+ShortDescription: Pool home machines into one llama.cpp RPC cluster.
+Installers:
+  - Architecture: x64
+    InstallerType: inno
+    InstallerUrl: https://github.com/dakotacookson/Llama-RPC-Farm/releases/download/release-2.0.52/llama-rpc-farm_2.0.52_windows-x64-setup.exe
+    InstallerSha256: REPLACE_WITH_RELEASE_SHA256
+ManifestType: singleton
+ManifestVersion: 1.6.0

@@ -1,0 +1,38 @@
+name: llama-rpc-farm
+services:
+  farm:
+    image: ghcr.io/dakotacookson/llama-rpc-farm:latest
+    container_name: llama-rpc-farm
+    restart: unless-stopped
+    ports:
+      - target: 8199
+        published: "8199"
+        protocol: tcp
+      - target: 8090
+        published: "8090"
+        protocol: tcp
+      - target: 8080
+        published: "8080"
+        protocol: tcp
+    environment:
+      LLAMA_FARM_DATA_DIR: /data
+    volumes:
+      - /DATA/AppData/llama-rpc-farm:/data
+    x-casaos:
+      ports:
+        - container: "8199"
+          description: Farm UI
+        - container: "8090"
+          description: OpenAI/Anthropic gateway
+        - container: "8080"
+          description: llama-swap
+x-casaos:
+  architectures: [amd64, arm64]
+  main: farm
+  category: AI
+  description: One dashboard and API for a llama.cpp RPC cluster.
+  developer: Dakota Cookson
+  icon: https://raw.githubusercontent.com/dakotacookson/Llama-RPC-Farm/main/ui/static/logo.png
+  title:
+    en_us: Llama RPC Farm
+  port_map: "8199"

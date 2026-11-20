@@ -17,6 +17,12 @@ Do **not** port-forward:
 - the view gateway (`8090`),
 - or the peer-agent port (`8198`).
 
+The in-app **Safety check** detects Tailscale, WireGuard, ZeroTier,
+NetBird, Nebula, OpenVPN, Cloudflare Tunnel, ngrok, and common tunnel
+interfaces. If none are present it explicitly warns against
+port-forwarding; on a single-machine farm it also reports that RPC pooling
+is inactive.
+
 If you need remote access, put the whole farm behind a VPN or an
 authenticated reverse proxy.
 

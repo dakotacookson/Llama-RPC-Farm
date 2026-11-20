@@ -72,6 +72,7 @@
         </button>
         <div class="nav-sec-body">
         <button data-tab="launch" title="Launch"><i class="fa-solid fa-rocket"></i><span>Launch</span></button>
+        <button data-tab="connect" title="Connect a client"><i class="fa-solid fa-plug"></i><span>Connect</span></button>
         <button data-tab="servegroups" title="Serve Groups"><i class="fa-solid fa-object-group"></i><span>Serve Groups</span></button>
         <button data-tab="swapmetrics" title="Requests served through llama-swap"><i class="fa-solid fa-list-check"></i><span>Activity</span></button>
         <button data-tab="perf" title="GPU, CPU and RAM history of every machine"><i class="fa-solid fa-chart-line"></i><span>Performance</span></button></div>
@@ -198,6 +199,19 @@
           <li data-s="3">3 · Configure</li>
         </ol>
         <div id="wiz-step-1">
+          <fieldset>
+            <legend>New peer? Install the agent first</legend>
+            <div class="row">
+              <button type="button" class="small" id="m-pair-load">Show pairing command</button>
+              <span class="hint" id="m-pair-note">One copy/paste on the peer; it installs, pairs, and starts the agent.</span>
+            </div>
+            <div id="m-pair-box" hidden>
+              <p class="hint" style="margin:8px 0 4px"><b>Linux / macOS</b> <button type="button" class="small" data-copy-target="m-pair-unix">Copy</button></p>
+              <pre class="connect-snippet" id="m-pair-unix"></pre>
+              <p class="hint" style="margin:8px 0 4px"><b>Windows</b> <button type="button" class="small" data-copy-target="m-pair-windows">Copy</button></p>
+              <pre class="connect-snippet" id="m-pair-windows"></pre>
+            </div>
+          </fieldset>
           <fieldset>
             <legend>Discover peer agents <small class="hint">UDP discovery on port 8199 — no credentials</small></legend>
             <div class="row">
@@ -768,6 +782,23 @@
       </div>
     </section>
     <!-- Chat -->
+    <section id="tab-connect" class="tab">
+      <h2>Connect a client</h2>
+      <p class="hint">Copy a ready-to-paste config for the tools you already use. Every snippet uses the same farm access key and model grants.</p>
+      <div class="card" style="margin-bottom:14px">
+        <div class="row" style="align-items:center">
+          <label>Model
+            <select id="connect-model"><option value="">(loading…)</option></select>
+          </label>
+          <button type="button" class="small" id="connect-test">Test endpoint</button>
+          <span id="connect-test-status" class="hint">Checks the gateway and sends a tiny completion.</span>
+        </div>
+        <p class="hint" id="connect-key-note" style="margin:8px 0 0"></p>
+        <p class="hint" id="connect-kind-note" style="margin:4px 0 0"></p>
+      </div>
+      <div class="launch-grid" id="connect-clients"><p class="hint">Loading client configs…</p></div>
+    </section>
+
     <section id="tab-chat" class="tab">
       <h2>Chat Test <span id="chat-status" class="serving-ind">…</span></h2>
       <p class="hint">Chat with any configured model through llama-swap (the same OpenAI endpoint API clients use). Unloaded models load on first message — big ones take a while. <span id="chat-count"></span></p>
@@ -1288,6 +1319,10 @@ technical | bugs, errors, login problems</textarea></label>
             <div id="tool-status-panel" class="card" style="padding:8px 10px;font-size:12px"><p class="hint">probing…</p></div>
           </label>
         </div>
+        <div class="row" style="margin-top:12px">
+          <button type="button" class="small" id="set-safety-check"><i class="fa-solid fa-shield-halved"></i> Run safety check</button>
+        </div>
+        <div id="set-safety-result" class="card" style="display:none;padding:8px 10px;margin-top:8px"></div>
         <div class="actions">
           <button type="button" class="small" id="set-setup-guide"><i class="fa-solid fa-wand-magic-sparkles"></i> Setup guide</button>
           <button type="button" id="set-save">Save defaults</button>
@@ -1385,8 +1420,10 @@ technical | bugs, errors, login problems</textarea></label>
       <div class="modal-body" style="padding:14px">
         <div class="setup-steps" id="setup-steps">
           <span class="setup-step done">1 · Admin</span>
-          <span class="setup-step active" data-step="2">2 · Model storage</span>
+          <span class="setup-step active" data-step="2">2 · Storage</span>
           <span class="setup-step" data-step="3">3 · Engines</span>
+          <span class="setup-step" data-step="4">4 · First model</span>
+          <span class="setup-step" data-step="5">5 · Ready</span>
         </div>
         <div id="setup-step-2">
           <p class="hint" style="margin-top:0">Choose where model files live. Shared keeps the NAS/CIFS mount for every machine (the original setup); Model sync uses a local model space and copies a missing model to the machine that serves it.</p>
@@ -1418,14 +1455,32 @@ technical | bugs, errors, login problems</textarea></label>
           <p class="status-bad" id="setup-err" hidden></p>
         </div>
         <div id="setup-step-3" hidden>
-          <p class="hint" style="margin-top:0">Storage is configured. Open the Machines page to install the engines:</p>
-          <ol class="hint" style="line-height:1.8;margin:8px 0 10px 18px">
-            <li><b>Install engines</b> on the master (llama.cpp + <code>ggml-rpc-server</code>).</li>
-            <li>Add any peers and install the peer agent on them.</li>
-            <li><b>Install llama-swap</b> on the swap host.</li>
-          </ol>
-          <p class="hint">This is the same live checklist as the Machines page — it knows which boxes still need engines or llama-swap.</p>
+          <p class="hint" style="margin-top:0">Install stock llama.cpp + <code>ggml-rpc-server</code> and llama-swap on this machine. One click; no terminal.</p>
+          <div class="row">
+            <button type="button" class="small" id="setup-install-engines" style="background:var(--accent-dim);color:var(--accent);border-color:var(--accent)"><i class="fa-solid fa-download"></i> Install engines on this machine</button>
+            <button type="button" class="small" id="setup-engines-machines">Open Machines</button>
+          </div>
+          <div id="setup-engine-status" class="card" style="margin:10px 0;padding:8px 10px"><p class="hint" style="margin:0">Checking machines…</p></div>
           <div id="setup-engines" class="card" style="margin:10px 0;padding:8px 10px"><p class="hint" style="margin:0">Checking machines…</p></div>
+        </div>
+        <div id="setup-step-4" hidden>
+          <p class="hint" style="margin-top:0">The walkthrough uses one known-good starter: <b>Demo — Qwen3 0.6B</b>. It runs on any machine. If you do not have it yet, the farm downloads it from Hugging Face, configures it, launches llama-swap, and warms it once.</p>
+          <div id="setup-recipes" class="launch-grid" style="margin:10px 0"><p class="hint">Loading demo model…</p></div>
+          <div id="setup-recipe-status" class="card" style="margin:10px 0;padding:8px 10px;display:none"><p class="hint" style="margin:0"></p></div>
+        </div>
+        <div id="setup-step-5" hidden>
+          <p class="hint" style="margin-top:0">You are ready. Copy the endpoint and key into any OpenAI or Anthropic client.</p>
+          <div class="card" style="padding:10px 12px;margin:10px 0">
+            <p style="margin:0 0 6px"><b>OpenAI</b> <code id="setup-ready-openai">http://127.0.0.1:8090/v1</code></p>
+            <p style="margin:0 0 6px"><b>Anthropic</b> <code id="setup-ready-anthropic">http://127.0.0.1:8090</code></p>
+            <p style="margin:0 0 6px"><b>Model</b> <code id="setup-ready-model">—</code></p>
+            <p style="margin:0"><b>Access key</b> <code id="setup-ready-key">—</code></p>
+          </div>
+          <div id="setup-safety" class="card" style="padding:10px 12px;margin:10px 0"><p class="hint" style="margin:0">Checking exposure…</p></div>
+          <div class="row">
+            <button type="button" class="small" id="setup-open-chat">Open Chat</button>
+            <button type="button" class="small" id="setup-open-connect">Connect a client</button>
+          </div>
         </div>
       </div>
       <div class="modal-footer" style="display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--border-soft)">

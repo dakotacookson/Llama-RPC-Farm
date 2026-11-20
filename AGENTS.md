@@ -110,6 +110,25 @@ install.bat           # Windows equivalent (cmd.exe)
   `run.sh` only starts the UI when it is not already running. systemd unit
   owners can also: `systemctl --user restart llama-swap`.
 
+## Onboarding / quickstart
+
+- `src/onboarding.py` owns starter recipes, client snippets, safety checks,
+  the pairing command, and the local-only onboarding metrics. Routes live in
+  `src/routes/onboarding.py`.
+- `scripts/quickstart.sh` / `.ps1` install the app, start it, then run
+  `src/quickstart.py`, which calls the onboarding APIs in order:
+  engines → recipe → key → test completion.
+- Recipe application = download → save model config → `swap_manager.launch()`
+  → warmup through the :8090 gateway. It is intentionally heavy; do not run
+  it concurrently with another recipe.
+- The demo Docker container seeds `machines.yaml` with `gpu_vendor: cpu`
+  before boot. Do not remove that seed or the engine resolver may download a
+  CUDA build on a CPU-only host.
+- Onboarding metrics are local only (`config/onboarding_metrics.json`,
+  git-ignored). No external telemetry.
+- The pairing command embeds the farm agent token. Treat it as a secret even
+  though it is only returned to a control identity.
+
 ## Commands
 
 ```bash

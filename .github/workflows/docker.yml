@@ -1,0 +1,132 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    tags: ["release-*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  FARM_IMAGE: ghcr.io/dakotacookson/llama-rpc-farm
+  AGENT_IMAGE: ghcr.io/dakotacookson/llama-rpc-farm-agent
+
+jobs:
+  build:
+    name: Build and push images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        name: Image metadata
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "push=false" >> "$GITHUB_OUTPUT"
+            echo "tags=${{ env.FARM_IMAGE }}:pr-${{ github.event.number }}" >> "$GITHUB_OUTPUT"
+            echo "agent_tags=${{ env.AGENT_IMAGE }}:pr-${{ github.event.number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "push=true" >> "$GITHUB_OUTPUT"
+            echo "tags=${{ env.FARM_IMAGE }}:latest,${{ env.FARM_IMAGE }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            echo "agent_tags=${{ env.AGENT_IMAGE }}:latest,${{ env.AGENT_IMAGE }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build farm image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: ${{ steps.meta.outputs.push }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build agent image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.agent
+          push: ${{ steps.meta.outputs.push }}
+          tags: ${{ steps.meta.outputs.agent_tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  demo-smoke:
+    name: Demo quickstart smoke
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build demo image
+        run: docker build -t farm-demo:test .
+
+      - name: Run demo quickstart
+        run: |
+          set -euo pipefail
+          docker run -d --name farm-demo \
+            -p 18199:8199 -p 18090:8090 \
+            -e FARM_DEMO_RECIPE=demo-0.6b \
+            farm-demo:test /app/docker/demo-entrypoint.sh
+
+          for i in $(seq 1 180); do
+            if docker logs farm-demo 2>&1 | grep -q "Llama RPC Farm is ready"; then
+              break
+            fi
+            if ! docker ps --format '{{.Names}}' | grep -q '^farm-demo$'; then
+              echo "demo container exited" >&2
+              docker logs farm-demo || true
+              exit 1
+            fi
+            sleep 2
+          done
+
+          KEY="$(docker logs farm-demo 2>&1 | sed -n 's/.*Access key: \(sk-[^ ]*\).*/\1/p' | tail -1)"
+          test -n "$KEY" || { echo "demo did not create an access key" >&2; docker logs farm-demo; exit 1; }
+
+          curl -fsS --max-time 15 http://127.0.0.1:18090/v1/models \
+            -H "Authorization: Bearer $KEY" > /tmp/models.json
+          cat /tmp/models.json
+          python3 - <<'PY'
+          import json
+          data = json.load(open("/tmp/models.json"))
+          ids = [m.get("id") for m in data.get("data", [])]
+          assert "qwen3-0-6b-demo" in ids, ids
+          print("demo model visible:", ids)
+          PY
+
+          curl -fsS --max-time 300 http://127.0.0.1:18090/v1/chat/completions \
+            -H 'Content-Type: application/json' \
+            -H "Authorization: Bearer $KEY" \
+            -d '{"model":"qwen3-0-6b-demo","messages":[{"role":"user","content":"Reply with OK."}],"max_tokens":8}' \
+            | tee /tmp/chat.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open("/tmp/chat.json"))
+          msg = ((d.get("choices") or [{}])[0].get("message") or {})
+          assert (msg.get("content") or msg.get("reasoning_content") or "").strip(), d
+          print("demo completion OK")
+          PY
+
+      - name: Demo logs on failure
+        if: failure()
+        run: docker logs farm-demo || true
+
+      - name: Stop demo
+        if: always()
+        run: docker rm -f farm-demo || true

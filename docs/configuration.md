@@ -165,6 +165,7 @@ Generated into llama-swap's `groups:` config section on push.
 | `flow_layout.json` | Visualizer node drag positions (per model node) |
 | `model_icons.json` | Model → icon URL cache |
 | `net_speed_cache.json` | Bandwidth probe results (7-day TTL) |
+| `onboarding_metrics.json` | Local-only setup funnel timestamps (no external telemetry) |
 | `swap.yaml` | llama-swap host pointer (`host_name`); never contains secrets |
 
 ## The second copy (on the host)

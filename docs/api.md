@@ -123,6 +123,21 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 | `POST /api/install-llama-swap?name=` | Install llama-swap on a machine if missing (local or via the agent); updates swap settings' binary |
 | `POST /api/restart` | Restart this web app (POSIX/Windows aware) |
 
+## Onboarding / quickstart
+
+| Method + Path | Purpose |
+|---|---|
+| `GET /api/onboarding/recipes` | Curated starter models with hardware fit |
+| `POST /api/onboarding/recipes/{id}/apply` | Download → configure → launch → warm one recipe |
+| `GET /api/onboarding/recipes/jobs/{job_id}` | Recipe job phase / progress / error |
+| `POST /api/onboarding/access-key` | Create a one-time quickstart access key |
+| `GET /api/onboarding/pairing-command` | Per-platform peer-agent install/pair command |
+| `GET /api/onboarding/clients?model=` | Copyable OpenAI/Anthropic/client configs, model list, live model selection |
+| `POST /api/onboarding/test` | Test gateway + tiny completion |
+| `GET /api/onboarding/safety` | LAN exposure / key / Tailscale checks |
+| `POST /api/onboarding/local-store` | Pick the default local model root |
+| `POST /api/onboarding/mark` · `GET /api/onboarding/metrics` | Local-only onboarding funnel timing |
+
 ## Misc
 
 | `GET /api/fs/browse` | File explorer (local or per-machine, OS-aware) |

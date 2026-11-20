@@ -5,6 +5,21 @@ added, models visible, llama-swap serving, clients hitting the gateway. The app'
 the project folder (or the platform data dir for packaged builds); engines
 and the agent are installed to standard user locations.
 
+## Fast path: one command
+
+For a solo first run (CPU or one GPU), the quickstart installs the app +
+engines, downloads a tiny model, launches it, and verifies an endpoint:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dakotacookson/Llama-RPC-Farm/main/scripts/quickstart.sh | bash
+```
+
+Or use Docker: `docker compose --profile demo up --build`. Full details:
+[quickstart.md](quickstart.md).
+
+The rest of this page is the full, manual path for a real mixed-machine
+fleet.
+
 ## 0. Prerequisites
 
 | Where you need it | Requirement |
@@ -69,15 +84,15 @@ first web login plus its admin access key and signs the browser in.
 Right after the admin account is created (or on the next reload while it
 is still pending), the setup walkthrough continues:
 
-1. **Model storage** — choose **Shared NAS / CIFS** (and give the store
-   path for this machine's platform; it is written to
-   `config/stores.yaml`) or **Model sync** (a default local model dir;
-   missing models are copied through the peer agent). The scan root stays
-   `store://llm-models` so model configs remain portable.
-2. **Engines** — the last step opens the **Machines** page. Use
-   **Install engines** (llama.cpp + `ggml-rpc-server`) and
-   **Install llama-swap** on the swap host. The **Setup needed** panel
-   lists anything still missing.
+1. **Storage** — choose **Shared NAS / CIFS** or **Model sync**. If you
+   leave the path empty, the wizard picks a local `~/llama-models` root so
+   a solo install can continue without a NAS.
+2. **Engines** — one button installs llama.cpp + `ggml-rpc-server` +
+   llama-swap on this machine. Peers can still use the Machines page.
+3. **First model** — pick a curated recipe; the farm downloads it, writes
+   the config, launches llama-swap, and warms it.
+4. **Ready** — copy the OpenAI/Anthropic endpoints and the generated key,
+   run the safety check, and open Chat or Connect.
 
 The walkthrough is recorded as `setup_wizard_done` in
 `config/settings.yaml`; existing installs are not prompted. Reopen it
@@ -106,6 +121,7 @@ each machine row.
 | Machines | Add/edit machines (IP, agent port, agent token, GPUs); start/stop RPC servers |
 | Groups | Cluster groups of machines for multi-AI setups |
 | Models | Scan directories for GGUF files (shards shown as ONE model); per-model: servers, variants, tensor split, flags key/value editor |
+| Connect | Copyable OpenAI/Anthropic/Claude Code/Open WebUI/Continue configs + endpoint test |
 | Launch | Load a model through the selected engines/peers and watch live state |
 | Downloads | Search Hugging Face, filter GGUF models, and download into a `store://` path |
 
