@@ -54,7 +54,9 @@ app.add_middleware(CORSMiddleware,
                    allow_credentials=True,   # session cookie rides along
                    allow_methods=["GET", "POST", "OPTIONS"],
                    allow_headers=["authorization", "x-api-key",
-                                  "content-type"])
+                                  "content-type", "anthropic-version",
+                                  "anthropic-beta",
+                                  "anthropic-dangerous-direct-browser-access"])
 # Local models on big contexts can stall for many minutes between streamed
 # chunks (huge prefill, RPC backends, memory pressure). The read timeout is
 # *idle-gap* based; the old 30s read surfaced as client-side "connection
@@ -239,12 +241,41 @@ def allow_for_ip(request: Request):
 
 
 GATEWAY_PATHS = ("v1/", "models", "health", "upstream")
-GENERATE_PATHS = ("v1/chat/completions", "v1/completions",
-                  "v1/embeddings", "v1/responses", "v1/rerank",
-                  "v1/audio/", "v1/images/")
 GENERATE_PATHS = ("/v1/chat/completions", "/v1/completions",
                   "/v1/embeddings", "/v1/responses", "/v1/rerank",
-                  "/v1/audio/", "/v1/images/", "/v1/systemone")
+                  "/v1/audio/", "/v1/images/", "/v1/systemone",
+                  "/v1/messages")
+# count_tokens is model-scoped (same key/allowlist gate) but not a
+# generation: no usage row.
+MODEL_PATHS = GENERATE_PATHS + ("/v1/messages/count_tokens",)
+
+
+def _is_model_path(req_path: str) -> bool:
+    """Key/allowlist scope applies to this request."""
+    p = (req_path or "").rstrip("/")
+    for pref in MODEL_PATHS:
+        if p == pref.rstrip("/"):
+            return True
+        if pref.endswith("/") and p.startswith(pref):
+            return True
+        if not pref.endswith("/") and p.startswith(pref + "/"):
+            return True
+    return False
+
+
+def _is_generate_path(req_path: str) -> bool:
+    """Request produces (or would produce) generated tokens for usage."""
+    p = (req_path or "").rstrip("/")
+    if p == "/v1/messages/count_tokens":
+        return False
+    for pref in GENERATE_PATHS:
+        if p == pref.rstrip("/"):
+            return True
+        if pref.endswith("/") and p.startswith(pref):
+            return True
+        if not pref.endswith("/") and p.startswith(pref + "/"):
+            return True
+    return False
 
 
 def _mid_allowed(mid: str, allow) -> bool:
@@ -259,6 +290,40 @@ def _mid_allowed(mid: str, allow) -> bool:
         tail = mid.rsplit("/", 1)[1]
         return _mid_allowed(tail, allow)
     return False
+
+
+def _anthropic_usage(u) -> dict:
+    """Anthropic usage -> {prompt_tokens, completion_tokens}.
+
+    Anthropic's `input_tokens` EXCLUDES cache-read/cache-creation tokens
+    (llama.cpp reports e.g. input_tokens=4, cache_read_input_tokens=12
+    for the same prompt OpenAI counts as ~17). Sum them so farm usage is
+    comparable across protocols.
+    """
+    if not isinstance(u, dict):
+        return {}
+    prompt = (int(u.get("input_tokens") or 0)
+              + int(u.get("cache_read_input_tokens") or 0)
+              + int(u.get("cache_creation_input_tokens") or 0))
+    out = int(u.get("output_tokens") or 0)
+    return {"prompt_tokens": prompt, "completion_tokens": out}
+
+
+def _gate_error(req_path: str, status: int, message: str):
+    """401/404 in the caller's protocol shape.
+
+    Anthropic SDKs parse `{"type":"error","error":{...}}`; OpenAI clients
+    already get the FastAPI `{"detail": ...}` shape from every other farm
+    endpoint. Returns a JSONResponse for Anthropic, raises otherwise.
+    """
+    if (req_path or "").startswith("/v1/messages"):
+        etype = {401: "authentication_error",
+                 404: "not_found_error"}.get(status, "api_error")
+        return JSONResponse(status_code=status, content={
+            "type": "error",
+            "error": {"type": etype, "message": message}})
+    from fastapi import HTTPException
+    raise HTTPException(status_code=status, detail=message)
 
 
 
@@ -314,12 +379,15 @@ async def proxy(request: Request, path: str):
                if k.lower() not in ("host", "content-length", "connection")}
 
     req_path = "/" + path
-    # STRICT key gate: once keys exist, no valid key means generate
+    _scope = _is_model_path(req_path)
+    _gen = _is_generate_path(req_path)
+    # STRICT key gate: once keys exist, no valid key means model-scoped
     # paths answer 401 outright (never a forwarded 500) and model lists
     # come back empty — the caller learns the protocol, not the farm.
     if allow is not None and not allow:
-        if any(req_path.startswith(p) for p in GENERATE_PATHS):
-            raise _unauthorized()
+        if _scope:
+            return _gate_error(req_path, 401,
+                               "invalid or missing API key")
         if req_path.rstrip("/") in ("/v1/models", "/models"):
             return JSONResponse(status_code=200, content={
                 "object": "list", "data": []})
@@ -328,13 +396,11 @@ async def proxy(request: Request, path: str):
     # TRUTH 1: usage tracking rides the IDENTITY on every generate path
     # (console included) — independent of scoping/enforcement.
     # TRUTH 2: enforcement (401 / model gate) applies ONLY to scoped keys.
-    _is_generate = any(req_path.startswith(p) for p in GENERATE_PATHS)
-    _gen = _is_generate
-    if _is_generate and allow is not None and len(allow) == 0:
-        raise _unauthorized()   # scoped key with no grants → 401
+    if _scope and allow is not None and len(allow) == 0:
+        return _gate_error(req_path, 401, "invalid or missing API key")
     payload = {}
     mid = ""
-    if _gen:
+    if _scope:
         try:
             payload = json.loads(body or b"{}")
         except Exception:
@@ -342,7 +408,8 @@ async def proxy(request: Request, path: str):
         mid = await canonical_model(
             (payload.get("model") or "").strip())
         if allow is not None and not _mid_allowed(mid, allow):
-            raise _model_not_found(mid)
+            return _gate_error(req_path, 404,
+                               f"model '{mid}' not found")
 
     # usage tracking identity (key NAME) — resolve BEFORE the hop; the
     # collector never sees raw tokens
@@ -443,83 +510,131 @@ async def proxy(request: Request, path: str):
 
 
 async def _counting_stream(resp, meta):
-    """Wrap the upstream byte stream: count SSE content deltas (~chars/4
-    token estimate) and record ONE usage row when the stream closes.
-    Estimate-flagged — exact counts only exist when callers send
-    stream_options.include_usage=true, in which case the final SSE
-    chunk's usage block overrides the estimate."""
+    """Wrap the upstream byte stream: count generated output and record
+    ONE usage row when the stream closes.
+
+    Handles OpenAI SSE (`choices[].delta.content` / `reasoning_content`),
+    llama.cpp's final `timings` block, and Anthropic Messages SSE
+    (`message_start` / `content_block_delta` / `message_delta`). Exact
+    token counts come from the server when it reports them; otherwise the
+    row is estimate-flagged.
+    """
     chars = 0
     saw_usage = None
+    saw_anthropic = {}
     saw_timings = None
     final_status = meta["status"]
     _t_first = None    # first CONTENT/reasoning delta = decode start
     _t_last = None     # last chunk = decode end (excludes prefill)
+
+    def _mark(text):
+        nonlocal chars, _t_first
+        if not text:
+            return
+        if _t_first is None:
+            _t_first = time.monotonic()
+        chars += len(text)
+
     async for chunk in resp.aiter_bytes():
         _t_last = time.monotonic()
         try:
             for line in chunk.decode("utf-8", "replace").splitlines():
                 line = line.strip()
-                if line.startswith("data: "):
-                    d = line[6:]
-                    if d == "[DONE]":
-                        continue
-                    try:
-                        j = json.loads(d)
-                        # llama.cpp streams a FINAL chunk carrying per-run
-                        # TIMINGS (predicted_per_second etc.) — the true
-                        # decode rate for THAT run, prefill excluded.
-                        tm = j.get("timings") or {}
-                        if tm:
-                            saw_timings = tm
-                        u = j.get("usage")
-                        if u and u.get("completion_tokens"):
-                            saw_usage = u
-                        for ch in (j.get("choices") or []):
-                            d = ch.get("delta") or {}
-                            # reasoning models stream reasoning_content
-                            # before/instead of content — count BOTH so
-                            # decode speed reflects actual generated load
-                            cl, rl = len(d.get("content") or ""), len(d.get("reasoning_content") or "")
-                            if (cl or rl) and _t_first is None:
-                                _t_first = time.monotonic()
-                            chars += cl + rl
-                    except Exception:
-                        chars += max(0, len(d) - 80)
+                if not line.startswith("data: "):
+                    continue
+                raw = line[6:]
+                if raw == "[DONE]":
+                    continue
+                try:
+                    j = json.loads(raw)
+                    # llama.cpp streams a FINAL chunk carrying per-run
+                    # TIMINGS (predicted_per_second etc.) — the true
+                    # decode rate for THAT run, prefill excluded.
+                    tm = j.get("timings") or {}
+                    if tm:
+                        saw_timings = tm
+                    u = j.get("usage")
+                    if u and u.get("completion_tokens"):
+                        saw_usage = u
+                    typ = j.get("type")
+                    if typ == "message_start":
+                        au = _anthropic_usage(
+                            (j.get("message") or {}).get("usage"))
+                        if au.get("prompt_tokens"):
+                            saw_anthropic["prompt_tokens"] = au["prompt_tokens"]
+                        if au.get("completion_tokens"):
+                            saw_anthropic["completion_tokens"] = \
+                                au["completion_tokens"]
+                    elif typ == "message_delta":
+                        au = _anthropic_usage(j.get("usage"))
+                        if au.get("prompt_tokens"):
+                            saw_anthropic["prompt_tokens"] = au["prompt_tokens"]
+                        if au.get("completion_tokens"):
+                            saw_anthropic["completion_tokens"] = \
+                                au["completion_tokens"]
+                    elif typ == "content_block_start":
+                        cb = j.get("content_block") or {}
+                        _mark(cb.get("text") or cb.get("thinking") or "")
+                    elif typ == "content_block_delta":
+                        dlt = j.get("delta") or {}
+                        if dlt.get("type") in ("text_delta",
+                                               "thinking_delta"):
+                            _mark(dlt.get("text")
+                                  or dlt.get("thinking") or "")
+                    # OpenAI-style chunks (and llama.cpp's mixed shape)
+                    for ch in (j.get("choices") or []):
+                        d = ch.get("delta") or {}
+                        _mark(d.get("content") or "")
+                        _mark(d.get("reasoning_content") or "")
+                except Exception:
+                    chars += max(0, len(raw) - 80)
         except Exception:
             pass
         yield chunk
+
     tokens = None
     est = True
-    if saw_usage:
+    if saw_timings and (saw_timings.get("predicted_per_second") or 0) > 0:
+        # server-reported per-run decode rate beats every estimate:
+        # predicted_n / predicted_per_second give the EXACT tokens and
+        # decode seconds that llama.cpp measured (prefill excluded)
+        tokens = {
+            "prompt_tokens": (saw_timings.get("prompt_n") or 0),
+            "completion_tokens": (saw_timings.get("predicted_n") or 0)}
+        _dur_decode = (saw_timings.get("predicted_n") or 0) / \
+            (saw_timings.get("predicted_per_second") or 1)
+        est = False
+    elif saw_anthropic:
+        tokens = {
+            "prompt_tokens": saw_anthropic.get("prompt_tokens") or 0,
+            "completion_tokens": (
+                saw_anthropic.get("completion_tokens")
+                or max(0, chars // 4))}
+        # output_tokens from message_delta is exact; a stream cut before
+        # that event falls back to the character estimate.
+        est = not bool(saw_anthropic.get("completion_tokens"))
+        _dur_decode = round((_t_last - _t_first), 3) if (
+            _t_first and _t_last and _t_last > _t_first) else 0.0
+    elif saw_usage:
         tokens = {"prompt_tokens": (saw_usage.get("prompt_tokens")
                                     or saw_usage.get("input_tokens") or 0),
                   "completion_tokens": (
                       saw_usage.get("completion_tokens")
                       or saw_usage.get("output_tokens") or 0)}
         est = False
+        _dur_decode = round((_t_last - _t_first), 3) if (
+            _t_first and _t_last and _t_last > _t_first) else 0.0
     else:
         tokens = {"prompt_tokens": 0,
                   "completion_tokens": max(0, chars // 4)}
+        _dur_decode = round((_t_last - _t_first), 3) if (
+            _t_first and _t_last and _t_last > _t_first) else 0.0
     try:
         import usage_collector as _uc
-        # server-reported per-run decode rate beats every estimate:
-        # predicted_n / predicted_per_second give the EXACT tokens and
-        # decode seconds that llama.cpp measured (prefill excluded)
-        if saw_timings and (saw_timings.get("predicted_per_second") or 0) > 0:
-            tokens = {
-                "prompt_tokens": (saw_timings.get("prompt_n")
-                                  or (tokens or {}).get("prompt_tokens") or 0),
-                "completion_tokens": (saw_timings.get("predicted_n")
-                                      or (tokens or {}).get("completion_tokens")
-                                      or 0)}
-            _dur_decode = (saw_timings.get("predicted_n") or 0) /                 (saw_timings.get("predicted_per_second") or 1)
-            est = False
-        else:
-            _dur_decode = round((_t_last - _t_first), 3) if (
-                _t_first and _t_last and _t_last > _t_first) else 0.0
         _uc.record(meta["name"], meta["path"], meta["model"],
                    final_status, _dur_decode, tokens, estimated=est)
-        print(f"[usage-close] {meta['name']}/{meta['model']} chars={chars} tok={tokens}", flush=True)
+        print(f"[usage-close] {meta['name']}/{meta['model']} "
+              f"chars={chars} tok={tokens}", flush=True)
     except Exception as e:
         print(f"[usage-close-ERR] {e}", flush=True)
 
