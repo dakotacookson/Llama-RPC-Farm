@@ -646,6 +646,7 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           $env:APP_VERSION = $env:VERSION
+          $env:BUILD_VERSION = $env:VERSION
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
           & $iscc packaging\app.iss
           if ($LASTEXITCODE -ne 0) { throw "app installer build failed" }

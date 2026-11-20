@@ -97,6 +97,35 @@ combinations to avoid: **[docs/topologies.md](docs/topologies.md)**.
 
 ## Quick start
 
+### One command (solo demo)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dakotacookson/Llama-RPC-Farm/main/scripts/quickstart.sh | bash
+```
+
+This installs the app and engines, downloads the tiny Qwen3-0.6B recipe,
+launches llama-swap, verifies a completion, and prints the OpenAI and
+Anthropic endpoints plus a generated access key. CPU-only is fine. Windows:
+`irm .../scripts/quickstart.ps1 | iex`.
+
+### Docker
+
+```bash
+docker compose --profile demo up --build          # tiny CPU model, fully automatic
+docker compose --profile demo-wizard up --build   # CPU demo that opens the wizard
+docker compose --profile solo up                  # normal single box
+docker compose --profile gpu up                   # NVIDIA
+docker compose --profile gpu-rocm up              # AMD ROCm
+docker compose --profile gpu-intel up             # Intel SYCL/Vulkan
+```
+
+Demo data persists in the `farm-data` volume. GPU profiles need the host
+driver/runtime exposed to Docker; NVIDIA uses device reservations, ROCm
+needs `/dev/kfd` + `/dev/dri` + `render`/`video` groups, Intel/Vulkan needs
+`/dev/dri`. Apple Metal cannot run in a Linux container — use the native
+macOS app. Details: **[docs/distribution.md](docs/distribution.md)**.
+Images are published to GHCR on every `main` build.
+
 ### Install a release (recommended)
 
 Grab the newest
@@ -146,8 +175,9 @@ This repo ships an agent playbook (`AGENTS.md`). Tell your coding agent:
 ## Connect a client
 
 Point any OpenAI- or Anthropic-compatible client at the gateway (`:8090`)
-or llama-swap directly (`:8080`). Keys, per-user model grants, and client
-configs: **[docs/access.md](docs/access.md)**.
+or llama-swap directly (`:8080`). The in-app **Connect** tab generates
+copyable configs and can test the endpoint. Keys, per-user model grants,
+and client configs: **[docs/access.md](docs/access.md)**.
 
 ```bash
 curl http://<master-ip>:8090/v1/chat/completions \
@@ -249,6 +279,7 @@ control over where every layer runs. More:
 
 | Doc | What it covers |
 |-----|----------------|
+| [docs/quickstart.md](docs/quickstart.md) | One-command demo, Docker profiles, starter recipes |
 | [docs/setup.md](docs/setup.md) | Step-by-step install, machines, stores, engines, clients |
 | [docs/topologies.md](docs/topologies.md) | Single-box, RPC, peer-local, custom, MLX; recipes and anti-patterns |
 | [docs/access.md](docs/access.md) | Users, API keys, per-key model grants, gateway, client config |
@@ -259,6 +290,7 @@ control over where every layer runs. More:
 | [docs/rpc-model.md](docs/rpc-model.md) | RPC numbering, device tokens, ports, generated scripts |
 | [docs/configuration.md](docs/configuration.md) | Every config file, what owns it — incl. `storage_mode` / model sync and engine selection |
 | [docs/api.md](docs/api.md) | Full HTTP/WebSocket endpoint reference |
+| [docs/distribution.md](docs/distribution.md) | Docker/GHCR, Homebrew, winget, Proxmox, Unraid, CasaOS |
 | [docs/README.md](docs/README.md) | Full documentation index |
 
 Security: **[SECURITY.md](SECURITY.md)**. Contributing:

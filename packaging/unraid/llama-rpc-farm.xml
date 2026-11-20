@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>llama-rpc-farm</Name>
+  <Repository>ghcr.io/dakotacookson/llama-rpc-farm:latest</Repository>
+  <Registry>https://github.com/dakotacookson/Llama-RPC-Farm/pkgs/container/llama-rpc-farm</Registry>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/dakotacookson/Llama-RPC-Farm/discussions</Support>
+  <Project>https://github.com/dakotacookson/Llama-RPC-Farm</Project>
+  <Overview>Llama RPC Farm — one dashboard and API for llama.cpp RPC clusters.</Overview>
+  <Category>AI:Tools:Utilities</Category>
+  <WebUI>http://[IP]:[PORT:8199]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/dakotacookson/Llama-RPC-Farm/main/packaging/unraid/llama-rpc-farm.xml</TemplateURL>
+  <Config Name="UI" Target="8199" Default="8199" Mode="tcp" Type="Port" Display="always" Required="true" Mask="false">8199</Config>
+  <Config Name="Gateway" Target="8090" Default="8090" Mode="tcp" Type="Port" Display="always" Required="true" Mask="false">8090</Config>
+  <Config Name="llama-swap" Target="8080" Default="8080" Mode="tcp" Type="Port" Display="always" Required="false" Mask="false">8080</Config>
+  <Config Name="Data" Target="/data" Default="/mnt/user/appdata/llama-rpc-farm" Mode="rw" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/llama-rpc-farm</Config>
+</Container>

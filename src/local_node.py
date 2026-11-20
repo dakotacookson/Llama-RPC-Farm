@@ -1,5 +1,6 @@
 """Detects the machine the app is running on, so it can be seeded as the
 default master node and flagged in the UI."""
+import os
 import socket
 import sys
 
@@ -115,14 +116,22 @@ def ensure_local_master():
     name = local_hostname()
     if any(m["name"] == name for m in machines):
         return cfg.machines.update(name, {"role": "master", "ip": my_ip, "os": local_os()})
-    return cfg.machines.add({
+    # Docker/ROCm/Intel installs often cannot probe the vendor from inside
+    # the container. Let the launcher declare it explicitly.
+    vendor = (os.environ.get("LLAMA_FARM_GPU_VENDOR") or "").strip().lower()
+    if vendor not in ("nvidia", "amd", "intel", "apple", "cpu"):
+        vendor = ""
+    data = {
         "name": name,
         "ip": my_ip,
         "username": "",       # local machine: no remote login needed
         "password": "",
         "role": "master",
         "os": local_os(),
-    })
+    }
+    if vendor:
+        data["gpu_vendor"] = vendor
+    return cfg.machines.add(data)
 
 
 def is_local(machine):

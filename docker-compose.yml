@@ -1,0 +1,192 @@
+# Llama RPC Farm — Docker profiles
+#
+#   docker compose --profile demo up --build          # CPU demo, tiny model
+#   docker compose --profile demo-wizard up --build   # CPU demo that opens the wizard
+#   docker compose --profile solo up --build          # normal single box
+#   docker compose --profile gpu up --build           # NVIDIA
+#   docker compose --profile gpu-rocm up --build      # AMD ROCm
+#   docker compose --profile gpu-intel up --build     # Intel SYCL / Vulkan
+#   docker compose --profile agent up -d              # CPU peer agent
+#   docker compose --profile agent-nvidia up -d       # NVIDIA peer agent
+#   docker compose --profile agent-rocm up -d         # ROCm peer agent
+#
+# GPU profiles require the host driver/runtime (see docs/distribution.md):
+#   NVIDIA: nvidia-container-toolkit + Docker --gpus support
+#   ROCm:   amdgpu driver + ROCm runtime + /dev/kfd + /dev/dri + render/video groups
+#   Intel:  /dev/dri + Mesa/Vulkan or oneAPI runtime
+# Apple Metal is NOT available inside Linux containers — use the native
+# macOS app/quickstart instead.
+#
+# Data/config/models persist in the `farm-data` volume. For RPC peers,
+# mount the shared model store or use Model sync.
+
+x-farm-common: &farm-common
+  image: ${FARM_IMAGE:-ghcr.io/dakotacookson/llama-rpc-farm:latest}
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment:
+    LLAMA_FARM_DATA_DIR: /data
+    FARM_GATEWAY_DISABLE: "0"
+  volumes:
+    - farm-data:/data
+  restart: unless-stopped
+
+x-agent-common: &agent-common
+  image: ${AGENT_IMAGE:-ghcr.io/dakotacookson/llama-rpc-farm-agent:latest}
+  build:
+    context: .
+    dockerfile: Dockerfile.agent
+  environment:
+    PEER_AGENT_TOKEN: ${PEER_AGENT_TOKEN:-}
+    PEER_AGENT_PORT: "8198"
+    PEER_AGENT_NO_SERVICE: "1"
+  command:
+    - bash
+    - -lc
+    - |
+      if [ -z "$$PEER_AGENT_TOKEN" ]; then
+        echo "PEER_AGENT_TOKEN is required (copy it from the farm pairing command)" >&2
+        exit 1
+      fi
+      exec python -m llama_peer_agent --host 0.0.0.0
+  network_mode: host
+  restart: unless-stopped
+
+services:
+  farm:
+    <<: *farm-common
+    profiles: ["solo"]
+    ports:
+      - "8199:8199"
+      - "8090:8090"
+      - "8080:8080"
+
+  demo:
+    <<: *farm-common
+    profiles: ["demo"]
+    command: ["/app/docker/demo-entrypoint.sh"]
+    environment:
+      LLAMA_FARM_DATA_DIR: /data
+      LLAMA_FARM_GPU_VENDOR: cpu
+      FARM_DEMO_AUTO: "1"
+      FARM_DEMO_RECIPE: ${FARM_DEMO_RECIPE:-demo-0.6b}
+    ports:
+      - "8199:8199"
+      - "8090:8090"
+      - "8080:8080"
+
+  demo-wizard:
+    <<: *farm-common
+    profiles: ["demo-wizard"]
+    command: ["/app/docker/demo-entrypoint.sh"]
+    environment:
+      LLAMA_FARM_DATA_DIR: /data
+      LLAMA_FARM_GPU_VENDOR: cpu
+      FARM_DEMO_AUTO: "0"
+    ports:
+      - "8199:8199"
+      - "8090:8090"
+      - "8080:8080"
+
+  gpu:
+    <<: *farm-common
+    profiles: ["gpu"]
+    environment:
+      LLAMA_FARM_DATA_DIR: /data
+      LLAMA_FARM_GPU_VENDOR: nvidia
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    ports:
+      - "8199:8199"
+      - "8090:8090"
+      - "8080:8080"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, utility]
+
+  gpu-rocm:
+    <<: *farm-common
+    profiles: ["gpu-rocm"]
+    environment:
+      LLAMA_FARM_DATA_DIR: /data
+      LLAMA_FARM_GPU_VENDOR: amd
+      HSA_OVERRIDE_GFX_VERSION: ${HSA_OVERRIDE_GFX_VERSION:-}
+    ports:
+      - "8199:8199"
+      - "8090:8090"
+      - "8080:8080"
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+      - render
+    security_opt:
+      - seccomp=unconfined
+
+  gpu-intel:
+    <<: *farm-common
+    profiles: ["gpu-intel"]
+    environment:
+      LLAMA_FARM_DATA_DIR: /data
+      LLAMA_FARM_GPU_VENDOR: intel
+    ports:
+      - "8199:8199"
+      - "8090:8090"
+      - "8080:8080"
+    devices:
+      - /dev/dri
+    group_add:
+      - video
+      - render
+
+  agent:
+    <<: *agent-common
+    profiles: ["agent"]
+    environment:
+      PEER_AGENT_TOKEN: ${PEER_AGENT_TOKEN:-}
+      PEER_AGENT_PORT: "8198"
+      PEER_AGENT_NO_SERVICE: "1"
+      LLAMA_FARM_GPU_VENDOR: cpu
+
+  agent-nvidia:
+    <<: *agent-common
+    profiles: ["agent-nvidia"]
+    environment:
+      PEER_AGENT_TOKEN: ${PEER_AGENT_TOKEN:-}
+      PEER_AGENT_PORT: "8198"
+      PEER_AGENT_NO_SERVICE: "1"
+      LLAMA_FARM_GPU_VENDOR: nvidia
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, utility]
+
+  agent-rocm:
+    <<: *agent-common
+    profiles: ["agent-rocm"]
+    environment:
+      PEER_AGENT_TOKEN: ${PEER_AGENT_TOKEN:-}
+      PEER_AGENT_PORT: "8198"
+      PEER_AGENT_NO_SERVICE: "1"
+      LLAMA_FARM_GPU_VENDOR: amd
+      HSA_OVERRIDE_GFX_VERSION: ${HSA_OVERRIDE_GFX_VERSION:-}
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+      - render
+    security_opt:
+      - seccomp=unconfined
+
+volumes:
+  farm-data:

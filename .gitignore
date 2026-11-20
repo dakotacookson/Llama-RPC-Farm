@@ -65,6 +65,7 @@ c.tar.gz
 # usage telemetry — per-key runtime history, wiped fresh 2026-10-10;
 # never commit (recreated live by the gateway writer thread)
 config/usage/*.enc
+config/onboarding_metrics.json
 
 # agent worktrees — never part of the project
 .worktrees/

@@ -10,8 +10,17 @@ everything. Keys are also how usage is attributed per user in the dashboard.
 
 ## Connect a client
 
-Point any OpenAI-compatible client at the gateway (`:8090`) or llama-swap
-directly (`:8080`):
+The app’s **Connect** tab generates copyable configs for these clients,
+auto-fills the key for the logged-in identity, lets you switch the target
+model from a dropdown, and can run an endpoint test. Snippets are
+type-aware: vision models count as both chat and vision, audio uses the
+chat endpoint with `input_audio`, embeddings use `/v1/embeddings`, and
+TypeSafe decision models use `/v1/systemone`. Chat clients stay visible for
+every model but are marked **not applicable** when they cannot target that
+model type. The reference configs are below.
+
+Point any OpenAI- or Anthropic-compatible client at the gateway (`:8090`)
+or llama-swap directly (`:8080`):
 
 ```
 baseURL: http://<master-ip>:8090/v1     # or http://<master-ip>:8080/v1

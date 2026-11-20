@@ -31,6 +31,25 @@ function setFarmSession(s) {
   } catch (_) {}
 }
 
+async function copyText(text) {
+  text = String(text == null ? "" : text);
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(text); return; } catch (_) {}
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "-1000px";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand("copy"); } finally { ta.remove(); }
+  if (!ok) throw new Error("copy failed");
+}
 function setAccessKey(k) {
   _accessKey = (k || "").trim() || null;
   try {
@@ -352,6 +371,7 @@ document.querySelectorAll("nav button").forEach((btn) => {
     }
     if (btn.dataset.tab === "dljobs") loadDownloads();
     if (btn.dataset.tab === "chat") loadChat();
+    if (btn.dataset.tab === "connect") loadConnect();
     if (btn.dataset.tab === "settings") { loadSettings(); renderThemeGrid(); }
     if (btn.dataset.tab === "launch") loadLaunch();
     if (btn.dataset.tab === "servegroups") { loadServeGroups(); renderServeGroupMembers([]); }
@@ -646,13 +666,13 @@ async function loadMyKey() {
 
 on("#acc-edit-key-copy", "click", async () => {
   try {
-    await navigator.clipboard.writeText($("#acc-edit-key").textContent);
+    await copyText($("#acc-edit-key").textContent);
     toast("key copied", "ok");
   } catch (_) { toast("select the key and Ctrl+C", "bad"); }
 });
 on("#acc-my-key-copy", "click", async () => {
   try {
-    await navigator.clipboard.writeText($("#acc-my-key").textContent);
+    await copyText($("#acc-my-key").textContent);
     toast("key copied", "ok");
   } catch (_) { toast("clipboard unavailable — click the key text and Ctrl+C", "bad"); }
 });
@@ -909,7 +929,7 @@ on("#acc-key-generate", "click", async () => {
 });
 
 on("#acc-token-copy", "click", async () => {
-  try { await navigator.clipboard.writeText($("#acc-new-token").textContent); toast("token copied", "ok"); }
+  try { await copyText($("#acc-new-token").textContent); toast("token copied", "ok"); }
   catch (_) { toast("clipboard unavailable — select and copy manually", "bad"); }
 });
 
@@ -2336,6 +2356,22 @@ function wizNext() {
   wizShow(3);
   toast("Verify the details, then Save (Save verifies the peer agent before storing)", "ok");
 }
+on("#m-pair-load", "click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = "Loading…";
+  try {
+    const r = await api("GET", "/api/onboarding/pairing-command");
+    $("#m-pair-unix").textContent = r.unix || "";
+    $("#m-pair-windows").textContent = r.windows || "";
+    $("#m-pair-box").hidden = false;
+    $("#m-pair-note").textContent = r.note || "";
+  } catch (err) {
+    toast(err.message, "bad");
+  }
+  btn.disabled = false;
+  btn.textContent = "Show pairing command";
+});
 on("#wiz-next", "click", wizNext);
 on("#wiz-back", "click", () => { if (!wizEditing() && wizStep > 1) wizShow(wizStep - 1); });
 on("#wiz-cancel", "click", () => { wizClearPick(); machineFormLoad(EMPTY_MACHINE, false); });
@@ -5687,6 +5723,16 @@ async function doBootstrap() {
 
 /* ---------------- first-run setup walkthrough -------------------- */
 let _setupState = null;
+let _setupKey = "";
+let _setupModel = "";
+async function _localMachineName() {
+  try {
+    const ms = await api("GET", "/api/machines");
+    const arr = Array.isArray(ms) ? ms : (ms.machines || []);
+    const m = arr.find(x => x.is_local || x.role === "master") || arr[0];
+    return m ? m.name : "";
+  } catch (_) { return ""; }
+}
 function syncSetupStorageFields() {
   const mode = $("#setup-storage-mode")?.value || "shared";
   const shared = $("#setup-shared-fields");
@@ -5695,14 +5741,20 @@ function syncSetupStorageFields() {
   if (sync) sync.hidden = mode !== "sync";
 }
 function setupStep(n) {
-  const is3 = n === 3;
-  if ($("#setup-step-2")) $("#setup-step-2").hidden = is3;
-  if ($("#setup-step-3")) $("#setup-step-3").hidden = !is3;
-  if ($("#setup-back")) $("#setup-back").style.display = is3 ? "" : "none";
-  if ($("#setup-next")) $("#setup-next").style.display = is3 ? "none" : "";
-  if ($("#setup-machines")) $("#setup-machines").style.display = is3 ? "" : "none";
-  if ($("#setup-finish")) $("#setup-finish").style.display = is3 ? "" : "none";
-  if (is3) loadReadiness(true).catch(() => {});
+  for (const i of [2, 3, 4, 5]) {
+    const el = $(`#setup-step-${i}`);
+    if (el) el.hidden = i !== n;
+  }
+  const back = $("#setup-back"), next = $("#setup-next");
+  const finish = $("#setup-finish");
+  if (back) back.style.display = n > 2 ? "" : "none";
+  if (next) {
+    next.style.display = n < 5 ? "" : "none";
+    next.textContent = n === 2 ? "Save & continue" : "Continue";
+  }
+  if (finish) finish.style.display = n === 5 ? "" : "none";
+  const machines = $("#setup-machines");
+  if (machines) machines.style.display = "none";
   $$("#setup-steps .setup-step").forEach((el) => {
     const s = Number(el.dataset.step || 0);
     el.classList.toggle("active", s === n);
@@ -5710,6 +5762,10 @@ function setupStep(n) {
   });
   const err = $("#setup-err");
   if (err) { err.hidden = true; err.textContent = ""; }
+  if (n === 3) { loadReadiness(true).catch(() => {}); }
+  if (n === 4) { loadSetupRecipes().catch(() => {}); }
+  if (n === 5) { finishSetupReady().catch(() => {}); }
+  api("POST", "/api/onboarding/mark", { event: `setup_step_${n}` }).catch(() => {});
 }
 async function showSetupWizard(step = 2) {
   try { _setupState = await api("GET", "/api/setup/status"); }
@@ -5723,11 +5779,20 @@ async function showSetupWizard(step = 2) {
   syncSetupStorageFields();
   setupStep(step);
   $("#setup-modal")?.classList.remove("hidden");
+  api("POST", "/api/onboarding/mark", { event: "setup_shown" }).catch(() => {});
 }
 async function saveSetupStorage() {
   const err = $("#setup-err");
   const mode = $("#setup-storage-mode").value;
-  const storePath = $("#setup-store-path").value.trim();
+  let storePath = $("#setup-store-path").value.trim();
+  if (mode === "sync") storePath = "";
+  if (mode === "shared" && !storePath) {
+    try {
+      const local = await api("POST", "/api/onboarding/local-store", {});
+      storePath = local.root || "";
+      if ($("#setup-store-path")) $("#setup-store-path").value = storePath;
+    } catch (_) {}
+  }
   if (mode === "shared" && !storePath) {
     err.textContent = "Enter the shared model store path for this machine.";
     err.hidden = false;
@@ -5744,14 +5809,133 @@ async function saveSetupStorage() {
     });
     _setupState = await api("GET", "/api/setup/status").catch(() => _setupState);
     await loadSettings();
+    api("POST", "/api/onboarding/mark", { event: "storage_saved" }).catch(() => {});
     setupStep(3);
   } catch (e) {
     err.textContent = e.message;
     err.hidden = false;
   }
 }
+async function installSetupEngines() {
+  const btn = $("#setup-install-engines");
+  const box = $("#setup-engine-status");
+  const name = await _localMachineName();
+  if (!name) { toast("No local machine configured", "bad"); return; }
+  btn.disabled = true;
+  btn.textContent = "Installing… (first run can take a few minutes)";
+  if (box) box.innerHTML = '<p class="hint" style="margin:0"><i class="fa-solid fa-spinner fa-spin"></i> Installing llama.cpp + llama-swap…</p>';
+  try {
+    const res = await api("POST", "/api/tools/install/sync", {
+      machine: name, role: "main",
+      tools: ["llama.cpp", "llama-swap"], dry_run: false,
+    }, 1800000);
+    if (res.failures && res.failures.length) {
+      throw new Error((res.failures[0] && res.failures[0].error) || "install failed");
+    }
+    if (box) box.innerHTML = '<p class="status-ok" style="margin:0"><i class="fa-solid fa-circle-check"></i> Engines installed.</p>';
+    api("POST", "/api/onboarding/mark", { event: "engines_installed" }).catch(() => {});
+    await loadReadiness(true).catch(() => {});
+  } catch (e) {
+    if (box) box.innerHTML = `<p class="status-bad" style="margin:0">${escHtml(e.message)}</p>`;
+  }
+  btn.disabled = false;
+  btn.textContent = "Install engines on this machine";
+}
+async function loadSetupRecipes() {
+  const box = $("#setup-recipes");
+  if (!box) return;
+  box.innerHTML = '<p class="hint">Loading demo model…</p>';
+  let data;
+  try { data = await api("GET", "/api/onboarding/recipes"); }
+  catch (e) { box.innerHTML = `<p class="status-bad">${escHtml(e.message)}</p>`; return; }
+  const demo = (data.recipes || []).find(r => r.id === "demo-0.6b")
+    || (data.recipes || [])[0];
+  if (!demo) {
+    box.innerHTML = '<p class="status-bad">Demo recipe is unavailable in this build.</p>';
+    return;
+  }
+  const hf = `https://huggingface.co/${demo.repo}/blob/main/${demo.file}`;
+  box.innerHTML = `
+    <div class="card" style="padding:12px">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
+        <div>
+          <strong>${escHtml(demo.name)}</strong>
+          <p class="hint" style="margin:4px 0">${escHtml(demo.description)}</p>
+          <small class="hint">${escHtml(String(demo.size_gb))} GB download · ${escHtml((demo.tags || []).join(", "))}</small>
+          <p class="hint" style="margin:6px 0 0"><a href="${escHtml(hf)}" target="_blank" rel="noreferrer">Download link / model card ↗</a></p>
+        </div>
+        <span class="serving-ind ${demo.fit ? "status-ok" : "status-warn"}">${demo.fit ? "fits" : "tight"}</span>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button type="button" class="small" data-recipe="${escHtml(demo.id)}">Download &amp; use demo model</button>
+      </div>
+    </div>`;
+  box.querySelectorAll("[data-recipe]").forEach(btn => {
+    btn.addEventListener("click", () => applySetupRecipe(btn.dataset.recipe, btn));
+  });
+}
+async function applySetupRecipe(id, btn) {
+  const box = $("#setup-recipe-status");
+  const name = await _localMachineName();
+  btn.disabled = true;
+  btn.textContent = "Starting…";
+  if (box) {
+    box.style.display = "";
+    box.innerHTML = '<p class="hint" style="margin:0"><i class="fa-solid fa-spinner fa-spin"></i> Starting download…</p>';
+  }
+  try {
+    const r = await api("POST", `/api/onboarding/recipes/${encodeURIComponent(id)}/apply`,
+                        { machine: name, launch: true });
+    if (!r.job_id) throw new Error("recipe did not start");
+    const job = await _waitRecipeJob(r.job_id, (j) => {
+      if (box) {
+        const pct = j.progress != null ? ` ${Math.round(j.progress * 100)}%` : "";
+        box.innerHTML = `<p class="hint" style="margin:0"><i class="fa-solid fa-spinner fa-spin"></i> ${escHtml(j.phase || "working")}${pct}</p>`;
+      }
+    });
+    _setupModel = (job.result && job.result.model_id) || job.model_id || id;
+    api("POST", "/api/onboarding/mark", { event: "recipe_applied", extra: { recipe: id } }).catch(() => {});
+    if (box) box.innerHTML = '<p class="status-ok" style="margin:0"><i class="fa-solid fa-circle-check"></i> Model is loaded.</p>';
+    setupStep(5);
+  } catch (e) {
+    if (box) box.innerHTML = `<p class="status-bad" style="margin:0">${escHtml(e.message)}</p>`;
+    btn.disabled = false;
+    btn.textContent = "Download & use demo model";
+  }
+}
+async function _waitRecipeJob(id, onUpdate) {
+  for (;;) {
+    const j = await api("GET", `/api/onboarding/recipes/jobs/${encodeURIComponent(id)}`);
+    if (onUpdate) onUpdate(j);
+    if (j.error) throw new Error(j.error);
+    if (j.done) return j;
+    await new Promise(r => setTimeout(r, 1200));
+  }
+}
+async function finishSetupReady() {
+  const host = window.location.hostname || "127.0.0.1";
+  const openai = `http://${host}:8090/v1`;
+  const anthropic = `http://${host}:8090`;
+  if ($("#setup-ready-openai")) $("#setup-ready-openai").textContent = openai;
+  if ($("#setup-ready-anthropic")) $("#setup-ready-anthropic").textContent = anthropic;
+  if ($("#setup-ready-model")) $("#setup-ready-model").textContent = _setupModel || "pick a model on the Launch page";
+  if (!_setupKey) {
+    try { const k = await api("POST", "/api/onboarding/access-key", {}); _setupKey = k.token || ""; }
+    catch (_) {}
+  }
+  if ($("#setup-ready-key")) $("#setup-ready-key").textContent = _setupKey || "use an existing key (Access page)";
+  const box = $("#setup-safety");
+  if (box) {
+    try {
+      const s = await api("GET", "/api/onboarding/safety");
+      box.innerHTML = `<strong><i class="fa-solid fa-shield-halved"></i> Safety check</strong>` +
+        (s.checks || []).map(c => `<p style="margin:5px 0" class="${c.level === "bad" ? "status-bad" : c.level === "warn" ? "status-warn" : c.level === "ok" ? "status-ok" : "hint"}">${escHtml(c.title)} — ${escHtml(c.detail)}${c.fix ? ` <em>${escHtml(c.fix)}</em>` : ""}</p>`).join("");
+    } catch (e) { box.innerHTML = `<p class="status-bad">${escHtml(e.message)}</p>`; }
+  }
+}
 async function completeSetup() {
   try { await api("POST", "/api/setup/complete", {}); } catch (_) {}
+  api("POST", "/api/onboarding/mark", { event: "setup_complete" }).catch(() => {});
   $("#setup-modal")?.classList.add("hidden");
   loadSettings();
 }
@@ -5760,14 +5944,48 @@ async function openSetupMachines() {
   const btn = document.querySelector('nav button[data-tab="machines"]');
   if (btn) btn.click();
 }
-on("#setup-next", "click", saveSetupStorage);
-on("#setup-back", "click", () => setupStep(2));
+async function setupNext() {
+  const n = [2, 3, 4, 5].find(i => !$(`#setup-step-${i}`)?.hidden) || 2;
+  if (n === 2) return saveSetupStorage();
+  if (n < 5) return setupStep(n + 1);
+}
+on("#setup-next", "click", setupNext);
+on("#setup-back", "click", () => {
+  const n = [2, 3, 4, 5].find(i => !$(`#setup-step-${i}`)?.hidden) || 2;
+  setupStep(Math.max(2, n - 1));
+});
 on("#setup-machines", "click", openSetupMachines);
+on("#setup-engines-machines", "click", openSetupMachines);
+on("#setup-install-engines", "click", installSetupEngines);
 on("#setup-finish", "click", completeSetup);
 on("#setup-skip", "click", completeSetup);
 on("#setup-close", "click", completeSetup);
 on("#setup-storage-mode", "change", syncSetupStorageFields);
+on("#setup-open-chat", "click", async () => {
+  await completeSetup();
+  document.querySelector('nav button[data-tab="chat"]')?.click();
+});
+on("#setup-open-connect", "click", async () => {
+  await completeSetup();
+  document.querySelector('nav button[data-tab="connect"]')?.click();
+});
 on("#set-setup-guide", "click", () => showSetupWizard(2));
+on("#set-safety-check", "click", async (e) => {
+  const btn = e.currentTarget;
+  const box = $("#set-safety-result");
+  btn.disabled = true;
+  try {
+    const s = await api("GET", "/api/onboarding/safety");
+    if (box) {
+      box.style.display = "";
+      box.innerHTML = `<strong>Safety check</strong>` +
+        (s.checks || []).map(c => `<p style="margin:5px 0" class="${c.level === "bad" ? "status-bad" : c.level === "warn" ? "status-warn" : c.level === "ok" ? "status-ok" : "hint"}">${escHtml(c.title)} — ${escHtml(c.detail)}${c.fix ? ` <em>${escHtml(c.fix)}</em>` : ""}</p>`).join("");
+    }
+  } catch (err) {
+    if (box) { box.style.display = ""; box.innerHTML = `<p class="status-bad">${escHtml(err.message)}</p>`; }
+  }
+  btn.disabled = false;
+});
 
 /* Boot-time Access-tab gate: same decision loadAccess makes
    (whoami.trusted), applied without loading the tab — hides the nav
@@ -6830,6 +7048,106 @@ document.querySelectorAll('nav button[data-tab="audio"]').forEach(btn=>{
   btn.addEventListener('click', ()=> setTimeout(loadAudioModels, 200));
 });
 
+/* ---------------- Connect a client ---------------- */
+let _connectKey = "";
+let _connectModels = [];
+async function _connectKeyOnce() {
+  if (_connectKey !== undefined && _connectKey !== "") return _connectKey;
+  try {
+    const k = await api("GET", "/api/auth/my-key");
+    _connectKey = k.key || "";
+  } catch (_) {
+    _connectKey = "";
+  }
+  return _connectKey;
+}
+async function loadConnect(model) {
+  const box = $("#connect-clients");
+  const sel = $("#connect-model");
+  const note = $("#connect-key-note");
+  const kindNote = $("#connect-kind-note");
+  if (!box) return;
+  box.innerHTML = '<p class="hint">Loading client configs…</p>';
+  try {
+    const key = await _connectKeyOnce();
+    if (note) {
+      note.textContent = key
+        ? "Using your logged-in key. Treat copied snippets as secrets."
+        : "No personal access key found (console session). Create one on the Access page; snippets use <your-key> for now.";
+    }
+    const qs = model ? `?model=${encodeURIComponent(model)}` : "";
+    const r = await api("GET", "/api/onboarding/clients" + qs);
+    _connectModels = r.models || [];
+    if (sel) {
+      const prev = sel.value;
+      sel.innerHTML = _connectModels.length
+        ? _connectModels.map(m => {
+            const kinds = (m.kinds && m.kinds.length) ? m.kinds : [m.kind || "chat"];
+            const label = kinds.length > 1 || kinds[0] !== "chat"
+              ? ` · ${kinds.join(" · ")}` : "";
+            return `<option value="${escHtml(m.id)}">${escHtml(m.name || m.id)}${escHtml(label)}</option>`;
+          }).join("")
+        : '<option value="">(no configured models)</option>';
+      const want = model || r.model || prev;
+      if (want && _connectModels.some(m => m.id === want)) sel.value = want;
+    }
+    const kinds = (r.kinds && r.kinds.length) ? r.kinds : [r.kind || "chat"];
+    if (kindNote) {
+      kindNote.textContent = kinds.includes("chat")
+        ? (kinds.length > 1 ? `This model is ${kinds.join(" + ")}.` : "")
+        : `This model is ${kinds.join(" + ")}. Chat clients are shown but marked not applicable — pick a chat model to use them.`;
+    }
+    const token = key || "<your-key>";
+    const cards = (r.clients || []).map((c, i) => {
+      const snippet = String(c.snippet || "").split("<your-key>").join(token);
+      const bad = c.compatible === false;
+      return `
+      <div class="card" style="padding:12px${bad ? ";opacity:.62" : ""}">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
+          <div><strong>${escHtml(c.name)}</strong>
+            <p class="hint" style="margin:4px 0">${escHtml(c.description || "")}</p></div>
+          <span class="serving-ind ${bad ? "status-warn" : ""}">${bad ? "not applicable" : escHtml(c.kind || "config")}</span>
+        </div>
+        <pre class="connect-snippet" id="connect-snippet-${i}">${escHtml(snippet)}</pre>
+        <button type="button" class="small" data-copy-target="connect-snippet-${i}" ${bad ? "disabled title=\"Not applicable to this model type\"" : ""}>Copy</button>
+      </div>`;
+    }).join("");
+    box.innerHTML = cards || '<p class="hint">No client configs available.</p>';
+    api("POST", "/api/onboarding/mark", { event: "connect_viewed" }).catch(() => {});
+  } catch (e) {
+    box.innerHTML = `<p class="status-bad">${escHtml(e.message)}</p>`;
+  }
+}
+on("#connect-model", "change", (e) => loadConnect(e.currentTarget.value));
+async function testConnect() {
+  const btn = $("#connect-test");
+  const st = $("#connect-test-status");
+  btn.disabled = true;
+  if (st) st.textContent = "Testing…";
+  try {
+    const model = $("#connect-model")?.value || "";
+    const r = await api("POST", "/api/onboarding/test", { model }, 320000);
+    if (st) st.innerHTML = `<span class="status-ok">OK — ${escHtml(String(r.models))} models visible, ${escHtml(r.model)} replied ${escHtml(JSON.stringify(r.reply || ""))}</span>`;
+    api("POST", "/api/onboarding/mark", { event: "first_chat" }).catch(() => {});
+  } catch (e) {
+    if (st) st.innerHTML = `<span class="status-bad">${escHtml(e.message)}</span>`;
+  }
+  btn.disabled = false;
+}
+on("#connect-test", "click", testConnect);
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest && e.target.closest("[data-copy-target]");
+  if (!b) return;
+  const el = document.getElementById(b.dataset.copyTarget);
+  if (!el) return;
+  try {
+    await copyText(el.textContent || "");
+    toast("copied", "ok");
+  } catch (_) {
+    toast("clipboard unavailable — select and copy manually", "bad");
+  }
+});
+
 /* ---------------- chat test (native, no chainlit) ---------------- */
 let chatHistory = [];
 let chatAbort = null;
@@ -6978,6 +7296,8 @@ async function sendChat() {
     }
     if (full) {
       chatHistory.push({ role: "assistant", content: full });
+      api("POST", "/api/onboarding/mark", { event: "first_chat",
+        extra: { model } }).catch(() => {});
     } else if (reasoning) {
       aBox.innerHTML = `<p class="chat-meta">Model streamed reasoning but no final answer.</p>`;
     }
@@ -10897,7 +11217,7 @@ function initLogsTab() {
     });
     $("#logs-copy")?.addEventListener("click", async () => {
       const text = logsBuffer.filter(x => logsLineMatches(x)).map(x => `[${x.src}] ${x.line}`).join("\n");
-      try { await navigator.clipboard.writeText(text); toast(`copied ${logsBuffer.length} lines`, "ok"); }
+      try { await copyText(text); toast(`copied ${logsBuffer.length} lines`, "ok"); }
       catch (_) { toast("clipboard unavailable", "bad"); }
     });
     $("#logs-pause")?.addEventListener("click", (e) => {
