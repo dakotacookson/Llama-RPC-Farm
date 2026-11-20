@@ -21,7 +21,9 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 import tempfile
+import zipfile
 
 # ---------------------------------------------------------------------------
 # Asset maps (design §2, mirrored from llamacpp_installer / swap_installer —
@@ -61,6 +63,47 @@ def _swap_arch(arch):
 def _tag_number(tag):
     """llama-swap releases carry the tag NUMBER in asset names (v255 -> 255)."""
     return (tag or "").lstrip("v")
+
+
+def _safe_extract_zip(zip_path, dest):
+    """Extract a release zip with Python, refusing path escapes.
+
+    Windows installs used PowerShell `Expand-Archive` on a `.pkg` temp file.
+    That is fragile: Windows PowerShell 5.1 only treats `.zip` as a supported
+    archive format, and a non-terminating cmdlet error does not change the
+    process exit code — so a failed extract could look successful and leave
+    `llama-server.exe` missing. Python's zipfile raises on corrupt/truncated
+    archives and has no extension restriction; this also keeps extraction
+    consistent with the peer agent's install path.
+    """
+    dest = os.path.abspath(os.path.expanduser(os.path.expandvars(dest)))
+    os.makedirs(dest, exist_ok=True)
+    try:
+        zf = zipfile.ZipFile(zip_path)
+    except (zipfile.BadZipFile, OSError) as e:
+        raise RuntimeError(f"not a readable zip archive: {zip_path}: {e}") from e
+    with zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            parts = [p for p in info.filename.replace("\\", "/").split("/")
+                     if p not in ("", ".")]
+            if not parts or any(p == ".." for p in parts):
+                raise RuntimeError(
+                    f"unsafe archive member: {info.filename!r}")
+            target = os.path.abspath(os.path.join(dest, *parts))
+            try:
+                common = os.path.commonpath([target, dest])
+            except ValueError as e:
+                raise RuntimeError(
+                    f"archive member escapes destination: {info.filename!r}"
+                ) from e
+            if os.path.normcase(common) != os.path.normcase(dest):
+                raise RuntimeError(
+                    f"archive member escapes destination: {info.filename!r}")
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with zf.open(info) as src, open(target, "wb") as out:
+                shutil.copyfileobj(src, out)
 
 
 def swap_asset_names(os_name, arch, version):
@@ -117,20 +160,31 @@ def install_swap(step, downloader, run, log, os_name, arch):
     dest = os.path.expanduser(os.path.expandvars(
         os.path.join(step.dest, bin_dest)))
     log(f"swap: downloading {names[0]}")
-    downloader(url, tmp + ".pkg")
+    pkg = tmp + (".zip" if os_name == "windows" else ".tar.gz")
+    downloader(url, pkg)
     if os_name == "windows":
-        r = run(f'powershell -NoProfile -Command "Expand-Archive -Force '
-                f"'{tmp}.pkg' '{tmp}'\"")
-        code = r.exit_code
+        # Clean stale extract output: a previous run's llama-swap.exe must
+        # never make a failed extraction look successful.
+        shutil.rmtree(tmp, ignore_errors=True)
+        try:
+            _safe_extract_zip(pkg, tmp)
+        except RuntimeError as e:
+            raise RuntimeError(
+                f"llama-swap zip extraction failed for {names[0]}: {e}") from e
         src = os.path.join(tmp, "llama-swap.exe")
+        if not os.path.isfile(src):
+            raise RuntimeError(
+                f"llama-swap zip extraction produced no llama-swap.exe "
+                f"({names[0]})")
     else:
         r = run(f"mkdir -p {shlex.quote(tmp)} && "
-                f"tar -xzf {shlex.quote(tmp + '.pkg')} -C {shlex.quote(tmp)} "
+                f"tar -xzf {shlex.quote(pkg)} -C {shlex.quote(tmp)} "
                 f"llama-swap")
         code = r.exit_code
         src = os.path.join(tmp, "llama-swap")
-    if code != 0:
-        raise RuntimeError(f"llama-swap tarball extraction failed (exit {code})")
+        if code != 0:
+            raise RuntimeError(
+                f"llama-swap tarball extraction failed (exit {code})")
     # atomic convergence: temp file + replace (design §5)
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     os.replace(os.path.expanduser(src), dest)
@@ -161,20 +215,26 @@ def install_llcpp(step, downloader, run, log, os_name, arch):
     dest = os.path.expanduser(os.path.expandvars(step.dest))
     log(f"llama.cpp: {', '.join(names)} (backend={step.backend})")
     for i, (name, url) in enumerate(zip(names, urls)):
-        pkg = os.path.join(tempfile.gettempdir(), f"llamabin{i}.pkg")
+        # Keep the real archive suffix: Windows PowerShell's Expand-Archive
+        # only accepts .zip, and a failed extract there can exit 0.
+        pkg = os.path.join(tempfile.gettempdir(), f"llamabin{i}"
+                           + (".zip" if os_name == "windows" else ".tar.gz"))
         downloader(url, pkg)
         if os_name == "windows":
-            r = run(f"powershell -NoProfile -Command \"Expand-Archive -Force "
-                    f"'{pkg}' '{dest}'\"")
+            try:
+                _safe_extract_zip(pkg, dest)
+            except RuntimeError as e:
+                raise RuntimeError(
+                    f"llama.cpp zip extraction failed for {name}: {e}") from e
         else:
             # POSIX prebuilts nest in llama-<tag>/ -> --strip-components=1
             # lands binaries flat in dest (app expects bin/llama-server).
             r = run(f"mkdir -p {shlex.quote(dest)} && "
                     f"tar -xzf {shlex.quote(pkg)} -C {shlex.quote(dest)} "
                     f"--strip-components=1")
-        if r.exit_code != 0:
-            raise RuntimeError(f"llama.cpp extraction failed for {name}: "
-                               f"{(r.stderr or r.stdout)[-300:]}")
+            if r.exit_code != 0:
+                raise RuntimeError(f"llama.cpp extraction failed for {name}: "
+                                   f"{(r.stderr or r.stdout)[-300:]}")
         try:
             os.remove(pkg)
         except OSError:

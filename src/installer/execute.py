@@ -106,16 +106,30 @@ class RealDownloader:
             try:
                 req = urllib.request.Request(
                     url, headers={"User-Agent": "llama-rpc-farm-installer"})
-                with urllib.request.urlopen(req, timeout=120) as r, \
-                        open(dest, "wb") as f:
-                    while True:
-                        chunk = r.read(1 << 16)
-                        if not chunk:
-                            break
-                        f.write(chunk)
+                with urllib.request.urlopen(req, timeout=120) as r:
+                    expected = r.headers.get("Content-Length")
+                    written = 0
+                    with open(dest, "wb") as f:
+                        while True:
+                            chunk = r.read(1 << 16)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            written += len(chunk)
+                # A dropped connection can end the stream early without an
+                # exception; a truncated release archive then fails later in
+                # extraction (and used to look like a successful install).
+                # Treat a short body as a failed attempt so it is retried.
+                if expected and expected.isdigit() and written < int(expected):
+                    raise RuntimeError(
+                        f"truncated download: {written}/{expected} bytes")
                 return
             except Exception as e:                    # noqa: BLE001
                 last = e
+                try:
+                    os.remove(dest)
+                except OSError:
+                    pass
         raise RuntimeError(f"download failed after {self.retries} tries: "
                            f"{url}: {last}")
 
