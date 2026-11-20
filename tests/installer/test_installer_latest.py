@@ -132,8 +132,8 @@ def test_bootstrap_resolves_latest_via_ui_selectors(monkeypatch):
     import llamacpp_installer as lcpp
     import swap_installer as swp
 
-    monkeypatch.setattr(lcpp, "_fetch_latest_assets",
-                        lambda limit=30: ("b20000", LC_NAMES, LC_BASE))
+    monkeypatch.setattr(lcpp, "_fetch_release_asset_sets",
+                        lambda limit=30: [("b20000", LC_NAMES, LC_BASE)])
     monkeypatch.setattr(lcpp, "_pick_assets",
                         lambda machine, tag, assets, glibc=None,
                         driver_version=None:
@@ -247,3 +247,36 @@ def test_prebuilt_install_requires_llama_rpc():
     with pytest.raises(RuntimeError, match="ggml-rpc-server"):
         tools_mod.install_llcpp(step, DL(), MissingRpcRun().run,
                                 lambda m: None, "linux", "x86_64")
+
+
+def test_bootstrap_skips_release_missing_macos_asset(monkeypatch):
+    """Upstream can publish a release before every platform archive lands.
+
+    macOS must fall back to the newest release that actually has its
+    Metal tarball instead of installing a Linux/CPU asset or a stale pin.
+    """
+    import bootstrap
+    import llamacpp_installer as lcpp
+
+    releases = [
+        ("b20001", ["llama-b20001-bin-ubuntu-x64.tar.gz"], "base-new"),
+        ("b20000", ["llama-b20000-bin-macos-arm64.tar.gz"], "base-old"),
+    ]
+    monkeypatch.setattr(lcpp, "_fetch_release_asset_sets",
+                        lambda limit=30: releases)
+
+    info = SystemInfo(os="macos", arch="arm64", gpu_vendor="cpu")
+    resolved = bootstrap._resolve_latest(info, "client", lambda m: None)
+
+    assert resolved["llama.cpp"]["version"] == "b20000"
+    assert resolved["llama.cpp"]["assets"] == [
+        "llama-b20000-bin-macos-arm64.tar.gz"]
+    assert resolved["llama.cpp"]["backend"] == "metal"
+
+
+def test_macos_cpu_vendor_fallback_still_uses_metal_asset():
+    info = SystemInfo(os="macos", arch="arm64", gpu_vendor="cpu")
+    step = InstallTool("llama.cpp", "prebuilt", "b10000", backend="cpu",
+                       dest="~/llama.cpp/bin", extra={"arch": "arm64"})
+    assert tools_mod.llcpp_assets_for(step, info) == [
+        "llama-b10000-bin-macos-arm64.tar.gz"]

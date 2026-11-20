@@ -121,8 +121,8 @@ def _resolve_latest(info, role, log):
     }
     resolved = {}
     from llamacpp_installer import (
-        _fetch_latest_assets as _fetch_lcpp,
-        _pick_assets as _pick_lcpp,
+        _fetch_release_asset_sets as _fetch_lcpp,
+        _choose_release_for as _choose_lcpp,
         _driver_tuple,
     )
     def _fetch_retry(fetch, what):
@@ -139,18 +139,25 @@ def _resolve_latest(info, role, log):
         raise last
 
     try:
-        tag, assets, base = _fetch_retry(_fetch_lcpp, "llama.cpp")
-        if not tag:
+        releases = _fetch_retry(_fetch_lcpp, "llama.cpp")
+        if not releases:
             raise RuntimeError("no llama.cpp release with bin assets")
-        names, dest, note, _zip = _pick_lcpp(
-            machine, tag, assets, glibc=info.glibc,
+        # Newest release whose asset set actually covers THIS host. Upstream
+        # uploads assets over several minutes; the newest release can be
+        # missing one platform's archive (observed: macOS arm64 absent while
+        # Linux/Windows were already uploaded).
+        sel = _choose_lcpp(
+            machine, releases, glibc=info.glibc,
             driver_version=_driver_tuple(info.driver_version))
-        missing = [n for n in names if n not in assets]
-        if missing:
-            raise RuntimeError(f"llama.cpp assets missing upstream: {missing}")
+        if sel.get("missing"):
+            raise RuntimeError(
+                f"llama.cpp assets missing upstream: {sel['missing']}")
+        tag = sel["tag"]
+        names = sel["assets"]
+        note = sel.get("backend") or ""
         resolved["llama.cpp"] = {
-            "version": tag, "assets": names, "base": base,
-            "dest": dest, "note": note,
+            "version": tag, "assets": names, "base": sel["base"],
+            "dest": sel["dest"], "note": note,
             "backend": _backend_from_assets(names),
         }
         log(f"latest llama.cpp: {tag} — {note}")

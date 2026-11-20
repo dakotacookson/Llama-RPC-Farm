@@ -130,6 +130,10 @@ def llcpp_assets_for(step, info=None):
     """Resolve the llama.cpp asset list for a plan step, honoring the
     vulkan fallback when the step carries the glibc hint in extra."""
     backend = step.backend or "cpu"
+    # macOS ships ONE prebuilt family (Metal). A declared/probed CPU vendor
+    # must never select the Linux "cpu" tarball on a Mac.
+    if info is not None and info.os == "macos":
+        backend = "metal"
     glibc = (step.extra or {}).get("glibc") or (info.glibc if info else None)
     if backend == "cuda-13.3" and glibc and tuple(glibc) < (2, 38):
         backend = "vulkan"

@@ -146,6 +146,7 @@ def _tools_plan(machine, role, log=lambda m: None):
     source_probe = bootstrap._detect_source_build(
         info, fs, log, settings_file=settings_store.SETTINGS_FILE)
     plan = installer_probe(info, fs, run, role=role, resolved=resolved,
+                           pinned=bootstrap.DEFAULT_PINS,
                            source_probe=source_probe,
                            settings_root=BASE_DIR)
     return plan, info, run, fs
