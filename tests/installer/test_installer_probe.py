@@ -110,6 +110,8 @@ class TestFreshMachine:
         assert probe_mod.LLCPP_BACKEND[("linux", "amd")] == "rocm-10.0"
         assert probe_mod.LLCPP_BACKEND[("linux", "none")] == "cpu"
         assert probe_mod.LLCPP_BACKEND[("macos", "apple")] == "metal"
+        assert probe_mod.LLCPP_BACKEND[("macos", "cpu")] == "metal"
+        assert probe_mod.LLCPP_BACKEND[("macos", "none")] == "metal"
 
 # ---------------------------------------------------------------------------
 # Present + current -> all-skip with discovered paths

@@ -82,6 +82,14 @@ LLCPP_BACKEND = {
     ("windows", "nvidia"):"cuda-13.3",
     ("windows", "none"):  "cpu",
     ("macos", "apple"):   "metal",
+    # Every macOS llama.cpp prebuilt is the Metal build. A CPU-only test
+    # declaration (or a probe that reports no GPU) must NOT fall back to
+    # the Linux "cpu" asset — that downloads a Mach-O-incompatible
+    # tarball and fails at exec ("cannot execute binary file").
+    ("macos", "none"):    "metal",
+    ("macos", "cpu"):     "metal",
+    ("macos", "intel"):   "metal",
+    ("macos", "amd"):     "metal",
 }
 
 # Per-backend engine defaults (§10, operator clarification #3): flags that are
@@ -240,7 +248,8 @@ def probe(info: SystemInfo, fs: FS, run: RunCmd,
     need_lcpp = r_lc.get("version") or pinned.get(
         "llama.cpp", {}).get("version", "b10000")
     lc_backend = r_lc.get("backend") or LLCPP_BACKEND.get(
-        (info.os, info.gpu_vendor), "cpu")
+        (info.os, info.gpu_vendor),
+        "metal" if info.os == "macos" else "cpu")
     lc_extra = {"arch": info.arch}
     if info.glibc:
         lc_extra["glibc"] = info.glibc
