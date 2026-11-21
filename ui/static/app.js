@@ -3957,9 +3957,17 @@ function modelFormLoad(m, isEdit) {
   // Advanced is always open by default (wizard decision) — no collapsing logic
   const adv = $("#mo-advanced");
   if (adv) adv.open = true;
-  try{ syncTensorChips(); syncOrderChips(); syncToggleChip("chip-pinned","mo-pinned"); syncToggleChip("chip-flash-attn","flag-flash-attn"); syncToggleChip("chip-jinja","flag-jinja"); }catch(_){}
+  try{ syncTensorChips(); syncOrderChips(); syncToggleChip("chip-pinned","mo-pinned"); syncToggleChip("chip-flash-attn","flag-flash-attn"); syncToggleChip("chip-jinja","flag-jinja"); syncToggleChip("chip-load-balance","mo-load-balance"); syncToggleChip("chip-lb-keep-warm","mo-lb-keep-warm"); }catch(_){}
   updateAdvancedBadge();
-  // variants
+  // variants / load-balanced replicas
+  const lb = $("#mo-load-balance");
+  if (lb) lb.checked = !!m.load_balance;
+  const lbs = $("#mo-lb-strategy");
+  if (lbs) lbs.value = m.lb_strategy || "least_inflight";
+  const lbk = $("#mo-lb-keep-warm");
+  if (lbk) lbk.checked = m.lb_keep_warm !== false;
+  const lbm = $("#mo-lb-max-inflight");
+  if (lbm) lbm.value = m.lb_max_inflight || (m.flags || {}).parallel || 1;
   renderVariants(m.variants || []);
   // show the additional-configs card whenever a model is being configured
   const vcard = $("#variants-card");
@@ -4676,7 +4684,13 @@ document.querySelectorAll("#chips-order-policy .hw-chip").forEach(b=>{
   b.addEventListener("click", ()=>{ $("#mo-order-policy").value=b.dataset.value; syncOrderChips(); updateAdvancedBadge();
     const cl = $("#mo-servers-chip-list"); if (cl) renderDeviceOrderPreview(cl, cl._machinesData || []); });
 });
-for(const [chipId,inputId] of [["chip-pinned","mo-pinned"],["chip-flash-attn","flag-flash-attn"],["chip-jinja","flag-jinja"]]){
+const _lbConcEl = document.getElementById("mo-lb-max-inflight");
+if (_lbConcEl) _lbConcEl.addEventListener("input", () => {
+  const v = String(parseInt(_lbConcEl.value, 10) || 1);
+  upsertFlagRow("parallel", v);
+  upsertFlagTextLine("parallel", v);
+});
+for(const [chipId,inputId] of [["chip-pinned","mo-pinned"],["chip-flash-attn","flag-flash-attn"],["chip-jinja","flag-jinja"],["chip-load-balance","mo-load-balance"],["chip-lb-keep-warm","mo-lb-keep-warm"]]){
   const chip=document.getElementById(chipId), inp=document.getElementById(inputId);
   if(!chip||!inp) continue;
   chip.addEventListener("click", ()=>{
@@ -4696,7 +4710,7 @@ function syncAllHwChips(){
   });
   // also sync the new card chips for tensor/device/pinned
   try{ syncTensorChips(); syncOrderChips(); }catch(_){}
-  try{ syncToggleChip("chip-pinned","mo-pinned"); syncToggleChip("chip-flash-attn","flag-flash-attn"); syncToggleChip("chip-jinja","flag-jinja"); }catch(_){}
+  try{ syncToggleChip("chip-pinned","mo-pinned"); syncToggleChip("chip-flash-attn","flag-flash-attn"); syncToggleChip("chip-jinja","flag-jinja"); syncToggleChip("chip-load-balance","mo-load-balance"); syncToggleChip("chip-lb-keep-warm","mo-lb-keep-warm"); }catch(_){}
 }
 document.addEventListener('change', (e)=>{
   if(e.target.matches('.hw-chip input, .server-chip input, .ram-chip input')){
@@ -4738,7 +4752,7 @@ async function applyPreset(kind){
     $("#flag-cache-k").value="q8_0"; $("#flag-cache-v").value="q8_0";
     syncCommonFlagsToRows();
   }
-  try{ syncTensorChips(); syncOrderChips(); syncToggleChip("chip-pinned","mo-pinned"); syncToggleChip("chip-flash-attn","flag-flash-attn"); syncToggleChip("chip-jinja","flag-jinja"); }catch(_){}
+  try{ syncTensorChips(); syncOrderChips(); syncToggleChip("chip-pinned","mo-pinned"); syncToggleChip("chip-flash-attn","flag-flash-attn"); syncToggleChip("chip-jinja","flag-jinja"); syncToggleChip("chip-load-balance","mo-load-balance"); syncToggleChip("chip-lb-keep-warm","mo-lb-keep-warm"); }catch(_){}
   updateAdvancedBadge();
   toast(`Preset ${kind} applied`, "ok");
 }
@@ -4802,6 +4816,17 @@ async function saveModelForm(btn, skipArm = false) {
     if (seen.has(v.label)) { toast(`duplicate variant label '${v.label}'`, "bad"); btn.disabled=false; btn.textContent=origLabel; return null; }
     seen.add(v.label);
   }
+  if ($("#mo-load-balance")?.checked && !deviceOrder) {
+    toast("Load balancing needs selected GPU/RAM chips", "bad");
+    btn.disabled = false; btn.textContent = origLabel; return null;
+  }
+  const lbConcurrency = parseInt($("#mo-lb-max-inflight")?.value, 10) || 1;
+  if ($("#mo-load-balance")?.checked) {
+    // One UI control owns both: llama.cpp's real slots and the gateway's
+    // per-replica routing cap must not silently disagree.
+    upsertFlagRow("parallel", String(lbConcurrency));
+    upsertFlagTextLine("parallel", String(lbConcurrency));
+  }
   const data = {
     model_id: mid,
     original_model_id: $("#model-original-id").value.trim(),
@@ -4823,6 +4848,10 @@ async function saveModelForm(btn, skipArm = false) {
     expose: exposeUpdates,
     flags: readFlags(),
     variants,
+    load_balance: !!($("#mo-load-balance")?.checked),
+    lb_strategy: $("#mo-lb-strategy")?.value || "least_inflight",
+    lb_keep_warm: $("#mo-lb-keep-warm")?.checked !== false,
+    lb_max_inflight: lbConcurrency,
     reset: !!($("#model-reset")?.checked),
   };
   // runtime: custom — carry the kind/bat/port section so the saved config

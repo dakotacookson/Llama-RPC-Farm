@@ -99,6 +99,13 @@ install.bat           # Windows equivalent (cmd.exe)
   state is derived from `usage_collector` rows and enforced in the gateway
   before upstream forwarding (429 + Retry-After). Do not count model lists
   or status checks.
+- Load-balanced models: `load_balance: true` groups top-level
+  `device_order` chips by machine, emits one full replica per machine
+  (`model__lb-<machine>`) into llama-swap, auto-creates a persistent
+  co-serve group, and lets the `:8090` gateway rewrite one public model id
+  to a replica. Do not treat these as variants or shards; `swap:true` is
+  forced off for a group containing replicas. UI Load prewarms replicas
+  sequentially; the gateway retries transient 5xx cold-start races.
 - llama-swap serving (`:8080`) + view gateway (`:8090`,
   `src/swap_gateway.py`) are the client-facing endpoints; model list per
   client is filtered by views (`config/settings.yaml`) / access keys.

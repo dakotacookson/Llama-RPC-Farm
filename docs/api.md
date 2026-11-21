@@ -75,6 +75,16 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 Quota exhaustion on a generate path returns `429` with `Retry-After` and
 rate-limit headers; Anthropic clients get the Anthropic error envelope.
 
+## Load-balanced models
+
+A model config may set `load_balance: true`; `servers`/`device_order` are
+grouped by machine into full replicas. Clients still call the single public
+model id. Relevant fields: `lb_strategy`, `lb_keep_warm`,
+`lb_max_inflight`.
+
+`GET /api/swap/loaded` collapses replica ids to the public id; evicting the
+public id evicts all replicas.
+
 ## Tuning
 
 | `GET /api/tune/estimate`, `GET /api/models/{id}/tune/estimate` | Pure-math VRAM fit estimate |

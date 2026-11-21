@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 import config_loader as cfg
 import engine_registry
+import load_balance
 import local_node
 import swap_captures
 import rpc_manager
@@ -144,8 +145,9 @@ async def swap_loaded_models(request: Request):
             else f"http://{st.get('host_ip')}:{st['port']}/v1/models"
         with urllib.request.urlopen(url, timeout=5) as r:
             data = _json.load(r)
-        ids = [m["id"] for m in data.get("data", [])
-               if (m.get("status") or {}).get("value") == "loaded"]
+        ids = load_balance.collapse([
+            m["id"] for m in data.get("data", [])
+            if (m.get("status") or {}).get("value") == "loaded"])
         if (_a.gate_open() and _a.view_allow() is None) \
                 or _a.admin_sees_everything():
             return ids
@@ -255,6 +257,8 @@ async def swap_activity(limit: int = 200):
     def fetch():
         data = _swap_api_get(st, f"/api/metrics/activity?limit={limit}&page=1")
         rows = [_activity_row(r) for r in (data.get("data") or [])]
+        for r in rows:
+            r["model"] = load_balance.public_id(r.get("model") or "")
         if allowed is not None:
             rows = [dict(r, src=None, capture_id=None, kept=False)
                     for r in rows if allowed(r["model"])]
@@ -324,6 +328,43 @@ async def swap_capture(capture_id: str):
                 source="live")
 
 
+def _warm_swap_internal(st, model_id, base_id=""):
+    """Warm one llama-swap model entry directly (used for LB replicas)."""
+    import urllib.request, urllib.error, json as _json
+    from swap_client import _swap_api_url
+    is_embed = is_decision = False
+    try:
+        engine = engine_registry.get_engine()
+        emb_ids = {m.get("model_id") for m in
+                   (engine.filter_embedding_models(cfg.list_models()) or [])}
+        dec_ids = {m.get("model_id") for m in
+                   (engine.filter_decision_models(cfg.list_models()) or [])}
+        is_embed = (base_id or model_id.split("--")[0]) in emb_ids
+        is_decision = (base_id or model_id.split("--")[0]) in dec_ids
+    except Exception:
+        pass
+    if is_decision:
+        path = "/v1/systemone"
+        payload = {"model": model_id, "state": "warmup",
+                   "questions": {"route": {"type": "choice",
+                                           "instructions": "Pick one",
+                                           "criteria": {"yes": 1, "no": 2}}}}
+    elif is_embed:
+        path = "/v1/embeddings"
+        payload = {"model": model_id, "input": "hi"}
+    else:
+        path = "/v1/chat/completions"
+        payload = {"model": model_id,
+                   "messages": [{"role": "user", "content": "hi"}],
+                   "max_tokens": 1}
+    data = _json.dumps(payload).encode()
+    req = urllib.request.Request(
+        _swap_api_url(st, path), data=data, method="POST",
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=900) as r:
+        return _json.loads(r.read() or b"{}")
+
+
 @router.post("/api/swap/load/{model_id}")
 async def swap_load_model(model_id: str, request: Request):
     """Load one model through the running swap daemon: this fires a minimal
@@ -336,6 +377,29 @@ async def swap_load_model(model_id: str, request: Request):
     if not st.get("running"):
         raise HTTPException(status_code=503,
                             detail="swap daemon is not running — Launch All first")
+    keys = load_balance.replica_keys(model_id)
+    if keys:
+        def prewarm_all():
+            import time as _time
+            t0 = _time.time()
+            done = []
+            for key in keys:
+                try:
+                    _warm_swap_internal(st, key, model_id)
+                    done.append({"replica": key, "ok": True})
+                except Exception as e:
+                    return {"ok": False, "model": model_id,
+                            "elapsed_s": round(_time.time() - t0, 1),
+                            "replicas": done,
+                            "error": f"{key}: {e}"}
+            return {"ok": True, "model": model_id,
+                    "elapsed_s": round(_time.time() - t0, 1),
+                    "replicas": done}
+        try:
+            return await run_in_threadpool(prewarm_all)
+        except Exception as e:
+            raise HTTPException(status_code=502,
+                                detail=f"prewarm failed: {e}") from None
     import time as _time
 
     def warmup():
@@ -466,12 +530,17 @@ async def swap_evict(model_id: str):
     if model and (model.get("runtime") or "") == "custom":
         custom = await run_in_threadpool(swap_manager.stop_custom_model,
                                         model_id)
-    try:
-        res = await _proxy_swap_unload(model_id)
-    except Exception as e:
-        if custom is None:
-            raise
-        res = {"ok": False, "error": str(e)}
+    keys = load_balance.replica_keys(model_id) or [model_id]
+    results = []
+    for key in keys:
+        try:
+            results.append(await _proxy_swap_unload(key))
+        except Exception as e:
+            if custom is None:
+                if len(keys) == 1:
+                    raise
+                results.append({"ok": False, "error": str(e), "model": key})
+    res = results[0] if len(results) == 1 else {"ok": True, "replicas": results}
     if custom is not None:
         res = {**res, "custom": custom}
     return res

@@ -1359,8 +1359,36 @@ def launch_plan(config_path=None, host_name=None):
                 f"{mid}: disabled for swap (re-enable on the Launch page), "
                 "skipped")
             continue
-        # primary deployment
-        _process_one(model, mid, mid, is_variant=False)
+        # Load-balanced mode: selected devices are grouped by machine and
+        # each machine gets a FULL model copy. No RPC split is generated.
+        _lb_primary = False
+        if model.get("load_balance"):
+            import load_balance as _lb
+            groups = _lb.groups_for_model(model)
+            if not groups:
+                warnings.append(
+                    f"{mid}: load_balance enabled but no device_order chips "
+                    "were selected; falling back to one deployment")
+            else:
+                for g in groups:
+                    merged = dict(model)
+                    merged.pop("variants", None)
+                    merged["servers"] = [g["machine"]]
+                    merged["device_order"] = g["device_order"]
+                    merged["launch_mode"] = "local"
+                    if merged.get("lb_keep_warm", True):
+                        merged["pinned"] = True
+                        merged["ttl"] = 0
+                    merged["model_id"] = g["key"]
+                    merged["name"] = ((model.get("name") or mid)
+                                      + f" [{g['machine']}]")
+                    _process_one(merged, g["key"],
+                                 f"{mid} replica {g['machine']}",
+                                 is_variant=False)
+                _lb_primary = True
+        # primary deployment (skipped when load-balanced replicas were emitted)
+        if not _lb_primary:
+            _process_one(model, mid, mid, is_variant=False)
         # variant deployments (if any) — each gets its own swap entry, inheriting base_path/name
         for var in (model.get("variants") or []):
             label = (var.get("label") or "").strip()
@@ -1442,6 +1470,19 @@ def launch_plan(config_path=None, host_name=None):
                     {f'{e["base_model"]}--{e["variant"]}'}
                     if e.get("variant") else set()):
                 label_to_key.setdefault(cand, e["key"])
+        # Load-balanced public models are logical group members; expand
+        # them to every replica key so a user's serve group still applies
+        # to the model as a whole.
+        lb_keys = {}
+        for m in cfg.list_models():
+            if not m.get("load_balance"):
+                continue
+            public = (m.get("model_id") or "").strip()
+            keys = [e["key"] for e in entries
+                    if str(e.get("key") or "").startswith(
+                        public + "__lb-")]
+            if keys:
+                lb_keys[public] = keys
         claimed = {}
         swap_groups_out = {}
         for sg in cfg.swap_groups.all():
@@ -1453,7 +1494,24 @@ def launch_plan(config_path=None, host_name=None):
             if (sg.get("engine") or "llama_cpp") != engine:
                 continue
             keys = []
-            for mem in (sg.get("members") or []):
+            members = list(sg.get("members") or [])
+            group_swap = bool(sg.get("swap"))
+            if any(mem in lb_keys for mem in members) and group_swap:
+                group_swap = False
+                warnings.append(
+                    f'serve group {sg.get("name")}: swap:true forced off '
+                    "because load-balanced replicas must co-serve")
+            for mem in members:
+                if mem in lb_keys:
+                    for k in lb_keys[mem]:
+                        if k in claimed:
+                            warnings.append(
+                                f"serve group {sg.get('name')}: replica "
+                                f"'{k}' already in '{claimed[k]}', skipped")
+                            continue
+                        claimed[k] = sg.get("name")
+                        keys.append(k)
+                    continue
                 k = label_to_key.get(mem)
                 if not k:
                     warnings.append(
@@ -1477,6 +1535,19 @@ def launch_plan(config_path=None, host_name=None):
                 "exclusive": bool(sg.get("exclusive", False)),
                 "persistent": bool(sg.get("persistent", False)),
                 "members": keys,
+            }
+        # Load-balanced replicas must co-serve or llama-swap will swap one
+        # copy out when the next is loaded. If the operator did not put the
+        # public model in a serve group, create a private co-serve group.
+        for public, keys in lb_keys.items():
+            free = [k for k in keys if k not in claimed]
+            if not free:
+                continue
+            name = "lb-" + "".join(
+                c if c.isalnum() or c in "-_" else "-" for c in public)
+            swap_groups_out[name] = {
+                "swap": False, "exclusive": False,
+                "persistent": True, "members": free,
             }
         if swap_groups_out:
             doc["groups"] = swap_groups_out

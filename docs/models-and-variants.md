@@ -13,6 +13,12 @@ One YAML file per model in `config/models/`. Key fields:
   repo id, served via `python -m mlx_lm server`, no RPC/--device).
 - `servers` — machines this model deploys across; first is the master
   for this model (llama-server host), rest are RPC peers.
+- `load_balance` — optional: instead of one RPC-split deployment, run one
+  full model copy per machine selected in `device_order`.
+- `lb_strategy` — `least_inflight` or `round_robin`.
+- `lb_keep_warm` — keep replica TTL at 0 so all copies stay loaded.
+- `lb_max_inflight` — soft per-replica concurrency cap; the editor keeps
+  it equal to llama.cpp's `--parallel` so routing and real slots agree.
 
 ## Model formats (GGUF vs HF/safetensors)
 
@@ -87,6 +93,46 @@ happened — the visualizer showed aibox3 while only aibox1 served).
 
 Variant save diffs against the primary's flags so untouched prefilled
 values stay inherited (`variantModalSave`).
+
+## Load-balanced replicas
+
+Enable **load balance across selected machines** in the model editor. The
+same `device_order` hardware selection is grouped by machine:
+
+```text
+aibox1-CUDA0,aibox3-CUDA0,aibox1-CUDA1,aibox3-CUDA1
+```
+
+becomes two full replicas:
+
+```text
+aibox1: aibox1-CUDA0,aibox1-CUDA1
+aibox3: aibox3-CUDA0,aibox3-CUDA1
+```
+
+This is **not** RPC sharding. Each machine loads the complete model. The
+public model id stays one name at `:8090`; the gateway selects a replica,
+rewrites the request's `model` field internally, and exposes only the
+public id on `/v1/models`.
+
+- `least_inflight` uses capacity weight + active request count.
+- `round_robin` cycles replicas.
+- `lb_max_inflight` makes the gateway prefer another replica when one is full;
+  the UI/API keeps it equal to `--parallel`.
+- `lb_keep_warm` creates a persistent co-serve group so replicas do not
+  evict each other and remain loaded.
+- The UI **Load** action prewarms every replica sequentially and returns
+  only after all are healthy. Direct `:8090` traffic also retries llama-swap's
+  transient cold-start `group is shutting down` / `upstream exited` errors.
+- `load/evict` on the public model applies to all replicas.
+- `/api/swap/loaded` and activity views collapse replica ids back to the
+  public model.
+- A user serve group containing the public model is expanded to all of its
+  replicas. `swap:true` is forced off for that group because replicas must
+  co-serve.
+
+The generated llama-swap config contains the internal replica entries and
+one public virtual model. All client traffic still goes through `:8090`.
 
 ## Serve groups (llama-swap)
 

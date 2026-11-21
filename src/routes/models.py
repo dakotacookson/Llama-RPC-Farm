@@ -40,6 +40,8 @@ class VariantIn(pydantic.BaseModel):
     ttl: int | None = None
     launch_mode: str | None = None          # auto | local | rpc
     launch_mode_local_port: int | None = None
+    weight: int | None = None               # relative capacity for load balancing
+    max_inflight: int | None = None          # soft per-replica concurrency cap
 
 
 class ModelConfigIn(pydantic.BaseModel):
@@ -60,6 +62,10 @@ class ModelConfigIn(pydantic.BaseModel):
     device_order_policy: str = "as-selected"  # as-selected | vram-first
     launch_mode: str = "auto"        # auto | local | rpc (swap deployment)
     launch_mode_local_port: int | None = None
+    load_balance: bool = False       # one full model copy per selected machine
+    lb_strategy: str = "least_inflight"  # least_inflight | round_robin
+    lb_keep_warm: bool = True        # replicas pinned / TTL 0
+    lb_max_inflight: int = 1         # soft per-replica cap
     expose: dict = {}
     flags: dict = {}
     # custom runtime (external server, e.g. winbox .bat passthrough):
@@ -326,8 +332,26 @@ async def save_model(m: ModelConfigIn, request: Request):
             unknown_v = [s for s in (v.servers or []) if s not in valid_machines]
             if unknown_v:
                 raise HTTPException(status_code=400, detail=f"variant '{lab}': unknown machine(s): {', '.join(unknown_v)}")
+            if v.weight is not None and not (1 <= int(v.weight) <= 100):
+                raise HTTPException(status_code=400,
+                                    detail=f"variant '{lab}': LB weight must be 1..100")
+            if v.max_inflight is not None and int(v.max_inflight) < 1:
+                raise HTTPException(status_code=400,
+                                    detail=f"variant '{lab}': Max in-flight must be >= 1")
+    if m.load_balance and not (m.device_order or "").strip():
+        raise HTTPException(status_code=400,
+                            detail="Load balancing needs selected hardware on at least one machine")
     try:
         data = m.model_dump()
+        if data.get("load_balance"):
+            try:
+                conc = max(1, int(data.get("lb_max_inflight") or 1))
+            except (TypeError, ValueError):
+                conc = 1
+            data["lb_max_inflight"] = conc
+            flags = dict(data.get("flags") or {})
+            flags["parallel"] = conc
+            data["flags"] = flags
         # runtime: custom (external server) — validate the spec now (400)
         # so a bad custom config can never be filed; the plan-time branch
         # re-validates and skips with a warning as second defense. A
@@ -366,6 +390,11 @@ async def save_model(m: ModelConfigIn, request: Request):
         orig = (data.pop("original_model_id", "") or "").strip()
         validation_warnings = []
         saved = cfg.save_model(mid, data)
+        try:
+            import load_balance
+            load_balance.invalidate()
+        except Exception:
+            pass
         # Validation is disk-based, so run it AFTER the save (the config
         # exists now). It never blocks the save: errors and warnings ride
         # back to the UI so a user sees a doomed placement/flag combination
@@ -504,6 +533,11 @@ async def delete_scanned_file(delete_file: bool = False, path: str = ""):
 @router.delete("/api/models/{model_id}")
 async def delete_model(model_id: str):
     out = {"deleted": cfg.delete_model(model_id)}
+    try:
+        import load_balance
+        load_balance.invalidate()
+    except Exception:
+        pass
     # stale seeds must not haunt a future model with the same id
     try:
         import tuner, os
