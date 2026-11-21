@@ -53,6 +53,14 @@ KEYS_SETTINGS_KEY = "access_keys"
 # Always-trusted anchors: loopback (operator console, farm's own
 # in-process fetches). Everything else identifies by KEY.
 _TRUSTED_ANCHORS = {"127.0.0.1", "::1"}
+# Additional reverse proxies allowed to set X-Forwarded-For / Proto
+# (comma-separated IPs/CIDRs). Loopback is always trusted as a proxy.
+_EXTRA_TRUSTED_PROXIES = {
+    x.strip() for x in (os.environ.get("FARM_TRUSTED_PROXIES") or "").split(",")
+    if x.strip()
+}
+_REQUIRE_AUTH = str(os.environ.get("FARM_REQUIRE_AUTH") or "").lower() in (
+    "1", "true", "yes", "on")
 TRUSTED_IPS = _TRUSTED_ANCHORS  # legacy name kept for callers only
 
 # contextvar: exact-token allowlist for THIS request; None = unrestricted
@@ -231,14 +239,68 @@ def key_record(token: str):
     return out
 
 
-def request_ip(request):
-    """Legacy helper (logging + 404-shaping callers)."""
-    for header in ("x-forwarded-for", "x-real-ip"):
-        val = (request.headers.get(header) or "").strip()
+def _is_trusted_proxy(ip):
+    if not ip:
+        return False
+    if ip in _TRUSTED_ANCHORS or ip in _EXTRA_TRUSTED_PROXIES:
+        return True
+    try:
+        import ipaddress as _ipa
+        addr = _ipa.ip_address(ip)
+        for item in _EXTRA_TRUSTED_PROXIES:
+            try:
+                if addr in _ipa.ip_network(item, strict=False):
+                    return True
+            except ValueError:
+                pass
+    except ValueError:
+        pass
+    return False
+
+
+def _scope_headers(scope):
+    return {k.decode() if isinstance(k, bytes) else k:
+            v.decode() if isinstance(v, bytes) else v
+            for k, v in (scope.get("headers") or [])}
+
+
+def peer_ip_scope(scope):
+    """Real client IP, honoring X-Forwarded-For only from a trusted proxy.
+
+    Without this, nginx on the same host makes every request look like the
+    loopback operator console and the UI/gateway would silently skip auth.
+    """
+    actual = ((scope.get("client") or (None,))[0] or "")
+    if not _is_trusted_proxy(actual):
+        return actual
+    h = _scope_headers(scope)
+    for key in ("x-forwarded-for", "x-real-ip"):
+        val = (h.get(key) or "").strip()
         if val:
             return val.split(",")[0].strip()
-    client = getattr(request, "client", None)
-    return (client.host if client and client.host else "") or ""
+    return actual
+
+
+def peer_ip(request):
+    return peer_ip_scope(getattr(request, "scope", {}) or {})
+
+
+def request_ip(request):
+    """Real client IP for THIS request (proxy-aware when trusted)."""
+    return peer_ip(request)
+
+
+def cookie_secure(request):
+    """Set Secure cookies when TLS is terminated by a trusted proxy."""
+    if str(os.environ.get("FARM_COOKIE_SECURE") or "").lower() in (
+            "1", "true", "yes", "on"):
+        return True
+    actual = ((getattr(request, "scope", {}).get("client") or (None,))[0] or "")
+    if not _is_trusted_proxy(actual):
+        return False
+    h = _scope_headers(getattr(request, "scope", {}) or {})
+    proto = (h.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    return proto == "https"
 
 
 # ---- legacy IP-API shims: identity is key-first now; IPs grant nothing ----
@@ -400,15 +462,21 @@ def restrict_scope_from_key(scope, token: str):
     # extraction (request_token_from_scope → _session_token) may have
     # just set it for THIS request; only identity-decision paths clear it
     _raw_key_record.set(None)
+    peer = peer_ip_scope(scope)
     if not keys:
+        # Public/proxied deployments can force auth before keys exist.
+        if _REQUIRE_AUTH and peer not in _TRUSTED_ANCHORS:
+            set_restricted(True)
+            set_view_allow(None)
+            set_key_admin(False)
+            set_key_name(None)
+            return
         set_restricted(False)
         set_view_allow(None)
         set_key_admin(False)
         set_key_name(None)
         return
     t = (token or "").strip()
-    # loopback console without a key stays open
-    peer = ((scope.get("client") or (None,))[0] or "")
     if not t and peer in _TRUSTED_ANCHORS:
         set_restricted(False)
         set_view_allow(None)

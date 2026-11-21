@@ -33,7 +33,9 @@ Per machine:
   rdma: false           # RDMA/RoCE transport (opt-in; TCP default)
   rdma_ip: / rdma_dev: / rdma_gid: / rdma_cm: false
   transport: agent      # accepted for compatibility; runtime is agent-only
-  agent_port: 8198      # peer-agent HTTP port
+  agent_port: 8198      # peer-agent HTTP port (loopback-only after TLS)
+  agent_tls: false      # true after RPC security installs certs; agent uses HTTPS/mTLS
+  agent_tls_port: 8197 # agent HTTPS/mTLS listener
   # agent_token is write-only in the Add/Edit form; it is stored in the
   # Fernet vault, never in machines.yaml. There is no SSH/remote-login
   # password: all peer work goes through the agent.
@@ -95,7 +97,7 @@ peer to act as a copy SOURCE from a mount outside home (e.g.
 
 ```yaml
 engine: llama_cpp        # llama_cpp
-rpc_security: off         # off | mtls — optional mTLS RPC transport
+rpc_security: off         # off | mtls — one mTLS tunnel per peer on :5399
 ```
 
 - A missing `engine` key means `llama_cpp` (backward compatible); a

@@ -77,11 +77,53 @@ def _token(machine) -> str:
             or os.environ.get("AGENT_TOKEN") or "").strip()
 
 
+def agent_tls_port(machine) -> int:
+    try:
+        value = int((machine or {}).get("agent_tls_port") or 8197)
+    except (TypeError, ValueError):
+        value = 8197
+    return value if 1 <= value <= 65535 else 8197
+
+
+def _agent_uses_tls(machine) -> bool:
+    return bool((machine or {}).get("agent_tls"))
+
+
+_TLS_CTX = None
+_TLS_OPENER = None
+
+
+def _ssl_context():
+    global _TLS_CTX, _TLS_OPENER
+    if _TLS_CTX is not None:
+        return _TLS_CTX
+    try:
+        import rpc_tls
+        _TLS_CTX = rpc_tls.client_context()
+        _TLS_OPENER = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            urllib.request.HTTPSHandler(context=_TLS_CTX))
+        return _TLS_CTX
+    except Exception as e:
+        raise AgentError(f"agent TLS context unavailable: {e}") from e
+
+
+def _open(req, timeout, machine):
+    if _agent_uses_tls(machine):
+        ctx = _ssl_context()
+        if _TLS_OPENER is not None:
+            return _TLS_OPENER.open(req, timeout=timeout)
+        return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+    return _OPENER.open(req, timeout=timeout)
+
+
 def _base(machine) -> str:
     ip = str((machine or {}).get("ip") or "").strip()
     if not ip:
         raise AgentError("machine has no IP")
-    return f"http://{ip}:{agent_port(machine)}"
+    scheme = "https" if _agent_uses_tls(machine) else "http"
+    port = agent_tls_port(machine) if _agent_uses_tls(machine) else agent_port(machine)
+    return f"{scheme}://{ip}:{port}"
 
 
 def _request(machine, method: str, path: str, body=None, timeout=6.0,
@@ -98,7 +140,7 @@ def _request(machine, method: str, path: str, body=None, timeout=6.0,
     req = urllib.request.Request(_base(machine) + path, data=data,
                                  method=method, headers=headers)
     try:
-        with _OPENER.open(req, timeout=timeout) as resp:
+        with _open(req, timeout, machine) as resp:
             raw = resp.read(1_048_576)
             return json.loads(raw.decode("utf-8") or "{}")
     except urllib.error.HTTPError as e:
@@ -119,7 +161,7 @@ def pair(machine, token, timeout=8.0) -> dict:
         headers={"Content-Type": "application/json",
                  "Accept": "application/json"})
     try:
-        with _OPENER.open(req, timeout=timeout) as resp:
+        with _open(req, timeout, machine) as resp:
             return json.loads(resp.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as e:
         try:
@@ -185,7 +227,7 @@ def speedtest(machine, mb=50, timeout=120.0):
     start = _time.monotonic()
     total = 0
     try:
-        with _OPENER.open(req, timeout=timeout) as resp:
+        with _open(req, timeout, machine) as resp:
             while True:
                 chunk = resp.read(1024 * 1024)
                 if not chunk:
@@ -305,7 +347,7 @@ def file_read_stream(machine, path, timeout=3600.0):
         _base(machine) + f"/files/read?{query}",
         headers={"Authorization": f"Bearer {token}"})
     try:
-        return _OPENER.open(req, timeout=timeout)
+        return _open(req, timeout, machine)
     except urllib.error.HTTPError as e:
         try:
             detail = e.read(1000).decode("utf-8", "replace")
@@ -341,7 +383,7 @@ def file_write_stream(machine, path, fileobj, size, mode=None,
                  "Content-Length": str(length),
                  "Accept": "application/json"})
     try:
-        with _OPENER.open(req, timeout=timeout) as resp:
+        with _open(req, timeout, machine) as resp:
             raw = resp.read(1_048_576)
             return json.loads(raw.decode("utf-8") or "{}")
     except urllib.error.HTTPError as e:
@@ -481,6 +523,14 @@ def tls_install(machine, cert, key, ca, timeout=20.0) -> dict:
 
 def tls_status(machine, timeout=8.0) -> dict:
     return _request(machine, "GET", "/tls/status", timeout=timeout)
+
+
+def tls_https_start(machine, timeout=20.0) -> dict:
+    return _request(machine, "POST", "/tls/https/start", {}, timeout=timeout)
+
+
+def tls_https_stop(machine, timeout=20.0) -> dict:
+    return _request(machine, "POST", "/tls/https/stop", {}, timeout=timeout)
 
 
 def tls_stop(machine, port=None, timeout=20.0) -> dict:

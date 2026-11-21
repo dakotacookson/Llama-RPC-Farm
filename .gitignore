@@ -66,6 +66,7 @@ c.tar.gz
 # never commit (recreated live by the gateway writer thread)
 config/usage/*.enc
 config/onboarding_metrics.json
+config/rpc_tls/
 
 # agent worktrees — never part of the project
 .worktrees/

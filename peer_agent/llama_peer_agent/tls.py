@@ -9,11 +9,14 @@ from __future__ import annotations
 import os
 import socket
 import ssl
+import struct
 import threading
 from pathlib import Path
 
 from .config import AgentConfig
 
+TUNNEL_PORT = 5399
+# legacy mapping, kept for compatibility/status callers
 TLS_PORT_BASE = 53000
 TLS_PORT_RANGE = 500
 TLS_PORT_LEGACY_BASE = 53500
@@ -57,10 +60,19 @@ def install(config: AgentConfig, cert, key, ca) -> dict:
 def status(config: AgentConfig) -> dict:
     crt, key, ca = cert_paths(config)
     return {"cert": crt.is_file(), "key": key.is_file(), "ca": ca.is_file(),
-            "proxies": sorted(_PROXIES)}
+            "tunnel": bool(_PROXIES.get("tunnel")),
+            "tunnel_port": TUNNEL_PORT,
+            "https_port": https_port()}
 
 
-def _context(config: AgentConfig):
+def https_port() -> int:
+    try:
+        return int(os.environ.get("PEER_AGENT_TLS_PORT") or 8197)
+    except ValueError:
+        return 8197
+
+
+def https_context(config: AgentConfig):
     crt, key, ca = cert_paths(config)
     if not (crt.is_file() and key.is_file() and ca.is_file()):
         raise RuntimeError("TLS certs not installed on this peer")
@@ -70,6 +82,10 @@ def _context(config: AgentConfig):
     ctx.load_verify_locations(str(ca))
     ctx.verify_mode = ssl.CERT_REQUIRED
     return ctx
+
+
+def _context(config: AgentConfig):
+    return https_context(config)
 
 
 def _pump(a, b):
@@ -94,9 +110,11 @@ def _pump(a, b):
 
 
 class _Proxy:
-    def __init__(self, rpc_port, context):
-        self.rpc_port = int(rpc_port)
-        self.listen_port = tls_port_for(rpc_port)
+    """Single mTLS tunnel port; each connection starts with a 2-byte
+    big-endian target RPC port, then is bridged to 127.0.0.1:<target>."""
+
+    def __init__(self, context):
+        self.listen_port = TUNNEL_PORT
         self.context = context
         self._sock = None
         self._thread = None
@@ -131,8 +149,16 @@ class _Proxy:
         target = None
         try:
             conn = self.context.wrap_socket(conn, server_side=True)
+            hdr = conn.recv(2)
+            if len(hdr) != 2:
+                raise OSError("missing tunnel target")
+            target_port = struct.unpack("!H", hdr)[0]
+            if not (target_port == 50052
+                    or 51000 <= target_port <= 51499
+                    or 52000 <= target_port <= 52499):
+                raise OSError("tunnel target outside RPC range")
             target = socket.create_connection(
-                ("127.0.0.1", self.rpc_port), timeout=10)
+                ("127.0.0.1", target_port), timeout=10)
             threading.Thread(target=_pump, args=(conn, target),
                              daemon=True).start()
             threading.Thread(target=_pump, args=(target, conn),
@@ -155,35 +181,31 @@ class _Proxy:
         self._sock = None
 
 
+
+
 _PROXIES = {}
 _LOCK = threading.Lock()
 
 
-def ensure_proxy(config: AgentConfig, rpc_port: int) -> dict:
-    rpc_port = int(rpc_port)
+def ensure_proxy(config: AgentConfig, rpc_port=None) -> dict:
     with _LOCK:
-        existing = _PROXIES.get(rpc_port)
+        existing = _PROXIES.get("tunnel")
         if existing is not None:
             return {"running": True, "reused": True,
-                    "tls_port": existing.listen_port}
-        p = _Proxy(rpc_port, _context(config))
+                    "tls_port": TUNNEL_PORT}
+        p = _Proxy(_context(config))
         p.start()
-        _PROXIES[rpc_port] = p
-        return {"running": True, "reused": False, "tls_port": p.listen_port}
+        _PROXIES["tunnel"] = p
+        return {"running": True, "reused": False, "tls_port": TUNNEL_PORT}
 
 
-def stop_proxy(rpc_port: int) -> dict:
+def stop_proxy(rpc_port=None) -> dict:
     with _LOCK:
-        p = _PROXIES.pop(int(rpc_port), None)
+        p = _PROXIES.pop("tunnel", None)
     if p:
         p.stop()
-    return {"stopped": bool(p), "tls_port": tls_port_for(int(rpc_port))}
+    return {"stopped": bool(p), "tls_port": TUNNEL_PORT}
 
 
 def stop_all() -> dict:
-    with _LOCK:
-        items = list(_PROXIES.items())
-        _PROXIES.clear()
-    for _port, p in items:
-        p.stop()
-    return {"stopped": len(items)}
+    return stop_proxy()

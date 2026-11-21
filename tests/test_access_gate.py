@@ -58,7 +58,22 @@ def test_request_ip_prefers_forwarded_header():
         def get(self, k, d=None):
             return {"x-forwarded-for": "203.0.113.9, 10.0.0.1",
                     "x-real-ip": "198.51.100.1"}.get(k, d)
-    req = type("Req", (), {"headers": H(), "client": None})()
+    client = type("C", (), {"host": "127.0.0.1"})()
+    req = type("Req", (), {"headers": H(), "client": client,
+                           "scope": {"client": ("127.0.0.1", 1),
+                                     "headers": [
+                                         (b"x-forwarded-for",
+                                          b"203.0.113.9, 10.0.0.1")]}})()
+    assert access.request_ip(req) == "203.0.113.9"
+
+
+def test_request_ip_ignores_forwarded_header_from_untrusted_peer():
+    class H(dict):
+        def get(self, k, d=None):
+            return {"x-forwarded-for": "127.0.0.1"}.get(k, d)
+    client = type("C", (), {"host": "203.0.113.9"})()
+    req = type("Req", (), {"headers": H(), "client": client,
+                           "scope": {"client": ("203.0.113.9", 1)}})()
     assert access.request_ip(req) == "203.0.113.9"
 
 

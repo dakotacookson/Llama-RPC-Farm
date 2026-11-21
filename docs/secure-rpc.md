@@ -25,8 +25,9 @@ Changed only when `rpc_security: mtls`:
 
 | Side | Listener | Target |
 |---|---|---|
-| Peer agent | `0.0.0.0:<tls-port>` (mTLS, client cert required) | `127.0.0.1:<existing rpc port>` |
-| Master app | `127.0.0.1:<existing rpc port>` | `<peer-ip>:<tls-port>` (mTLS client cert) |
+| Peer agent | `0.0.0.0:5399` (one mTLS tunnel, client cert required) | `127.0.0.1:<requested rpc port>` |
+| Peer agent API | `0.0.0.0:8197` HTTPS/mTLS (same certs) | agent API |
+| Master app | `127.0.0.1:<existing rpc port>` | `<peer-ip>:5399` (mTLS client cert) |
 
 `--rpc` keeps the **same port number** and switches the host from the peer
 IP to `127.0.0.1`:
@@ -36,8 +37,11 @@ before: --rpc "10.0.0.53:51203"
 mtls:   --rpc "127.0.0.1:51203"
 ```
 
-TLS ports for per-model RPC ports map into `53000–53499`; the legacy base
-uses `53500+`.
+The master proxy sends the target RPC port inside the TLS connection; the
+peer tunnel routes only to `50052`, `51000–51499`, or `52000–52499`.
+
+**Only one port per peer needs forwarding: TCP 5399.** Dynamic per-model
+RPC ports are never exposed.
 
 ## Enable / disable
 
@@ -64,6 +68,11 @@ After enabling/disabling, llama-swap reloads and models must restart to pick
 up the new `--rpc` targets. Stop/Launch the model (or restart the farm) if a
 currently loaded model was started before the change.
 
+Enabling also installs the same certs on the peer agent and starts its
+HTTPS/mTLS listener on `8197`; the farm then talks to that agent over HTTPS.
+Restart each agent once after enabling so its legacy HTTP `8198` listener
+binds loopback only.
+
 ## Security properties
 
 - RPC streams are encrypted with TLS 1.2+.
@@ -84,8 +93,8 @@ currently loaded model was started before the change.
   working, but new connections/reloads will not.
 - A peer agent restart drops its TLS listeners until the next `/rpc/ensure`
   (model load) runs.
-- One TLS listener/proxy is needed per RPC endpoint because RPC has no
-  routing or authentication of its own.
+- One TLS tunnel per peer (port 5399) carries every per-model RPC stream;
+  the peer routes to the requested port after mutual authentication.
 - There is an extra userspace TLS hop on both sides. Benchmark before using
   it on a bandwidth-sensitive deployment.
 - WireGuard/Tailscale remains the recommended choice when possible: one VPN

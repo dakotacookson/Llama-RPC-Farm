@@ -22,6 +22,10 @@ stream in mutual TLS without changing llama.cpp or the per-model ports. It
 is disabled by default and requires every peer to be online when enabled.
 See [docs/secure-rpc.md](docs/secure-rpc.md).
 
+If you expose the UI/gateway through a reverse proxy, follow
+[docs/reverse-proxy.md](docs/reverse-proxy.md): TLS termination, trusted
+proxy headers, `FARM_REQUIRE_AUTH=1`, and `FARM_GATEWAY_REQUIRE_KEYS=1`.
+
 The in-app **Safety check** detects Tailscale, WireGuard, ZeroTier,
 NetBird, Nebula, OpenVPN, Cloudflare Tunnel, ngrok, and common tunnel
 interfaces. If none are present it explicitly warns against

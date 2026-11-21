@@ -44,7 +44,7 @@ async def auth_me(request: Request, response: Response):
     # unauthenticated remote request must NOT inherit the console label
     # (the UI's login-first gate keys off exactly this field — labeling
     # everything loopback silently disabled the login screen).
-    peer = ((request.scope.get("client") or (None,))[0] or "")
+    peer = access.peer_ip(request)
     is_console = peer in access._TRUSTED_ANCHORS
     has_logins = bool(_vault.list_web_logins())
     has_keys = bool(access.access_keys())
@@ -141,7 +141,7 @@ class LoginIn(pydantic.BaseModel):
 
 
 @router.post("/api/auth/login")
-async def auth_login(l: LoginIn, response: Response):
+async def auth_login(l: LoginIn, request: Request, response: Response):
     """Web login: verify against the vault's salted hash, set a
     session cookie that maps to the login's access key — identity for
     the whole UI on the next request. Restart-safe by design."""
@@ -163,6 +163,7 @@ async def auth_login(l: LoginIn, response: Response):
     _vault.set_web_session(sid, user)
     response.set_cookie(LOGIN_COOKIE, sid, max_age=30 * 24 * 3600,
                         httponly=True, samesite="lax",
+                        secure=access.cookie_secure(request),
                         path="/")
     return {"ok": True, "user": user, "session": sid}
 
@@ -391,7 +392,8 @@ class FirstLoginIn(pydantic.BaseModel):
 
 
 @router.post("/api/auth/bootstrap")
-async def auth_bootstrap(l: FirstLoginIn, response: Response):
+async def auth_bootstrap(l: FirstLoginIn, request: Request,
+                         response: Response):
     import secrets_vault as _vault, access as _a
     has_logins = bool(_vault.list_web_logins())
     has_keys = bool(access.access_keys())
@@ -424,5 +426,6 @@ async def auth_bootstrap(l: FirstLoginIn, response: Response):
     sid = secrets.token_urlsafe(24)
     _vault.set_web_session(sid, name)
     response.set_cookie(LOGIN_COOKIE, sid, max_age=30 * 24 * 3600,
-                        httponly=True, samesite="lax", path="/")
+                        httponly=True, samesite="lax",
+                        secure=access.cookie_secure(request), path="/")
     return {"ok": True, "user": name, "session": sid, "key_created": True}

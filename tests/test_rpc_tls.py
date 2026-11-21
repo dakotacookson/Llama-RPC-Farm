@@ -58,6 +58,7 @@ def test_enabled_setting_roundtrip(monkeypatch, tmp_path):
 
 
 def test_tls_port_mapping_is_stable():
+    assert rpc_tls.TUNNEL_PORT == 5399
     assert rpc_tls.tls_port_for(51000) == 53000
     assert rpc_tls.tls_port_for(51499) == 53499
     assert rpc_tls.tls_port_for(50052) >= 53500

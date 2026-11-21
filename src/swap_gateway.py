@@ -40,6 +40,12 @@ SETTINGS_FILE = os.path.join(BASE_DIR, "config", "settings.yaml")
 LISTEN_PORT = int(os.environ.get("GATEWAY_PORT", "8090"))
 UPSTREAM = os.environ.get("GATEWAY_UPSTREAM", "http://127.0.0.1:8080")
 _TRUSTED_ANCHORS = {"127.0.0.1", "::1"}
+_EXTRA_TRUSTED_PROXIES = {
+    x.strip() for x in (os.environ.get("FARM_TRUSTED_PROXIES") or "").split(",")
+    if x.strip()
+}
+_REQUIRE_KEYS = str(os.environ.get("FARM_GATEWAY_REQUIRE_KEYS") or "").lower() in (
+    "1", "true", "yes", "on")
 SETTINGS_KEY = "views"
 KEYS_SETTINGS_KEY = "access_keys"
 
@@ -108,14 +114,36 @@ def views_table():
     return out
 
 
+def _trusted_proxy(ip: str) -> bool:
+    if not ip:
+        return False
+    if ip in _TRUSTED_ANCHORS or ip in _EXTRA_TRUSTED_PROXIES:
+        return True
+    try:
+        import ipaddress
+        addr = ipaddress.ip_address(ip)
+        for item in _EXTRA_TRUSTED_PROXIES:
+            try:
+                if addr in ipaddress.ip_network(item, strict=False):
+                    return True
+            except ValueError:
+                pass
+    except ValueError:
+        pass
+    return False
+
+
 def client_ip(request: Request) -> str:
-    """Legacy helper (logging only)."""
+    """Real client IP; forwarded headers are trusted only from a proxy."""
+    c = getattr(request, "client", None)
+    actual = (c.host if c and c.host else "") or ""
+    if not _trusted_proxy(actual):
+        return actual
     for header in ("x-forwarded-for", "x-real-ip"):
         val = (request.headers.get(header) or "").strip()
         if val:
             return val.split(",")[0].strip()
-    c = getattr(request, "client", None)
-    return (c.host if c and c.host else "") or ""
+    return actual
 
 
 def request_key(request: Request) -> str:
@@ -219,6 +247,8 @@ def allow_for_ip(request: Request):
     with :8199. Unknown/malformed keys are refusals, not "lists open". """
     keys = access_keys()
     if not keys:
+        if _REQUIRE_KEYS and request_key_name(request) != "console":
+            return set()
         return None  # pre-Access farm state: open
     tok = request_token(request)
     rec = keys.get(tok) if tok else None

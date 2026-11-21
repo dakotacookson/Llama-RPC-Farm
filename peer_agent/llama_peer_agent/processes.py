@@ -330,10 +330,6 @@ def stop_rpc_port(config: AgentConfig, port: int) -> dict:
         _state_path(config, port).unlink()
     except OSError:
         pass
-    try:
-        tls.stop_proxy(port)
-    except Exception:
-        pass
     # stale RPC tensor cache (same cleanup as the script path)
     try:
         shutil.rmtree(Path.home() / ".cache" / "llama.cpp" / "rpc",
@@ -577,11 +573,6 @@ def ensure_rpc(config: AgentConfig, port: int, devices: list,
                 return {"running": False, "reused": True, "port": port,
                         "pid": None, "log": str(_log_path(config, port)),
                         "error": f"secure RPC front failed: {e}"}
-        else:
-            try:
-                tls.stop_proxy(port)
-            except Exception:
-                pass
         return {"running": True, "reused": True, "port": port,
                 "pid": None, "log": str(_log_path(config, port)),
                 "secure": bool(secure), **secure_info}
@@ -643,11 +634,6 @@ def ensure_rpc(config: AgentConfig, port: int, devices: list,
                     return {"running": False, "reused": False, "port": port,
                             "pid": proc.pid, "log": str(log_path),
                             "error": f"secure RPC front failed: {e}"}
-            else:
-                try:
-                    tls.stop_proxy(port)
-                except Exception:
-                    pass
             return {"running": True, "reused": False, "port": port,
                     "pid": proc.pid, "log": str(log_path),
                     "secure": bool(secure), **secure_info}

@@ -122,8 +122,17 @@ install.bat           # Windows equivalent (cmd.exe)
   security. Only `--rpc` host changes from peer IP to `127.0.0.1`.
 - The app must stay running for master-side proxies; agent restarts drop
   peer TLS listeners until the next model load (`/rpc/ensure`).
+- Live transport is ONE mTLS tunnel per peer on TCP 5399; the master proxy
+  on 127.0.0.1:<rpc port> sends the target RPC port inside TLS.
+- Agent HTTPS/mTLS listener: `:8197`; after certs are installed the farm uses
+  HTTPS when machine `agent_tls` is set, and the legacy agent HTTP `:8198`
+  binds loopback on restart.
 - Tests: `tests/test_rpc_tls.py`, `tests/test_peer_agent_tls.py`,
-  `tests/test_rpc_security_routes.py`.
+  `tests/test_rpc_security_routes.py`, `tests/test_agent_client_tls.py`.
+- Reverse proxies: forwarded headers are trusted ONLY from loopback or
+  `FARM_TRUSTED_PROXIES`; `FARM_REQUIRE_AUTH=1` and
+  `FARM_GATEWAY_REQUIRE_KEYS=1` close the pre-key window. Never trust
+  X-Forwarded-For from the actual client peer. See docs/reverse-proxy.md.
 
 ## Onboarding / quickstart
 
