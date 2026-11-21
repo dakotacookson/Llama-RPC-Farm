@@ -524,3 +524,37 @@ def test_build_endpoints(live_agent, monkeypatch):
         "src_root": "/src", "build_dir": "/src/build",
         "bin_path": "/src/build/bin/llama-server"})
     assert status == 200 and body["ok"] is True
+
+
+def test_token_rotation_hashes_secret_and_invalidates_old(live_agent,
+                                                         monkeypatch, tmp_path):
+    from llama_peer_agent import config as agent_config
+    env_file = tmp_path / "agent.env"
+    monkeypatch.setattr(agent_config, "env_file_path", lambda: env_file)
+
+    new_token = "rotated-agent-token-0000000000000000"
+    status, body = _post(live_agent, "/token/rotate", {"token": new_token})
+    assert status == 200 and body["ok"] is True
+    raw = env_file.read_text(encoding="utf-8")
+    assert new_token not in raw
+    assert "PEER_AGENT_TOKEN_SHA256=" in raw
+    assert "PEER_AGENT_TOKEN=" not in raw
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(live_agent, "/capabilities")
+    assert exc.value.code == 401
+    status, _body = _get(live_agent, "/capabilities", token=new_token)
+    assert status == 200
+
+
+def test_plaintext_agent_env_migrates_to_hash(tmp_path, monkeypatch):
+    from llama_peer_agent import config as agent_config
+    env_file = tmp_path / "agent.env"
+    env_file.write_text("PEER_AGENT_TOKEN=legacy-token-000000000000000\n",
+                        encoding="utf-8")
+    monkeypatch.setattr(agent_config, "env_file_path", lambda: env_file)
+    token = agent_config.migrate_plaintext_env_file()
+    assert token == "legacy-token-000000000000000"
+    raw = env_file.read_text(encoding="utf-8")
+    assert token not in raw
+    assert agent_config.token_digest(token) in raw

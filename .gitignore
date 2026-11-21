@@ -67,6 +67,7 @@ c.tar.gz
 config/usage/*.enc
 config/onboarding_metrics.json
 config/rpc_tls/
+config/runtime.env
 
 # agent worktrees — never part of the project
 .worktrees/

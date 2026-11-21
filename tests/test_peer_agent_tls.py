@@ -58,6 +58,16 @@ def _cfg(tmp_path):
                        log_dir=str(tmp_path / "logs"))
 
 
+def test_https_marker_controls_loopback_binding(tmp_path, monkeypatch):
+    _cert_paths(monkeypatch, tmp_path)
+    cfg = _cfg(tmp_path)
+    assert agent_tls.https_enabled(cfg) is False
+    agent_tls.mark_https_enabled(cfg)
+    assert agent_tls.https_enabled(cfg) is True
+    agent_tls.clear_https_enabled(cfg)
+    assert agent_tls.https_enabled(cfg) is False
+
+
 def test_install_cert_bundle(tmp_path, monkeypatch):
     _cert_paths(monkeypatch, tmp_path)
     rpc_tls.ensure_ca()

@@ -252,9 +252,9 @@ def set_machine_agent_token(machine_id, plain):
         delete_env_value(key)
 
 
-def get_machine_agent_token(machine):
-    """Peer-agent token for a machine: per-machine vault entry, then a
-    farm-wide vault entry, then explicit env overrides for tests/dev."""
+def get_machine_agent_token(machine, allow_farm=True):
+    """Peer-agent token for a machine: per-machine vault entry, then (unless
+    allow_farm=False) the legacy farm-wide entry, then env overrides."""
     mid = (machine or {}).get("id") or (machine or {}).get("name") or ""
     enc = (os.environ.get(machine_agent_env_key(mid)) or "").strip()
     if enc:
@@ -266,6 +266,8 @@ def get_machine_agent_token(machine):
            or os.environ.get("AGENT_TOKEN") or "").strip()
     if env:
         return env
+    if not allow_farm:
+        return ""
     enc = (os.environ.get("AGENT_TOKEN_ENC") or "").strip()
     if enc:
         try:

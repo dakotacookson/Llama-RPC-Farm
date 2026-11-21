@@ -1,5 +1,6 @@
 """Agent configuration (env + CLI)."""
 from dataclasses import dataclass, field
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -32,23 +33,67 @@ def load_env_file() -> None:
         pass
 
 
+def token_digest(token: str) -> str:
+    return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+
 def save_token(token: str) -> None:
-    """Persist the bearer token for services/scheduled tasks (0600)."""
+    """Persist a one-way token digest for services (agent.env, 0600).
+
+    The agent only needs to verify the bearer token, so the reusable
+    plaintext secret is never kept on the peer after enrollment/rotation.
+    """
     p = env_file_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     lines = []
     try:
         for line in p.read_text(encoding="utf-8").splitlines():
-            if not line.strip().startswith("PEER_AGENT_TOKEN="):
+            if not line.strip().startswith(("PEER_AGENT_TOKEN=",
+                                             "PEER_AGENT_TOKEN_SHA256=")):
                 lines.append(line)
     except OSError:
         pass
-    lines.append(f"PEER_AGENT_TOKEN={token}")
+    lines.append(f"PEER_AGENT_TOKEN_SHA256={token_digest(token)}")
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
     try:
         os.chmod(p, 0o600)
     except OSError:
         pass
+
+
+def migrate_plaintext_env_file() -> str:
+    """Move a legacy agent.env plaintext token to a digest in place.
+
+    Returns the plaintext token so a running config can authenticate this
+    boot; the value is not written back to disk.
+    """
+    p = env_file_path()
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    token = ""
+    out = []
+    changed = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("PEER_AGENT_TOKEN="):
+            token = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+            changed = True
+        elif stripped.startswith("PEER_AGENT_TOKEN_SHA256="):
+            continue
+        else:
+            out.append(line)
+    if not changed:
+        return ""
+    if token:
+        out.append(f"PEER_AGENT_TOKEN_SHA256={token_digest(token)}")
+    try:
+        p.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+        os.chmod(p, 0o600)
+    except OSError:
+        pass
+    return token
 
 
 def _int_env(name, default):
@@ -64,6 +109,7 @@ def _int_env(name, default):
 @dataclass
 class AgentConfig:
     token: str
+    token_hash: str = ""
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     rpc_bin: str = ""
@@ -85,10 +131,13 @@ class AgentConfig:
         if not roots:
             roots = [p for p in (os.environ.get("PEER_AGENT_MODEL_ROOTS") or "")
                      .split(os.pathsep) if p]
+        raw_token = (token if token is not None
+                     else (os.environ.get("PEER_AGENT_TOKEN")
+                           or os.environ.get("AGENT_TOKEN") or ""))
+        digest = (os.environ.get("PEER_AGENT_TOKEN_SHA256") or "").strip()
         return cls(
-            token=(token if token is not None
-                   else (os.environ.get("PEER_AGENT_TOKEN")
-                         or os.environ.get("AGENT_TOKEN") or "")),
+            token=raw_token,
+            token_hash=digest or (token_digest(raw_token) if raw_token else ""),
             host=(host if host is not None
                   else os.environ.get("PEER_AGENT_HOST") or DEFAULT_HOST),
             port=(int(port) if port is not None

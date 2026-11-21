@@ -14,6 +14,28 @@ silently destroyed all comments on every install or uninstall run.
 import os
 
 
+def _chmod_private(path):
+    """settings.yaml holds plaintext access keys; keep it owner-only."""
+    if os.name != "posix":
+        return
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def ensure_private(path):
+    """Tighten permissions on an existing settings.yaml (startup migration)."""
+    if os.name != "posix" or not path or not os.path.exists(path):
+        return
+    try:
+        mode = os.stat(path).st_mode & 0o777
+        if mode & 0o077:
+            os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
 def load_yaml_preserving(path):
     """settings.yaml as a mutable mapping, comments attached."""
     try:
@@ -39,14 +61,18 @@ def dump_yaml_preserving(data, path):
     except ImportError:  # bare install: degrade to plain PyYAML
         import yaml
         tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
         os.replace(tmp, path)
+        _chmod_private(path)
         return
     y = YAML()
     y.preserve_quotes = True
     y.default_flow_style = False
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         y.dump(data, f)
     os.replace(tmp, path)
+    _chmod_private(path)

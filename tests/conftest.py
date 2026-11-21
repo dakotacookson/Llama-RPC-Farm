@@ -14,6 +14,9 @@ if SRC not in sys.path:
 
 import pytest
 
+# Never let a developer's live config/runtime.env change test behavior.
+os.environ.setdefault("FARM_SKIP_RUNTIME_ENV", "1")
+
 
 class _FakeMachines:
     """Resolves machine names to dicts from an in-memory map, mimicking

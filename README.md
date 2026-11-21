@@ -295,6 +295,7 @@ control over where every layer runs. More:
 | [docs/api.md](docs/api.md) | Full HTTP/WebSocket endpoint reference |
 | [docs/distribution.md](docs/distribution.md) | Docker/GHCR, Homebrew, winget, Proxmox, Unraid, CasaOS |
 | [docs/reverse-proxy.md](docs/reverse-proxy.md) | nginx TLS, trusted proxy headers, public exposure rules |
+| [docs/public-api.md](docs/public-api.md) | Tailscale or public 443 API setup (one-command nginx installer) |
 | [docs/README.md](docs/README.md) | Full documentation index |
 
 Security: **[SECURITY.md](SECURITY.md)**. Contributing:

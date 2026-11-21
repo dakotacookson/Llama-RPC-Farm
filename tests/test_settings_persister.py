@@ -207,3 +207,17 @@ def test_legacy_yaml_token_still_removed_on_post(settings_file, client):
     on_disk = yaml.safe_load(_read_raw(settings_file))
     assert "hf_token" not in on_disk
     assert on_disk["legacy_unknown_key"] == "keep-me"
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permissions only")
+def test_settings_yaml_is_owner_only(tmp_path):
+    """settings.yaml holds plaintext farm access keys; every write must
+    leave it 0600, and startup migration tightens an existing loose file."""
+    import settings_persister
+    p = tmp_path / "settings.yaml"
+    _write_raw(p, SAMPLE_SETTINGS)
+    os.chmod(p, 0o664)
+    settings_persister.ensure_private(str(p))
+    assert os.stat(p).st_mode & 0o777 == 0o600
+    settings_store._dump_settings_yaml_preserving(
+        {"access_keys": {"sk-farm-test": {"name": "t"}}}, str(p))
+    assert os.stat(p).st_mode & 0o777 == 0o600

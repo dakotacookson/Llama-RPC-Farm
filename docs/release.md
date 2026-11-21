@@ -134,9 +134,10 @@ the previous tag comparison until they are updated once.
 
 Packaged binaries self-register a login service (systemd user unit,
 launchd LaunchAgent, or Windows Scheduled Task) and the Windows agent adds
-inbound rules for TCP 8198 + UDP 8199. Unpaired agents open a bounded
-pairing window and are enrolled by the app with its auto-managed farm
-token (stored only in the encrypted vault; there is no Settings override).
+inbound rules for TCP 8198 + UDP 8199. Unpaired agents open a short
+pairing window and are enrolled by the app with a unique per-machine token
+(stored only in the encrypted vault; no Settings override). Legacy shared
+tokens rotate via `POST /api/machines/rotate-agent-tokens`.
 Opt out with
 `LLAMA_FARM_NO_SERVICE=1` / `PEER_AGENT_NO_SERVICE=1`.
 

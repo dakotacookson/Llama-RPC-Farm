@@ -60,6 +60,11 @@ async def enable(body: SecurityIn = SecurityIn()):
             if not hs.get("running"):
                 raise RuntimeError(
                     f"agent HTTPS failed: {hs.get('error') or hs}")
+            st = agent_client.tls_status(m)
+            if int(st.get("tunnel_port") or 0) != 5399:
+                raise RuntimeError(
+                    "agent does not support the single-port RPC tunnel; "
+                    "update the agent first")
             try:
                 cfg.machines.update(name, {"agent_tls": True,
                                            "agent_tls_port": 8197})

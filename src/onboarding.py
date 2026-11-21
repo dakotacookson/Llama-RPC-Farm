@@ -445,10 +445,14 @@ def create_access_key(name="quickstart", models=None, admin=False):
 # ---------------------------------------------------------------------------
 
 def pairing_commands():
-    from machine_tokens import _ensure_farm_agent_token
-    tok = _ensure_farm_agent_token()
-    if not tok:
-        raise RuntimeError("could not create the farm agent token")
+    """One unique enroll token per generated command.
+
+    The token is bound to whichever one machine you run the command on;
+    paste it into that machine's Agent token field when adding it. It is
+    deliberately NOT the fleet-wide token.
+    """
+    import secrets
+    tok = secrets.token_urlsafe(32)
     raw = "https://raw.githubusercontent.com/dakotacookson/Llama-RPC-Farm/main"
     q = shlex.quote(tok)
     unix = (f"curl -fsSL {raw}/scripts/install-remote-agent.sh "
@@ -459,8 +463,9 @@ def pairing_commands():
         "token": tok,
         "unix": unix,
         "windows": win,
-        "note": "Keep this command private. It installs the peer agent, "
-                "pairs it with this farm, and starts it on port 8198.",
+        "note": "This command contains a one-machine token, not the fleet "
+                "token. Keep it private, run it on one host, and paste the "
+                "token into that machine's Agent token field when adding it.",
     }
 
 
@@ -790,6 +795,25 @@ def _machine_count():
         return 1
 
 
+def _shared_agent_token_count():
+    """Peers still using the legacy farm-wide token (blast-radius risk)."""
+    try:
+        import secrets_vault as vault
+        farm = vault.get_farm_agent_token()
+        if not farm:
+            return 0
+        count = 0
+        for machine in cfg.machines.all():
+            if local_node.is_local(machine):
+                continue
+            if vault.get_machine_agent_token(
+                    machine, allow_farm=False) == farm:
+                count += 1
+        return count
+    except Exception:
+        return 0
+
+
 def safety_report():
     checks = []
     keys = access.access_keys()
@@ -806,7 +830,9 @@ def safety_report():
             checks.append({"id": f"port-{port}", "level": "ok",
                            "title": f"{label} ({port})",
                            "detail": "listening on all interfaces; agents "
-                                     "require a bearer token"})
+                                     "require a bearer token. Keep it on a "
+                                     "trusted LAN/VPN; HTTPS :8197 is the "
+                                     "preferred agent transport."})
         elif exposed and not keys and port in (8090, 8199):
             checks.append({"id": f"port-{port}", "level": "bad",
                            "title": f"{label} ({port})",
@@ -817,8 +843,11 @@ def safety_report():
         elif exposed:
             checks.append({"id": f"port-{port}", "level": "warn",
                            "title": f"{label} ({port})",
-                           "detail": "reachable on the LAN (expected for a "
-                                     "trusted LAN/VPN)"})
+                           "detail": "reachable on the LAN/VPN (expected for "
+                                     "a trusted network; never the internet). "
+                                     "For public API clients use HTTPS 443 → "
+                                     "nginx → 127.0.0.1:8090 (docs/public-api.md), "
+                                     "not a forwarded 8090/8199."})
         else:
             checks.append({"id": f"port-{port}", "level": "ok",
                            "title": f"{label} ({port})",
@@ -847,11 +876,23 @@ def safety_report():
                        "detail": "single-machine farm: no RPC peers are "
                                  "configured, so RPC pooling is inactive."})
     else:
-        checks.append({"id": "rpc", "level": "warn", "title": "RPC exposure",
-                       "detail": f"{count} machines configured. llama.cpp "
-                                 "RPC servers are unauthenticated; keep them "
-                                 "on a trusted LAN/VPN and never forward "
-                                 "their ports."})
+        try:
+            import rpc_tls
+            rpc_secure = bool(rpc_tls.enabled())
+        except Exception:
+            rpc_secure = False
+        if rpc_secure:
+            checks.append({"id": "rpc", "level": "ok", "title": "RPC exposure",
+                           "detail": f"{count} machines configured. RPC mTLS "
+                                     "is enabled; the tunnel port and raw RPC "
+                                     "ports must still stay on the LAN/VPN and "
+                                     "never be forwarded."})
+        else:
+            checks.append({"id": "rpc", "level": "warn", "title": "RPC exposure",
+                           "detail": f"{count} machines configured. llama.cpp "
+                                     "RPC servers are unauthenticated; keep them "
+                                     "on a trusted LAN/VPN and never forward "
+                                     "their ports."})
     if not keys:
         checks.append({"id": "keys", "level": "bad",
                        "title": "Access keys",
@@ -861,7 +902,21 @@ def safety_report():
     else:
         checks.append({"id": "keys", "level": "ok",
                        "title": "Access keys",
-                       "detail": f"{len(keys)} key(s) configured"})
+                       "detail": f"{len(keys)} key(s) configured; stored in "
+                                 "config/settings.yaml (owner-only)"})
+    shared = _shared_agent_token_count()
+    if shared:
+        checks.append({"id": "agent-tokens", "level": "warn",
+                       "title": "Agent tokens",
+                       "detail": f"{shared} peer(s) still share the legacy "
+                                 "farm token; one compromised peer can reach "
+                                 "the others.",
+                       "fix": "Rotate agent tokens: POST /api/machines/"
+                              "rotate-agent-tokens (after agents update)."})
+    elif _machine_count() > 1:
+        checks.append({"id": "agent-tokens", "level": "ok",
+                       "title": "Agent tokens",
+                       "detail": "each peer has its own token"})
     bad = sum(1 for c in checks if c["level"] == "bad")
     warn = sum(1 for c in checks if c["level"] == "warn")
     return {"checks": checks, "bad": bad, "warn": warn,

@@ -43,6 +43,30 @@ def cert_paths(config: AgentConfig):
     return d / "server.crt", d / "server.key", d / "ca.crt"
 
 
+def https_marker(config: AgentConfig) -> Path:
+    return tls_dir(config) / "https.enabled"
+
+
+def https_enabled(config: AgentConfig) -> bool:
+    return https_marker(config).is_file()
+
+
+def mark_https_enabled(config: AgentConfig) -> None:
+    p = https_marker(config)
+    p.write_text("1\n", encoding="utf-8")
+    try:
+        os.chmod(p, 0o600)
+    except OSError:
+        pass
+
+
+def clear_https_enabled(config: AgentConfig) -> None:
+    try:
+        https_marker(config).unlink()
+    except OSError:
+        pass
+
+
 def install(config: AgentConfig, cert, key, ca) -> dict:
     crt, key_path, ca_path = cert_paths(config)
     for path, data in ((crt, cert), (key_path, key), (ca_path, ca)):

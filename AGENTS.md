@@ -79,15 +79,17 @@ install.bat           # Windows equivalent (cmd.exe)
   Linux installs should enable linger; Windows uses a boot Scheduled Task
   (`LlamaPeerAgent`); macOS uses the `.pkg` launchd agent.
   Packaged binaries self-register at next login; an agent with no token
-  opens a bounded pairing window and the app auto-enrolls it with the
-  auto-managed farm token. Windows agent adds TCP 8198/UDP 8199 firewall
-  rules.
+  opens a short pairing window and the app auto-enrolls it with a unique
+  per-machine token. A legacy farm token is adopted only for old agents and
+  rotated by `POST /api/machines/rotate-agent-tokens`. Windows agent adds
+  TCP 8198/UDP 8199 firewall rules.
 - Secrets NEVER go in YAML or generated scripts: HF token + agent tokens
   live in the Fernet vault (`.env`, keys `FARM_SECRET_KEY`, `FARM_SALT`,
   `HF_TOKEN_ENC`, `AGENT_TOKEN_ENC`, `MACHINE_<ID>_AGENT_TOKEN_ENC`). The
-  farm token is app-managed (auto-generated, no UI override); per-machine
-  tokens are set via the Machines UI/API (`agent_token_set` flags only; no
-  plaintext in responses) or `scripts/set-agent-token.py <machine>`.
+  per-machine tokens are set via the Machines UI/API (`agent_token_set`
+  flags only; no plaintext in responses) or `scripts/set-agent-token.py
+  <machine>`. The farm token is legacy/migration-only; new peers never
+  enroll with it, and agents store only a token digest.
 - Managing models/machines as an agent: use the HTTP API at `:8199`
   (complete route reference: `docs/api.md`) rather than hand-editing YAML
   — the running app holds in-memory state and YAML CRUD from outside is
@@ -133,6 +135,11 @@ install.bat           # Windows equivalent (cmd.exe)
   `FARM_TRUSTED_PROXIES`; `FARM_REQUIRE_AUTH=1` and
   `FARM_GATEWAY_REQUIRE_KEYS=1` close the pre-key window. Never trust
   X-Forwarded-For from the actual client peer. See docs/reverse-proxy.md.
+- `config/runtime.env` is loaded by BOTH source scripts and `app.py`
+  (`runtime_paths.load_runtime_env`) before access/gateway constants are
+  imported, so compiled installs get the same env without editing their
+  systemd/launchd/scheduled-task definition. Public 443 setup:
+  `scripts/setup-public-nginx.sh` (supports `--env-file`).
 
 ## Onboarding / quickstart
 
@@ -150,8 +157,8 @@ install.bat           # Windows equivalent (cmd.exe)
   CUDA build on a CPU-only host.
 - Onboarding metrics are local only (`config/onboarding_metrics.json`,
   git-ignored). No external telemetry.
-- The pairing command embeds the farm agent token. Treat it as a secret even
-  though it is only returned to a control identity.
+- The pairing command embeds a unique one-machine token, not the fleet
+  token. Treat it as a secret and run it on one host.
 
 ## Commands
 

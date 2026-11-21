@@ -113,6 +113,26 @@ def test_packaging_templates_parse():
         "docs", "distribution.md")
 
 
+def test_public_api_setup_assets():
+    sh = _path("scripts", "setup-public-nginx.sh")
+    assert os.path.isfile(sh) and os.access(sh, os.X_OK)
+    text = _read("scripts", "setup-public-nginx.sh")
+    assert "certbot certonly --webroot" in text
+    assert "listen 443 ssl" in text
+    assert "proxy_set_header X-Forwarded-For" in text
+    assert "127.0.0.1:8090" in text
+    assert "--env-file" in text
+    assert "FARM_GATEWAY_REQUIRE_KEYS" in text
+    r = subprocess.run(["bash", "-n", sh], capture_output=True, text=True,
+                       timeout=30)
+    assert r.returncode == 0, r.stderr
+    assert os.path.isfile(_path("config", "runtime.env.example"))
+    for script in ("run.sh", "restart.sh"):
+        assert "config/runtime.env" in _read(script)
+    assert "Tailscale" in _read("docs", "public-api.md")
+    assert "443" in _read("docs", "public-api.md")
+
+
 def test_onboarding_docs_exist():
     for rel in ("docs/quickstart.md", "docs/distribution.md"):
         assert os.path.isfile(_path(rel)), rel

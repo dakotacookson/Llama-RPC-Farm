@@ -10,7 +10,7 @@ YAML, generated scripts, API responses, or git.
 | `FARM_SECRET_KEY` + `FARM_SALT` | Vault key material (auto-generated on first run) |
 | `HF_TOKEN_ENC` | Hugging Face token, Fernet-encrypted |
 | `MACHINE_<ID>_AGENT_TOKEN_ENC` | Per-machine peer-agent token, Fernet-encrypted (id uppercased, non-alnum → `_`) |
-| `AGENT_TOKEN_ENC` | Farm-wide agent token, auto-generated and managed by the app (no Settings override) |
+| `AGENT_TOKEN_ENC` | Legacy farm-wide token, used only to adopt pre-migration agents; new peers get per-machine tokens |
 
 Crypto (`src/secrets_vault.py`): SHA-256+salt fingerprints
 (`hash_password`/`verify_password`) for verification-only cases; Fernet
@@ -56,7 +56,10 @@ removed. Agents are installed from their own `.deb`/`.pkg`/`setup.exe`.
 
 - Rotate: edit/delete per-machine keys or the HF token via the app, or use
   `secrets_vault` (`set_machine_agent_token` / `set_hf_token` /
-  `set_env_value`). The farm token (`AGENT_TOKEN_ENC`) is app-managed:
-  regenerated automatically if missing, never exposed in Settings.
+  `set_env_value`). Rotate agent tokens with
+  `POST /api/machines/<name>/rotate-token` or migrate all legacy shared
+  tokens with `POST /api/machines/rotate-agent-tokens`. Agents persist only
+  a SHA-256 digest, never the reusable token. The legacy farm token
+  (`AGENT_TOKEN_ENC`) is migration-only; new peers never enroll with it.
 - `.env` must be `0600`-ish protected; it is NOT tracked by git.
 - Before distributing the repo: rotate/remove real credentials and tokens.
