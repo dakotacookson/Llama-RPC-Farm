@@ -21,6 +21,7 @@ small JSON so they're buffered and rewritten.
 
 Run:  .venv/bin/python src/swap_gateway.py   (systemd: swap-gateway.service)
 """
+import asyncio
 import ipaddress
 import json
 import os
@@ -31,9 +32,10 @@ import time
 import httpx
 import uvicorn
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 import access as farm_access
+import load_balance
 from runtime_paths import data_dir
 BASE_DIR = data_dir()
 SETTINGS_FILE = os.path.join(BASE_DIR, "config", "settings.yaml")
@@ -400,6 +402,10 @@ async def canonical_model(mid: str) -> str:
     mid = (mid or "").strip()
     if not mid:
         return mid
+    # A load-balanced public id is not in llama-swap's model list; returning
+    # a replica id here would bypass the gateway's replica selection.
+    if load_balance.replica_keys(mid):
+        return mid
     now = time.time()
     if not _CANON_MODELS or now - _CANON_TS > 30:
         try:
@@ -472,6 +478,7 @@ async def proxy(request: Request, path: str):
 
     # usage tracking identity (key NAME) — resolve BEFORE the hop; the
     # collector never sees raw tokens
+    _orig_payload = dict(payload) if _scope else None
     import usage_collector as _uc
     _urec = request_key_record(request)
     _uname = request_key_name(request)
@@ -481,10 +488,53 @@ async def proxy(request: Request, path: str):
             return _quota_error(req_path, blocked)
     _t0 = time.monotonic()
 
-    upstream_req = client.build_request(
-        request.method, f"/{path}", content=body or None,
-        headers=headers, params=request.query_params)
-    upstream_resp = await client.send(upstream_req, stream=True)
+    _lb_choice = None
+    _attempt = 0
+    while True:
+        _lb_choice = load_balance.choose(mid) if (_scope and mid) else None
+        _body = body
+        if _lb_choice and _orig_payload is not None:
+            _p = dict(_orig_payload)
+            _p["model"] = _lb_choice["key"]
+            _body = json.dumps(_p, separators=(",", ":")).encode()
+        upstream_req = client.build_request(
+            request.method, f"/{path}", content=_body or None,
+            headers=headers, params=request.query_params)
+        try:
+            upstream_resp = await client.send(upstream_req, stream=True)
+        except Exception:
+            load_balance.release(_lb_choice)
+            raise
+        # Only load-balanced cold starts are retried. llama-swap can
+        # transiently return "group is shutting down" / "upstream exited
+        # prematurely" while a replica is still warming; clients should
+        # never see that internal race.
+        if _lb_choice and upstream_resp.status_code in (500, 502, 503):
+            _ct = upstream_resp.headers.get("content-type", "")
+            if _ct.startswith("application/json"):
+                _err = await upstream_resp.aread()
+                _txt = _err.decode("utf-8", "replace").lower()
+                _transient = any(x in _txt for x in (
+                    "group is shutting down", "exited prematurely",
+                    "starting", "upstream process exited",
+                    "connection refused", "temporarily unavailable"))
+                if _transient and _attempt < 3:
+                    await upstream_resp.aclose()
+                    load_balance.release(_lb_choice)
+                    await asyncio.sleep(0.75 * (_attempt + 1))
+                    _attempt += 1
+                    continue
+                await upstream_resp.aclose()
+                load_balance.release(_lb_choice)
+                _headers = {k: v for k, v in upstream_resp.headers.items()
+                            if k.lower() not in (
+                                "content-length", "transfer-encoding",
+                                "connection")}
+                return Response(content=_err,
+                                status_code=upstream_resp.status_code,
+                                headers=_headers,
+                                media_type="application/json")
+        break
     _dur = time.monotonic() - _t0
 
     # record usage for generate paths: tokens when the response carries
@@ -524,6 +574,8 @@ async def proxy(request: Request, path: str):
                                    "content-length", "transfer-encoding",
                                    "connection")}
                 await upstream_resp.aclose()
+                load_balance.release(_lb_choice)
+                _lb_choice = None
                 return _Resp(content=data,
                              status_code=upstream_resp.status_code,
                              headers=out_headers,
@@ -535,21 +587,24 @@ async def proxy(request: Request, path: str):
             return StreamingResponse(
                 _counting_stream(upstream_resp, {
                     "name": _uname, "path": path, "model": mid,
-                    "status": upstream_resp.status_code, "dur": _dur}),
+                    "status": upstream_resp.status_code, "dur": _dur,
+                    "lb_choice": _lb_choice}),
                 status_code=upstream_resp.status_code,
                 headers={k: v for k, v in upstream_resp.headers.items()
                          if k.lower() not in (
                              "content-length", "transfer-encoding",
                              "connection")},
-                background=_CloseBg(upstream_resp))
+                background=_CloseBg(upstream_resp, _lb_choice))
 
-    # model list: rewrite the JSON body to the caller's view
-    if allow is not None and req_path.rstrip("/") in ("/v1/models", "/models"):
+    # model list: rewrite the JSON body to the caller's view and hide
+    # load-balancing replica ids behind their public model
+    if req_path.rstrip("/") in ("/v1/models", "/models"):
         data = await upstream_resp.aread()
         try:
             parsed = json.loads(data)
-            parsed["data"] = [m for m in (parsed.get("data") or [])
-                              if _mid_allowed((m.get("id") or ""), allow)]
+            parsed = load_balance.rewrite_model_list(
+                parsed, allow if allow is not None else None,
+                _mid_allowed)
             payload = (json.dumps(parsed, separators=(",", ":")) + "\n")\
                 .encode()
             out_headers = {k.decode() if isinstance(k, bytes) else k:
@@ -570,7 +625,7 @@ async def proxy(request: Request, path: str):
         headers={k: v for k, v in upstream_resp.headers.items()
                  if k.lower() not in ("content-length", "transfer-encoding",
                                       "connection")},
-        background=_CloseBg(upstream_resp))
+        background=_CloseBg(upstream_resp, _lb_choice))
 
 
 async def _counting_stream(resp, meta):
@@ -704,15 +759,20 @@ async def _counting_stream(resp, meta):
 
 
 class _CloseBg:
-    """Ensure the streamed upstream response is released."""
-    def __init__(self, resp):
+    """Ensure the streamed upstream response and LB slot are released."""
+    def __init__(self, resp, lb_choice=None):
         self._resp = resp
+        self._lb_choice = lb_choice
+        self._released = False
 
     async def __call__(self):
         try:
             await self._resp.aclose()
         except Exception:
             pass
+        if not self._released:
+            self._released = True
+            load_balance.release(self._lb_choice)
 
 
 def _not_found():

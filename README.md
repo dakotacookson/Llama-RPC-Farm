@@ -166,6 +166,13 @@ GPUs, or CPU/RAM only. The same UI, model configs, and endpoint work when
 you add peers later; nothing needs to be rebuilt. A two-machine test path
 is in **[docs/examples.md](docs/examples.md)**.
 
+For models that fit on one machine, the model editor can **load balance
+full replicas**: select hardware across two or more machines, enable load
+balance, and the farm runs one complete copy per machine, keeps them warm,
+and distributes requests through the same public model name on `:8090`
+instead of splitting the model with RPC. Details:
+**[docs/models-and-variants.md](docs/models-and-variants.md)**.
+
 ### Let your AI agent do it
 
 This repo ships an agent playbook (`AGENTS.md`). Tell your coding agent:

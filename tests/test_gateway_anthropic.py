@@ -33,8 +33,9 @@ def key_table(monkeypatch):
 
 
 class FakeResp:
-    def __init__(self, body=b'{"ok":true}', ctype="application/json"):
-        self.status_code = 200
+    def __init__(self, body=b'{"ok":true}', ctype="application/json",
+                 status=200):
+        self.status_code = status
         self.headers = {"content-type": ctype}
         self._body = body
 
@@ -385,3 +386,56 @@ def test_quota_exhaustion_is_429_openai_and_anthropic(key_table, monkeypatch):
                json={"model": "m1", "messages": []})
     assert r.status_code == 429
     assert r.json()["error"]["type"] == "rate_limit_error"
+
+
+def test_load_balance_rewrites_model_and_releases(monkeypatch, key_table):
+    fake = _client_for(monkeypatch, FakeResp(b'{"choices":[]}'))
+    released = []
+    monkeypatch.setattr(gw.load_balance, "choose",
+                        lambda mid: {"public": mid, "key": mid + "--a",
+                                     "weight": 1})
+    monkeypatch.setattr(gw.load_balance, "release",
+                        lambda choice: released.append(choice))
+
+    async def _canon(mid):
+        return mid
+    monkeypatch.setattr(gw, "canonical_model", _canon)
+    c = TestClient(gw.app)
+    r = c.post("/v1/chat/completions",
+               headers={"content-type": "application/json",
+                        "authorization": f"Bearer {SCOPED}"},
+               json={"model": "m1", "messages": []})
+    assert r.status_code == 200
+    content = fake.requests[0][1]["content"]
+    assert b'"model":"m1--a"' in content
+    assert released and released[0]["key"] == "m1--a"
+
+
+def test_load_balance_retries_transient_cold_start(monkeypatch, key_table):
+    import asyncio as _aio
+    class SeqClient:
+        def __init__(self): self.calls = 0
+        def build_request(self, *a, **kw): return object()
+        async def send(self, *a, **kw):
+            self.calls += 1
+            if self.calls == 1:
+                return FakeResp(b'{"error":{"message":"group is shutting down"}}',
+                                ctype="application/json", status=500)
+            return FakeResp(b'{"choices":[]}')
+    fake = SeqClient()
+    monkeypatch.setattr(gw, "client", fake)
+    monkeypatch.setattr(gw, "request_key_name", lambda r: "console")
+    monkeypatch.setattr(gw.load_balance, "choose",
+                        lambda mid: {"public": mid, "key": mid + "__lb-a",
+                                     "weight": 1})
+    monkeypatch.setattr(gw.load_balance, "release", lambda c: None)
+    async def _canon(mid): return mid
+    monkeypatch.setattr(gw, "canonical_model", _canon)
+
+    c = TestClient(gw.app)
+    r = c.post("/v1/chat/completions",
+               headers={"content-type": "application/json",
+                        "authorization": f"Bearer {SCOPED}"},
+               json={"model": "m1", "messages": []})
+    assert r.status_code == 200
+    assert fake.calls == 2
