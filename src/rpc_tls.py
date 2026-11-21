@@ -17,11 +17,14 @@ import ipaddress
 import os
 import socket
 import ssl
+import struct
 import threading
 
 from runtime_paths import data_dir
 
 RPC_PORT_BASE = 51000
+TUNNEL_PORT = 5399
+# Legacy per-port mapping retained for older status displays/tests.
 TLS_PORT_BASE = 53000
 TLS_PORT_RANGE = 500
 TLS_PORT_LEGACY_BASE = 53500
@@ -33,6 +36,8 @@ MASTER_KEY = os.path.join(CERT_DIR, "master.key")
 
 
 def tls_port_for(rpc_port):
+    """Legacy helper retained for callers/tests; live transport uses the
+    single TUNNEL_PORT per peer."""
     p = int(rpc_port)
     if RPC_PORT_BASE <= p < RPC_PORT_BASE + TLS_PORT_RANGE:
         return TLS_PORT_BASE + (p - RPC_PORT_BASE)
@@ -235,13 +240,14 @@ class TLSProxy:
     """One listener; each accepted connection is bridged to a TCP target."""
 
     def __init__(self, listen_host, listen_port, target_host, target_port,
-                 context, server_side):
+                 context, server_side, route_port=None):
         self.listen_host = listen_host
         self.listen_port = int(listen_port)
         self.target_host = target_host
-        self.target_port = int(target_port)
+        self.target_port = int(target_port) if target_port else None
         self.context = context
         self.server_side = bool(server_side)
+        self.route_port = int(route_port) if route_port else None
         self._sock = None
         self._thread = None
         self._stop = threading.Event()
@@ -276,13 +282,25 @@ class TLSProxy:
         try:
             if self.server_side:
                 conn = self.context.wrap_socket(conn, server_side=True)
+                target_port = self.target_port
+                if target_port is None:
+                    hdr = conn.recv(2)
+                    if len(hdr) != 2:
+                        raise OSError("missing tunnel target")
+                    target_port = struct.unpack("!H", hdr)[0]
+                    if not (target_port == 50052
+                            or 51000 <= target_port <= 51499
+                            or 52000 <= target_port <= 52499):
+                        raise OSError("tunnel target outside RPC range")
                 target = socket.create_connection(
-                    (self.target_host, self.target_port), timeout=10)
+                    ("127.0.0.1", target_port), timeout=10)
             else:
                 target = socket.create_connection(
                     (self.target_host, self.target_port), timeout=10)
                 target = self.context.wrap_socket(
                     target, server_hostname=self.target_host)
+                if self.route_port:
+                    target.sendall(struct.pack("!H", self.route_port))
             threading.Thread(target=_pump, args=(conn, target),
                              daemon=True).start()
             threading.Thread(target=_pump, args=(target, conn),
@@ -321,8 +339,8 @@ def ensure_local_proxy(peer_ip, rpc_port):
         if existing is not None:
             return existing
         p = TLSProxy("127.0.0.1", int(rpc_port), str(peer_ip),
-                     tls_port_for(rpc_port), client_context(),
-                     server_side=False)
+                     TUNNEL_PORT, client_context(),
+                     server_side=False, route_port=rpc_port)
         p.start()
         _LOCAL_PROXIES[key] = p
         return p
@@ -409,8 +427,9 @@ def refresh_local_proxies():
 
 def status():
     with _LOCAL_LOCK:
-        proxies = [{"ip": k[0], "port": k[1], "tls_port": tls_port_for(k[1])}
+        proxies = [{"ip": k[0], "port": k[1], "tls_port": TUNNEL_PORT}
                    for k in _LOCAL_PROXIES]
     return {"enabled": enabled(), "proxies": proxies,
+            "tunnel_port": TUNNEL_PORT,
             "ca": os.path.isfile(CA_CRT),
             "master_cert": os.path.isfile(MASTER_CRT)}

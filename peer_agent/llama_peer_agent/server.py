@@ -31,6 +31,8 @@ from . import build
 
 _START_TS = time.time()
 _MAX_BODY = 1_048_576
+_HTTPS_SERVER = None
+_HTTPS_LOCK = threading.Lock()
 _PAIRING_DEADLINE = 0.0
 
 
@@ -58,6 +60,46 @@ class AgentHTTPServer(ThreadingHTTPServer):
     def __init__(self, address, handler, config: AgentConfig):
         self.config = config
         super().__init__(address, handler)
+
+
+def _start_https(config):
+    global _HTTPS_SERVER
+    with _HTTPS_LOCK:
+        if _HTTPS_SERVER is not None:
+            return {"running": True, "port": tls.https_port()}
+        try:
+            ctx = tls.https_context(config)
+        except Exception as e:
+            return {"running": False, "error": str(e)}
+        port = tls.https_port()
+        srv = AgentHTTPServer(("0.0.0.0", port), AgentHandler, config)
+        try:
+            srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        except Exception as e:
+            srv.server_close()
+            return {"running": False, "error": f"TLS wrap failed: {e}"}
+        t = threading.Thread(target=srv.serve_forever, daemon=True,
+                             name="agent-https")
+        t.start()
+        _HTTPS_SERVER = srv
+        log.info("peer agent HTTPS/mTLS listening on :%s", port)
+        return {"running": True, "port": port}
+
+
+def _stop_https():
+    global _HTTPS_SERVER
+    with _HTTPS_LOCK:
+        srv, _HTTPS_SERVER = _HTTPS_SERVER, None
+    if srv:
+        try:
+            srv.shutdown()
+        except Exception:
+            pass
+        try:
+            srv.server_close()
+        except Exception:
+            pass
+    return {"stopped": bool(srv)}
 
 
 class AgentHandler(BaseHTTPRequestHandler):
@@ -192,7 +234,9 @@ class AgentHandler(BaseHTTPRequestHandler):
         if path == "/rpc/list":
             return 200, {"servers": processes.list_rpc_processes()}
         if path == "/tls/status":
-            return 200, tls.status(config)
+            st = tls.status(config)
+            st["https_running"] = bool(_HTTPS_SERVER)
+            return 200, st
         if path == "/llama/list":
             return 200, {"servers": processes.list_llama_processes()}
         if path == "/llama/status":
@@ -367,6 +411,10 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return 200, tls.stop_proxy(int(port))
             except (TypeError, ValueError) as e:
                 return 400, {"error": str(e)}
+        if path == "/tls/https/start":
+            return 200, _start_https(config)
+        if path == "/tls/https/stop":
+            return 200, _stop_https()
         if path == "/rpc/stop":
             try:
                 port = int(body.get("port"))
@@ -659,6 +707,20 @@ def create_server(config: AgentConfig) -> AgentHTTPServer:
 
 def serve(config: AgentConfig):
     ensure_dirs(config)
+    # Once certs are installed, the public API should be HTTPS only.
+    # Keep the legacy HTTP listener on loopback for local recovery; the
+    # master switches to HTTPS when the machine's agent_tls flag is set.
+    if tls.status(config)["cert"] and str(
+            os.environ.get("PEER_AGENT_HTTP_LOOPBACK", "1")).lower() not in (
+                "0", "false", "no", "off"):
+        config.host = "127.0.0.1"
+    if tls.status(config)["cert"] and str(
+            os.environ.get("PEER_AGENT_HTTPS", "1")).lower() not in (
+                "0", "false", "no", "off"):
+        try:
+            _start_https(config)
+        except Exception as e:
+            log.warning("HTTPS listener failed: %s", e)
     server = create_server(config)
     config.port = int(server.server_address[1])
     logging.basicConfig(
@@ -688,6 +750,7 @@ def serve(config: AgentConfig):
         server.serve_forever()
     finally:
         server.server_close()
+        _stop_https()
         if disc is not None:
             thread, sock, stop_event = disc
             stop_event.set()

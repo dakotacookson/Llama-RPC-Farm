@@ -5977,8 +5977,8 @@ async function loadRpcSecurityStatus() {
     const r = await api("GET", "/api/rpc/security/status");
     const on = !!r.settings?.enabled;
     if (st) st.innerHTML = on
-      ? '<span class="status-ok">mTLS enabled</span>'
-      : '<span class="status-warn">off — RPC is plain TCP</span>';
+      ? '<span class="status-ok">RPC mTLS + agent HTTPS</span>'
+      : '<span class="status-warn">off — RPC plain TCP, agent HTTP</span>';
     if (btn) btn.dataset.enabled = on ? "1" : "0";
   } catch (e) {
     if (st) st.textContent = e.message;
@@ -5989,7 +5989,7 @@ on("#set-rpc-security", "click", async (e) => {
   const box = $("#set-rpc-security-result");
   const on = btn.dataset.enabled === "1";
   const action = on ? "disable" : "enable";
-  if (!confirm(`${action} mTLS RPC transport? ${on ? "This will switch RPC back to plain TCP." : "Every peer must be online; certs will be installed through the agents."}`)) return;
+  if (!confirm(`${action} secure transport? ${on ? "This switches RPC back to plain TCP; agent HTTPS remains until reverted on the peers." : "Every peer must be online and updated; certs + agent HTTPS will be installed."}`)) return;
   btn.disabled = true;
   if (box) { box.style.display = ""; box.innerHTML = '<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Working…</p>'; }
   try {

@@ -56,6 +56,15 @@ async def enable(body: SecurityIn = SecurityIn()):
             bundle = rpc_tls.cert_bundle(m)
             agent_client.tls_install(m, bundle["cert"], bundle["key"],
                                      bundle["ca"])
+            hs = agent_client.tls_https_start(m)
+            if not hs.get("running"):
+                raise RuntimeError(
+                    f"agent HTTPS failed: {hs.get('error') or hs}")
+            try:
+                cfg.machines.update(name, {"agent_tls": True,
+                                           "agent_tls_port": 8197})
+            except Exception:
+                pass
             installed.append(name)
         except Exception as e:
             failures.append({"machine": name, "error": str(e)})

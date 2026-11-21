@@ -124,6 +124,8 @@ class MachineIn(pydantic.BaseModel):
     model_dir: str | None = None  # per-machine model root (empty = shared store)
     transport: str = "agent"    # agent-only (kept for config compatibility)
     agent_port: int = 8198
+    agent_tls: bool | None = None      # None = preserve; true = HTTPS/mTLS agent
+    agent_tls_port: int | None = None
     agent_token: str = ""       # write-only; stored in the vault, never YAML
     role: str = "peer"
     os: str = "linux"
@@ -304,6 +306,10 @@ def _validate_machine_connection(payload):
 async def add_machine(m: MachineIn):
     try:
         payload = m.model_dump()
+        if payload.get("agent_tls") is None:
+            payload.pop("agent_tls", None)
+        if payload.get("agent_tls_port") is None:
+            payload.pop("agent_tls_port", None)
         payload["model_dir"] = payload.get("model_dir") or ""
         payload["engine_mode"] = payload.get("engine_mode") or "auto"
         payload["engine_backend"] = payload.get("engine_backend") or "auto"
@@ -357,6 +363,10 @@ async def update_machine(name: str, m: MachineIn):
             payload.pop("mac", None)   # omitted = keep the stored identity
         if payload.get("model_dir") is None:
             payload.pop("model_dir", None)
+        if payload.get("agent_tls") is None:
+            payload.pop("agent_tls", None)
+        if payload.get("agent_tls_port") is None:
+            payload.pop("agent_tls_port", None)
         old_name = str(name)
         new_name = str(payload.get("name") or old_name).strip()
         if new_name and new_name != old_name and cfg.machines.get(new_name):

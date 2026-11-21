@@ -130,7 +130,8 @@ the same typed agent endpoints on every OS.
 | `GET /speedtest?mb=N` | bounded throughput stream (1..256 MB) |
 | `GET /system/rdma` | RoCE device/port/GID/IP discovery |
 | `POST /install/artifact`, `/install/verify` | typed installs |
-| `POST /tls/install`, `GET /tls/status`, `POST /tls/stop` | mTLS RPC front certs/lifecycle |
+| `POST /tls/install`, `GET /tls/status`, `POST /tls/stop` | mTLS RPC tunnel certs/lifecycle |
+| `POST /tls/https/start`, `POST /tls/https/stop` | Agent HTTPS/mTLS listener (default `:8197`) |
 | `POST /agent/update` | pip wheel self-update + restart |
 | `POST /agent/update-binary` | standalone binary self-replace + restart |
 | `GET /build/probe`, `POST /build/update` | llama.cpp source probe/update |

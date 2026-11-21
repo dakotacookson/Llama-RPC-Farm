@@ -159,7 +159,7 @@ reports anything still missing. Full walkthrough:
 > not port-forward them to the internet. The optional
 > **[secure RPC transport](docs/secure-rpc.md)** wraps RPC in mutual TLS
 > without changing llama.cpp or the existing port allocation. Details:
-> **[SECURITY.md](SECURITY.md)**.
+> **[SECURITY.md](SECURITY.md)** · [reverse-proxy.md](docs/reverse-proxy.md).
 
 **No cluster yet?** Run it solo on one machine first — one GPU, several
 GPUs, or CPU/RAM only. The same UI, model configs, and endpoint work when
@@ -294,6 +294,7 @@ control over where every layer runs. More:
 | [docs/configuration.md](docs/configuration.md) | Every config file, what owns it — incl. `storage_mode` / model sync and engine selection |
 | [docs/api.md](docs/api.md) | Full HTTP/WebSocket endpoint reference |
 | [docs/distribution.md](docs/distribution.md) | Docker/GHCR, Homebrew, winget, Proxmox, Unraid, CasaOS |
+| [docs/reverse-proxy.md](docs/reverse-proxy.md) | nginx TLS, trusted proxy headers, public exposure rules |
 | [docs/README.md](docs/README.md) | Full documentation index |
 
 Security: **[SECURITY.md](SECURITY.md)**. Contributing:
