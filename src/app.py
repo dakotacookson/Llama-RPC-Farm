@@ -44,6 +44,7 @@ from routes.inference import router as inference_router
 from routes.launch import router as launch_router
 from routes.model_sync import router as model_sync_router
 from routes.onboarding import router as onboarding_router
+from routes.rpc_security import router as rpc_security_router
 from routes.setup import router as setup_router
 from routes.machines import router as machines_router
 from routes.models import router as models_router
@@ -64,7 +65,8 @@ for _router in (flow_router, hf_router, hardware_router, files_router,
                 install_router, tools_router, views_router,
                 tools_install_router, auth_router, machines_router,
                 models_router, settings_router, launch_router,
-                model_sync_router, setup_router, onboarding_router):
+                model_sync_router, setup_router, onboarding_router,
+                rpc_security_router):
     app.include_router(_router)
 
 
@@ -325,6 +327,25 @@ def seed_local_master():
     except Exception:
         pass
     start_swap_gateway()
+    # Secure RPC: start master-side mTLS client proxies for configured
+    # endpoints. Off by default; when rpc_security=off this stops any
+    # stale proxies. Runs before the swap reconcile so the first model
+    # load already has its localhost proxy listeners.
+    def _secure_rpc_refresh():
+        try:
+            import rpc_tls
+            res = rpc_tls.refresh_local_proxies()
+            if res.get("error"):
+                print(f"[rpc-tls] refresh skipped: {res['error']}")
+            elif res.get("enabled"):
+                print(f"[rpc-tls] {len(res.get('proxies', []))} client "
+                      "proxy endpoint(s)")
+        except Exception as e:
+            print(f"[rpc-tls] refresh skipped: {e}")
+    try:
+        _secure_rpc_refresh()
+    except Exception:
+        pass
     # DEC-17: one-time stamp of `engine` on legacy group entries (both
     # collections) so existing groups keep rendering under their engine.
     # Best-effort: a locked/read-only config dir never blocks boot.

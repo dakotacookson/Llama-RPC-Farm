@@ -156,7 +156,10 @@ reports anything still missing. Full walkthrough:
 
 > **LAN/VPN only.** llama.cpp's RPC server is unauthenticated by design.
 > Keep RPC ports, the UI, and the gateway on a trusted network or VPN — do
-> not port-forward them to the internet. Details: **[SECURITY.md](SECURITY.md)**.
+> not port-forward them to the internet. The optional
+> **[secure RPC transport](docs/secure-rpc.md)** wraps RPC in mutual TLS
+> without changing llama.cpp or the existing port allocation. Details:
+> **[SECURITY.md](SECURITY.md)**.
 
 **No cluster yet?** Run it solo on one machine first — one GPU, several
 GPUs, or CPU/RAM only. The same UI, model configs, and endpoint work when

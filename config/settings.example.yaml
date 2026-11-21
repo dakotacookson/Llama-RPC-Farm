@@ -3,6 +3,7 @@ llama_bin: ~/llama.cpp/build/bin
 theme_family: steel
 theme_mode: light
 engine: llama_cpp
+rpc_security: off   # off | mtls
 views:
   Dad:
     ips:

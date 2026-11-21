@@ -17,6 +17,11 @@ Do **not** port-forward:
 - the view gateway (`8090`),
 - or the peer-agent port (`8198`).
 
+An optional **mTLS RPC transport** (`rpc_security: mtls`) wraps each RPC
+stream in mutual TLS without changing llama.cpp or the per-model ports. It
+is disabled by default and requires every peer to be online when enabled.
+See [docs/secure-rpc.md](docs/secure-rpc.md).
+
 The in-app **Safety check** detects Tailscale, WireGuard, ZeroTier,
 NetBird, Nebula, OpenVPN, Cloudflare Tunnel, ngrok, and common tunnel
 interfaces. If none are present it explicitly warns against

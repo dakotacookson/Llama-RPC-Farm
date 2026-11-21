@@ -95,6 +95,7 @@ peer to act as a copy SOURCE from a mount outside home (e.g.
 
 ```yaml
 engine: llama_cpp        # llama_cpp
+rpc_security: off         # off | mtls — optional mTLS RPC transport
 ```
 
 - A missing `engine` key means `llama_cpp` (backward compatible); a

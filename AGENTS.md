@@ -110,6 +110,21 @@ install.bat           # Windows equivalent (cmd.exe)
   `run.sh` only starts the UI when it is not already running. systemd unit
   owners can also: `systemctl --user restart llama-swap`.
 
+## Secure RPC transport
+
+- Optional `rpc_security: mtls` in `settings.yaml`; default `off`.
+- `src/rpc_tls.py` generates the CA/master/peer certs and runs master-side
+  mTLS client proxies on `127.0.0.1:<existing rpc port>`.
+- `peer_agent/llama_peer_agent/tls.py` runs the peer-side mTLS listener on
+  `tls_port_for(rpc_port)` (53000–53499) and forwards to the existing RPC
+  port. `processes.ensure_rpc(..., secure=True)` starts/reuses it.
+- Do NOT change `_model_rpc_port` / `_model_rpc_ports` / RPC numbering for
+  security. Only `--rpc` host changes from peer IP to `127.0.0.1`.
+- The app must stay running for master-side proxies; agent restarts drop
+  peer TLS listeners until the next model load (`/rpc/ensure`).
+- Tests: `tests/test_rpc_tls.py`, `tests/test_peer_agent_tls.py`,
+  `tests/test_rpc_security_routes.py`.
+
 ## Onboarding / quickstart
 
 - `src/onboarding.py` owns starter recipes, client snippets, safety checks,
@@ -317,5 +332,10 @@ anything that runs shell commands:
   gives a GPU-less peer its own `cpu` RPC group. `tuner.estimate` falls
   back to a RAM budget (`_cpu_ram_budget`) when no accelerator chips are
   selected — don't reintroduce a GPU-only early raise there.
-- Ports: rpc-servers get per-model rolled ports (`_roll_port_if_busy`);
-  Windows excludes Hyper-V/WSL reserved ranges. Base 50052 is legacy.
+- Ports: rpc-servers get deterministic per-model ports from
+  `_model_rpc_port` (51000–51499); they are NOT rolled. `_roll_port_if_busy`
+  is for llama-swap/llama-server HTTP and remote-local proxy ports. Windows
+  excludes Hyper-V/WSL reserved ranges. Base 50052 is legacy.
+- Current `_peer_server_groups` returns ONE `"all"` group per peer (GPUs +
+  CPU when RAM is selected). Older docs/comments describing separate GPU and
+  CPU groups are stale.

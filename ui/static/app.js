@@ -372,7 +372,7 @@ document.querySelectorAll("nav button").forEach((btn) => {
     if (btn.dataset.tab === "dljobs") loadDownloads();
     if (btn.dataset.tab === "chat") loadChat();
     if (btn.dataset.tab === "connect") loadConnect();
-    if (btn.dataset.tab === "settings") { loadSettings(); renderThemeGrid(); }
+    if (btn.dataset.tab === "settings") { loadSettings(); renderThemeGrid(); loadRpcSecurityStatus(); }
     if (btn.dataset.tab === "launch") loadLaunch();
     if (btn.dataset.tab === "servegroups") { loadServeGroups(); renderServeGroupMembers([]); }
     if (btn.dataset.tab === "access") loadAccess();
@@ -5970,6 +5970,40 @@ on("#setup-open-connect", "click", async () => {
   document.querySelector('nav button[data-tab="connect"]')?.click();
 });
 on("#set-setup-guide", "click", () => showSetupWizard(2));
+async function loadRpcSecurityStatus() {
+  const st = $("#set-rpc-security-status");
+  const btn = $("#set-rpc-security");
+  try {
+    const r = await api("GET", "/api/rpc/security/status");
+    const on = !!r.settings?.enabled;
+    if (st) st.innerHTML = on
+      ? '<span class="status-ok">mTLS enabled</span>'
+      : '<span class="status-warn">off — RPC is plain TCP</span>';
+    if (btn) btn.dataset.enabled = on ? "1" : "0";
+  } catch (e) {
+    if (st) st.textContent = e.message;
+  }
+}
+on("#set-rpc-security", "click", async (e) => {
+  const btn = e.currentTarget;
+  const box = $("#set-rpc-security-result");
+  const on = btn.dataset.enabled === "1";
+  const action = on ? "disable" : "enable";
+  if (!confirm(`${action} mTLS RPC transport? ${on ? "This will switch RPC back to plain TCP." : "Every peer must be online; certs will be installed through the agents."}`)) return;
+  btn.disabled = true;
+  if (box) { box.style.display = ""; box.innerHTML = '<p class="hint"><i class="fa-solid fa-spinner fa-spin"></i> Working…</p>'; }
+  try {
+    const r = await api("POST", `/api/rpc/security/${action}`, {}, 300000);
+    if (box) box.innerHTML = r.ok
+      ? `<p class="status-ok">RPC security ${r.enabled ? "enabled" : "disabled"}.</p>`
+      : `<p class="status-bad">${escHtml(r.detail || "failed")}</p>` +
+        (r.failures || []).map(f => `<p class="status-bad">${escHtml(f.machine)}: ${escHtml(f.error)}</p>`).join("");
+    await loadRpcSecurityStatus();
+  } catch (err) {
+    if (box) box.innerHTML = `<p class="status-bad">${escHtml(err.message)}</p>`;
+  }
+  btn.disabled = false;
+});
 on("#set-safety-check", "click", async (e) => {
   const btn = e.currentTarget;
   const box = $("#set-safety-result");

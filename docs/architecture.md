@@ -44,6 +44,7 @@ scripts.
 | `secret_fields.py` | Single naming policy for secret fields (`is_secret_key` / `strip_secret_keys`) shared by the machine store, API responses, and `farmctl` snapshot redaction. |
 | `engine_registry.py` | Engine adapter seam (`llama_cpp`): `load_settings` applies the engine schema (enum — bad values are startup errors, never silent fallback); `get_engine(settings)` is the one seam app.py dispatches on. Adapters implement the `EngineAdapter` Protocol (build_command / probe / swap_entries / validate_model_config / validate_hosts / ui_hints); `LlamaCppAdapter` is pure delegation to rpc_manager/swap_manager. |
 | `rpc_manager.py` | The biggest module (~2.6k lines): RPC server start/stop/status, port rolling, per-port state files, `build_llama_command`, `compute_rpc_map`, bash/PowerShell script generation, RDMA gating, llama-swap host bin resolution. |
+| `rpc_tls.py` | Optional mutual-TLS transport wrapper for RPC: CA/peer/master certs, peer TLS ports, master-side client proxies. Existing RPC ports and numbering are unchanged. |
 | `swap_manager.py` | llama-swap daemon: settings, `generate()` (builds full config.yaml plan from model configs), push, `launch()` orchestration, `stop()`, `reload_daemon()`, systemd/win/mac service paths, backup + validation. |
 | `tuner.py` | Math estimate (VRAM fit, KV bytes, split weights) + staged live benchmark search. Writes tuning results back into model configs. |
 | `llamacpp_installer.py` | Downloads the right llama.cpp prebuilt per OS/vendor/arch/glibc and updates `llama_bin`. |

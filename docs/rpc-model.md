@@ -13,7 +13,7 @@ exactly that order:
 
 ```
 for peer in peers (servers order, master first):
-    for group in peer groups (gpu group, then cpu group iff RAM):
+    for group in peer groups (currently ONE "all" group per peer):
         for device in group devices (GPUs by index, then CPU):
             assign next RPC<N>
 ```
@@ -44,10 +44,13 @@ Chips in the UI are `<machine>-<token>` (e.g. `aibox1-CUDA0`,
 
 ## Ports
 
-- Legacy base port 50052 still exists but per-model ports are **rolled**
-  at launch: `_model_rpc_port(model_id, peer, group)` hashes model+peer
-  (+group) onto a port range, `_roll_port_if_busy` bumps past anything
-  already listening (including Windows Hyper-V/WSL excluded ranges).
+- Legacy base port 50052 still exists. Per-model ports are
+  **deterministic, not rolled**: `_model_rpc_port(model_id, peer, group)`
+  hashes model+peer (+group) into `51000–51499`. The same inputs always
+  produce the same port; processes are stopped, but the port number is
+  reused.
+- `_roll_port_if_busy` is used for **llama-swap / llama-server HTTP ports
+  and remote-local proxy ports**, not for RPC port allocation.
 - Per-port state files (`rpc.state.<port>`) record the device set each
   rpc-server was started with, so co-served models on different ports
   never clobber each other's ensure-checks.
@@ -56,15 +59,16 @@ Chips in the UI are `<machine>-<token>` (e.g. `aibox1-CUDA0`,
 
 ## Peer groups (`_peer_server_groups`)
 
-A peer can contribute up to two rpc-servers:
+Current policy: **one rpc-server per peer**, group name `"all"`.
 
-1. **GPU server** — its selected GPUs (expose config / device_order).
-2. **CPU server** — iff its RAM chip is selected (`-d CPU`, or default
-   CPU-only when no GPUs selected).
+It contains the peer's selected accelerators plus `CPU` iff that peer's
+RAM chip is selected. A CPU-only peer gets one `"cpu"` group. The comment
+in the code notes that splitting CPU onto a second server adds an endpoint
+without removing serialization, so the current implementation keeps one
+minimal endpoint per peer.
 
-This exists because llama.cpp serializes multi-backend work per
-rpc-server connection; the CPU backend gets its own port so it never
-blocks GPU tensors behind a single client connection.
+The grouping mechanism still supports multiple groups per peer (for
+future cross-vendor binaries), but current configs produce one.
 
 ## Generated scripts (`_render_rpc`, `generate_script`)
 
@@ -115,6 +119,14 @@ Three layers, all per-port and co-serve safe:
    touches a protected endpoint, a process younger than the grace period
    (`FARM_REAPER_GRACE`, default 1800s), or a machine it cannot inspect.
    Disable with `FARM_REAPER=0`; log-only with `FARM_REAPER_DRY_RUN=1`.
+
+## Secure RPC transport (optional)
+
+`rpc_security: mtls` wraps the same ports in mutual TLS without changing
+allocation. The peer agent listens on `tls_port_for(port)` and forwards to
+the existing RPC port; the master app listens on `127.0.0.1:<same rpc port>`
+and connects to the peer's TLS port. Only the `--rpc` host changes from the
+peer IP to `127.0.0.1`. See [secure-rpc.md](secure-rpc.md).
 
 ## Where things can silently disagree
 

@@ -1862,6 +1862,22 @@ def push_scripts():
         _write_host(host, dest, content,
                     mode=0o600 if fname == SIDECAR_NAME else 0o755)
         written.append(dest)
+    # Secure RPC: keep master-side mTLS client proxies in sync with the
+    # deployment endpoints. No-op (and stops stale proxies) when off.
+    try:
+        import rpc_tls
+        sec = rpc_tls.refresh_local_proxies()
+        if sec.get("error"):
+            gen.setdefault("warnings", []).append(
+                f"rpc_security: {sec['error']}")
+        elif sec.get("enabled"):
+            for p in sec.get("proxies", []):
+                if p.get("error"):
+                    gen.setdefault("warnings", []).append(
+                        f"rpc_security: {p['ip']}:{p['port']}: {p['error']}")
+    except Exception as e:
+        gen.setdefault("warnings", []).append(
+            f"rpc_security: proxy refresh skipped: {e}")
     return {"written": written, "backups": backups, "validated": True,
             "warnings": gen.get("warnings", []),
             "models": gen.get("models", [])}

@@ -114,8 +114,8 @@ def test_rpc_list_shape(live_agent, monkeypatch):
 def test_rpc_ensure_and_stop_validation(live_agent, monkeypatch):
     calls = {}
 
-    def fake_ensure(config, port, devices, env):
-        calls["ensure"] = (port, devices, env)
+    def fake_ensure(config, port, devices, env, secure=False):
+        calls["ensure"] = (port, devices, env, secure)
         return {"running": True, "reused": False, "port": port, "pid": 123}
 
     def fake_stop(config, port):
@@ -127,7 +127,7 @@ def test_rpc_ensure_and_stop_validation(live_agent, monkeypatch):
     status, body = _post(live_agent, "/rpc/ensure", {
         "port": 51234, "devices": ["CUDA0"], "env": {"A": "1"}})
     assert status == 200 and body["running"] is True
-    assert calls["ensure"] == (51234, ["CUDA0"], {"A": "1"})
+    assert calls["ensure"] == (51234, ["CUDA0"], {"A": "1"}, False)
     status, body = _post(live_agent, "/rpc/stop", {"port": 51234})
     assert status == 200 and body["killed"] is True
     assert calls["stop"] == 51234
@@ -176,8 +176,9 @@ def test_rpc_manager_uses_agent_for_list_ensure_stop(stub_cfg, monkeypatch):
                         lambda m: [{"pid": 7, "port": 51234, "age_s": 1,
                                     "cmd": "ggml-rpc-server -p 51234"}])
     monkeypatch.setattr(rpc_manager.agent_client, "rpc_ensure",
-                        lambda m, p, d, e: {"running": True, "reused": False,
-                                            "port": p, "pid": 8})
+                        lambda m, p, d, e, secure=False:
+                        {"running": True, "reused": False,
+                         "port": p, "pid": 8})
     monkeypatch.setattr(rpc_manager.agent_client, "rpc_stop",
                         lambda m, p: {"port": p, "killed": True, "pids": [8]})
     monkeypatch.setattr(rpc_manager.agent_client, "stop_all",

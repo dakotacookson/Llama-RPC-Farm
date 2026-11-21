@@ -750,7 +750,8 @@ def start_rpc(machine_name, port=None, expose_override=None, device_list=None,
                 except Exception:
                     pass
             res = agent_client.rpc_ensure(
-                machine, port, devices, _agent_env_dict(machine))
+                machine, port, devices, _agent_env_dict(machine),
+                secure=_rpc_secure_enabled())
             return {
                 "machine": machine_name, "ip": machine["ip"], "port": port,
                 "running": bool(res.get("running")),
@@ -1428,6 +1429,22 @@ def _split_servers(servers, master_name=None):
     return master, peers
 
 
+def _rpc_secure_enabled():
+    try:
+        import rpc_tls
+        return bool(rpc_tls.enabled())
+    except Exception:
+        return False
+
+
+def _rpc_connect_host(peer):
+    """Host the master's llama-server should dial for a peer RPC server.
+
+    Secure mode: the local mTLS client proxy listens on 127.0.0.1:the SAME
+    rpc port. Non-secure: the peer IP, exactly as before."""
+    return "127.0.0.1" if _rpc_secure_enabled() else peer.get("ip", "")
+
+
 def build_llama_command(model_cfg, servers, master_name=None):
     """Build the llama-server command from a model config.
 
@@ -1585,7 +1602,8 @@ def build_llama_command(model_cfg, servers, master_name=None):
         raw = model_cfg.get("device_order") or ""
         port_of = _model_rpc_ports(model_cfg, peers)
         rpc_list = ",".join(
-            f"{p['ip']}:{port_of.get((p['name'], gname), p.get('rpc_port', 50052))}"
+            f"{_rpc_connect_host(p)}:"
+            f"{port_of.get((p['name'], gname), p.get('rpc_port', 50052))}"
             for p in peers
             for gname, _devs in _peer_server_groups(raw, p))
         parts.append(f'--rpc "{rpc_list}"')
@@ -2404,6 +2422,7 @@ def _render_rpc(model_cfg, master, peers, cmd=None):
         body = _json.dumps({
             "devices": list(n["devs"]),
             "env": _agent_env_dict(n["machine"]),
+            "secure": _rpc_secure_enabled(),
         }, separators=(",", ":"))
         payload = '{"port":__PORT__,' + body[1:]
         # _case_fn emits `echo "<escaped>"`; pass the raw JSON. Pre-quoting
