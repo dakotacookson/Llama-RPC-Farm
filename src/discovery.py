@@ -198,26 +198,10 @@ def reconcile_machine_ips():
 
 
 def pair_agents(include_known=True):
-    """Auto-enroll unpaired agents with the farm token (paired once)."""
-    import secrets_vault
-    import agent_client
-    tok = secrets_vault.get_farm_agent_token()
-    if not tok:
-        return []
-    try:
-        found = discover_agents(include_known=include_known).get("results") or []
-    except Exception:
-        return []
-    paired = []
-    for a in found:
-        if not a.get("pairing") or not a.get("ip"):
-            continue
-        m = {"name": a.get("hostname") or a["ip"], "ip": a["ip"],
-             "agent_port": a.get("agent_port") or 8198}
-        try:
-            agent_client.pair(m, tok)
-            paired.append(a["ip"])
-            print(f"[pairing] paired {a.get('hostname') or a['ip']} with farm token")
-        except Exception as e:
-            print(f"[pairing] {a.get('ip')}: failed: {e}")
-    return paired
+    """Deprecated no-op: discovery never enrolls agents automatically.
+
+    Enrollment is a trust decision and must issue a unique per-machine
+    token. The add-machine path does that via `_auto_agent_token`; keeping
+    a farm-token auto-pair here would recreate the shared-token blast radius.
+    """
+    return []

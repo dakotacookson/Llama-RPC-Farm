@@ -2147,7 +2147,23 @@ def _cmd_to_args(cmd, os_type="linux"):
 
 def _agent_base_url(machine):
     ip = (machine.get("ip") or "").strip()
+    if (machine or {}).get("agent_tls"):
+        return f"https://{ip}:{agent_client.agent_tls_port(machine)}"
     return f"http://{ip}:{agent_client.agent_port(machine)}"
+
+
+def _agent_tls_paths():
+    """Master-side mTLS files used by generated scripts to reach agents."""
+    import shlex
+    try:
+        import rpc_tls
+        return {
+            "ca": shlex.quote(rpc_tls.CA_CRT),
+            "cert": shlex.quote(rpc_tls.MASTER_CRT),
+            "key": shlex.quote(rpc_tls.MASTER_KEY),
+        }
+    except Exception:
+        return {"ca": "", "cert": "", "key": ""}
 
 
 def _agent_token_var(machine_name):
@@ -2414,6 +2430,9 @@ def _render_rpc(model_cfg, master, peers, cmd=None):
     label_pairs = [(n["tag"], n["label"]) for n in nodes]
     agent_base_pairs = [
         (n["tag"], _agent_base_url(n["machine"])) for n in agent_nodes]
+    agent_tls_pairs = [
+        (n["tag"], "1" if (n["machine"] or {}).get("agent_tls") else "0")
+        for n in agent_nodes]
     agent_token_pairs = [
         (n["tag"], "${" + _agent_token_var(n["machine"].get("name")) + ":-}")
         for n in agent_nodes]
@@ -2439,6 +2458,7 @@ def _render_rpc(model_cfg, master, peers, cmd=None):
     )
     peer_labels_decl = _case_fn("peer_label_of", label_pairs)
     agent_bases_decl = _case_fn("agent_base_of", agent_base_pairs)
+    agent_tls_decl = _case_fn("agent_tls_of", agent_tls_pairs, default="0")
     agent_tokens_decl = _case_fn("agent_token_of", agent_token_pairs)
     agent_payloads_decl = _case_fn("agent_payload_of", agent_payload_pairs)
     rpc_legend = _rpc_legend(raw_order, master, peers)
@@ -2462,51 +2482,62 @@ DEVICE_ORDER="{device_order}"
 {rpc_logs_decl}
 {peer_labels_decl}
 {agent_bases_decl}
+{agent_tls_decl}
 {agent_tokens_decl}
 {agent_payloads_decl}
+AGENT_CA={_agent_tls_paths()["ca"]}
+AGENT_CERT={_agent_tls_paths()["cert"]}
+AGENT_KEY={_agent_tls_paths()["key"]}
 AGENT_NODES=({agent_nodes_decl})
 STARTED=()
 note_started() {{ STARTED+=("$1"); }}
+agent_curl() {{
+  local node="$1"; shift
+  local path="$1"; shift
+  local base; base="$(agent_base_of "$node")"
+  local token; token="$(agent_token_of "$node")"
+  if [[ "$(agent_tls_of "$node")" == "1" ]]; then
+    if [[ ! -f "$AGENT_CA" || ! -f "$AGENT_CERT" || ! -f "$AGENT_KEY" ]]; then
+      echo "!!! agent mTLS certs missing for $node (expected $AGENT_CA, $AGENT_CERT, $AGENT_KEY)" >&2
+      return 1
+    fi
+    curl -fsS --cacert "$AGENT_CA" --cert "$AGENT_CERT" --key "$AGENT_KEY" \
+      -H "Authorization: Bearer $token" "$@" "$base$path"
+  else
+    curl -fsS -H "Authorization: Bearer $token" "$@" "$base$path"
+  fi
+}}
 agent_ensure() {{
   local node="$1"
   local port; port="$(rpc_port_of "$node")"
   local payload; payload="$(agent_payload_of "$node")"
   payload="${{payload//__PORT__/$port}}"
-  local base; base="$(agent_base_of "$node")"
-  local token; token="$(agent_token_of "$node")"
   local devs; devs="$(peer_devices "$node")"
   local out
   echo ">>> starting rpc-server on $node:$port [${{devs:-default}}] [$(peer_label_of "$node")]"
-  out="$(curl -fsS --max-time 90 -H "Authorization: Bearer $token" \
-    -H "Content-Type: application/json" --data-binary "$payload" \
-    "$base/rpc/ensure")" || return 1
+  out="$(agent_curl "$node" "/rpc/ensure" --max-time 90 \
+    -H "Content-Type: application/json" --data-binary "$payload")" || return 1
   echo "$out"
   [[ "$out" == *'"reused":true'* ]] || note_started "$node"
 }}
 agent_stop() {{
   local node="$1"
   local port; port="$(rpc_port_of "$node")"
-  local base; base="$(agent_base_of "$node")"
-  local token; token="$(agent_token_of "$node")"
-  curl -fsS --max-time 60 -H "Authorization: Bearer $token" \
+  agent_curl "$node" "/rpc/stop" --max-time 60 \
     -H "Content-Type: application/json" --data-binary '{{"port":'"$port"'}}' \
-    "$base/rpc/stop" >/dev/null 2>&1 || true
+    >/dev/null 2>&1 || true
 }}
 agent_port_open() {{
   local node="$1"
   local port; port="$(rpc_port_of "$node")"
-  local base; base="$(agent_base_of "$node")"
-  local token; token="$(agent_token_of "$node")"
-  curl -fsS --max-time 5 -H "Authorization: Bearer $token" \
-    "$base/port/open?port=$port" 2>/dev/null | grep -q '"open":true'
+  agent_curl "$node" "/port/open?port=$port" --max-time 5 \
+    2>/dev/null | grep -q '"open":true'
 }}
 agent_rpc_listed() {{
   local node="$1"
   local port; port="$(rpc_port_of "$node")"
-  local base; base="$(agent_base_of "$node")"
-  local token; token="$(agent_token_of "$node")"
-  curl -fsS --max-time 8 -H "Authorization: Bearer $token" \
-    "$base/rpc/list" 2>/dev/null | grep -q "port.:$port"
+  agent_curl "$node" "/rpc/list" --max-time 8 \
+    2>/dev/null | grep -q "port.:$port"
 }}
 stop_started_rpc() {{
   local node

@@ -68,8 +68,16 @@ async def enable(body: SecurityIn = SecurityIn()):
             try:
                 cfg.machines.update(name, {"agent_tls": True,
                                            "agent_tls_port": 8197})
-            except Exception:
-                pass
+            except Exception as e:
+                # Do not leave the agent in HTTPS-only mode while the
+                # master still believes it is HTTP; that caused a fleet
+                # lockout before. Clear the marker/HTTPS and fail.
+                try:
+                    agent_client.tls_https_stop(m)
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    f"could not persist agent_tls for {name}: {e}") from e
             installed.append(name)
         except Exception as e:
             failures.append({"machine": name, "error": str(e)})

@@ -354,6 +354,12 @@ def seed_local_master():
                 if res.get("failed"):
                     print(f"[agent-tokens] rotation failures: "
                           f"{res['failed']}")
+                if res.get("rotated"):
+                    try:
+                        import swap_manager
+                        swap_manager.push_scripts()
+                    except Exception as e:
+                        print(f"[agent-tokens] script refresh failed: {e}")
             threading.Thread(target=_rotate_bg, daemon=True).start()
     except Exception:
         pass

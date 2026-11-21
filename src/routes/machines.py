@@ -433,15 +433,28 @@ async def rotate_machine_agent_token(name: str):
         raise HTTPException(status_code=400,
                             detail="local master has no peer agent token")
     try:
-        return await run_in_threadpool(rotate_machine_token, machine)
+        res = await run_in_threadpool(rotate_machine_token, machine)
     except ValueError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
+    # Generated start scripts embed AGENT_TOKEN_<NAME>; refresh them so the
+    # next model launch uses the rotated value.
+    try:
+        await run_in_threadpool(swap_manager.push_scripts)
+    except Exception as e:
+        res["warning"] = f"scripts not refreshed: {e}"
+    return res
 
 
 @router.post("/api/machines/rotate-agent-tokens")
 async def rotate_shared_agent_tokens():
     """Migrate every legacy farm-token peer to a unique token."""
-    return await run_in_threadpool(rotate_shared_tokens)
+    res = await run_in_threadpool(rotate_shared_tokens)
+    if res.get("rotated"):
+        try:
+            await run_in_threadpool(swap_manager.push_scripts)
+        except Exception as e:
+            res["warning"] = f"scripts not refreshed: {e}"
+    return res
 
 
 @router.post("/api/machines/{name}/detect")
@@ -672,7 +685,8 @@ async def discover_hosts(p: DiscoverIn):
     import discovery
 
     def run():
-        discovery.pair_agents(include_known=True)
+        # Do not enroll discovered agents here: Add Machine issues the
+        # unique per-peer token after the user confirms the machine.
         return discovery.discover_agents(include_known=p.include_known)
 
     result = await run_in_threadpool(run)

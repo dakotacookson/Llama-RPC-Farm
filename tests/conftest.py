@@ -17,7 +17,7 @@ import pytest
 # Never let a developer's live config/runtime.env change test behavior.
 os.environ.setdefault("FARM_SKIP_RUNTIME_ENV", "1")
 # No background agent-token rotation during tests (would touch live peers).
-os.environ.setdefault("FARM_ROTATE_SHARED_AGENT_TOKENS", "0")
+os.environ["FARM_ROTATE_SHARED_AGENT_TOKENS"] = "0"
 
 
 class _FakeMachines:

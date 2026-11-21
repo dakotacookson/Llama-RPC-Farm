@@ -602,16 +602,17 @@ set -uo pipefail
 source "{scripts_dir}/{SIDECAR_NAME}" 2>/dev/null || true
 : "${{{var}:?agent token not set for {machine.get('name')}}}"
 AGENT="{base}"
+{_agent_curl_array(machine)}
 PORT="{int(port)}"
 START_BODY={shlex.quote(start_body)}
 STOP_BODY={shlex.quote(stop_body)}
 agent_stop() {{
-  curl -fsS --max-time 60 -H "Authorization: Bearer ${var}" \
+  "${{AGENT_CURL[@]}}" --max-time 60 -H "Authorization: Bearer ${var}" \
     -H "Content-Type: application/json" --data-binary "$STOP_BODY" \
     "$AGENT/custom/stop" >/dev/null 2>&1 || true
 }}
 trap agent_stop EXIT
-if ! curl -fsS --max-time 60 -H "Authorization: Bearer ${var}" \
+if ! "${{AGENT_CURL[@]}}" --max-time 60 -H "Authorization: Bearer ${var}" \
   -H "Content-Type: application/json" --data-binary "$START_BODY" \
   "$AGENT/custom/start" >/dev/null; then
   echo "!!! agent custom/start failed for {machine.get('name')}:{int(port)}" >&2
@@ -619,12 +620,12 @@ if ! curl -fsS --max-time 60 -H "Authorization: Bearer ${var}" \
 fi
 _down=0
 for _i in $(seq 1 2400); do
-  if curl -fsS --max-time 5 -H "Authorization: Bearer ${var}" \
+  if "${{AGENT_CURL[@]}}" --max-time 5 -H "Authorization: Bearer ${var}" \
       "$AGENT/port/open?port=$PORT" 2>/dev/null | grep -q '"open":true'; then
     _down=0
     echo ">>> {machine.get('name')}:{int(port)} is up"
     while :; do
-      if curl -fsS --max-time 5 -H "Authorization: Bearer ${var}" \
+      if "${{AGENT_CURL[@]}}" --max-time 5 -H "Authorization: Bearer ${var}" \
           "$AGENT/port/open?port=$PORT" 2>/dev/null | grep -q '"open":true'; then
         _down=0
       else
@@ -658,7 +659,8 @@ def _agent_custom_stop_script(scripts_dir, machine, port, stop_script="",
 set -uo pipefail
 source "{scripts_dir}/{SIDECAR_NAME}" 2>/dev/null || true
 : "${{{var}:?agent token not set for {machine.get('name')}}}"
-curl -fsS --max-time 90 -H "Authorization: Bearer ${var}" \
+{_agent_curl_array(machine)}
+"${{AGENT_CURL[@]}}" --max-time 90 -H "Authorization: Bearer ${var}" \
   -H "Content-Type: application/json" --data-binary {shlex.quote(body)} \
   "{base}/custom/stop" >/dev/null 2>&1 || true
 """
@@ -671,7 +673,28 @@ def _agent_token_var(machine_name):
 
 def _agent_base(machine):
     ip = (machine.get("ip") or "").strip()
+    if (machine or {}).get("agent_tls"):
+        return f"https://{ip}:{agent_client.agent_tls_port(machine)}"
     return f"http://{ip}:{agent_client.agent_port(machine)}"
+
+
+def _agent_curl_prefix(machine, flags="-fsS"):
+    """curl prefix for generated scripts; adds master mTLS files."""
+    import shlex
+    parts = ["curl", flags]
+    if (machine or {}).get("agent_tls"):
+        try:
+            import rpc_tls
+            parts += ["--cacert", shlex.quote(rpc_tls.CA_CRT),
+                      "--cert", shlex.quote(rpc_tls.MASTER_CRT),
+                      "--key", shlex.quote(rpc_tls.MASTER_KEY)]
+        except Exception:
+            pass
+    return " ".join(parts)
+
+
+def _agent_curl_array(machine, name="AGENT_CURL", flags="-fsS"):
+    return f"{name}=({_agent_curl_prefix(machine, flags)})"
 
 
 def _agent_llama_start_script(scripts_dir, machine, port, payload_name):
@@ -682,8 +705,10 @@ set -uo pipefail
 source "{scripts_dir}/{SIDECAR_NAME}" 2>/dev/null || true
 : "${{{var}:?agent token not set for {machine.get('name')}}}"
 AGENT="{base}"
+{_agent_curl_array(machine)}
+{_agent_curl_array(machine, name="AGENT_CURL_S", flags="-sS")}
 PORT="{int(port)}"
-_resp=$(curl -sS -H "Authorization: Bearer ${var}" \
+_resp=$("${{AGENT_CURL_S[@]}}" -H "Authorization: Bearer ${var}" \
   -H "Content-Type: application/json" \
   --data-binary @"{scripts_dir}/{payload_name}" \
   "$AGENT/llama/start" 2>&1) || _resp="curl failed: $_resp"
@@ -697,7 +722,7 @@ for _i in $(seq 1 2400); do
     _up=1; break
   fi
   if [ $((_i % 20)) -eq 0 ]; then
-    curl -fsS -H "Authorization: Bearer ${var}" \
+    "${{AGENT_CURL[@]}}" -H "Authorization: Bearer ${var}" \
       "$AGENT/llama/status?port=$PORT" >/dev/null || {{
       echo "!!! llama-server on {machine.get('name')}:{int(port)} died before opening the port" >&2
       exit 1
@@ -716,7 +741,7 @@ fi
 # /port/open is a local TCP probe and cannot be starved by generation.
 _down=0
 while :; do
-  if curl -fsS -H "Authorization: Bearer ${var}" \
+  if "${{AGENT_CURL[@]}}" -H "Authorization: Bearer ${var}" \
       "$AGENT/port/open?port=$PORT" 2>/dev/null | grep -q '"open":true'; then
     _down=0
   else
@@ -738,7 +763,8 @@ def _agent_llama_stop_script(scripts_dir, machine, port, state_key):
 set -uo pipefail
 source "{scripts_dir}/{SIDECAR_NAME}" 2>/dev/null || true
 : "${{{var}:?agent token not set for {machine.get('name')}}}"
-curl -fsS -H "Authorization: Bearer ${var}" \
+{_agent_curl_array(machine)}
+"${{AGENT_CURL[@]}}" -H "Authorization: Bearer ${var}" \
   -H "Content-Type: application/json" \
   -d '{body}' \
   "{base}/llama/stop" >/dev/null || true
@@ -779,7 +805,8 @@ def _rpc_cmdstop(model_cfg, peers):
             if agent_client.should_use_agent(p):
                 var = _agent_token_var(p.get("name"))
                 cmds.append(
-                    f'curl -fsS --max-time 60 -H "Authorization: Bearer ${{{var}}}" '
+                    f'{_agent_curl_prefix(p)} --max-time 60 '
+                    f'-H "Authorization: Bearer ${{{var}}}" '
                     f'-H "Content-Type: application/json" '
                     f'--data-binary \'{{"port":{port}}}\' '
                     f'"{_agent_base(p)}/rpc/stop" >/dev/null 2>&1 || true')
