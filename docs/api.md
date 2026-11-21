@@ -138,6 +138,15 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 | `POST /api/onboarding/local-store` | Pick the default local model root |
 | `POST /api/onboarding/mark` · `GET /api/onboarding/metrics` | Local-only onboarding funnel timing |
 
+## RPC security
+
+| Method + Path | Purpose |
+|---|---|
+| `GET /api/rpc/security/status` | mTLS state, local proxy endpoints, certs |
+| `POST /api/rpc/security/enable` | Generate/distribute certs, turn on mTLS, reload |
+| `POST /api/rpc/security/disable` | Turn off mTLS, stop proxies/TLS fronts, reload |
+| `POST /api/rpc/security/refresh` | Re-sync master-side client proxies |
+
 ## Misc
 
 | `GET /api/fs/browse` | File explorer (local or per-machine, OS-aware) |

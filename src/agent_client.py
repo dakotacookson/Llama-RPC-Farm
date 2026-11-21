@@ -464,12 +464,28 @@ def rpc_list(machine, timeout=8.0) -> list:
 
 
 def rpc_ensure(machine, port: int, devices=None, env=None,
-               timeout=40.0) -> dict:
+               timeout=40.0, secure=False) -> dict:
     return _request(machine, "POST", "/rpc/ensure", {
         "port": int(port),
         "devices": list(devices or []),
         "env": dict(env or {}),
+        "secure": bool(secure),
     }, timeout=timeout)
+
+
+def tls_install(machine, cert, key, ca, timeout=20.0) -> dict:
+    return _request(machine, "POST", "/tls/install", {
+        "cert": cert, "key": key, "ca": ca,
+    }, timeout=timeout)
+
+
+def tls_status(machine, timeout=8.0) -> dict:
+    return _request(machine, "GET", "/tls/status", timeout=timeout)
+
+
+def tls_stop(machine, port=None, timeout=20.0) -> dict:
+    body = {} if port is None else {"port": int(port)}
+    return _request(machine, "POST", "/tls/stop", body, timeout=timeout)
 
 
 def rpc_stop(machine, port: int, timeout=20.0) -> dict:

@@ -130,6 +130,7 @@ the same typed agent endpoints on every OS.
 | `GET /speedtest?mb=N` | bounded throughput stream (1..256 MB) |
 | `GET /system/rdma` | RoCE device/port/GID/IP discovery |
 | `POST /install/artifact`, `/install/verify` | typed installs |
+| `POST /tls/install`, `GET /tls/status`, `POST /tls/stop` | mTLS RPC front certs/lifecycle |
 | `POST /agent/update` | pip wheel self-update + restart |
 | `POST /agent/update-binary` | standalone binary self-replace + restart |
 | `GET /build/probe`, `POST /build/update` | llama.cpp source probe/update |
@@ -143,7 +144,7 @@ the same typed agent endpoints on every OS.
 | `GET /service/status` | daemon status |
 | `GET /which?name=` | allowlisted binary lookup |
 | `GET /port/open?port=N` | TCP port probe |
-| `POST /rpc/ensure` | `{port, devices, env}` → start or reuse |
+| `POST /rpc/ensure` (optional `secure: true`) | `{port, devices, env}` → start or reuse |
 | `POST /rpc/stop` | `{port}` → kill only that `ggml-rpc-server` |
 | `GET /rpc/list` | `[{pid, port, age_s, cmd}]` (feeds the orphan reaper) |
 | `POST /llama/start` | `{port, args, env, state_key}` → start/reuse `llama-server` |

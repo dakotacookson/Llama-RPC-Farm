@@ -19,6 +19,7 @@ from .platform_info import tegra_gpu_unsupported_reason
 from . import BUILD_COMMIT, PROTOCOL_VERSION, __version__
 from .config import AgentConfig, ensure_dirs
 from . import processes
+from . import tls
 from . import discovery
 from . import files
 from . import service
@@ -190,6 +191,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return 400, {"error": str(e)}
         if path == "/rpc/list":
             return 200, {"servers": processes.list_rpc_processes()}
+        if path == "/tls/status":
+            return 200, tls.status(config)
         if path == "/llama/list":
             return 200, {"servers": processes.list_llama_processes()}
         if path == "/llama/status":
@@ -343,10 +346,27 @@ class AgentHandler(BaseHTTPRequestHandler):
                 port, devices, env = processes.validate_ensure(
                     body.get("port"), body.get("devices") or [],
                     body.get("env") or {})
-                result = processes.ensure_rpc(config, port, devices, env)
+                result = processes.ensure_rpc(
+                    config, port, devices, env,
+                    secure=bool(body.get("secure")))
             except processes.AgentProcessError as e:
                 return 400, {"error": str(e)}
+            return (200 if result.get("running") else 500), result
+        if path == "/tls/install":
+            try:
+                result = tls.install(config, body.get("cert"),
+                                     body.get("key"), body.get("ca"))
+            except (TypeError, ValueError) as e:
+                return 400, {"error": str(e)}
             return 200, result
+        if path == "/tls/stop":
+            try:
+                port = body.get("port")
+                if port is None:
+                    return 200, tls.stop_all()
+                return 200, tls.stop_proxy(int(port))
+            except (TypeError, ValueError) as e:
+                return 400, {"error": str(e)}
         if path == "/rpc/stop":
             try:
                 port = int(body.get("port"))

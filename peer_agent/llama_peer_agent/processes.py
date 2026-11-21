@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from . import files
+from . import tls
 from .config import AgentConfig
 from .platform_info import board_model, tegra_gpu_unsupported_reason
 
@@ -329,6 +330,10 @@ def stop_rpc_port(config: AgentConfig, port: int) -> dict:
         _state_path(config, port).unlink()
     except OSError:
         pass
+    try:
+        tls.stop_proxy(port)
+    except Exception:
+        pass
     # stale RPC tensor cache (same cleanup as the script path)
     try:
         shutil.rmtree(Path.home() / ".cache" / "llama.cpp" / "rpc",
@@ -560,12 +565,26 @@ def validate_ensure(port, devices, env):
 
 
 def ensure_rpc(config: AgentConfig, port: int, devices: list,
-               env: dict) -> dict:
+               env: dict, secure: bool = False) -> dict:
     port, devices, env = validate_ensure(port, devices, env)
     want = ",".join(devices) if devices else "default"
     if _port_open(port) and _read_state(config, port) == want:
+        secure_info = {}
+        if secure:
+            try:
+                secure_info = tls.ensure_proxy(config, port)
+            except Exception as e:
+                return {"running": False, "reused": True, "port": port,
+                        "pid": None, "log": str(_log_path(config, port)),
+                        "error": f"secure RPC front failed: {e}"}
+        else:
+            try:
+                tls.stop_proxy(port)
+            except Exception:
+                pass
         return {"running": True, "reused": True, "port": port,
-                "pid": None, "log": str(_log_path(config, port))}
+                "pid": None, "log": str(_log_path(config, port)),
+                "secure": bool(secure), **secure_info}
 
     stop_rpc_port(config, port)
     time.sleep(0.5)
@@ -616,8 +635,22 @@ def ensure_rpc(config: AgentConfig, port: int, devices: list,
     while time.time() < deadline:
         if _port_open(port):
             _write_state(config, port, want)
+            secure_info = {}
+            if secure:
+                try:
+                    secure_info = tls.ensure_proxy(config, port)
+                except Exception as e:
+                    return {"running": False, "reused": False, "port": port,
+                            "pid": proc.pid, "log": str(log_path),
+                            "error": f"secure RPC front failed: {e}"}
+            else:
+                try:
+                    tls.stop_proxy(port)
+                except Exception:
+                    pass
             return {"running": True, "reused": False, "port": port,
-                    "pid": proc.pid, "log": str(log_path)}
+                    "pid": proc.pid, "log": str(log_path),
+                    "secure": bool(secure), **secure_info}
         if proc.poll() is not None:
             break
         time.sleep(0.5)
@@ -634,6 +667,11 @@ def stop_all(config: AgentConfig) -> dict:
     path. It is deliberately explicit (no arbitrary process names) and
     reports anything that survived.
     """
+    tls_stopped = 0
+    try:
+        tls_stopped = int(tls.stop_all().get("stopped") or 0)
+    except Exception:
+        pass
     groups = (
         (("llama-swap", "llama-swap.exe"), False),
         (("llama-server", "llama-server.exe"), True),
@@ -660,7 +698,7 @@ def stop_all(config: AgentConfig) -> dict:
     }
     left = sum(len(v) for v in remaining.values())
     return {"killed": left == 0, "pids": sorted(set(all_pids)),
-            "remaining": remaining}
+            "remaining": remaining, "tls_stopped": tls_stopped}
 
 
 _LOG_NAME_RE = re.compile(
