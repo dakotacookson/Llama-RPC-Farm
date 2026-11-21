@@ -25,10 +25,18 @@ def _cert_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(rpc_tls, "MASTER_KEY", str(tmp_path / "master.key"))
 
 
+_USED_PORTS = set()
+
+
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    for _ in range(100):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        if port not in _USED_PORTS:
+            _USED_PORTS.add(port)
+            return port
+    raise RuntimeError("no free test port")
 
 
 def _echo_server():
@@ -151,6 +159,7 @@ def test_agent_tls_tunnel_roundtrip(tmp_path, monkeypatch):
                 time.sleep(0.1)
         assert sock is not None
         with sock:
+            sock.settimeout(10)
             sock.sendall(b"agent-secure-rpc")
             assert sock.recv(64) == b"agent-secure-rpc"
     finally:
