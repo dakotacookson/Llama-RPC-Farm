@@ -95,7 +95,9 @@ curl https://api.example.com/v1/models \
 ```
 
 `/v1/models` is empty without a key once keys exist, and generate paths
-return `401`. Create keys in **Access**.
+return `401`. Create keys in **Access**. Per-key daily/weekly/monthly request
+limits (optional, unlimited by default) return `429` with `Retry-After` when
+exhausted.
 
 ## What the script does not do
 

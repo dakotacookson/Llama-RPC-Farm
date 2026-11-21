@@ -102,6 +102,7 @@ minutes between streamed chunks (prefill, RPC backends, memory pressure).
 | `models` | **Exact grants**: `mid` (base model) or `mid--variant`. A bare mid grants only the base entry, not its variants |
 | `admin` | Opens control surfaces (Access tab and admin APIs) |
 | `admin_unrestricted` / `unrestricted` | When off, an admin keeps control surfaces but their **model visibility stays scoped** to the key's grants |
+| `limits` | Optional `{day, week, month}` generation-request caps; missing or `0` = unlimited |
 | `ui` | Per-key theme state |
 
 Rules:
@@ -119,6 +120,27 @@ The gateway enforces this **before** forwarding to llama-swap: it rewrites
 `/v1/models` per caller and rejects generate requests for models the key is
 not granted. It also records usage (exact llama.cpp `timings` when present,
 estimated for streams) without ever seeing the raw token in the collector.
+
+## Request limits
+
+Each key can have optional daily, weekly, and monthly **generation-request**
+limits:
+
+```yaml
+limits:
+  day: 500
+  week: 3000
+  month: 10000
+```
+
+- Missing or `0` means unlimited; new/existing keys default to unlimited.
+- The week starts Monday; windows use the farm host's local calendar.
+- Counted paths are generation requests (`/v1/chat/completions`,
+  `/v1/messages`, completions, embeddings, systemone, responses, audio,
+  images). Model lists, status, and health checks are not counted.
+- Exhausted limits return `429` with `Retry-After` and `X-RateLimit-*`
+  headers. Anthropic clients get the Anthropic error shape.
+- The User page shows used/limit and reset time for the signed-in identity.
 
 ## Where keys live
 
