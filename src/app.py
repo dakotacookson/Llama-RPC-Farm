@@ -340,8 +340,11 @@ def seed_local_master():
         )
         _ensure_farm_agent_token()
         migrate_missing_agent_tokens()
+        # Default ON: fresh installs with no legacy farm-token peers are a
+        # no-op, while upgraded installs automatically replace shared tokens
+        # as soon as their agents support /token/rotate. Set 0 to opt out.
         if str(os.environ.get("FARM_ROTATE_SHARED_AGENT_TOKENS")
-               or "").lower() in ("1", "true", "yes", "on"):
+               or "1").lower() not in ("0", "false", "no", "off"):
             import threading
             from machine_tokens import rotate_shared_tokens
 

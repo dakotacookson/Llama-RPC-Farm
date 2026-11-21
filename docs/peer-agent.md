@@ -203,9 +203,10 @@ remote-shell call site.
 - Each peer has its **own** per-machine token. The old farm-wide token is
   only adopted for pre-migration agents and can be rotated away with
   `POST /api/machines/rotate-agent-tokens` (or one peer at a time via
-  `POST /api/machines/<name>/rotate-token`). To migrate automatically after
-  all agents are on the rotation-capable release, set
-  `FARM_ROTATE_SHARED_AGENT_TOKENS=1` and restart the app.
+  `POST /api/machines/<name>/rotate-token`). Background migration is ON by
+  default (`FARM_ROTATE_SHARED_AGENT_TOKENS=1`); it is a no-op on fresh
+  installs and only acts once an agent supports `/token/rotate`. Set it to
+  `0` to disable.
 - `GET /health` returns the protocol version; the master warns on drift but
   keeps working when the contract is compatible.
 - Discovery binds UDP `8199` (configurable with `PEER_AGENT_DISCOVERY_PORT`
