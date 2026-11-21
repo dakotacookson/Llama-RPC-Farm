@@ -100,7 +100,6 @@ def _hw_watcher_loop():
             # MAC-based IP healing: the agent's UDP responder reports its
             # current addresses, so DHCP re-leases fix themselves.
             import discovery
-            discovery.pair_agents(include_known=True)
             healed = discovery.reconcile_machine_ips()
             if healed:
                 print("[ip-sync] updated: " + ", ".join(

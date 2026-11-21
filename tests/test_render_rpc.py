@@ -210,3 +210,51 @@ def test_rpc_env_prefers_uuid_visible_over_order_pin():
     env2 = rpc_manager._rpc_env_exports({"name": "w"})
     assert "CUDA_DEVICE_ORDER=PCI_BUS_ID" in env2
     assert "CUDA_VISIBLE_DEVICES" not in env2
+
+def test_render_agent_tls_uses_https_and_mtls(stub_cfg):
+    model = _model("m", device_order="node1-CUDA0,node2-CUDA0")
+    master = _machine("node1", "10.0.0.11", role="master")
+    p1 = _machine("node2", "10.0.0.12", agent_tls=True,
+                  agent_tls_port=8197)
+    stub_cfg.update({m["name"]: m for m in (master, p1)})
+    script = _render_rpc(model, master, [p1])
+    assert "https://10.0.0.12:8197" in script
+    assert "http://10.0.0.12:8198" not in script
+    assert "agent_curl() {" in script
+    assert "--cacert" in script and "--cert" in script and "--key" in script
+    import subprocess
+    proc = subprocess.run(["bash", "-n"], input=script,
+                          text=True, capture_output=True)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_swap_agent_scripts_use_https_mtls():
+    import subprocess
+    import swap_manager
+    m = _machine("node2", "10.0.0.12", agent_tls=True, agent_tls_port=8197)
+    scripts = [
+        swap_manager._agent_llama_start_script("/tmp", m, 52001, "p.json"),
+        swap_manager._agent_llama_stop_script("/tmp", m, 52001, "k"),
+        swap_manager._agent_custom_stop_script("/tmp", m, 52001),
+        swap_manager._agent_custom_start_script("/tmp", m, "/x/run.sh", 52001),
+    ]
+    for script in scripts:
+        assert "https://10.0.0.12:8197" in script
+        assert "http://10.0.0.12:8198" not in script
+        assert "--cacert" in script and "--cert" in script and "--key" in script
+        proc = subprocess.run(["bash", "-n"], input=script,
+                              text=True, capture_output=True)
+        assert proc.returncode == 0, proc.stderr
+
+
+def test_rpc_cmdstop_uses_https_mtls(monkeypatch):
+    import swap_manager
+    m = _machine("node2", "10.0.0.12", agent_tls=True, agent_tls_port=8197)
+    monkeypatch.setattr(rpc_manager, "_model_rpc_ports",
+                        lambda model, peers: {("node2", "all"): 51234})
+    monkeypatch.setattr(rpc_manager, "_peer_server_groups",
+                        lambda order, peer: [("all", ["CUDA0"])])
+    cmd = swap_manager._rpc_cmdstop({"device_order": "node2-CUDA0"}, [m])
+    assert "https://10.0.0.12:8197/rpc/stop" in cmd
+    assert "--cacert" in cmd and "--cert" in cmd and "--key" in cmd
+    assert "http://10.0.0.12:8198" not in cmd

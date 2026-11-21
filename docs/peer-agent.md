@@ -203,7 +203,9 @@ remote-shell call site.
 - Each peer has its **own** per-machine token. The old farm-wide token is
   only adopted for pre-migration agents and can be rotated away with
   `POST /api/machines/rotate-agent-tokens` (or one peer at a time via
-  `POST /api/machines/<name>/rotate-token`). Background migration is ON by
+  `POST /api/machines/<name>/rotate-token`). Rotating tokens also regenerates
+  the swap/RPC start scripts because those embed per-peer agent tokens.
+  Background migration is ON by
   default (`FARM_ROTATE_SHARED_AGENT_TOKENS=1`); it is a no-op on fresh
   installs and only acts once an agent supports `/token/rotate`. Set it to
   `0` to disable.

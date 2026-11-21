@@ -32,7 +32,8 @@ class _M:
 def _machines(monkeypatch):
     rows = [_M("aibox1", "127.0.0.1", True), _M("peer1", "10.0.0.2")]
     monkeypatch.setattr(rs.cfg, "machines", type("X", (), {
-        "all": staticmethod(lambda: [r.m for r in rows])})())
+        "all": staticmethod(lambda: [r.m for r in rows]),
+        "update": staticmethod(lambda name, patch: None)})())
     monkeypatch.setattr(rs.local_node, "is_local",
                         lambda m: m.get("name") == "aibox1")
 

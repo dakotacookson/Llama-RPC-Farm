@@ -216,3 +216,11 @@ def test_rotate_machine_token_keeps_new_on_success(monkeypatch):
     assert out["ok"] is True
     assert stored["tok"] != "old-token-000000000000000000"
     assert calls and calls[0][1] == stored["tok"]
+
+
+def test_discovery_does_not_enroll_with_farm_token(monkeypatch):
+    import discovery
+    import secrets_vault
+    monkeypatch.setattr(secrets_vault, "get_farm_agent_token",
+                        lambda: "legacy-farm-token")
+    assert discovery.pair_agents() == []
