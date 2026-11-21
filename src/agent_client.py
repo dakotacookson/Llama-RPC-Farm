@@ -58,21 +58,33 @@ def _token(machine) -> str:
     override = str((machine or {}).get("_agent_token") or "").strip()
     if override:
         return override
+    # Per-machine token only. The legacy farm token is available explicitly
+    # for migration (FARM_ALLOW_LEGACY_AGENT_TOKEN=1) but is never the
+    # normal credential: one compromised peer must not authenticate to all.
+    allow_farm = str(os.environ.get("FARM_ALLOW_LEGACY_AGENT_TOKEN")
+                     or "").lower() in ("1", "true", "yes", "on")
     try:
-        tok = secrets_vault.get_machine_agent_token(machine)
+        tok = secrets_vault.get_machine_agent_token(
+            machine, allow_farm=allow_farm)
         if tok:
             return tok
+    except TypeError:
+        # Compatibility with older test doubles / patched vault shims.
+        try:
+            tok = secrets_vault.get_machine_agent_token(machine)
+            if tok:
+                return tok
+        except Exception:
+            pass
     except Exception:
         pass
-    # Farm-wide token (vault): paired agents accept this when no
-    # per-machine token is stored. This is what lets a freshly discovered
-    # agent be health-checked/paird without restarting the app.
-    try:
-        tok = secrets_vault.get_farm_agent_token()
-        if tok:
-            return tok
-    except Exception:
-        pass
+    if allow_farm:
+        try:
+            farm = secrets_vault.get_farm_agent_token()
+            if farm:
+                return farm
+        except Exception:
+            pass
     return (os.environ.get("FARM_AGENT_TOKEN")
             or os.environ.get("AGENT_TOKEN") or "").strip()
 
@@ -153,8 +165,15 @@ def _request(machine, method: str, path: str, body=None, timeout=6.0,
         raise AgentError(f"agent request failed: {e}") from e
 
 
+def rotate_token(machine, token, new_token, timeout=8.0) -> dict:
+    """Rotate a peer's bearer token, authenticating with the OLD token."""
+    res = _request(machine, "POST", "/token/rotate",
+                   {"token": new_token}, timeout=timeout, token=token)
+    return res
+
+
 def pair(machine, token, timeout=8.0) -> dict:
-    """Enroll an unpaired agent (its /pair window) with the farm token."""
+    """Enroll an unpaired agent (its /pair window) with a unique token."""
     data = json.dumps({"token": token}, separators=(",", ":")).encode()
     req = urllib.request.Request(
         _base(machine) + "/pair", data=data, method="POST",

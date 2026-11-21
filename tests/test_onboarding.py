@@ -133,14 +133,14 @@ def test_safety_single_machine_rpc_is_inactive(monkeypatch):
     assert "no RPC peers" in rpc["detail"]
 
 
-def test_pairing_commands_contain_token_and_both_platforms(monkeypatch):
-    import machine_tokens
-    monkeypatch.setattr(machine_tokens, "_ensure_farm_agent_token",
-                        lambda: "farm-token-123")
+def test_pairing_commands_use_a_unique_one_machine_token():
     out = onboarding.pairing_commands()
-    assert out["token"] == "farm-token-123"
+    other = onboarding.pairing_commands()
+    assert out["token"] != other["token"]
+    assert len(out["token"]) >= 32
+    assert "fleet" in out["note"]
     assert "PEER_AGENT_TOKEN" in out["unix"]
-    assert "farm-token-123" in out["unix"]
+    assert out["token"] in out["unix"]
     assert "$env:PEER_AGENT_TOKEN" in out["windows"]
 
 
@@ -244,3 +244,34 @@ def test_quickstart_cli_help():
                        capture_output=True, text=True, timeout=30)
     assert r.returncode == 0
     assert "--recipe" in r.stdout
+
+
+def test_safety_reports_rpc_mtls_enabled(monkeypatch):
+    import rpc_tls
+    monkeypatch.setattr(onboarding.access, "access_keys",
+                        lambda: {"sk-one": {"name": "one"}})
+    monkeypatch.setattr(onboarding, "_listen_addresses", lambda p: {"127.0.0.1"})
+    monkeypatch.setattr(onboarding, "_machine_count", lambda: 3)
+    monkeypatch.setattr(onboarding, "_vpn_status",
+                        lambda: {"found": ["Tailscale"], "tailscale": True,
+                                 "wireguard": False})
+    monkeypatch.setattr(rpc_tls, "enabled", lambda: True)
+    rep = onboarding.safety_report()
+    rpc = next(c for c in rep["checks"] if c["id"] == "rpc")
+    assert rpc["level"] == "ok"
+    assert "mTLS" in rpc["detail"]
+
+
+def test_safety_warns_when_peers_share_farm_token(monkeypatch):
+    monkeypatch.setattr(onboarding.access, "access_keys",
+                        lambda: {"sk-one": {"name": "one"}})
+    monkeypatch.setattr(onboarding, "_listen_addresses", lambda p: {"127.0.0.1"})
+    monkeypatch.setattr(onboarding, "_machine_count", lambda: 3)
+    monkeypatch.setattr(onboarding, "_vpn_status",
+                        lambda: {"found": ["Tailscale"], "tailscale": True,
+                                 "wireguard": False})
+    monkeypatch.setattr(onboarding, "_shared_agent_token_count", lambda: 2)
+    rep = onboarding.safety_report()
+    tok = next(c for c in rep["checks"] if c["id"] == "agent-tokens")
+    assert tok["level"] == "warn"
+    assert "farm token" in tok["detail"]

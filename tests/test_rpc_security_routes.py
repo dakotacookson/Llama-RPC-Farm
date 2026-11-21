@@ -63,6 +63,8 @@ def test_enable_installs_every_peer_then_turns_on(monkeypatch):
                         lambda m, c, k, a: calls["installed"].append(m["name"]))
     monkeypatch.setattr(rs.agent_client, "tls_https_start",
                         lambda m: {"running": True, "port": 8197})
+    monkeypatch.setattr(rs.agent_client, "tls_status",
+                        lambda m: {"tunnel_port": 5399})
     monkeypatch.setattr(rs.swap_manager, "push_scripts",
                         lambda: calls.update(pushed=True))
     monkeypatch.setattr(rs, "_reload_swap", lambda: None)

@@ -123,8 +123,10 @@ estimated for streams) without ever seeing the raw token in the collector.
 ## Where keys live
 
 Access keys, views, and per-key UI state live in the per-install,
-git-ignored `config/settings.yaml` (never in git). Agent tokens and the HF
-token live only in the encrypted vault (see [secrets.md](secrets.md)).
+git-ignored `config/settings.yaml` (never in git). Access keys are
+**plaintext in that file**, so the app keeps it owner-only (`0600`) and
+tightens an existing loose file at startup. Agent tokens and the HF token
+live only in the encrypted vault (see [secrets.md](secrets.md)).
 Passwords for web logins are one-way SHA-256+salt fingerprints; the vault
 never sends secrets to the browser, only `agent_token_set` / `hf_token_set`
 flags.
@@ -135,5 +137,15 @@ A fresh install has no default credentials. The UI opens **Create admin
 account** (or `POST /api/auth/bootstrap`) and creates the first web login
 plus its admin access key. Once any login or key exists, bootstrap is
 admin/console-only. Later logins and keys are managed from the app.
+
+## LAN, VPN, or public API
+
+- **LAN / Tailscale:** point clients at `http://<master-ip>:8090/v1` or
+  `http://<tailscale-name>:8090/v1`. Keep the UI/API on a trusted network.
+- **Public clients:** expose only HTTPS 443 through nginx to
+  `127.0.0.1:8090`; see [public-api.md](public-api.md). Never forward raw
+  `8090`, `8199`, `8198`, or RPC ports.
+- **Do not** run the UI/gateway on a shared multi-user host and assume
+  loopback is private: local users/processes are trusted by design.
 
 API reference: [api.md](api.md). Setup walkthrough: [setup.md](setup.md).

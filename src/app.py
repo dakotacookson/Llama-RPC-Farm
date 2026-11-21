@@ -12,6 +12,12 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Load per-install runtime.env BEFORE access/gateway modules read their
+# module-level security constants. Frozen builds use the platform data dir,
+# so this also covers packaged/systemd/launchd/scheduled-task installs.
+from runtime_paths import load_runtime_env
+load_runtime_env()
+
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -314,6 +320,12 @@ def seed_local_master():
     # generated/, model/usage dirs and minimal defaults before anything
     # reads them. Best-effort, never blocks boot.
     ensure_runtime_layout()
+    try:
+        import settings_store
+        import settings_persister
+        settings_persister.ensure_private(settings_store.SETTINGS_FILE)
+    except Exception:
+        pass
     # Agent tokens/passwords belong in the vault, never in machines.yaml.
     # Trigger the write boundary BEFORE any startup write so a legacy value
     # is vaulted rather than dropped by an unrelated rewrite.
@@ -323,7 +335,26 @@ def seed_local_master():
         pass
     local_node.ensure_local_master()
     try:
+        from machine_tokens import (
+            _ensure_farm_agent_token, migrate_missing_agent_tokens,
+        )
         _ensure_farm_agent_token()
+        migrate_missing_agent_tokens()
+        # Default ON: fresh installs with no legacy farm-token peers are a
+        # no-op, while upgraded installs automatically replace shared tokens
+        # as soon as their agents support /token/rotate. Set 0 to opt out.
+        if str(os.environ.get("FARM_ROTATE_SHARED_AGENT_TOKENS")
+               or "1").lower() not in ("0", "false", "no", "off"):
+            import threading
+            from machine_tokens import rotate_shared_tokens
+
+            def _rotate_bg():
+                time.sleep(3)
+                res = rotate_shared_tokens()
+                if res.get("failed"):
+                    print(f"[agent-tokens] rotation failures: "
+                          f"{res['failed']}")
+            threading.Thread(target=_rotate_bg, daemon=True).start()
     except Exception:
         pass
     start_swap_gateway()

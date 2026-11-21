@@ -49,7 +49,7 @@ def _pairing_window() -> int:
     try:
         return max(30, int(os.environ.get("PEER_AGENT_PAIRING_WINDOW") or 600))
     except ValueError:
-        return 86400
+        return 600
 log = logging.getLogger("llama_peer_agent")
 
 
@@ -106,14 +106,20 @@ class AgentHandler(BaseHTTPRequestHandler):
     server_version = f"llama-peer-agent/{__version__}"
 
     def _authorized(self) -> bool:
-        expected = self.server.config.token
-        if not expected:
-            return False
+        config = self.server.config
         header = (self.headers.get("Authorization") or "").strip()
         if not header.lower().startswith("bearer "):
             return False
         got = header[7:].strip()
-        return hmac.compare_digest(got, expected)
+        if not got:
+            return False
+        if config.token_hash:
+            from .config import token_digest
+            if hmac.compare_digest(token_digest(got), config.token_hash):
+                return True
+        if config.token:
+            return hmac.compare_digest(got, config.token)
+        return False
 
     def _send_json(self, status: int, payload: dict):
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -236,6 +242,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         if path == "/tls/status":
             st = tls.status(config)
             st["https_running"] = bool(_HTTPS_SERVER)
+            st["https_enabled"] = tls.https_enabled(config)
             return 200, st
         if path == "/llama/list":
             return 200, {"servers": processes.list_llama_processes()}
@@ -257,22 +264,37 @@ class AgentHandler(BaseHTTPRequestHandler):
         global _PAIRING_DEADLINE
         config = self.server.config
         if path == "/pair":
-            if (config.token or "").strip():
+            if (config.token or "").strip() or config.token_hash:
                 return 400, {"error": "already paired"}
             if not _pairing_open():
                 return 400, {"error": "pairing window closed"}
             tok = str(body.get("token") or "").strip()
             if len(tok) < 16:
                 return 400, {"error": "token must be at least 16 chars"}
-            from .config import save_token
+            from .config import save_token, token_digest
             try:
                 save_token(tok)
             except OSError as e:
                 return 500, {"error": f"could not persist token: {e}"}
-            config.token = tok
+            config.token = ""
+            config.token_hash = token_digest(tok)
             _PAIRING_DEADLINE = 0.0
-            log.warning("paired successfully; token persisted")
+            log.warning("paired successfully; token digest persisted")
             return 200, {"ok": True, "paired": True}
+        if path == "/token/rotate":
+            tok = str(body.get("token") or "").strip()
+            if len(tok) < 16:
+                return 400, {"error": "token must be at least 16 chars"}
+            from .config import save_token, token_digest
+            try:
+                save_token(tok)
+            except OSError as e:
+                return 500, {"error": f"could not persist token: {e}"}
+            config.token = ""
+            config.token_hash = token_digest(tok)
+            log.warning("bearer token rotated; digest persisted")
+            return 200, {"ok": True,
+                         "fingerprint": config.token_hash[:12]}
         if path == "/files/write":
             try:
                 mode = body.get("mode")
@@ -412,8 +434,12 @@ class AgentHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError) as e:
                 return 400, {"error": str(e)}
         if path == "/tls/https/start":
-            return 200, _start_https(config)
+            res = _start_https(config)
+            if res.get("running"):
+                tls.mark_https_enabled(config)
+            return 200, res
         if path == "/tls/https/stop":
+            tls.clear_https_enabled(config)
             return 200, _stop_https()
         if path == "/rpc/stop":
             try:
@@ -693,7 +719,7 @@ class AgentHandler(BaseHTTPRequestHandler):
 
 def create_server(config: AgentConfig) -> AgentHTTPServer:
     global _PAIRING_DEADLINE
-    if not (config.token or "").strip():
+    if not (config.token or "").strip() and not config.token_hash:
         if not _pairing_enabled():
             raise ValueError("PEER_AGENT_TOKEN is required")
         _PAIRING_DEADLINE = time.time() + _pairing_window()
@@ -707,12 +733,13 @@ def create_server(config: AgentConfig) -> AgentHTTPServer:
 
 def serve(config: AgentConfig):
     ensure_dirs(config)
-    # Once certs are installed, the public API should be HTTPS only.
-    # Keep the legacy HTTP listener on loopback for local recovery; the
-    # master switches to HTTPS when the machine's agent_tls flag is set.
-    if tls.status(config)["cert"] and str(
-            os.environ.get("PEER_AGENT_HTTP_LOOPBACK", "1")).lower() not in (
-                "0", "false", "no", "off"):
+    # Only bind legacy HTTP to loopback AFTER HTTPS was explicitly enabled
+    # (marker written by /tls/https/start). Certs alone are not enough: the
+    # master may still be using HTTP during bootstrap, and binding loopback
+    # on a cert-only agent locked the whole fleet out once.
+    if (tls.status(config)["cert"] and tls.https_enabled(config)
+            and str(os.environ.get("PEER_AGENT_HTTP_LOOPBACK", "1")).lower()
+            not in ("0", "false", "no", "off")):
         config.host = "127.0.0.1"
     if tls.status(config)["cert"] and str(
             os.environ.get("PEER_AGENT_HTTPS", "1")).lower() not in (

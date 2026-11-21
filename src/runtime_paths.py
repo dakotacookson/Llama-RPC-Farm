@@ -4,6 +4,43 @@ import sys
 from pathlib import Path
 
 
+def load_runtime_env() -> None:
+    """Load config/runtime.env into os.environ (real env wins).
+
+    Works for both source and frozen builds: frozen builds use the
+    platform data dir, so the packaged service gets the same reverse-proxy
+    security flags without editing the systemd/launchd/scheduled-task
+    definition.
+    """
+    if str(os.environ.get("FARM_SKIP_RUNTIME_ENV") or "").lower() in (
+            "1", "true", "yes", "on"):
+        return
+    paths = [os.path.join(data_dir(), "config", "runtime.env"),
+             os.path.join(data_dir(), "runtime.env")]
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except OSError:
+            continue
+        for raw in lines:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[7:].strip()
+            if "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip()
+            val = val.strip()
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+                val = val[1:-1]
+            if key and key not in os.environ:
+                os.environ[key] = val
+        break
+
+
 def asset_dir() -> str:
     """Read-only bundled resources (ui, examples, bundled agent wheel)."""
     if getattr(sys, "frozen", False):

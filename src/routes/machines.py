@@ -16,7 +16,10 @@ import rpc_manager
 import stats_collector
 import swap_manager
 from machine_conn import _machine_connection_caps
-from machine_tokens import _agent_guard, _auto_agent_token, _ensure_agent_ready
+from machine_tokens import (
+    _agent_guard, _auto_agent_token, _ensure_agent_ready,
+    rotate_machine_token, rotate_shared_tokens,
+)
 from secret_fields import strip_secret_keys
 from swap_apply import apply_swap_config
 from web_shared import _raw_is_private
@@ -420,6 +423,25 @@ async def delete_machine(name: str):
     remaining = cfg.machines.delete(name)
     await apply_swap_config(f"machine delete {name}")
     return {"remaining": remaining}
+
+
+@router.post("/api/machines/{name}/rotate-token")
+async def rotate_machine_agent_token(name: str):
+    """Rotate this peer to a fresh per-machine token (admin/control)."""
+    machine = cfg.machines.require(name)
+    if local_node.is_local(machine):
+        raise HTTPException(status_code=400,
+                            detail="local master has no peer agent token")
+    try:
+        return await run_in_threadpool(rotate_machine_token, machine)
+    except ValueError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@router.post("/api/machines/rotate-agent-tokens")
+async def rotate_shared_agent_tokens():
+    """Migrate every legacy farm-token peer to a unique token."""
+    return await run_in_threadpool(rotate_shared_tokens)
 
 
 @router.post("/api/machines/{name}/detect")

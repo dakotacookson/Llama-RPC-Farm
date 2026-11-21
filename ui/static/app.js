@@ -2366,6 +2366,11 @@ on("#m-pair-load", "click", async (e) => {
     $("#m-pair-windows").textContent = r.windows || "";
     $("#m-pair-box").hidden = false;
     $("#m-pair-note").textContent = r.note || "";
+    const tokField = $("#m-agent-token");
+    if (tokField && r.token) {
+      tokField.value = r.token;
+      tokField.dispatchEvent(new Event("input", { bubbles: true }));
+    }
   } catch (err) {
     toast(err.message, "bad");
   }

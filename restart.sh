@@ -17,6 +17,12 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Optional per-install environment (reverse-proxy security, gateway bind, ...)
+if [ -f "$SCRIPT_DIR/config/runtime.env" ]; then
+  set -a
+  . "$SCRIPT_DIR/config/runtime.env"
+  set +a
+fi
 PORT=8199
 LOG=/tmp/llama-web.log
 

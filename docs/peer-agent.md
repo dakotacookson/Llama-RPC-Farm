@@ -197,8 +197,16 @@ remote-shell call site.
   - Windows: boot-triggered Scheduled Task `LlamaPeerAgent`, running the
     venv entry point through a token-loading `.cmd` wrapper.
   - macOS: launchd LaunchAgent installed by the `.pkg` postinstall.
-- Agent reads a 0600 env file for the token; never writes secrets to logs.
-  The farm token itself is auto-generated and managed by the app.
+- Agent reads a 0600 env file; pairing/rotation store only a SHA-256
+  **digest** of the token there, never the reusable plaintext. Legacy
+  plaintext files are migrated on startup. Tokens are never written to logs.
+- Each peer has its **own** per-machine token. The old farm-wide token is
+  only adopted for pre-migration agents and can be rotated away with
+  `POST /api/machines/rotate-agent-tokens` (or one peer at a time via
+  `POST /api/machines/<name>/rotate-token`). Background migration is ON by
+  default (`FARM_ROTATE_SHARED_AGENT_TOKENS=1`); it is a no-op on fresh
+  installs and only acts once an agent supports `/token/rotate`. Set it to
+  `0` to disable.
 - `GET /health` returns the protocol version; the master warns on drift but
   keeps working when the contract is compatible.
 - Discovery binds UDP `8199` (configurable with `PEER_AGENT_DISCOVERY_PORT`
@@ -213,6 +221,10 @@ remote-shell call site.
 
 - LAN/VPN only; document “do not port-forward”.
 - Token auth on every endpoint; constant-time compare.
+- One token per peer, not one token for the fleet. A compromised agent
+  token cannot authenticate to other peers.
+- Pairing is a short window (default 600 s); set `PEER_AGENT_PAIRING=0`
+  after enrollment. Never reuse the fleet token for new enrollments.
 - IP allowlist optional (CIDR list from `config/settings.yaml`).
 - Request body size limits, strict JSON schema, path allowlist for logs.
 - No secrets in responses; no shell interpolation of user strings.

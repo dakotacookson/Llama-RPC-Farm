@@ -3,7 +3,7 @@ import argparse
 import sys
 
 from . import PROTOCOL_VERSION, __version__
-from .config import AgentConfig, load_env_file
+from .config import AgentConfig, load_env_file, migrate_plaintext_env_file
 from .server import serve
 
 
@@ -50,6 +50,7 @@ def main(argv=None) -> int:
     # install step; real environment variables still win. Without this, an
     # auto-paired agent forgets its token on the next restart.
     load_env_file()
+    migrate_plaintext_env_file()
     try:
         config = AgentConfig.from_env(
             token=args.token, host=args.host, port=args.port,
