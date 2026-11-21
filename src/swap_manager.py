@@ -1140,6 +1140,7 @@ def launch_plan(config_path=None, host_name=None):
                     "proxy": f"http://{remote_ip}:{remote_port}",
                     "cmdStop": f'/bin/bash "{scripts_dir}/{stop_name}"',
                     "checkEndpoint": "/health",
+                    "ttl": max(0, int(deploy_model.get("ttl") or 0)),
                 }
                 entries.append({"key": key, "model_id": mid_for_key,
                                 "mode": "remote-proxy",
@@ -1531,7 +1532,7 @@ def launch_plan(config_path=None, host_name=None):
                     f"skipped")
                 continue
             swap_groups_out[sg["name"]] = {
-                "swap": bool(sg.get("swap", False)),
+                "swap": group_swap,
                 "exclusive": bool(sg.get("exclusive", False)),
                 "persistent": bool(sg.get("persistent", False)),
                 "members": keys,
