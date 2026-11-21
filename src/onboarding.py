@@ -271,16 +271,29 @@ def _wait_download(res, job_id):
     ids = [j.get("id") for j in jobs if j.get("id")]
     deadline = time.time() + 7200
     while time.time() < deadline:
-        states = [(_job_download_state(i)) for i in ids]
-        if any(s == "downloading" for s in states):
-            done = sum(1 for s in states if s == "done")
+        states = [_job_download_state(i) for i in ids]
+        if any(st == "downloading" for st, _err in states):
+            done = sum(1 for st, _err in states if st == "done")
             _job_update(job_id, phase="downloading",
                         progress=round(done / max(1, len(states)), 2))
             time.sleep(1)
             continue
-        err = next((e for s, e in states if s == "error"), None)
+        err = next((e for st, e in states if st == "error"), None)
         if err:
             raise RuntimeError(err)
+        # _finalize_bundle runs asynchronously after job statuses; wait for
+        # the manifest so model launch never races the last file rename.
+        try:
+            import hf_downloader as _hf
+        except Exception:
+            _hf = None
+        while _hf is not None and time.time() < deadline:
+            bundles = [b for b in (_hf.BUNDLES or {}).values()
+                       if b.get("name") == res.get("bundle", {}).get("name")]
+            if bundles and all(b.get("status") == "done"
+                               for b in bundles):
+                return
+            time.sleep(0.5)
         return
     raise RuntimeError("download timed out after 2 hours")
 

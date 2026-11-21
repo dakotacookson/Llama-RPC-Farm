@@ -36,6 +36,9 @@ import urllib.request
 
 GITHUB_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases"
 GITHUB_LATEST_DL = "https://github.com/ggml-org/llama.cpp/releases/latest/download"
+# Release tags that are known-bad on all platforms. Add only with a
+# concrete regression and remove once upstream fixes it.
+KNOWN_BAD_LLAMA_TAGS = set()
 LINUX_VER = "10.0"   # ubuntu-rocm-<ver>
 WIN_CUDA_VER = "12.4"
 WIN_ROCM_VER = "10.0"
@@ -175,6 +178,8 @@ def _fetch_release_asset_sets(limit=30):
         releases = json.loads(r.read().decode())
     out = []
     for rel in releases:
+        if str(rel.get("tag_name") or "") in KNOWN_BAD_LLAMA_TAGS:
+            continue
         names = [a["name"] for a in rel.get("assets", [])
                  if (("llama-" in a["name"] and "bin-" in a["name"])
                      or a["name"].startswith("cudart-"))]

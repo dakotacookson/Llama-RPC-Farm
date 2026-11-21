@@ -275,3 +275,19 @@ def test_safety_warns_when_peers_share_farm_token(monkeypatch):
     tok = next(c for c in rep["checks"] if c["id"] == "agent-tokens")
     assert tok["level"] == "warn"
     assert "farm token" in tok["detail"]
+
+
+def test_wait_download_actually_waits_for_job_status(monkeypatch):
+    calls = {"n": 0}
+    monkeypatch.setattr(onboarding, "_job_update", lambda *a, **k: None)
+    monkeypatch.setattr(onboarding.time, "sleep", lambda s: None)
+    def state(_jid):
+        calls["n"] += 1
+        return ("downloading", None) if calls["n"] < 3 else ("done", None)
+    monkeypatch.setattr(onboarding, "_job_download_state", state)
+    import hf_downloader
+    monkeypatch.setitem(hf_downloader.BUNDLES, "b1", {
+        "name": "bundle", "status": "done"})
+    onboarding._wait_download(
+        {"jobs": [{"id": "j1"}], "bundle": {"name": "bundle"}}, "job")
+    assert calls["n"] >= 3
