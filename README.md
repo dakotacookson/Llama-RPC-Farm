@@ -292,6 +292,7 @@ control over where every layer runs. More:
 |-----|----------------|
 | [docs/quickstart.md](docs/quickstart.md) | One-command demo, Docker profiles, starter recipes |
 | [docs/setup.md](docs/setup.md) | Step-by-step install, machines, stores, engines, clients |
+| [docs/model-loading.md](docs/model-loading.md) | **How a model can load**: single machine, remote-local, RPC split, load-balanced replicas |
 | [docs/topologies.md](docs/topologies.md) | Single-box, RPC, peer-local, custom, MLX; recipes and anti-patterns |
 | [docs/access.md](docs/access.md) | Users, API keys, per-key model grants, gateway, client config |
 | [docs/benchmarks.md](docs/benchmarks.md) | Real measured runs, reproduction, submit your numbers |
