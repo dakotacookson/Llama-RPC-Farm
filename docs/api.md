@@ -60,6 +60,21 @@ unless noted. Errors are FastAPI `HTTPException` (4xx) or `{"error": ...}`.
 | `GET /api/rpc-map` | **RPC<N> → {machine, resource} for every model** (visualizer ground truth) |
 | `GET /api/safe-defaults` | Math-derived flags for a path (tuner.estimate) |
 
+## Access / usage
+
+| Method + Path | Purpose |
+|---|---|
+| `GET /api/views` | Access keys (masked) + grants + request limits |
+| `POST /api/views/keys/generate` | Create key; accepts `limits: {day,week,month}` |
+| `POST /api/views/keys/{mask}/update` | Update grants/admin/visibility/limits |
+| `POST /api/views/keys/revoke` | Revoke by masked token |
+| `GET /api/usage` | Caller's usage buckets/totals |
+| `GET /api/usage/quota` | Current day/week/month request count, limits, reset times |
+| `GET /api/usage/by-model` | Per-model usage series/totals |
+
+Quota exhaustion on a generate path returns `429` with `Retry-After` and
+rate-limit headers; Anthropic clients get the Anthropic error envelope.
+
 ## Tuning
 
 | `GET /api/tune/estimate`, `GET /api/models/{id}/tune/estimate` | Pure-math VRAM fit estimate |

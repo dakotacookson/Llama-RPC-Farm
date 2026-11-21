@@ -94,6 +94,11 @@ install.bat           # Windows equivalent (cmd.exe)
   (complete route reference: `docs/api.md`) rather than hand-editing YAML
   — the running app holds in-memory state and YAML CRUD from outside is
   invisible until restart.
+- Access keys may carry optional `limits: {day,week,month}` generation-
+  request caps in `config/settings.yaml`. Missing/0 = unlimited. Quota
+  state is derived from `usage_collector` rows and enforced in the gateway
+  before upstream forwarding (429 + Retry-After). Do not count model lists
+  or status checks.
 - llama-swap serving (`:8080`) + view gateway (`:8090`,
   `src/swap_gateway.py`) are the client-facing endpoints; model list per
   client is filtered by views (`config/settings.yaml`) / access keys.

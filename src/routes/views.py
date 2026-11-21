@@ -46,6 +46,7 @@ async def list_views(r: Request):
     return {"keys": [
         {"name": e["name"], "token_masked": _mask_token(tok),
          "admin": e["admin"], "models": sorted(e["models"]),
+         "limits": e.get("limits") or {},
          "unrestricted": e.get("unrestricted", True)}
         for tok, e in keys.items()]}
 
@@ -113,6 +114,7 @@ class KeyIn(pydantic.BaseModel):
     models: list[str] = []
     admin: bool = False
     unrestricted: bool | None = None  # None = legacy default (true)
+    limits: dict | None = None        # {day,week,month} requests; 0 = unlimited
 
 
 @router.post("/api/views/keys/generate")
@@ -130,13 +132,15 @@ async def key_generate(k: KeyIn, r: Request):
            "models": [m.strip() for m in k.models if m.strip()],
            "admin": bool(k.admin),
            "admin_unrestricted": True if k.unrestricted is None
-                                 else bool(k.unrestricted)}
+                                 else bool(k.unrestricted),
+           "limits": access.normalize_limits(k.limits or {})}
     keys[tok] = ent
     current[access.KEYS_SETTINGS_KEY] = keys
     _dump_settings_yaml_preserving(current, settings_store.SETTINGS_FILE)
     _access_save_autopush()
     return {"ok": True, "token": tok, "name": ent["name"],
             "admin": ent["admin"], "models": ent["models"],
+            "limits": ent["limits"],
             "unrestricted": ent["admin_unrestricted"]}
 
 
@@ -156,7 +160,10 @@ async def key_update(token_masked: str, k: KeyIn, r: Request):
         keys[tok] = {"name": (k.name or ent.get("name") or "key").strip()
                      or "key", "models": models, "admin": bool(k.admin),
                      "admin_unrestricted": ent.get("admin_unrestricted", True)
-                     if k.unrestricted is None else bool(k.unrestricted)}
+                     if k.unrestricted is None else bool(k.unrestricted),
+                     "limits": (ent.get("limits") or {})
+                     if k.limits is None
+                     else access.normalize_limits(k.limits)}
         current[access.KEYS_SETTINGS_KEY] = keys
         _dump_settings_yaml_preserving(current, settings_store.SETTINGS_FILE)
         _access_save_autopush()

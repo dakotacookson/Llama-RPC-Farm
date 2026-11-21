@@ -259,6 +259,15 @@ async def usage_me(period: str = "all", count: int = 14,
             **agg}
 
 
+@router.get("/api/usage/quota")
+async def usage_quota(request: Request = None):
+    """Current request-quota windows for THIS identity."""
+    import usage_collector as _uc
+    rec = access.current_key_record() or {}
+    name = access.key_display_name() or access.session_user() or "console"
+    return _uc.quota_state(name, rec.get("limits") or {})
+
+
 @router.get("/api/usage/by-model")
 async def usage_by_model(days: int = 30, who: str = "",
                          request: Request = None):

@@ -33,6 +33,7 @@ import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
+import access as farm_access
 from runtime_paths import data_dir
 BASE_DIR = data_dir()
 SETTINGS_FILE = os.path.join(BASE_DIR, "config", "settings.yaml")
@@ -161,10 +162,9 @@ def request_key(request: Request) -> str:
 
 def request_key_name(request: Request) -> str | None:
     """Identity NAME for usage tracking / attribution — never the raw
-    token. Resolution order: Bearer/X-Api-Key header → farm login
-    SESSION COOKIE (maps to the login's access key) → 'console' for
-    keyless loopback → None."""
-    tok = request_key(request)
+    token. Header AND login-session identities resolve to the access-key
+    record name, so quotas/usage stay consistent for browser users."""
+    tok = request_token(request)
     if tok:
         rec = access_keys().get(tok)
         return rec["name"] if rec else None
@@ -174,6 +174,11 @@ def request_key_name(request: Request) -> str | None:
     if client_ip(request) in _TRUSTED_ANCHORS:
         return "console"
     return None
+
+
+def request_key_record(request: Request):
+    tok = request_token(request)
+    return access_keys().get(tok) if tok else None
 
 
 def request_token(request: Request) -> str:
@@ -227,7 +232,9 @@ def access_keys():
         models = {str(m).strip() for m in models if str(m).strip()}
         out[tok] = {"name": str(ent.get("name") or tok),
                     "models": models,
-                    "admin": bool(ent.get("admin", False))}
+                    "admin": bool(ent.get("admin", False)),
+                    "limits": farm_access.normalize_limits(
+                        ent.get("limits"))}
     return out
 
 
@@ -339,6 +346,28 @@ def _anthropic_usage(u) -> dict:
     return {"prompt_tokens": prompt, "completion_tokens": out}
 
 
+def _quota_error(req_path: str, blocked: dict):
+    """429 in the caller's protocol shape, with retry/limit headers."""
+    period = blocked.get("period") or "quota"
+    used = blocked.get("used") or 0
+    limit = blocked.get("limit") or 0
+    retry = max(1, int(blocked.get("reset_in") or 60))
+    msg = (f"{period} request limit reached ({used}/{limit}); "
+           f"retry after {retry}s")
+    headers = {
+        "Retry-After": str(retry),
+        "X-RateLimit-Limit-Requests": str(limit),
+        "X-RateLimit-Remaining-Requests": "0",
+        "X-RateLimit-Reset-Requests": str(int(blocked.get("reset_at") or 0)),
+    }
+    if (req_path or "").startswith("/v1/messages"):
+        return JSONResponse(status_code=429, headers=headers, content={
+            "type": "error",
+            "error": {"type": "rate_limit_error", "message": msg}})
+    from fastapi import HTTPException
+    raise HTTPException(status_code=429, detail=msg, headers=headers)
+
+
 def _gate_error(req_path: str, status: int, message: str):
     """401/404 in the caller's protocol shape.
 
@@ -444,7 +473,12 @@ async def proxy(request: Request, path: str):
     # usage tracking identity (key NAME) — resolve BEFORE the hop; the
     # collector never sees raw tokens
     import usage_collector as _uc
+    _urec = request_key_record(request)
     _uname = request_key_name(request)
+    if _gen and _urec:
+        blocked = _uc.check_quota(_urec["name"], _urec.get("limits"))
+        if blocked:
+            return _quota_error(req_path, blocked)
     _t0 = time.monotonic()
 
     upstream_req = client.build_request(

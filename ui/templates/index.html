@@ -1138,6 +1138,14 @@ technical | bugs, errors, login problems</textarea></label>
         <div class="launch-grid" id="user-models" style="grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); margin-top:6px"></div>
       </div>
 
+      <div class="card" style="margin-top:var(--s-3)">
+        <h3><i class="fa-solid fa-gauge-high"></i> Request limits
+          <span class="hint" style="float:right" id="user-quota-line"></span></h3>
+        <div id="user-quota-grid" class="launch-grid" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); margin-top:6px">
+          <span class="hint">loading…</span>
+        </div>
+      </div>
+
 </div>
 <div id="user-pane-speed" hidden>
       <!-- decode speed by model (per-model tok/s dials) -->
@@ -1367,6 +1375,13 @@ technical | bugs, errors, login problems</textarea></label>
           </div>
           <input type="hidden" id="acc-key-admin" value="false">
           <input type="hidden" id="acc-key-unrestricted" value="true">
+          <div class="hint" style="font-weight:600; margin:10px 0 6px"><i class="fa-solid fa-gauge-high"></i> Request limits <span class="hint">blank or 0 = unlimited; week starts Monday</span></div>
+          <div class="row" style="gap:10px; flex-wrap:wrap">
+            <label class="auto-refresh">Per day <input type="number" id="acc-limit-day" min="0" step="1" placeholder="∞" style="width:110px"></label>
+            <label class="auto-refresh">Per week <input type="number" id="acc-limit-week" min="0" step="1" placeholder="∞" style="width:110px"></label>
+            <label class="auto-refresh">Per month <input type="number" id="acc-limit-month" min="0" step="1" placeholder="∞" style="width:110px"></label>
+          </div>
+          <p class="hint" style="margin:6px 0 0">Counts generation requests only (chat, messages, embeddings, audio, images), not model lists or status checks.</p>
           <div class="card" style="padding:10px; margin-top:6px">
             <h3 style="font-size:0.95em; margin:0 0 6px">Models this view may see</h3>
             <p class="hint" style="margin:0 0 6px">Click cards to toggle. A model card grants the base model only; variant cards grant that exact variant — each is its own grant.</p>

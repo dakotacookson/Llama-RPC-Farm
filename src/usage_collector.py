@@ -30,6 +30,9 @@ USAGE_SETTINGS_KEY = "usage_tracking"   # settings.yaml gate (default on)
 _q: "queue.Queue" = queue.Queue(maxsize=4096)
 _qthread = None
 _qlock = threading.Lock()
+_QUOTA_LOCK = threading.Lock()
+_QUOTA_CACHE = {}   # name -> {window starts, reset_at, used}
+_QUOTA_WINDOWS = ("day", "week", "month")
 
 
 def enabled() -> bool:
@@ -82,6 +85,10 @@ def record(name, path, model, status, duration_s, tokens=None,
                        or (tokens or {}).get("output_tokens") or 0)}
     if estimated:
         row["est"] = True
+    try:
+        _bump_quota(row["name"], row["ts"])
+    except Exception:
+        pass
     try:
         _q.put_nowait(row)
     except queue.Full:
@@ -326,3 +333,117 @@ def key_files():
         if f.startswith("key.") and f.endswith(".enc"):
             out.append(f[4:-4])
     return out
+
+# ---------------------------------------------------------------------------
+# Per-key request quotas (day / week / month)
+# ---------------------------------------------------------------------------
+
+def _norm_limits(limits):
+    if not isinstance(limits, dict):
+        return {}
+    out = {}
+    for period in _QUOTA_WINDOWS:
+        try:
+            n = int(limits.get(period) or 0)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            out[period] = n
+    return out
+
+
+def _window_bounds(now=None):
+    import datetime as _dt
+    now = time.time() if now is None else float(now)
+    dt = _dt.datetime.fromtimestamp(now)
+    day = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    week = day - _dt.timedelta(days=day.weekday())
+    month = day.replace(day=1)
+    next_day = day + _dt.timedelta(days=1)
+    next_week = week + _dt.timedelta(days=7)
+    next_month = (month.replace(day=28) + _dt.timedelta(days=4)).replace(day=1)
+    return {
+        "day": {"start": day.timestamp(), "reset": next_day.timestamp()},
+        "week": {"start": week.timestamp(), "reset": next_week.timestamp()},
+        "month": {"start": month.timestamp(), "reset": next_month.timestamp()},
+    }
+
+
+def _quota_load_locked(name, now):
+    bounds = _window_bounds(now)
+    used = {p: 0 for p in _QUOTA_WINDOWS}
+    for row in _iter_rows(name):
+        try:
+            ts = float(row.get("ts") or 0)
+        except (TypeError, ValueError):
+            continue
+        for period in _QUOTA_WINDOWS:
+            if ts >= bounds[period]["start"]:
+                used[period] += 1
+    state = {"name": name, "bounds": bounds, "used": used}
+    _QUOTA_CACHE[name] = state
+    return state
+
+
+def _quota_get_locked(name, now):
+    state = _QUOTA_CACHE.get(name)
+    bounds = _window_bounds(now)
+    if state is None:
+        return _quota_load_locked(name, now)
+    for period in _QUOTA_WINDOWS:
+        if state["bounds"][period]["start"] != bounds[period]["start"]:
+            return _quota_load_locked(name, now)
+    state["bounds"] = bounds
+    return state
+
+
+def _bump_quota(name, ts=None):
+    now = time.time() if ts is None else float(ts)
+    with _QUOTA_LOCK:
+        state = _quota_get_locked(name, now)
+        for period in _QUOTA_WINDOWS:
+            state["used"][period] += 1
+
+
+def reset_quota_cache():
+    with _QUOTA_LOCK:
+        _QUOTA_CACHE.clear()
+
+
+def quota_state(name, limits=None, now=None):
+    """Current request usage for a key with its configured limits.
+
+    Returns windows: day/week/month each with used, limit (0 = unlimited),
+    remaining (None when unlimited), reset_at (unix), reset_in seconds.
+    """
+    now = time.time() if now is None else float(now)
+    norm = _norm_limits(limits)
+    with _QUOTA_LOCK:
+        state = _quota_get_locked(name, now)
+        used = dict(state["used"])
+        bounds = state["bounds"]
+    windows = {}
+    for period in _QUOTA_WINDOWS:
+        limit = int(norm.get(period) or 0)
+        u = int(used.get(period) or 0)
+        windows[period] = {
+            "used": u,
+            "limit": limit,
+            "remaining": max(0, limit - u) if limit > 0 else None,
+            "reset_at": bounds[period]["reset"],
+            "reset_in": max(0, int(bounds[period]["reset"] - now)),
+        }
+    return {"identity": name, "limits": norm, "windows": windows}
+
+
+def check_quota(name, limits=None, now=None):
+    """None when allowed, else the exhausted window (with retry_after)."""
+    norm = _norm_limits(limits)
+    if not name or not norm:
+        return None
+    state = quota_state(name, norm, now=now)
+    for period in _QUOTA_WINDOWS:
+        w = state["windows"][period]
+        if w["limit"] > 0 and w["used"] >= w["limit"]:
+            return {"period": period, **w}
+    return None

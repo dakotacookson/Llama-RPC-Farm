@@ -21,7 +21,7 @@ models, and one OpenAI- and Anthropic-compatible endpoint on top.
 ![Quick tour: Flow Visualizer, model editor, hardware placement, downloads, tests, launch, and themes](docs/img/tour.gif)
 
 - **Good fit:** spare GPUs across a few boxes, mixed OSes, one endpoint,
-  stock llama.cpp flags, per-user model access.
+  stock llama.cpp flags, per-user model access and request limits.
 - **Not the goal:** public multi-tenant serving, a new inference runtime,
   or automatic device discovery with its own scheduler. The farm drives
   stock llama.cpp builds; placement stays explicit and visible.
@@ -180,7 +180,8 @@ This repo ships an agent playbook (`AGENTS.md`). Tell your coding agent:
 Point any OpenAI- or Anthropic-compatible client at the gateway (`:8090`)
 or llama-swap directly (`:8080`). The in-app **Connect** tab generates
 copyable configs and can test the endpoint. Keys, per-user model grants,
-and client configs: **[docs/access.md](docs/access.md)**.
+optional daily/weekly/monthly request limits, and client configs:
+**[docs/access.md](docs/access.md)**.
 
 ```bash
 curl http://<master-ip>:8090/v1/chat/completions \

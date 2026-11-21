@@ -49,6 +49,25 @@ VIEWS_SETTINGS_KEY = "views"            # legacy block, read for migration view
 ADMIN_IPS_SETTINGS_KEY = "admin_ips"    # legacy, no longer grants trust
 ADMINS_UNRESTRICTED_KEY = "admins_unrestricted"  # legacy flag, moot under keys
 KEYS_SETTINGS_KEY = "access_keys"
+QUOTA_WINDOWS = ("day", "week", "month")
+
+
+def normalize_limits(raw):
+    """Normalize per-key request limits: {day,week,month} positive ints.
+
+    Missing/zero/negative = unlimited (omitted from the result).
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for period in QUOTA_WINDOWS:
+        try:
+            n = int(raw.get(period) or 0)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            out[period] = n
+    return out
 
 # Always-trusted anchors: loopback (operator console, farm's own
 # in-process fetches). Everything else identifies by KEY.
@@ -136,6 +155,7 @@ def access_keys():
         out[tok] = {"name": str(ent.get("name") or tok),
                     "models": models,
                     "admin": bool(ent.get("admin", False)),
+                    "limits": normalize_limits(ent.get("limits")),
                     "unrestricted": bool(ent.get(
                         "unrestricted",
                         ent.get("admin_unrestricted", True)))}

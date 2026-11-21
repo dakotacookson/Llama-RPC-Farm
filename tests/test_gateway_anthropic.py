@@ -358,3 +358,30 @@ def test_admin_key_can_use_messages(key_table, monkeypatch):
                         "authorization": f"Bearer {ADMIN}"},
                json={"model": "anything", "messages": []})
     assert r.status_code == 200
+
+
+def test_quota_exhaustion_is_429_openai_and_anthropic(key_table, monkeypatch):
+    _client_for(monkeypatch, FakeResp())
+    import usage_collector
+    monkeypatch.setattr(usage_collector, "check_quota",
+                        lambda name, limits: {
+                            "period": "day", "used": 5, "limit": 5,
+                            "reset_in": 30, "reset_at": 9999999999})
+
+    async def _canon(mid):
+        return mid
+    monkeypatch.setattr(gw, "canonical_model", _canon)
+    c = TestClient(gw.app)
+    r = c.post("/v1/chat/completions",
+               headers={"content-type": "application/json",
+                        "authorization": f"Bearer {SCOPED}"},
+               json={"model": "m1", "messages": []})
+    assert r.status_code == 429
+    assert r.headers.get("retry-after") == "30"
+
+    r = c.post("/v1/messages",
+               headers={"content-type": "application/json",
+                        "x-api-key": SCOPED},
+               json={"model": "m1", "messages": []})
+    assert r.status_code == 429
+    assert r.json()["error"]["type"] == "rate_limit_error"

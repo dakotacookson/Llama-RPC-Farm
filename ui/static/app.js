@@ -446,6 +446,7 @@ async function loadUser() {
     if (lineA) lineA.textContent = "model list failed: " + err.message;
   }
   // usage cards (all-time totals + series graph)
+  loadUserQuota();
   loadUsageTotals();
   loadUsageSeries("day");
 
@@ -535,6 +536,48 @@ function _ubmSub(d) {
     `${t.errors ? ` · <span style="color:var(--warn)">${t.errors} err</span>` : ""}`;
 }
 
+function _fmtReset(sec) {
+  sec = Math.max(0, Number(sec) || 0);
+  if (sec >= 86400) return `${Math.ceil(sec / 86400)}d`;
+  if (sec >= 3600) return `${Math.ceil(sec / 3600)}h`;
+  if (sec >= 60) return `${Math.ceil(sec / 60)}m`;
+  return `${Math.max(1, Math.round(sec))}s`;
+}
+
+async function loadUserQuota() {
+  const grid = $("#user-quota-grid");
+  const line = $("#user-quota-line");
+  if (!grid) return;
+  try {
+    const r = await api("GET", "/api/usage/quota");
+    const lim = r.limits || {};
+    const hasLimits = ["day", "week", "month"].some(p => (lim[p] || 0) > 0);
+    if (line) line.textContent = hasLimits ? "enforced per access key" : "unlimited";
+    grid.innerHTML = ["day", "week", "month"].map(p => {
+      const w = (r.windows || {})[p] || {};
+      const used = w.used || 0;
+      const max = w.limit || 0;
+      const pct = max > 0 ? Math.min(100, 100 * used / max) : 0;
+      const color = max > 0 && used >= max ? "var(--bad,#d33)"
+        : max > 0 && used >= max * 0.8 ? "var(--warn,#c60)"
+        : "var(--accent,#08f)";
+      const bar = max > 0
+        ? `<div style="height:6px;border-radius:99px;background:var(--surface-dim,#0003);overflow:hidden;margin:8px 0 5px"><div style="height:100%;width:${pct.toFixed(1)}%;background:${color}"></div></div>`
+        : `<div style="height:6px;border-radius:99px;background:var(--surface-dim,#0003);margin:8px 0 5px"></div>`;
+      return `<div class="card" style="padding:10px 12px">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
+          <strong style="text-transform:capitalize">${p}</strong>
+          <span class="hint">${max > 0 ? `${used} / ${max}` : `${used} / ∞`}</span>
+        </div>
+        ${bar}
+        <div class="hint">${max > 0 ? (used >= max ? "limit reached" : `${max - used} remaining`) : "unlimited"}${w.reset_in != null ? ` · resets in ${_fmtReset(w.reset_in)}` : ""}</div>
+      </div>`;
+    }).join("");
+  } catch (err) {
+    grid.innerHTML = `<span class="hint">limits unavailable: ${escHtml(err.message)}</span>`;
+  }
+}
+
 function _userRefreshVisible() {
   if (!document.querySelector("#tab-user")?.classList.contains("active"))
     return;
@@ -549,6 +592,7 @@ function _userRefreshVisible() {
     if (p && !p.hidden) { fn(); break; }
   }
   loadUserAccessChipsLite();
+  loadUserQuota();
 }
 
 /* LIGHT update = write into EXISTING nodes only (textContent/attrs);
@@ -769,12 +813,19 @@ let accessAllModels = [];
 async function renderAccessKeys(keys) {
   const host = $("#acc-views");
   if (!host) return;
+  const limText = (lim) => {
+    const parts = [];
+    for (const p of ["day", "week", "month"]) {
+      if (lim && lim[p] > 0) parts.push(`${p[0].toUpperCase()}${p.slice(1)} ${lim[p]}`);
+    }
+    return parts.length ? parts.join(" · ") : "unlimited";
+  };
   host.innerHTML = (keys || []).length
     ? keys.map(k => `
     <div class="server-chip" style="display:flex; gap:8px; align-items:center; margin-bottom:6px">
       <span class="chip-name"><b>${escHtml(k.name)}</b>${k.admin ? ' <span class="badge" style="background:var(--accent-dim);color:var(--accent)">admin</span>' : ""}</span>
-      <span class="chip-sub" title="${escHtml((k.models||[]).join(", "))}">${escHtml(k.token_masked)} · ${(k.models||[]).length ? (k.models).length + " model grants" : "unscoped"} · <b>${k.unrestricted === false ? "strict" : "unrestricted"}</b></span>
-      <button class="small" data-k-id="${escHtml(k.token_masked)}" data-k-name="${escHtml(k.name)}" data-k-admin="${k.admin ? 1 : 0}" data-k-models="${escHtml((k.models||[]).join(","))}" data-k-unrestricted="${k.unrestricted === false ? 0 : 1}">Edit</button>
+      <span class="chip-sub" title="${escHtml((k.models||[]).join(", "))}">${escHtml(k.token_masked)} · ${(k.models||[]).length ? (k.models).length + " model grants" : "unscoped"} · <b>${k.unrestricted === false ? "strict" : "unrestricted"}</b> · <span title="request limits">${escHtml(limText(k.limits))}</span></span>
+      <button class="small" data-k-id="${escHtml(k.token_masked)}" data-k-name="${escHtml(k.name)}" data-k-admin="${k.admin ? 1 : 0}" data-k-models="${escHtml((k.models||[]).join(","))}" data-k-unrestricted="${k.unrestricted === false ? 0 : 1}" data-k-day="${(k.limits||{}).day || 0}" data-k-week="${(k.limits||{}).week || 0}" data-k-month="${(k.limits||{}).month || 0}">Edit</button>
       <button class="small danger" data-k-revoke="${escHtml(k.token_masked)}" data-k-name="${escHtml(k.name)}">Revoke</button>
     </div>`).join("")
     : '<span class="hint">no keys yet — generate one per person/service</span>';
@@ -785,6 +836,11 @@ async function renderAccessKeys(keys) {
         admin: btn.dataset.kAdmin === "1",
         models: (btn.dataset.kModels || "").split(",").filter(Boolean),
         unrestricted: btn.dataset.kUnrestricted !== "0",
+        limits: {
+          day: Number(btn.dataset.kDay || 0) || 0,
+          week: Number(btn.dataset.kWeek || 0) || 0,
+          month: Number(btn.dataset.kMonth || 0) || 0,
+        },
       });
       // reveal + copy affordance (admins hand keys to users/rotate)
       try {
@@ -820,6 +876,11 @@ function accessLoadIntoEditor(k) {
   $("#acc-key-admin").value = k.admin ? "true" : "false";
   $("#acc-key-unrestricted").value =
     (k.unrestricted === undefined ? true : !!k.unrestricted) ? "true" : "false";
+  const lim = k.limits || {};
+  for (const p of ["day", "week", "month"]) {
+    const el = $("#acc-limit-" + p);
+    if (el) el.value = lim[p] > 0 ? lim[p] : "";
+  }
   syncKeyEditorChips();
   renderAccessModelGrid(accessAllModels, k.models || []);
   $("#acc-key-generate").textContent = accessEditingMasked ? "Save changes" : "Generate key";
@@ -911,12 +972,17 @@ on("#acc-key-generate", "click", async () => {
   const models = [...accessModelSel];
   const admin = $("#acc-key-admin")?.value === "true";
   const unrestricted = $("#acc-key-unrestricted")?.value !== "false";
+  const limits = {};
+  for (const p of ["day", "week", "month"]) {
+    const n = Number($("#acc-limit-" + p)?.value || 0) || 0;
+    if (n > 0) limits[p] = n;
+  }
   try {
     if (accessEditingMasked) {
-      await api("POST", `/api/views/keys/${encodeURIComponent(accessEditingMasked)}/update`, { name, models, admin, unrestricted });
+      await api("POST", `/api/views/keys/${encodeURIComponent(accessEditingMasked)}/update`, { name, models, admin, unrestricted, limits });
       toast(`key ${name} updated — refreshing…`, "ok");
     } else {
-      const r = await api("POST", "/api/views/keys/generate", { name, models, admin, unrestricted });
+      const r = await api("POST", "/api/views/keys/generate", { name, models, admin, unrestricted, limits });
       // the ONE time the raw token is shown — modal with copy button
       $("#acc-new-token").textContent = r.token;
       $("#acc-token-modal").classList.remove("hidden");
