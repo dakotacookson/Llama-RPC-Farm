@@ -56,6 +56,8 @@ log = logging.getLogger("llama_peer_agent")
 class AgentHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    request_queue_size = 128
+    block_on_close = False
 
     def __init__(self, address, handler, config: AgentConfig):
         self.config = config
@@ -103,6 +105,7 @@ def _stop_https():
 
 
 class AgentHandler(BaseHTTPRequestHandler):
+    timeout = 30
     server_version = f"llama-peer-agent/{__version__}"
 
     def _authorized(self) -> bool:
