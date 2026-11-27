@@ -121,6 +121,28 @@ class AudioIn(pydantic.BaseModel):
     language: str = "English"  # force ASR language ("None" = auto-detect)
 
 
+# llama.cpp's miniaudio-based decoder reads WAV/MP3/FLAC only. Map the data
+# URI subtype to the OpenAI `format`; anything else is rejected up front so
+# the UI never gets a confusing "Failed to load image or audio file".
+_AUDIO_DATA_FORMATS = {
+    "wav": "wav", "x-wav": "wav", "wave": "wav",
+    "mpeg": "mp3", "mp3": "mp3", "flac": "flac",
+}
+
+
+def _audio_data_uri_format(data_uri):
+    m = re.match(r"^data:audio/([^;,\s]+)", str(data_uri or ""), re.I)
+    sub = (m.group(1) if m else "").lower()
+    fmt = _AUDIO_DATA_FORMATS.get(sub)
+    if not fmt:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"unsupported audio container '{sub or 'unknown'}': "
+                    "llama.cpp's ASR decoder accepts WAV, MP3, or FLAC — "
+                    "convert the recording to WAV before sending"))
+    return fmt
+
+
 @router.post("/api/audio")
 async def audio_test(v: AudioIn, request: Request):
     """Transcribe browser-captured audio via OpenAI-style input_audio
@@ -130,6 +152,7 @@ async def audio_test(v: AudioIn, request: Request):
         raise HTTPException(status_code=503, detail="swap not running — Launch All first")
     host = cfg.machines.require(st["host"])
     is_local = local_node.is_local(host)
+    audio_format = _audio_data_uri_format(v.audio)
     url = _gateway_url("/v1/chat/completions")  # GATEWAY: key-auth + usage tracking for ALL farm-proxied generate paths
     def do():
         import urllib.request, json as _json, urllib.error
@@ -144,7 +167,8 @@ async def audio_test(v: AudioIn, request: Request):
         if sys_msg:
             msgs.append({"role": "system", "content": sys_msg})
         msgs.append({"role": "user", "content": [
-            {"type": "input_audio", "input_audio": {"data": v.audio, "format": "wav"}},
+            {"type": "input_audio", "input_audio": {"data": v.audio,
+                                                    "format": audio_format}},
         ]})
         payload = _json.dumps({"model": v.model, "messages": msgs}).encode()
         req = urllib.request.Request(url, data=payload,

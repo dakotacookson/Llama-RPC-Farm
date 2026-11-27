@@ -7086,11 +7086,21 @@ on("#aud-record","click", async ()=>{
   try{ localStorage.setItem("aud-mic-ok", "1"); }catch(_){}
   if(lv) lv.textContent = "mic allowed";
   aud.chunks = [];
-  const mime = ["audio/webm;codecs=opus","audio/webm","audio/mp4"].find(t=>MediaRecorder.isTypeSupported(t)) || "";
+  // Pick a recorder MIME this browser can ALSO decode with Web Audio.
+  // Firefox records WebM/Opus but its decodeAudioData rejects WebM
+  // ("unknown content type"), so its own recordings could never be
+  // re-encoded to WAV and were sent raw (llama.cpp then failed to load
+  // them). Ogg/Opus is recordable AND decodable on Firefox; Chromium
+  // prefers WebM; Safari falls back to MP4/AAC.
+  const _isFirefox = /firefox/i.test(navigator.userAgent);
+  const _mimePrefs = _isFirefox
+    ? ["audio/ogg;codecs=opus","audio/ogg","audio/webm;codecs=opus","audio/webm","audio/mp4"]
+    : ["audio/webm;codecs=opus","audio/webm","audio/ogg;codecs=opus","audio/mp4"];
+  const mime = _mimePrefs.find(t=>{ try{ return MediaRecorder.isTypeSupported(t); }catch(_){ return false; } }) || "";
   aud.rec = new MediaRecorder(aud.stream, mime ? { mimeType: mime } : undefined);
   aud.rec.ondataavailable = e => { if(e.data.size) aud.chunks.push(e.data); };
   aud.rec.onstop = ()=>{
-    aud.blob = new Blob(aud.chunks, { type: aud.rec.mimeType || "audio/webm" });
+    aud.blob = new Blob(aud.chunks, { type: aud.rec.mimeType || mime || "audio/webm" });
     aud.chunks = [];
     if(aud.stream){ aud.stream.getTracks().forEach(t=>t.stop()); aud.stream = null; }
     if(aud.ac){ aud.ac.close().catch(()=>{}); aud.ac = null; }
@@ -7151,13 +7161,26 @@ on("#aud-run","click", async ()=>{
     // convert anything that isn't already WAV/MP3/FLAC (what llama.cpp's
     // audio decoder accepts). Covers Firefox's audio/ogg, Chrome's webm, etc.
     if(!/^audio\/(wav|x-wav|wave|mpeg|mp3|flac)/i.test(aud.blob.type)){
+      let acx = null;
       try{
         const ab = await aud.blob.arrayBuffer();
-        const acx = new (window.AudioContext || window.webkitAudioContext)();
+        acx = new (window.AudioContext || window.webkitAudioContext)();
         const audioBuf = await acx.decodeAudioData(ab);
-        await acx.close();
         payloadBlob = await audioBufferToWav(audioBuf, 16000);
-      }catch(e){ toast("Audio decode failed: " + e.message + " (sending raw anyway)", "warn"); }
+      }catch(e){
+        // llama.cpp's ASR decoder only reads WAV/MP3/FLAC. Forwarding a raw
+        // WebM/Ogg clip just yields a confusing server-side
+        // "Failed to load image or audio file"; stop with the real cause.
+        const why = "Could not convert this recording to WAV ("
+          + ((e && e.message) || e)
+          + "). llama.cpp's ASR decoder needs WAV, MP3, or FLAC.";
+        if(out) out.innerHTML = `<p class="status-bad">${escHtml(why)}</p>`;
+        toast("Audio conversion failed — see the panel for details", "bad");
+        btn.disabled = false; btn.textContent = "Transcribe";
+        return;
+      }finally{
+        if(acx){ try{ await acx.close(); }catch(_){} }
+      }
     }
     const dataUri = await new Promise((res, rej)=>{
       const rd = new FileReader();
