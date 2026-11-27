@@ -11,6 +11,7 @@ import os
 import posixpath
 import re as _re
 import shutil
+import threading
 import time
 from datetime import datetime
 
@@ -1980,6 +1981,118 @@ def push_scripts():
     return {"written": written, "backups": backups, "validated": True,
             "warnings": gen.get("warnings", []),
             "models": gen.get("models", [])}
+
+
+# Automatic re-push after a peer's IP heals (MAC/ARP or agent discovery).
+# One push at a time: repeated heals coalesce into the in-flight push, which
+# re-reads machines.yaml at execution time and therefore picks up whatever
+# the latest healed IP is.
+_IP_REPUSH_LOCK = threading.Lock()
+_IP_REPUSH_STATE = {"pending": False, "thread": None}
+
+
+def _machine_refs(model, names):
+    """True if this deployment record (base or variant) uses any machine."""
+    if not isinstance(model, dict):
+        return False
+    for server in (model.get("servers") or []):
+        if str(server) in names:
+            return True
+    # Device tokens are `<machine>-<resource>`; machine names contain
+    # hyphens, so split at the LAST dash.
+    for token in str(model.get("device_order") or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        machine, sep, _resource = token.rpartition("-")
+        if sep and machine in names:
+            return True
+    for machine in (model.get("expose") or {}):
+        if str(machine) in names:
+            return True
+    return False
+
+
+def models_referencing_machines(names):
+    """Model ids whose base deployment or any variant touches `names`."""
+    names = {str(n) for n in (names or []) if n}
+    if not names:
+        return []
+    try:
+        models = cfg.list_models()
+    except Exception:
+        return []
+    out = []
+    for model in models:
+        mid = model.get("model_id") or model.get("_file") or ""
+        if not mid:
+            continue
+        refs = _machine_refs(model, names)
+        if not refs:
+            refs = any(_machine_refs(variant, names)
+                       for variant in (model.get("variants") or []))
+        if refs:
+            out.append(mid)
+    return out
+
+
+def repush_for_ip_change(changed_names, reason="ip-heal", background=True):
+    """Regenerate + push the swap config/scripts after a peer IP changed.
+
+    The generated `start-*.sh` wrappers and each remote-local model's
+    `proxy:` URL bake the peer IP at push time, so healing machines.yaml
+    alone leaves them pointing at the old, dead address until the next
+    launch. llama-swap runs with --watch-config (SWAP_DAEMON_ARGS), so a
+    push — no daemon restart, loaded models keep serving — is enough to
+    make the healed IP routable again.
+
+    Best-effort and coalesced: safe to call from synchronous status/heal
+    paths. Set FARM_IP_REPUSH_DISABLE=1 to turn the automatic push off.
+    """
+    if (os.environ.get("FARM_IP_REPUSH_DISABLE") or "").lower() in (
+            "1", "true", "yes", "on"):
+        return {"scheduled": False, "reason": "disabled"}
+    names = [str(n) for n in (changed_names or []) if n]
+    if not names:
+        return {"scheduled": False, "reason": "no machines"}
+    try:
+        if not status().get("running"):
+            return {"scheduled": False, "reason": "swap not running"}
+    except Exception as exc:
+        return {"scheduled": False, "error": str(exc)}
+    models = models_referencing_machines(names)
+    if not models:
+        return {"scheduled": False, "reason": "no models use those machines"}
+
+    def _run():
+        try:
+            res = push_scripts()
+            if res.get("error"):
+                print(f"[ip-sync] swap repush ({reason}) aborted: "
+                      f"{res['error']}")
+            else:
+                print(f"[ip-sync] swap repush ({reason}) wrote "
+                      f"{len(res.get('written') or [])} file(s)")
+        except Exception as exc:
+            print(f"[ip-sync] swap repush ({reason}) failed: {exc}")
+        finally:
+            with _IP_REPUSH_LOCK:
+                _IP_REPUSH_STATE["pending"] = False
+
+    with _IP_REPUSH_LOCK:
+        if _IP_REPUSH_STATE["pending"]:
+            return {"scheduled": False, "reason": "push already pending",
+                    "machines": names, "models": models}
+        _IP_REPUSH_STATE["pending"] = True
+    info = {"scheduled": True, "machines": names, "models": models,
+            "reason": reason}
+    if not background:
+        _run()
+        return info
+    thread = threading.Thread(target=_run, daemon=True, name="ip-repush")
+    _IP_REPUSH_STATE["thread"] = thread
+    thread.start()
+    return info
 
 
 def launch(binary=None, listen_port=None, config_path=None,

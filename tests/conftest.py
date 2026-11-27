@@ -18,6 +18,9 @@ import pytest
 os.environ.setdefault("FARM_SKIP_RUNTIME_ENV", "1")
 # No background agent-token rotation during tests (would touch live peers).
 os.environ["FARM_ROTATE_SHARED_AGENT_TOKENS"] = "0"
+# IP-heal re-push must never write swap files from a unit test; the
+# dedicated test re-enables it and stubs the push.
+os.environ["FARM_IP_REPUSH_DISABLE"] = "1"
 
 
 class _FakeMachines:
