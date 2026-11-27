@@ -1049,6 +1049,13 @@ def _sync_machine_ip(machine):
         pass  # best-effort persist; the in-memory fix already helps
     print(f"[ip-sync] {machine.get('name')}: {old_ip} -> {current_ip} "
           f"(matched stored MAC {stored_mac})")
+    # Generated swap scripts/proxies bake the peer IP at push time; refresh
+    # them so a healed IP does not leave models pointing at the old address.
+    try:
+        import swap_manager as _swap
+        _swap.repush_for_ip_change([machine.get("name")], reason="ip-heal")
+    except Exception:
+        pass
     return machine
 
 

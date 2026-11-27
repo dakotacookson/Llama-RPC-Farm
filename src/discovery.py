@@ -194,6 +194,16 @@ def reconcile_machine_ips():
                   f"(agent MAC {mac})")
         except Exception:
             pass
+    if changed:
+        # The generated swap wrappers/proxies bake peer IPs; refresh them
+        # so a healed IP is routable without waiting for the next launch.
+        try:
+            import swap_manager as _swap
+            _swap.repush_for_ip_change(
+                [name for name, _old, _new in changed],
+                reason="agent-discovery")
+        except Exception:
+            pass
     return changed
 
 
